@@ -1,0 +1,5 @@
+{
+  "vector": "TV-11c",
+  "description": "tar symlink member",
+  "expected_verdict": "MALFORMED_ARCHIVE"
+}

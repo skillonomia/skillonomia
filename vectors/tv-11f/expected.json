@@ -1,0 +1,5 @@
+{
+  "vector": "TV-11f",
+  "description": "pax path override hiding a traversal behind multi-byte records",
+  "expected_verdict": "MALFORMED_ARCHIVE"
+}

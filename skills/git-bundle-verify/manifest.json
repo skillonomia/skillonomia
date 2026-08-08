@@ -1,0 +1,233 @@
+{
+  "skill_id": "01GTBNDVFY0000000000000000",
+  "semantic_version": "1.1.0",
+  "title": "git-bundle-verify",
+  "capability_statement": "Verify that a git bundle file is the artifact it claims to be: its SHA-256 matches the digest recorded for it, it records a complete history, it clones, and the tree it produces matches a reference checkout byte for byte. The package carries the defective bundles it must refuse, so the refusals are checkable by whoever adopted it.",
+  "owner": "skillonomia",
+  "author_agent": "00000000000000000000000000",
+  "created_at": "2026-08-08T00:00:00Z",
+  "license": "Apache-2.0",
+  "access_policy": "workspace",
+  "scope": {
+    "problem_class": "Acceptance of a git bundle received as a release artifact: digest, completeness, cloneability and equality with a reference tree, decided offline and reproducibly.",
+    "non_goals": [
+      "Fetching the bundle, or any other network access",
+      "Writing to the bundle, the reference tree, or any path outside the work directory",
+      "Judging the CONTENT of the history (review, licensing, provenance of individual commits)",
+      "Establishing PROVENANCE: the digest check proves the file is the one you were told about, not that the one who told you is to be trusted",
+      "Repairing or rewriting a bundle that fails a check"
+    ],
+    "prerequisites": [
+      "git 2.30 or newer on PATH — the runbook is about the behaviour of `git bundle verify`, so the lower bound is declared rather than assumed, and step 1 checks it",
+      "GNU coreutils on PATH (sha256sum, sort, cat, printf) and GNU sed — the scripts use spellings that exist only there: sha256sum as a program name, sort --version-sort, sed --quiet --expression. runtime.os is linux alone for exactly this reason, and it is a declaration rather than a preference: on a BSD userland these are different programs, and a script that chose between them would need a conditional, which gate 5 refuses",
+      "awk on PATH — any POSIX awk. It counts lines where `wc -l` would: `wc` pads its count to a column on some implementations, and g3 and g4 are declared as exact lines",
+      "cmp, from diffutils, on PATH",
+      "read access to the bundle file and, for step 4, to the reference directory",
+      "a work directory that does not exist or is empty; step 1 refuses anything else, and the operator may delete it afterwards",
+      "the expected SHA-256 and the reference tree obtained by a DIFFERENT channel than the bundle itself"
+    ],
+    "risk_level": "low",
+    "required_approvals": [],
+    "maturity_tier": "experimental"
+  },
+  "runtime": {
+    "model_compat": [
+      {
+        "id": "any",
+        "range": "*"
+      }
+    ],
+    "runtime_compat": [
+      {
+        "id": "any",
+        "range": "*"
+      }
+    ],
+    "tool_compat": [
+      {
+        "id": "shell",
+        "range": "*"
+      },
+      {
+        "id": "git",
+        "range": ">=2.30.0"
+      }
+    ],
+    "os": [
+      "linux"
+    ],
+    "shell": [
+      "bash",
+      "sh"
+    ],
+    "cloud_iam_assumptions": [],
+    "mcp_dependencies": []
+  },
+  "procedure": {
+    "steps": [
+      {
+        "n": 1,
+        "instruction": "Confirm the work directory, the git version and the bundle's digest. Run scripts/01-checksum.sh with three arguments: the bundle path, the expected SHA-256 as 64 lowercase hex characters, and the work directory. The script refuses a work directory that has anything in it (a populated one lets a failed run read an earlier run's artifacts as its own), refuses a git older than the declared minimum, then writes a checksum file and hands it to sha256sum in check mode, so a wrong digest ends the run before anything is cloned. Substitute the three placeholder words with real paths and the real digest, which must have reached you by a different channel than the bundle.",
+        "command": "sh scripts/01-checksum.sh BUNDLE_PATH EXPECTED_SHA256 WORK_DIR",
+        "expected": "bundle-sha256-ok"
+      },
+      {
+        "n": 2,
+        "instruction": "Confirm the bundle carries a whole history rather than an increment. Run scripts/02-history.sh with the bundle path and the work directory. It creates an empty probe repository, because git refuses to verify a bundle outside a repository; extracts the bundle header's prerequisite lines into prerequisites.txt BEFORE verifying, so the classifier survives a refusal; and then requires two signals to agree — a zero exit status from git bundle verify, and an empty prerequisite list. The exit status is the refusal condition; the list is the cause, which the status alone cannot name.",
+        "command": "sh scripts/02-history.sh BUNDLE_PATH WORK_DIR",
+        "expected": "bundle-history-complete"
+      },
+      {
+        "n": 3,
+        "instruction": "Clone the bundle into a disposable directory and report what it produced. Run scripts/03-clone.sh with the bundle path and the work directory. It prints the HEAD commit id, the HEAD tree id and the number of tracked files, then a completion token. Record all four lines: the three identity lines are the finding, and they are what a second reader compares against. This step, not step 2, is what catches a damaged or truncated packfile, because git bundle verify reads only the header.",
+        "command": "sh scripts/03-clone.sh BUNDLE_PATH WORK_DIR",
+        "expected": "head-commit <40 hex>\nhead-tree <40 hex>\ntracked-files <count>\nclone-ok"
+      },
+      {
+        "n": 4,
+        "instruction": "Compare the clone with the reference tree, file by file. Run scripts/04-compare.sh with the work directory and the reference directory. It refuses to run unless step 3 left its finding behind, then points the clone's own git directory at the reference tree as a work tree, so every tracked path is compared by content and nothing is written outside the work directory. The number printed is the count of tracked paths whose bytes differ; zero means the reference tree and the bundle agree exactly. The count is printed first and the refusal follows it, so the number is on stdout either way AND a non-zero count ends the run with a non-zero exit status: a caller that reads only exit statuses is refused too, and one that reads the number still gets it.",
+        "command": "sh scripts/04-compare.sh WORK_DIR REFERENCE_DIR",
+        "expected": "divergences 0"
+      },
+      {
+        "n": 5,
+        "instruction": "Self-check, before trusting a verdict from the four steps above: prove on this package that the runbook can REFUSE. The directory vectors/ carries four classes of defective bundle plus a positive control, and vectors/MATRIX.tsv gives, for each, the digest to pass to step 1, the step that must refuse it, and the evidence to look for. Run every row of the matrix, each in its own fresh work directory, and follow the reading in SKILL.md under Self-check. The positive control must be accepted and end in divergences 0; without it, a runbook that refused everything would look perfect.",
+        "expected": "good.bundle accepted with divergences 0; corrupt and truncated refused at step 1 with the announced digest and at step 3 with their own; incremental refused at step 2 with a non-empty prerequisites.txt; foreign refused at step 4 with divergences 1 on stdout and a non-zero exit status"
+      }
+    ],
+    "expected_outputs": [
+      "bundle-sha256-ok",
+      "bundle-history-complete",
+      "head-commit, head-tree and tracked-files, then clone-ok",
+      "divergences 0",
+      "every row of vectors/MATRIX.tsv refused at the step it names, and the positive control accepted"
+    ],
+    "validation_gates": [
+      {
+        "gate_id": "g0-work-dir",
+        "check": "the work directory does not exist, or exists and is empty",
+        "pass_criteria": "step 1's rmdir succeeds and the directory is created again; a populated directory survives rmdir, which fails with \"Directory not empty\" and ends the run with empty stdout"
+      },
+      {
+        "gate_id": "g0-git-version",
+        "check": "git is at least the declared minimum, 2.30.0",
+        "pass_criteria": "sort --check --version-sort accepts the pair [required, actual]; an older git makes it report \"disorder\" on line 2 and ends the run"
+      },
+      {
+        "gate_id": "g1-digest",
+        "check": "the bundle file's SHA-256 equals the digest passed on the command line",
+        "pass_criteria": "stdout of step 1 == \"bundle-sha256-ok\"; any other digest makes sha256sum --check exit non-zero and set -e ends the run with empty stdout. This proves the file is the one the digest names, and nothing about who named it"
+      },
+      {
+        "gate_id": "g2-complete-history",
+        "check": "git bundle verify accepts the bundle AND the bundle declares no prerequisites",
+        "pass_criteria": "stdout of step 2 == \"bundle-history-complete\", which needs both signals: a zero exit status from git bundle verify (the refusal condition — non-zero for an increment, a damaged header or a file that is not a bundle, and unlike the sentence \"The bundle records a complete history\" neither localizable nor version-dependent), and an empty prerequisites.txt (the classifier that separates \"incomplete history\" from \"not a bundle\")"
+      },
+      {
+        "gate_id": "g3-clone",
+        "check": "the bundle clones, and the clone's HEAD commit, HEAD tree and tracked-file count are reported",
+        "pass_criteria": "stdout of step 3 ends with \"clone-ok\" and its first three lines read \"head-commit <sha>\", \"head-tree <sha>\", \"tracked-files <n>\""
+      },
+      {
+        "gate_id": "g4-matches-reference",
+        "check": "every tracked path in the reference tree is byte-identical to the same path in the clone",
+        "pass_criteria": "stdout of step 4 == \"divergences 0\" AND step 4 exits 0. The two agree by construction: the count is printed, then compared against an empty file, so a non-zero count exits non-zero. Neither reading of the step can accept a divergent tree"
+      },
+      {
+        "gate_id": "g5-refuses-defective-bundles",
+        "check": "the runbook refuses each defective bundle shipped in vectors/, at the step vectors/MATRIX.tsv names, and accepts the positive control",
+        "pass_criteria": "all seven rows of vectors/MATRIX.tsv behave as recorded: refusals print nothing on stdout and stop, the incremental vector leaves a non-empty prerequisites.txt, the foreign vector reaches step 4, prints a non-zero count AND exits non-zero, and good.bundle ends in \"divergences 0\""
+      }
+    ],
+    "rollback": [
+      "Delete the work directory. The runbook writes nowhere else: the bundle and the reference tree are opened read-only, and every git invocation is pointed at a git directory inside the work directory.",
+      "No registry, remote or system state is touched, so there is nothing else to undo."
+    ],
+    "failure_modes": [
+      {
+        "mode": "work-directory-not-empty",
+        "symptom": "step 1 prints nothing and exits non-zero; stderr reads \"rmdir: failed to remove ...: Directory not empty\"",
+        "mitigation": "point the run at a fresh work directory; the runbook never deletes anything. Reusing a populated one is how a previous run's head-commit.txt or empty divergences.txt gets read as this run's result"
+      },
+      {
+        "mode": "git-too-old",
+        "symptom": "step 1 prints nothing; stderr reads \"sort: .../git-version-check.txt:2: disorder: git version <yours>\"",
+        "mitigation": "install git 2.30 or newer; the runbook uses no newer feature, and only the lower bound matters"
+      },
+      {
+        "mode": "digest-mismatch",
+        "symptom": "step 1 prints nothing, exits non-zero and says nothing at all — sha256sum --status is silent by contract",
+        "mitigation": "the file is not the artifact the digest names — re-obtain it and do not clone the copy you have. Compare expected.sha256 against the file yourself to see the two values"
+      },
+      {
+        "mode": "incomplete-history",
+        "symptom": "step 2 prints nothing; prerequisites.txt is NOT empty, and bundle-verify.txt names the missing prerequisite commits",
+        "mitigation": "the bundle is an incremental one; obtain the base repository it was cut against, or a full bundle"
+      },
+      {
+        "mode": "not-a-bundle",
+        "symptom": "step 2 prints nothing; prerequisites.txt IS empty and bundle-verify.txt carries git's own complaint about the file",
+        "mitigation": "the file is not a readable bundle — re-obtain it. This is the case the exit status alone cannot tell apart from an incremental bundle, which is why the prerequisite list is parsed"
+      },
+      {
+        "mode": "damaged-packfile-passes-step-2",
+        "symptom": "step 2 succeeds on a bundle whose bytes are damaged or truncated, and step 3 then fails with \"error: inflate: data stream error\" or \"fatal: early EOF\", exit 128",
+        "mitigation": "expected, not a surprise: git bundle verify reads the bundle HEADER and does not inflate the packfile. Damage is caught by the digest when it is honest, and by the clone when it is not — never by step 2. A procedure that stops after git bundle verify is weaker than it reads"
+      },
+      {
+        "mode": "step-run-out-of-order",
+        "symptom": "a step prints nothing and stderr names a missing artifact of the previous step, e.g. \"cat: .../head-commit.txt: No such file or directory\" from step 4",
+        "mitigation": "run the four steps in order against the same work directory; each refuses to run without its predecessor's artifact"
+      },
+      {
+        "mode": "reference-tree-divergence",
+        "symptom": "step 4 prints a non-zero count on stdout and exits non-zero; stderr reads \"cmp: EOF on .../divergences-expected.txt which is empty\", and divergences.txt names the paths",
+        "mitigation": "either the reference tree carries local edits, or the bundle is not the commit it claims. Read divergences.txt for the paths; the count on stdout says how many. Both signals refuse, so a caller reading either one is safe"
+      }
+    ],
+    "tools_used": [
+      {
+        "id": "shell",
+        "range": "*"
+      },
+      {
+        "id": "git",
+        "range": ">=2.30.0"
+      }
+    ],
+    "scripts": []
+  },
+  "evidence": {
+    "summary": "Run against the skillonomia-public release bundle and its extracted reference tree: digest matched, git bundle verify reported a complete history, the clone reproduced HEAD and its tree, and all 171 tracked paths compared equal. The refusals are no longer the author's word: the four defect classes ship in vectors/ with their digests and expected refusals in vectors/MATRIX.tsv, and step 5 has an adopter re-run them on the package in hand.",
+    "test_results": "positive: g1-digest pass, g2-complete-history pass, g3-clone pass, g4-matches-reference pass, on the release bundle and on vectors/good.bundle. negative, all seven rows of vectors/MATRIX.tsv: corrupt.bundle with the announced digest -> refused at step 1, no clone attempted; corrupt.bundle with its own digest -> steps 1 and 2 pass, refused at step 3, exit 128, inflate data stream error; truncated.bundle with the announced digest -> refused at step 1; truncated.bundle with its own digest -> refused at step 3, early EOF; incremental.bundle -> refused at step 2, prerequisites.txt names the missing commit; foreign.bundle -> steps 1 to 3 pass and step 4 prints divergences 1 and exits non-zero. Recorded finding: git bundle verify accepts both the corrupt and the truncated bundle, printing that it records a complete history over a file that cannot clone, so g2 is not a damage check.",
+    "redaction_level": "none"
+  },
+  "safety": {
+    "forbidden_actions": [
+      "network access",
+      "writing outside the work directory",
+      "modifying the bundle file or the reference tree",
+      "running commands from the cloned repository"
+    ],
+    "secrets_policy": "The runbook accepts no secrets, reads no credential store and prints only digests, object ids and counts. A bundle is public artifact data; if the repository it carries is not, the work directory inherits that sensitivity and the operator deletes it.",
+    "dependency_manifest": [
+      {
+        "name": "git",
+        "version": "2.30.0"
+      },
+      {
+        "name": "coreutils",
+        "version": "8.32.0"
+      },
+      {
+        "name": "diffutils",
+        "version": "3.7.0"
+      }
+    ],
+    "url_allowlist": [],
+    "sandbox_requirement": "none"
+  },
+  "lifecycle": {
+    "supersedes": null
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "vector": "TV-02",
+  "description": "one byte changed in SKILL.md",
+  "expected_verdict": "TAMPERED_CONTENT"
+}

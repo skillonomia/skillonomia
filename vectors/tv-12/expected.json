@@ -1,0 +1,5 @@
+{
+  "vector": "TV-12",
+  "description": "decompression bomb (ratio and size caps)",
+  "expected_verdict": "LIMIT_EXCEEDED"
+}

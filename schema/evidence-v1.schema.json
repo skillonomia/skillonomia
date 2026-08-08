@@ -1,0 +1,8 @@
+{"type":"object","additionalProperties":false,"required":["gate_results"],
+ "properties":{
+   "gate_results":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,
+     "required":["gate_id","pass","observed"],"properties":{
+       "gate_id":{"type":"string"},"pass":{"type":"boolean"},
+       "observed":{"type":"string","maxLength":4000}}}},
+   "notes":{"type":"string","maxLength":2000},
+   "synthesized":{"type":"boolean"}}}

@@ -1,0 +1,8 @@
+{
+  "vector": "TV-05",
+  "description": "key revoked BEFORE countersign",
+  "expected_verdict": "invalid_key_revoked_at_signing",
+  "registry": {
+    "key_revoked_at_ms": "before_countersign"
+  }
+}

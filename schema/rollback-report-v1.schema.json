@@ -1,0 +1,5 @@
+{"type":"object","additionalProperties":false,"required":["reason","summary"],
+ "properties":{
+   "reason":{"enum":["regression","incident","policy","superseded"]},
+   "summary":{"type":"string","minLength":10,"maxLength":4000},
+   "rolled_back_at_step":{"type":"integer","minimum":1}}}

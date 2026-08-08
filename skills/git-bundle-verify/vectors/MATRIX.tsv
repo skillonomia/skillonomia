@@ -1,0 +1,11 @@
+# bundle	digest passed to step 1	refused at step (0 = accepted)	evidence
+# "refused" means a NON-ZERO EXIT STATUS at that step, uniformly. The step-4
+# row also prints `divergences N` on stdout; it used to print only that, and
+# exit 0, so a caller reading exit statuses accepted a foreign repository.
+good.bundle	ac9ccea5ff328c9c2d5b64e7335f00e1a2bf013f8179add69cf9d463ef057c16	0	accepted
+corrupt.bundle	ac9ccea5ff328c9c2d5b64e7335f00e1a2bf013f8179add69cf9d463ef057c16	1	none
+corrupt.bundle	2ad01ef6a193d07ad0a20b10970a6455d186eca1fd3acf069dc511466fd73773	3	none
+truncated.bundle	ac9ccea5ff328c9c2d5b64e7335f00e1a2bf013f8179add69cf9d463ef057c16	1	none
+truncated.bundle	709537bdcdb1393847f3b497eca431e8c710919f8baca5c5342a61e5a8547ddd	3	none
+incremental.bundle	69b4cfcd7926e605a55284c98d52b26166bc045169d7f2be05efbce94ed6a050	2	prerequisites
+foreign.bundle	cdccca725d8a7e13ee26017428049a47899acddbf478a33ca8ac4c0d663a43ea	4	divergences

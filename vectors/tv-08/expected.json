@@ -1,0 +1,9 @@
+{
+  "vector": "TV-08",
+  "description": "revoked version",
+  "expected_verdict": "revoked",
+  "registry": {
+    "version_state": "revoked",
+    "revocation_reason": "security issue"
+  }
+}

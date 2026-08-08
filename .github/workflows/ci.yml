@@ -1,0 +1,209 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+# GitHub's implicit shell for a `run:` step is `bash -e {0}` — errexit WITHOUT
+# pipefail, so a failing command piped into `tee` is masked by tee's 0 and the
+# step goes green (P7 verdict 2, blocking). Naming the shell explicitly makes
+# every step run under `bash --noprofile --norc -eo pipefail {0}`, which is what
+# the quickstart gate needs: `ci/quickstart-docker.sh | tee …` must fail the job when
+# the script exits 1. One workflow-level default rather than per-step flags.
+defaults:
+  run:
+    shell: bash
+
+# --------------------------------------------------------------- action pins
+#
+# Every `uses:` below MUST end up pinned to a COMMIT SHA, with the human-readable
+# tag kept as a trailing comment:
+#
+#     uses: actions/checkout@<40-hex-sha> # v4
+#
+# A tag is a mutable pointer. `actions/checkout@v4` is whatever that tag points
+# at today, which is third-party code running with this repository's checkout,
+# its token and its release artifacts. A SHA is a content address and cannot be
+# repointed.
+#
+# The lines marked `# UNPINNED` below are NOT pinned yet, because resolving a
+# tag to a SHA requires the network and no SHA may be invented — a wrong pin is
+# worse than an honest tag, since it looks pinned. Run
+#
+#     ci/pin-actions.sh          # needs network + an authenticated `gh`
+#
+# which resolves every tag (dereferencing annotated tags) and rewrites these
+# lines in place. `ci/pin-actions.sh --check` lists what is still unpinned.
+# test/supply-chain.test.ts fails on any `uses:` that is neither a SHA nor
+# carries the `# UNPINNED` marker, so a new action cannot be added unnoticed.
+
+jobs:
+  test-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - name: Typecheck (tsc --noEmit, strict)
+        run: npm run typecheck
+      - name: Run test suite (D.2 probes, triggers, transitions, verify-log, schemas, TV-01…TV-12)
+        run: npm test
+      - name: Schema dump (reviewer artifact)
+        run: npm run -s dump-schema > schema-dump.sql
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: schema-dump
+          path: schema-dump.sql
+
+  test-bun:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
+      - name: Typecheck under Bun's toolchain
+        run: bunx tsc --noEmit
+      - name: Run test suite under Bun (canonical §2 runtime)
+        run: bun test
+
+  # ------------------------------------------------------------ supply chain
+  # An install or a build that is not reproducible is not reviewable: a reviewer
+  # who reads this commit cannot tell what a build of it will contain. Three
+  # separable claims, each executed rather than asserted.
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+
+      # 1. The lockfiles describe package.json and nothing else. `npm ci` and
+      #    `bun install --frozen-lockfile` both REFUSE a lock that disagrees
+      #    with the manifest, which catches a dependency added by hand; what
+      #    they do not catch is a lock they QUIETLY rewrite, which is what the
+      #    `git diff --exit-code` after each is for.
+      - name: npm lockfile agrees with package.json
+        run: |
+          npm ci
+          git diff --exit-code package-lock.json ||
+            { echo "::error::npm ci rewrote package-lock.json — commit the result"; exit 1; }
+      - name: bun lockfile agrees with package.json
+        run: |
+          bun install --frozen-lockfile
+          git diff --exit-code bun.lock ||
+            { echo "::error::bun install rewrote bun.lock — commit the result"; exit 1; }
+      # `npm ci` exits 0 even when a PLATFORM-SPECIFIC OPTIONAL dependency could
+      # not be installed, and the TypeScript 7 compiler ships as exactly that.
+      # A silently incomplete toolchain would otherwise surface as a confusing
+      # failure three steps later.
+      - name: the installed toolchain is complete
+        run: node -e "require.resolve('@typescript/typescript-linux-x64/package.json')"
+
+      # 2. The two builds are byte-reproducible on one machine. This is the
+      #    weaker of the two useful claims (same host, same toolchain) — it does
+      #    not make the build hermetic — but it is the one that catches a
+      #    timestamp, a path or a map iteration order leaking into an artifact.
+      - name: build:js is byte-reproducible
+        run: |
+          npm run -s build:js && a=$(sha256sum dist-js/cli.js | cut -d' ' -f1)
+          rm -rf dist-js
+          npm run -s build:js && b=$(sha256sum dist-js/cli.js | cut -d' ' -f1)
+          echo "$a"; [ "$a" = "$b" ] || { echo "::error::build:js is not reproducible"; exit 1; }
+      - name: build:binary is byte-reproducible
+        run: |
+          npm run -s build:binary && a=$(sha256sum dist/skillonomia | cut -d' ' -f1)
+          rm -rf dist
+          npm run -s build:binary && b=$(sha256sum dist/skillonomia | cut -d' ' -f1)
+          echo "$a"; [ "$a" = "$b" ] || { echo "::error::build:binary is not reproducible"; exit 1; }
+
+      # 3. The base image is addressed by content, and every action is pinned or
+      #    explicitly marked as not yet pinned. Offline, from the files.
+      - name: supply-chain assertions (base image digest, action pins)
+        run: node --experimental-strip-types --no-warnings --test test/supply-chain.test.ts
+
+  # ---------------------------------------------------------------- P7 release
+  # The quickstart CI gate: the normative quickstart against the container image on a
+  # clean Ubuntu x86_64 runner, timed from container start, transcript archived.
+  # The gate is fixed as THE ≤600-second scenario: the container image, not a
+  # checkout. The image is BUILT here — V1 publishes none, so nothing to pull.
+  quickstart-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build the image
+        run: docker build -t skillonomia:ci .
+      - name: Record the image digest (release delivery record)
+        run: |
+          mkdir -p ci
+          docker image inspect skillonomia:ci --format '{{.Id}}' | tee ci/quickstart-image-id.txt
+      - name: Quickstart E2E (steps 1–6, timed, < 600 s from container start)
+        run: IMAGE=skillonomia:ci SKIP_BUILD=1 ci/quickstart-docker.sh | tee ci/quickstart-transcript.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: quickstart-transcript
+          path: |
+            ci/quickstart-transcript.txt
+            ci/quickstart-image-id.txt
+
+  # The packaged-tarball path and the Linux x86_64 binary need launch +
+  # /health smoke only. Nothing is published here — `npm pack` produces the
+  # tarball locally and it is installed from the file, which is the rehearsal
+  # for a publication that has not happened.
+  package-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      # `prepack` builds the plain-JS entry point: Node refuses to strip types
+      # under node_modules, so an INSTALLED package cannot run the sources
+      # (P7 verdict 1, blocking #1).
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+      - run: npm ci
+      - name: Pack and install the tarball (from the file, not a registry)
+        run: |
+          npm pack --silent | tail -1 > /tmp/tgz
+          npm install -g "./$(cat /tmp/tgz)"
+      - name: Launch + /health smoke (from the INSTALLED package, not the checkout)
+        run: |
+          cd /tmp
+          SKILLONOMIA_DATA=/tmp/npx-data SKILLONOMIA_PORT=7431 skillonomia serve > /tmp/npx.log 2>&1 &
+          for _ in $(seq 1 60); do curl -fsS http://localhost:7431/health && break; sleep 1; done
+          curl -fsS http://localhost:7431/health | grep -q '"status":"ok"'
+          grep -q BOOTSTRAP_OWNER_TOKEN /tmp/npx.log
+          skillonomia version
+
+  binary-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
+      - name: Compile the Linux x86_64 binary
+        run: npm run -s build:binary
+      - name: Launch + /health smoke
+        run: |
+          SKILLONOMIA_DATA=/tmp/bin-data SKILLONOMIA_PORT=7431 ./dist/skillonomia serve > /tmp/bin.log 2>&1 &
+          for _ in $(seq 1 60); do curl -fsS http://localhost:7431/health && break; sleep 1; done
+          curl -fsS http://localhost:7431/health | grep -q '"status":"ok"'
+          ./dist/skillonomia version
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: skillonomia-linux-x86_64
+          path: |
+            dist/skillonomia
+            dist/migrations
+            dist/schema
+            dist/seed

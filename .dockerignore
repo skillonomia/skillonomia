@@ -1,0 +1,9 @@
+node_modules
+.git
+.github
+reviews
+vectors
+test
+dist
+*.md
+!README.md

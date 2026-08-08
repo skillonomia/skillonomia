@@ -1,0 +1,5 @@
+{
+  "vector": "TV-07",
+  "description": "schema-invalid manifest (required group removed)",
+  "expected_verdict": "INVALID_SCHEMA"
+}

@@ -1,0 +1,6 @@
+{"type":"object","additionalProperties":false,"required":["category","summary"],
+ "properties":{
+   "category":{"enum":["pre_execution","compatibility","gate_failed","environment","other"]},
+   "summary":{"type":"string","minLength":10,"maxLength":4000},
+   "failed_gate_ids":{"type":"array","items":{"type":"string"}},
+   "logs_excerpt":{"type":"string","maxLength":8000}}}

@@ -1,0 +1,5 @@
+{
+  "vector": "TV-03",
+  "description": "manifest fields reordered, pretty-printed (JCS invariance)",
+  "expected_verdict": "valid"
+}

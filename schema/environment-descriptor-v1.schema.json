@@ -1,0 +1,16 @@
+{"type":"object","additionalProperties":false,
+ "required":["runtime","model","tools","os","shell","sandbox_capable"],
+ "properties":{
+   "runtime":{"type":"object","additionalProperties":false,"required":["id","version"],
+     "properties":{"id":{"type":"string","maxLength":80},"version":{"$ref":"#/$defs/exactVersion"}}},
+   "model":{"type":"object","additionalProperties":false,"required":["id","version"],
+     "properties":{"id":{"type":"string","maxLength":80},"version":{"$ref":"#/$defs/modelIdentifier"}}},
+   "tools":{"type":"array","items":{"type":"object","additionalProperties":false,
+     "required":["id","version"],"properties":{"id":{"type":"string","maxLength":80},
+     "version":{"$ref":"#/$defs/exactVersion"}}}},
+   "os":{"enum":["linux","macos","windows"]},
+   "shell":{"enum":["bash","zsh","sh","powershell","none"]},
+   "sandbox_capable":{"type":"boolean"}},
+ "$defs":{
+   "exactVersion":{"type":"string","pattern":"^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?$"},
+   "modelIdentifier":{"type":"string","minLength":1,"maxLength":80}}}

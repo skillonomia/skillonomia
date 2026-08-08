@@ -1,0 +1,25 @@
+-- SKILLONOMIA — the declared environment belongs to the receipt event.
+--
+-- The release gate's conjunct "adoptions between agents of DIFFERENT runtimes"
+-- was counted from `adoption_requests.requester_context_json`: a MUTABLE column
+-- on the request row, written by `skill.adopt` with no history and no event.
+-- Anything counted from it is counted from the last writer, so the acceptance
+-- figure could be raised after the fact by anyone holding an adopter key,
+-- without an event, without an error, and monotonically upward — a release gate
+-- that grows when it is tampered with. It was also how one caller's declared
+-- environment came to sit next to another caller's receipt chain.
+--
+-- The declared environment therefore moves onto `receipt_events`, which is the
+-- one INSERT-only part of this system: `tg_revents_no_upd`/`tg_revents_no_del`
+-- refuse to update or delete a row, `event_seq` fixes the order, and the row is
+-- written in the same transaction as the event it describes. A snapshot per
+-- event, immutable, attributable — and the count becomes a query over the
+-- journal rather than a reading of current state.
+--
+-- Strictly additive: one nullable column on one table. No table is rebuilt, no
+-- constraint is relaxed, no row is touched, and the 20-table shape of Appendix
+-- D.1 is unchanged. Rows written before this migration carry NULL, which
+-- contributes NO runtime to that count — the counters are fail-closed, so
+-- history that was never recorded cannot be inferred, only recounted on a fresh
+-- instance.
+ALTER TABLE receipt_events ADD COLUMN environment_json TEXT;

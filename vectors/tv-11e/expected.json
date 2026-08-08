@@ -1,0 +1,5 @@
+{
+  "vector": "TV-11e",
+  "description": "case-insensitive path collision",
+  "expected_verdict": "MALFORMED_ARCHIVE"
+}

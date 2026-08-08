@@ -1,0 +1,5 @@
+{
+  "vector": "TV-11a",
+  "description": "tar member with ../ traversal",
+  "expected_verdict": "MALFORMED_ARCHIVE"
+}

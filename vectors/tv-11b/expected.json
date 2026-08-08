@@ -1,0 +1,5 @@
+{
+  "vector": "TV-11b",
+  "description": "tar member with absolute path",
+  "expected_verdict": "MALFORMED_ARCHIVE"
+}

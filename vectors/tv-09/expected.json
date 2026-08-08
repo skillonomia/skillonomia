@@ -1,0 +1,9 @@
+{
+  "vector": "TV-09",
+  "description": "superseded version",
+  "expected_verdict": "valid_superseded",
+  "registry": {
+    "version_state": "superseded",
+    "has_successor": true
+  }
+}

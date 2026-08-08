@@ -1,0 +1,8 @@
+{
+  "vector": "TV-04",
+  "description": "key revoked AFTER countersign",
+  "expected_verdict": "valid_but_key_since_revoked",
+  "registry": {
+    "key_revoked_at_ms": "after_countersign"
+  }
+}

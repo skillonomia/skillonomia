@@ -1,0 +1,5 @@
+{
+  "vector": "TV-11d",
+  "description": "duplicate tar member",
+  "expected_verdict": "MALFORMED_ARCHIVE"
+}

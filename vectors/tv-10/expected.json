@@ -1,0 +1,9 @@
+{
+  "vector": "TV-10",
+  "description": "transparency-log hash-chain break (verify-log detects)",
+  "expected_verdict": "CHAIN_BROKEN",
+  "registry": {
+    "tamper": "UPDATE transparency_log SET subject_id='forged' WHERE seq=1",
+    "detected_by": "verify-log"
+  }
+}

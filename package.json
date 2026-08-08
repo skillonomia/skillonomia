@@ -1,0 +1,48 @@
+{
+  "name": "skillonomia",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Skillonomia V1 — self-hosted registry of Verified Skill Packages: signed skill packages, safety gates, review workflow, adoption receipts and evidence-backed reputation.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --no-warnings --test \"test/*.test.ts\"",
+    "test:bun": "bun test",
+    "verify": "node --experimental-strip-types --no-warnings src/cli.ts verify",
+    "verify-log": "node --experimental-strip-types --no-warnings src/cli.ts verify-log",
+    "dump-schema": "node --experimental-strip-types --no-warnings tools/dump-schema.ts",
+    "gen-vectors": "node --experimental-strip-types --no-warnings tools/gen-vectors.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "start": "node --experimental-strip-types --no-warnings src/cli.ts serve",
+    "gen-seed": "node --experimental-strip-types --no-warnings tools/gen-seed.ts",
+    "pack-skill": "node --experimental-strip-types --no-warnings tools/pack-skill.ts",
+    "build:binary": "bun build --compile --target=bun-linux-x64 src/cli.ts --outfile dist/skillonomia && mkdir -p dist/migrations dist/schema dist/seed && cp -r migrations/. dist/migrations/ && cp -r schema/. dist/schema/ && cp -r seed/. dist/seed/",
+    "build:js": "bun build --target=node --format=esm --external bun:sqlite src/cli.ts --outfile dist-js/cli.js",
+    "prepack": "npm run build:js"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "typescript": "^7.0.2"
+  },
+  "bin": {
+    "skillonomia": "bin/skillonomia.js"
+  },
+  "files": [
+    "bin/",
+    "dist-js/",
+    "src/",
+    "migrations/",
+    "schema/",
+    "seed/",
+    "README.md",
+    "LICENSE"
+  ]
+}
