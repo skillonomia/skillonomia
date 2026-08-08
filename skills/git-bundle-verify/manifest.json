@@ -1,6 +1,6 @@
 {
   "skill_id": "01GTBNDVFY0000000000000000",
-  "semantic_version": "1.1.0",
+  "semantic_version": "1.2.0",
   "title": "git-bundle-verify",
   "capability_statement": "Verify that a git bundle file is the artifact it claims to be: its SHA-256 matches the digest recorded for it, it records a complete history, it clones, and the tree it produces matches a reference checkout byte for byte. The package carries the defective bundles it must refuse, so the refusals are checkable by whoever adopted it.",
   "owner": "skillonomia",
@@ -67,7 +67,7 @@
     "steps": [
       {
         "n": 1,
-        "instruction": "Confirm the work directory, the git version and the bundle's digest. Run scripts/01-checksum.sh with three arguments: the bundle path, the expected SHA-256 as 64 lowercase hex characters, and the work directory. The script refuses a work directory that has anything in it (a populated one lets a failed run read an earlier run's artifacts as its own), refuses a git older than the declared minimum, then writes a checksum file and hands it to sha256sum in check mode, so a wrong digest ends the run before anything is cloned. Substitute the three placeholder words with real paths and the real digest, which must have reached you by a different channel than the bundle.",
+        "instruction": "Confirm the work directory, the git version and the bundle's digest. Run scripts/01-checksum.sh with three arguments: the bundle path, the expected SHA-256 as 64 lowercase hex characters, and the work directory. The script refuses a work directory that has anything in it (a populated one lets a failed run read an earlier run's artifacts as its own), refuses a git older than the declared minimum, MEASURES the bundle into actual.sha256, writes the digest you asserted into expected.sha256, and only then hands the latter to sha256sum in check mode, so a wrong digest ends the run before anything is cloned. Measuring before checking is what makes the refusal readable: the check is silent by contract, so both numbers being on disk is the whole of the diagnosis. On success the step also writes checksum-ok.txt, which is what step 2 refuses to run without — actual.sha256 exists after a refusal too and cannot stand for a passing check. What this step establishes is exactly one thing: the file matches the digest you were given. It does not classify HOW a mismatching file differs. Substitute the three placeholder words with real paths and the real digest, which must have reached you by a different channel than the bundle.",
         "command": "sh scripts/01-checksum.sh BUNDLE_PATH EXPECTED_SHA256 WORK_DIR",
         "expected": "bundle-sha256-ok"
       },
@@ -116,7 +116,7 @@
       {
         "gate_id": "g1-digest",
         "check": "the bundle file's SHA-256 equals the digest passed on the command line",
-        "pass_criteria": "stdout of step 1 == \"bundle-sha256-ok\"; any other digest makes sha256sum --check exit non-zero and set -e ends the run with empty stdout. This proves the file is the one the digest names, and nothing about who named it"
+        "pass_criteria": "stdout of step 1 == \"bundle-sha256-ok\"; any other digest makes sha256sum --check exit non-zero and set -e ends the run with empty stdout and empty stderr, which is the contract of --status and not an omission. The bundle is measured into actual.sha256 BEFORE the check, so a refusal leaves expected.sha256 and actual.sha256 side by side in the work directory and the mismatch is checkable there. What passing proves is exactly this and no more: the file matches the digest passed on the command line. It says nothing about who named that digest, and nothing about WHY a mismatching file differs — a flipped byte and a truncation are one event to a digest comparison, and the two are told apart at step 3"
       },
       {
         "gate_id": "g2-complete-history",
@@ -156,8 +156,8 @@
       },
       {
         "mode": "digest-mismatch",
-        "symptom": "step 1 prints nothing, exits non-zero and says nothing at all — sha256sum --status is silent by contract",
-        "mitigation": "the file is not the artifact the digest names — re-obtain it and do not clone the copy you have. Compare expected.sha256 against the file yourself to see the two values"
+        "symptom": "step 1 exits non-zero with empty stdout AND empty stderr — sha256sum --status is silent by contract, so there is no message to read. The work directory holds expected.sha256 and actual.sha256, and checksum-ok.txt is absent",
+        "mitigation": "read expected.sha256 against actual.sha256 in the work directory: the first is the digest you asserted, the second the digest the file actually has, and they differ. The file is not the artifact the digest names — re-obtain it, and do not clone the copy you have. Do not read the mismatch as a diagnosis of the damage: step 1 cannot tell a corrupted bundle from a truncated one, and does not claim to"
       },
       {
         "mode": "incomplete-history",
@@ -176,8 +176,8 @@
       },
       {
         "mode": "step-run-out-of-order",
-        "symptom": "a step prints nothing and stderr names a missing artifact of the previous step, e.g. \"cat: .../head-commit.txt: No such file or directory\" from step 4",
-        "mitigation": "run the four steps in order against the same work directory; each refuses to run without its predecessor's artifact"
+        "symptom": "a step prints nothing and stderr names a missing artifact of the previous step, e.g. \"cat: .../head-commit.txt: No such file or directory\" from step 4, or \"cat: .../checksum-ok.txt: No such file or directory\" from step 2",
+        "mitigation": "run the four steps in order against the same work directory; each refuses to run without its predecessor's artifact. Step 2's guard is checksum-ok.txt, which only a PASSING step 1 writes — actual.sha256 is written before the check and survives a refusal, so its presence is not permission to continue"
       },
       {
         "mode": "reference-tree-divergence",
@@ -199,7 +199,7 @@
   },
   "evidence": {
     "summary": "Run against the skillonomia-public release bundle and its extracted reference tree: digest matched, git bundle verify reported a complete history, the clone reproduced HEAD and its tree, and all 171 tracked paths compared equal. The refusals are no longer the author's word: the four defect classes ship in vectors/ with their digests and expected refusals in vectors/MATRIX.tsv, and step 5 has an adopter re-run them on the package in hand.",
-    "test_results": "positive: g1-digest pass, g2-complete-history pass, g3-clone pass, g4-matches-reference pass, on the release bundle and on vectors/good.bundle. negative, all seven rows of vectors/MATRIX.tsv: corrupt.bundle with the announced digest -> refused at step 1, no clone attempted; corrupt.bundle with its own digest -> steps 1 and 2 pass, refused at step 3, exit 128, inflate data stream error; truncated.bundle with the announced digest -> refused at step 1; truncated.bundle with its own digest -> refused at step 3, early EOF; incremental.bundle -> refused at step 2, prerequisites.txt names the missing commit; foreign.bundle -> steps 1 to 3 pass and step 4 prints divergences 1 and exits non-zero. Recorded finding: git bundle verify accepts both the corrupt and the truncated bundle, printing that it records a complete history over a file that cannot clone, so g2 is not a damage check.",
+    "test_results": "positive: g1-digest pass, g2-complete-history pass, g3-clone pass, g4-matches-reference pass, on the release bundle and on vectors/good.bundle. negative, all seven rows of vectors/MATRIX.tsv: corrupt.bundle with the announced digest -> refused at step 1, no clone attempted; corrupt.bundle with its own digest -> steps 1 and 2 pass, refused at step 3, exit 128, inflate data stream error; truncated.bundle with the announced digest -> refused at step 1; truncated.bundle with its own digest -> refused at step 3, early EOF; incremental.bundle -> refused at step 2, prerequisites.txt names the missing commit; foreign.bundle -> steps 1 to 3 pass and step 4 prints divergences 1 and exits non-zero. Recorded finding: git bundle verify accepts both the corrupt and the truncated bundle, printing that it records a complete history over a file that cannot clone, so g2 is not a damage check. Second recorded finding, from a live run by an outside operator: a refused g1 used to leave expected.sha256 alone, because actual.sha256 was written on the line after the check and set -e never reached it, while the artifact table promised both — the two step-1 rows now leave the asserted and the measured digest side by side, and the repository's own test executes those rows and reads both files.",
     "redaction_level": "none"
   },
   "safety": {

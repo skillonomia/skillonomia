@@ -189,6 +189,84 @@ test("the positive control is ACCEPTED — without it, refusing everything would
   assert.equal(runs[3].stdout, "divergences 0\n");
 });
 
+test("on the accepted run the two digest files agree, and step 1 leaves its success token", (t) => {
+  if (!gitAvailable()) return t.skip("git is not on PATH");
+  const pkg = packed();
+  const row = matrix(pkg).find((r) => r.refuseAt === 0)!;
+  const bundle = join("vectors", row.bundle);
+  const work = join(tmp("sklo-gbv-ok-"), "w");
+
+  const r = step(pkg, "01-checksum.sh", [bundle, row.digest, work]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, "bundle-sha256-ok\n", "the accepted run prints exactly the one line");
+
+  // measuring before the check must not change what an ACCEPTED run looks like:
+  // the two files exist and carry the same digest, because they agree
+  const real = createHash("sha256").update(readFileSync(join(pkg, bundle))).digest("hex");
+  assert.equal(real, row.digest, "the positive control's matrix digest is not its own");
+  assert.equal(readFileSync(join(work, "actual.sha256"), "utf8"), `${real}  ${bundle}\n`);
+  assert.equal(readFileSync(join(work, "expected.sha256"), "utf8"), `${row.digest}  ${bundle}\n`);
+  // and the token the chain is now guarded on holds the same bytes stdout got
+  assert.equal(readFileSync(join(work, "checksum-ok.txt"), "utf8"), "bundle-sha256-ok\n");
+});
+
+test("a refused g1 leaves BOTH digests in the work directory — the finding survives the refusal", (t) => {
+  if (!gitAvailable()) return t.skip("git is not on PATH");
+  const pkg = packed();
+  // the real refusing rows, read out of the shipped matrix rather than invented
+  // here: both damaged vectors offered under good.bundle's announced digest
+  const rows = matrix(pkg).filter((r) => r.refuseAt === 1);
+  assert.deepEqual(
+    rows.map((r) => r.bundle).sort(),
+    ["corrupt.bundle", "truncated.bundle"],
+    "MATRIX.tsv no longer carries the two g1 rows this checks",
+  );
+
+  for (const [i, row] of rows.entries()) {
+    const bundle = join("vectors", row.bundle);
+    const work = join(tmp("sklo-gbv-g1-"), `w${i}`);
+    const real = createHash("sha256").update(readFileSync(join(pkg, bundle))).digest("hex");
+    assert.notEqual(real, row.digest, `${row.bundle}: the row does not actually mismatch`);
+
+    const r = step(pkg, "01-checksum.sh", [bundle, row.digest, work]);
+    const where = `${row.bundle} under ${row.digest.slice(0, 8)}…`;
+
+    // the refusal is an exit status and nothing else — MATRIX.tsv records
+    // evidence `none` for both rows, and that stays true: g1 knows the bytes
+    // differ, never why, so "corrupt" and "truncated" are one case to it
+    assert.notEqual(r.code, 0, `${where}: step 1 accepted a wrong digest`);
+    assert.equal(r.stdout, "", `${where}: a refused step 1 must print nothing on stdout`);
+    assert.equal(r.stderr, "", `${where}: sha256sum --status is silent by contract`);
+    assert.equal(row.evidence, "none", `${where}: the matrix promises no console evidence here`);
+
+    // …and the diagnosis is on disk instead: what you asserted, what the file is
+    assert.equal(
+      readFileSync(join(work, "expected.sha256"), "utf8"),
+      `${row.digest}  ${bundle}\n`,
+      `${where}: expected.sha256 must hold the digest that was passed in`,
+    );
+    assert.equal(
+      readFileSync(join(work, "actual.sha256"), "utf8"),
+      `${real}  ${bundle}\n`,
+      `${where}: actual.sha256 must hold the SHA-256 of the bundle actually offered`,
+    );
+    assert.notEqual(
+      readFileSync(join(work, "actual.sha256"), "utf8"),
+      readFileSync(join(work, "expected.sha256"), "utf8"),
+      `${where}: the two readings must differ — that difference IS the refusal`,
+    );
+
+    // the chain does not continue past a refused digest. actual.sha256 now
+    // exists after a refusal, so it can no longer be step 2's guard; the token
+    // that only a passing check writes is, and step 2 names it when it is absent.
+    assert.ok(!existsSync(join(work, "checksum-ok.txt")), `${where}: a refused step 1 must leave no success token`);
+    const two = step(pkg, "02-history.sh", [bundle, work]);
+    assert.notEqual(two.code, 0, `${where}: step 2 ran after a refused step 1`);
+    assert.equal(two.stdout, "", `${where}: step 2 must print nothing when it refuses`);
+    assert.match(two.stderr, /checksum-ok\.txt/, `${where}: step 2 must name the missing artifact`);
+  }
+});
+
 test("every defective vector is refused at the step vectors/MATRIX.tsv names", (t) => {
   if (!gitAvailable()) return t.skip("git is not on PATH");
   const pkg = packed();
@@ -309,6 +387,32 @@ test("the guards are load-bearing: remove one and the vector it catches slips th
     const r = step(mutant, "01-checksum.sh", [join("vectors", "corrupt.bundle"), good, join(tmp("sklo-gbv-m1-"), "w")]);
     assert.equal(r.code, 0, "expected the weakened step 1 to accept a wrong digest");
     assert.equal(r.stdout, "bundle-sha256-ok\n");
+  }
+
+  // g1's EVIDENCE, which is an ordering and not a command: put the measurement
+  // back below the check — the order this package shipped — and the run that
+  // needed the measured digest is exactly the run that never writes it. This is
+  // the mutation the assertions above would otherwise be vacuous against.
+  {
+    const mutant = withoutLine(pkg, "01-checksum.sh", 'sha256sum "$1" >');
+    const path = join(mutant, "scripts", "01-checksum.sh");
+    const check = 'sha256sum --check --strict --status "$3/expected.sha256"';
+    writeFileSync(path, readFileSync(path, "utf8").replace(check, `${check}\nsha256sum "$1" > "$3/actual.sha256"`));
+
+    const work = join(tmp("sklo-gbv-m7-"), "w");
+    const r = step(mutant, "01-checksum.sh", [join("vectors", "corrupt.bundle"), good, work]);
+    assert.notEqual(r.code, 0, "the mutant must still refuse the wrong digest");
+    assert.ok(existsSync(join(work, "expected.sha256")), "the asserted digest is written either way");
+    assert.ok(
+      !existsSync(join(work, "actual.sha256")),
+      "expected the pre-fix order to leave the measured digest unwritten — that was the defect",
+    );
+
+    // and the shipped order leaves both, for the same vector and the same digest
+    const fixed = join(tmp("sklo-gbv-m7b-"), "w");
+    assert.notEqual(step(pkg, "01-checksum.sh", [join("vectors", "corrupt.bundle"), good, fixed]).code, 0);
+    assert.ok(existsSync(join(fixed, "actual.sha256")), "the shipped step 1 must leave the measured digest");
+    assert.ok(existsSync(join(fixed, "expected.sha256")));
   }
 
   // g0-work-dir: without the rmdir, a populated work directory is accepted, and

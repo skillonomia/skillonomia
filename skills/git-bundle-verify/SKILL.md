@@ -42,6 +42,16 @@ evidence of provenance, and the runbook cannot make it into any.
 Provenance is a signature over the digest, verified against a key you obtained
 independently. That is outside this runbook.
 
+`g1` also does not say **why** the bytes differ when they do. It confirms one
+thing and only that thing: the file matches the digest you obtained separately.
+A flipped byte and a file cut off half way are the same event to it — two
+digests that are not equal — and it cannot be otherwise, because a digest that
+disagrees carries no information about the shape of the disagreement.
+`vectors/MATRIX.tsv` records `evidence: none` for both of those rows for exactly
+this reason, and that is not a gap in the gate. Which kind of damage it is
+becomes visible at step 3, where the packfile is actually inflated: `inflate:
+data stream error` for the corrupt bundle, `early EOF` for the truncated one.
+
 ## About the SIGNATURE.jws in this package
 
 You do not have to verify it before running these scripts. The registry checks
@@ -138,8 +148,13 @@ divergences 0
   `sort --check --version-sort` over the pair [required, actual].
 - `g1-digest` — stdout of step 1 is exactly `bundle-sha256-ok`. `sha256sum` runs
   in check mode against a file the script writes from your argument, so a wrong
-  digest exits non-zero under `set -e` and nothing is printed. Read *What step 1
-  does NOT prove* above before treating this as authenticity.
+  digest exits non-zero under `set -e` and nothing is printed. The step measures
+  the bundle into `actual.sha256` **before** it runs the check, so both readings
+  — the digest you asserted and the digest the file has — are in the work
+  directory whichever way the check goes. What passing this gate means is
+  narrow and exact: **the file matches a digest you obtained by another
+  channel**, and nothing else. Read *What step 1 does NOT prove* above before
+  treating it as authenticity, or as a diagnosis of the damage.
 - `g2-complete-history` — stdout of step 2 is exactly `bundle-history-complete`,
   which requires **two** signals to agree:
   - the **exit status** of `git bundle verify` — the refusal condition. It is
@@ -167,17 +182,24 @@ Every script runs under `set -e`, so a failing step stops. Every step but the
 last prints **nothing on stdout** when it refuses; an empty stdout is the
 refusal, not "the step did not run". Step 4 is the exception, and deliberately:
 it prints its count *before* it refuses, so the finding survives the refusal.
-Either way the exit status is non-zero. The diagnosis is in stderr and in the
-work directory.
+Either way the exit status is non-zero.
+
+**The diagnosis is always in the work directory.** For every step but `g1` it is
+in stderr as well — the failing command names what it read and what it found.
+`g1` is the exception in both directions, and by design: `sha256sum --status`
+prints nothing on stdout *or* stderr, so its diagnosis is on disk alone, as
+`expected.sha256` and `actual.sha256` written side by side. Read the pair; do
+not expect a message.
 
 | Refused at | Exit | stdout | What you see, and what it means |
 |---|---|---|---|
 | `g0-work-dir` | 1 | empty | `rmdir: failed to remove 'WORK_DIR': Directory not empty`. Point the run at a fresh directory; the runbook deletes nothing. |
 | `g0-git-version` | 1 | empty | `sort: …/git-version-check.txt:2: disorder: git version 2.20.1` — the second line is your git, and it is below the minimum. |
-| `g1-digest` | 1 | empty | **Nothing at all**: `sha256sum --status` is silent by contract. Compare `expected.sha256` with the file yourself. The bundle is not the artifact the digest names — re-obtain it, and do not clone the copy you hold. |
+| `g1-digest` | 1 | empty | **Nothing on stderr either**: `sha256sum --status` is silent by contract, and that silence is deliberate. The diagnosis is the pair of files in the work directory — read `expected.sha256` (the digest you asserted) against `actual.sha256` (the digest the file has). They differ, and that difference *is* the refusal. The bundle is not the artifact the digest names — re-obtain it, and do not clone the copy you hold. The step does not say which kind of damage it is; step 3 does. |
 | `g2`, exit status | 1 | empty | `bundle-verify.txt` carries git's own words. If `prerequisites.txt` is **not empty**, it is an incremental bundle and the file names the commits you lack — obtain the base repository, or a full bundle. If `prerequisites.txt` **is** empty, the file is not a readable bundle at all. |
 | `g2`, classifier | 1 | empty | `cmp: EOF on …/prerequisites-expected.txt which is empty` — `git bundle verify` was satisfied, but the bundle declares prerequisites. Same reading as above: incremental. |
 | `g3-clone` | 128 | empty | git's own error: `error: inflate: data stream error …` for damaged bytes, `fatal: early EOF` for a truncated file, `error: Repository lacks these prerequisite commits:` for an increment. Exit 128 is git's, not the runbook's. |
+| step 2, no passing step 1 | 1 | empty | `cat: …/checksum-ok.txt: No such file or directory` — step 1 has not run, or ran and **refused**. `actual.sha256` being present is not permission to continue: it is written before the check and says only what was measured. Run the chain in order, and past a `g1` refusal do not run it at all. |
 | step 4, no step 3 | 1 | empty | `cat: …/head-commit.txt: No such file or directory` — step 3 has not run, or did not finish. Run the chain in order. |
 | `g4-matches-reference` | 1 | `divergences N` | The one step that prints on refusal, because the count *is* the finding: anything but `divergences 0` is a refusal, and the count says how large it is. stderr reads `cmp: EOF on …/divergences-expected.txt which is empty`. `divergences.txt` names the paths — either the reference tree carries local edits, or the bundle is not the commit it claims. |
 
@@ -217,6 +239,12 @@ each stop at the step the matrix names:
   the digest was replaced along with the file — it passes steps 1 and 2 and dies
   at the clone.
 - **truncated** — the same two readings, `fatal: early EOF` at step 3.
+- those two rows are **indistinguishable at step 1**, and the matrix says so by
+  giving both `evidence: none`. A digest that disagrees is a digest that
+  disagrees; step 1 is not being coy about which defect it found, it does not
+  have that fact. What it does leave, for both rows, is `expected.sha256` and
+  `actual.sha256` in the work directory — the two numbers, so the mismatch is
+  checkable rather than merely reported. The defects part company at step 3.
 - **incremental** — dies at step 2 with a non-empty `prerequisites.txt`. This is
   the most informative failure in the set: the artifact names what is missing.
 - **foreign** — a valid, complete bundle of another repository. Right digest,
@@ -241,7 +269,8 @@ Two facts the matrix makes visible, and neither is obvious:
 | Path | Contents |
 |---|---|
 | `git-version.txt`, `git-required.txt`, `git-version-check.txt` | your git, the declared minimum, and the pair the version check read |
-| `expected.sha256`, `actual.sha256` | the digest you asserted, and the one measured |
+| `expected.sha256`, `actual.sha256` | the digest you asserted, and the one measured from the bundle. `actual.sha256` is written **before** the check, so both are here after a refusal too — they are what a refused `g1` leaves instead of a message |
+| `checksum-ok.txt` | written only where `g1` **passed**, and carrying the same `bundle-sha256-ok` the step prints. It is what step 2 refuses to run without: `actual.sha256` cannot serve as that guard now that it survives a refusal |
 | `probe/` | the throwaway repository `git bundle verify` needs; it holds nothing but `probe/.git`, which is where git init put it |
 | `prerequisites.txt` | the bundle's prerequisite lines. **Empty on success** — a complete bundle names none |
 | `prerequisites-expected.txt` | the empty file the line above is compared against |

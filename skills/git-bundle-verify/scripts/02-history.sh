@@ -1,7 +1,12 @@
 set -eu
-# Step 1 must have run: its digest file is what makes this bundle the one the
-# digest names. Naming the missing artifact beats a bare git error.
-cat "$2/actual.sha256" > /dev/null
+# Step 1 must have PASSED: this token is written only where the digest matched,
+# and it is what makes this bundle the one the digest names. Naming the missing
+# artifact beats a bare git error.
+#
+# It reads checksum-ok.txt rather than actual.sha256 because actual.sha256 is now
+# written before step 1's check and therefore survives a refusal — it is evidence
+# of what was measured, not evidence that the measurement agreed.
+cat "$2/checksum-ok.txt" > /dev/null
 git init --quiet "$2/probe"
 # The CLASSIFIER's input, written BEFORE the refusal condition so it exists
 # whichever way the next line goes. In a v2/v3 bundle header every PREREQUISITE

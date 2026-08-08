@@ -69,15 +69,15 @@ this is".
 
 ## Validation
 
-The suite in `test/` runs 712 tests on Node 22 and on Bun 1.3, covering the
+The suite in `test/` runs 714 tests on Node 22 and on Bun 1.3, covering the
 package format, the signing and verification vectors, the state machines, the
 gates, the access rules, the CLI, provisioning, the outbound transport, the
 transparency-log namespace, the bind address, the network boundary of every
 shipped instruction, the ten threat-model rows, and the parity between `SPEC.md`
-and the code. The quickstart transcript in this file is executed as part of that
-suite. Beyond it, the registry has been exercised on a
-local instance through the ordinary lifecycle — create, lint, review, verify,
-adopt, report outcome — with low-risk packages only. **The §7.3 high-risk path
+and the code. The quickstart transcript in this file is executed as part of
+that suite. Beyond it, the registry has been exercised on a local instance
+through the ordinary lifecycle — create, lint, review, verify, adopt, report
+outcome — with low-risk packages only. **The §7.3 high-risk path
 was not executed in that run**: no package in it carried `risk_level: high`, so
 the human-approval-per-adoption branch has test coverage but no operational
 exercise. There has been no external pilot and no third-party review of the

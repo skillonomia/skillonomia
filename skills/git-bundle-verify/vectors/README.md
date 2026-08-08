@@ -34,16 +34,27 @@ the digest of the file you actually hold.
 | Vector, and the digest it is offered with | Refused at | How you know |
 |---|---|---|
 | `good.bundle`, its own digest | nowhere — accepted | `divergences 0` |
-| `corrupt.bundle`, `good.bundle`'s digest | step 1 | exit non-zero, stdout empty |
+| `corrupt.bundle`, `good.bundle`'s digest | step 1 | exit non-zero; stdout and stderr both empty; `expected.sha256` and `actual.sha256` in the work directory, differing |
 | `corrupt.bundle`, its own digest | step 3 | `error: inflate: data stream error …` |
-| `truncated.bundle`, `good.bundle`'s digest | step 1 | exit non-zero, stdout empty |
+| `truncated.bundle`, `good.bundle`'s digest | step 1 | exit non-zero; stdout and stderr both empty; the same two files, differing |
 | `truncated.bundle`, its own digest | step 3 | `fatal: early EOF` |
 | `incremental.bundle`, its own digest | step 2 | exit non-zero; `prerequisites.txt` NOT empty |
 | `foreign.bundle`, its own digest | step 4 | exit non-zero, and `divergences 1` on stdout — the count survives the refusal because it IS the finding |
 
+The `evidence` column of `MATRIX.tsv` reads `none` for both step-1 rows, and
+that is a statement about the CONSOLE, not about the run. Step 1 prints nothing
+either way — `sha256sum --status` is silent by contract — and it genuinely
+cannot name the defect: a digest that disagrees is the same event whether one
+byte was flipped or the tail was cut off, which is why those two rows are
+identical in shape and part company only at step 3. What the run does leave
+behind is the arithmetic: `expected.sha256` holds the digest you passed in,
+`actual.sha256` the digest the file actually has, and they are written side by
+side because the measurement happens *before* the check rather than after it.
+Verifying a step-1 row means reading those two files, not looking for a message.
+
 The last two rows are the ones worth dwelling on. The incremental bundle is the
-only class where the work directory carries a positive diagnosis rather than
-just a refusal: `prerequisites.txt` names the commit you are missing, and
+only class where the work directory NAMES what is wrong rather than merely
+showing it: `prerequisites.txt` gives the commit you are missing, and
 `bundle-verify.txt` repeats it. And the foreign bundle passes three gates —
 right digest, complete history, clean clone — and is caught only by comparison
 with the reference tree, which is the whole reason step 4 exists. It is also the
