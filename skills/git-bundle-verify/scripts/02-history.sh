@@ -1,4 +1,20 @@
 set -eu
+# FIRST, before anything can succeed or fail: this step's own PASS token from a
+# PREVIOUS run is destroyed. A token is a claim about the run that wrote it, and
+# it was outliving that run — g1 and g2 on the announced bundle, then g2 again in
+# the same work directory on an incremental one: the second g2 exited non-zero
+# and history-ok.txt was still there, left by the first. Step 3 read it, was
+# satisfied, and cloned; git refused on its own terms at exit 128. The presence
+# of the file no longer means "the LAST step 2 passed" once a second step 2 has
+# run, so the file is removed at the top and re-created only at the bottom, past
+# every signal. A refusal anywhere in between — the missing token of step 1, a
+# switched bundle, a non-zero verify, a non-empty prerequisite list — therefore
+# leaves NO usable token, this run's or the last one's, whichever bundle step 3
+# is then handed.
+#
+# One named path inside the work directory, and nothing else: the runbook still
+# deletes nothing it did not write.
+rm -f "$2/history-ok.txt"
 # Step 1 must have PASSED: this token is written only where the digest matched,
 # and it is what makes this bundle the one the digest names. Naming the missing
 # artifact beats a bare git error.
@@ -7,6 +23,26 @@ set -eu
 # written before step 1's check and therefore survives a refusal — it is evidence
 # of what was measured, not evidence that the measurement agreed.
 cat "$2/checksum-ok.txt" > /dev/null
+# …and the bundle in front of THIS step must be the one step 1 accepted. The
+# token above proves a digest matched; it cannot prove which file it matched,
+# and BUNDLE_PATH is an argument that may differ from the one step 1 was given.
+# Offered a foreign bundle after a passing g1, this step used to init a probe,
+# read the header and run `git bundle verify` on the substituted file — all of
+# it truthful about the wrong artifact.
+#
+# So: measure what is actually here, keep the digest field alone (`sha256sum`
+# prints the name too, and the name is exactly what an operator re-points), and
+# compare against the binding step 1 measured. `cmp` reports a difference on
+# STDOUT, which would break this step's contract of printing nothing when it
+# refuses, so its output is sent to stderr — where it names both files, and
+# where a missing binding reads `No such file or directory` under the same
+# redirect. This runs BEFORE `git init`, before the header is read and before
+# `git bundle verify`, so a switched bundle leaves no probe/, no
+# prerequisites.txt and no bundle-verify.txt to be mistaken for a step that got
+# somewhere.
+sha256sum "$1" > "$2/step2-input.sha256"
+awk '{ print $1 }' "$2/step2-input.sha256" > "$2/step2-input-id.sha256"
+cmp "$2/bundle-id.sha256" "$2/step2-input-id.sha256" >&2
 git init --quiet "$2/probe"
 # The CLASSIFIER's input, written BEFORE the refusal condition so it exists
 # whichever way the next line goes. In a v2/v3 bundle header every PREREQUISITE

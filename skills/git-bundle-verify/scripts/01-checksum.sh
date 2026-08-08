@@ -34,11 +34,30 @@ printf '%s  %s\n' "$2" "$1" > "$3/expected.sha256"
 # of you are the bytes the digest names. It cannot say WHY they differ, and does
 # not try to.
 sha256sum --check --strict --status "$3/expected.sha256"
+# The BINDING, written only past the check above, and the thing that makes the
+# rest of the chain about THIS bundle rather than about "some bundle that once
+# passed". A success token says a step agreed; it does not say what it agreed
+# ABOUT. With tokens alone one work directory accepted g1 and g2 on the bundle
+# you were told about and then g3 on a DIFFERENT file, printed `clone-ok`, and
+# left the substitution to be noticed at step 4 by a tree that happened to
+# differ — a comparison against a reference, not a broken chain.
+#
+# What identity to carry is decided by what an attacker controls. The path is
+# the operator's to choose and can be re-pointed at will, and `sha256sum` writes
+# the NAME beside the digest, so the two fields are separated here and only the
+# digest is kept: steps 2 and 3 compare the reading, never the path. The digest
+# is the one MEASURED from the bytes a line above, not the one asserted on the
+# command line — an asserted digest is the caller's word, and this file has to
+# outlive that.
+awk '{ print $1 }' "$3/actual.sha256" > "$3/bundle-id.sha256"
 # The success token, and step 2's guard reads THIS. actual.sha256 used to be that
 # guard — step 2 refuses to run unless step 1 left its artifact behind — and it
 # stopped being usable as one the moment it moved above the check: it now exists
 # after a REFUSED step 1 too. This file is written only where the check passed,
 # so the chain still refuses to continue past a digest mismatch. It carries the
-# same bytes the step prints, and `cat` is what prints them.
+# same bytes the step prints, and `cat` is what prints them. The digest stays OUT
+# of it: the stdout contract of this step is the exact line `bundle-sha256-ok`,
+# and the token is printed verbatim, so identity lives in bundle-id.sha256 beside
+# it rather than in the line an adopter's gate matches.
 printf 'bundle-sha256-ok\n' > "$3/checksum-ok.txt"
 cat "$3/checksum-ok.txt"

@@ -52,6 +52,30 @@ behind is the arithmetic: `expected.sha256` holds the digest you passed in,
 side because the measurement happens *before* the check rather than after it.
 Verifying a step-1 row means reading those two files, not looking for a message.
 
+## What the matrix cannot say, and where that case lives instead
+
+One row is one bundle: the file, the digest to offer it with, the step that must
+refuse it. That shape covers every defect that is a property of a **bundle**,
+and it covers none that is a property of a **sequence** — the same work
+directory, two different bundles, the steps run in an order the operator chose.
+Two of those were live defects here:
+
+- the input **switched** between steps. `g1 good.bundle`, `g2 good.bundle`,
+  `g3 foreign.bundle` printed `clone-ok` over another repository's bundle, and
+  was caught one step later by the reference-tree comparison — which would have
+  said nothing had the foreign bundle carried the same tree;
+- a **stale** token. `g1 good.bundle`, `g2 good.bundle`, then `g2` again on
+  `incremental.bundle` in the same directory: the second `g2` refused and the
+  first one's `history-ok.txt` was still there, so `g3` cloned.
+
+Step 1 now writes `bundle-id.sha256` — the digest it measured, no path — and
+steps 2 and 3 compare their own input against it before doing anything else;
+step 2 destroys `history-ok.txt` as its first action and writes it again only
+past every signal. `SKILL.md > Self-check, part two` gives the three runs (A, B
+and C) that demonstrate both, on the vectors in this directory and nothing else.
+They are not rows here because a row would have to name two bundles and their
+order, and the flat table is worth more than the two extra cases.
+
 The last two rows are the ones worth dwelling on. The incremental bundle is the
 only class where the work directory NAMES what is wrong rather than merely
 showing it: `prerequisites.txt` gives the commit you are missing, and

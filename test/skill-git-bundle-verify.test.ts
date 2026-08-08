@@ -195,6 +195,96 @@ test("the positive control is ACCEPTED — without it, refusing everything would
   // stop the NEXT step just as a refusal does.
   assert.equal(readFileSync(join(work, "checksum-ok.txt"), "utf8"), "bundle-sha256-ok\n");
   assert.equal(readFileSync(join(work, "history-ok.txt"), "utf8"), "bundle-history-complete\n");
+
+  // …and beside them the BINDING: the digest step 1 MEASURED, alone on its line
+  // with no path beside it. The path is the operator's argument and is exactly
+  // what a substitution re-points, so what steps 2 and 3 compare has to be the
+  // reading and not the name.
+  const measured = createHash("sha256").update(readFileSync(join(pkg, "vectors", row.bundle))).digest("hex");
+  assert.equal(readFileSync(join(work, "bundle-id.sha256"), "utf8"), `${measured}\n`);
+  assert.doesNotMatch(readFileSync(join(work, "bundle-id.sha256"), "utf8"), /bundle/, "no path in the binding");
+  // steps 2 and 3 each measured what they were actually handed, and agreed
+  assert.equal(readFileSync(join(work, "step2-input-id.sha256"), "utf8"), `${measured}\n`);
+  assert.equal(readFileSync(join(work, "step3-input-id.sha256"), "utf8"), `${measured}\n`);
+});
+
+test("a bundle switched between g1 and g2 is refused before the probe repository exists", (t) => {
+  if (!gitAvailable()) return t.skip("git is not on PATH");
+  const pkg = packed();
+  const good = createHash("sha256").update(readFileSync(join(pkg, "vectors", "good.bundle"))).digest("hex");
+  const work = join(tmp("sklo-gbv-switch12-"), "w");
+
+  // step 1 accepts the bundle it was told about…
+  assert.equal(step(pkg, "01-checksum.sh", [join("vectors", "good.bundle"), good, work]).code, 0);
+  // …and step 2 is handed a different file in the same work directory
+  const two = step(pkg, "02-history.sh", [join("vectors", "foreign.bundle"), work]);
+
+  assert.notEqual(two.code, 0, "step 2 accepted a bundle step 1 never saw");
+  assert.equal(two.stdout, "", "a refused step 2 must print nothing on stdout");
+  assert.match(two.stderr, /bundle-id\.sha256/, "the refusal must name the binding that did not match");
+
+  // it refused BEFORE it did any work on the substituted file: nothing was
+  // initialised, no header was read, `git bundle verify` never ran, and there is
+  // no token. Each of these existing would be an artifact describing a bundle
+  // the chain had already refused.
+  for (const artifact of ["probe", "prerequisites.txt", "bundle-verify.txt", "history-ok.txt"]) {
+    assert.ok(!existsSync(join(work, artifact)), `${artifact} must not exist after a switched bundle`);
+  }
+});
+
+test("a bundle switched between g2 and g3 is refused before git clone", (t) => {
+  if (!gitAvailable()) return t.skip("git is not on PATH");
+  const pkg = packed();
+  const good = createHash("sha256").update(readFileSync(join(pkg, "vectors", "good.bundle"))).digest("hex");
+  const work = join(tmp("sklo-gbv-switch23-"), "w");
+
+  assert.equal(step(pkg, "01-checksum.sh", [join("vectors", "good.bundle"), good, work]).code, 0);
+  assert.equal(step(pkg, "02-history.sh", [join("vectors", "good.bundle"), work]).code, 0);
+
+  // foreign.bundle is a valid, complete, clonable bundle of another repository:
+  // every check step 3 used to make would have passed on it, and did — the run
+  // printed `clone-ok` and was caught one step later by the reference tree
+  const three = step(pkg, "03-clone.sh", [join("vectors", "foreign.bundle"), work]);
+  assert.notEqual(three.code, 0, "step 3 accepted a bundle steps 1 and 2 never saw");
+  assert.equal(three.stdout, "", "a refused step 3 must print nothing on stdout");
+  assert.match(three.stderr, /bundle-id\.sha256/, "the refusal must name the binding that did not match");
+  assert.ok(!existsSync(join(work, "clone")), "nothing may be cloned from a substituted bundle");
+  assert.ok(!existsSync(join(work, "head-commit.txt")), "…and no identity may be recorded for it");
+});
+
+test("a refusing g2 takes the previous g2's token with it — a PASS token cannot outlive its run", (t) => {
+  if (!gitAvailable()) return t.skip("git is not on PATH");
+  const pkg = packed();
+  const good = createHash("sha256").update(readFileSync(join(pkg, "vectors", "good.bundle"))).digest("hex");
+  const work = join(tmp("sklo-gbv-stale-"), "w");
+
+  assert.equal(step(pkg, "01-checksum.sh", [join("vectors", "good.bundle"), good, work]).code, 0);
+  assert.equal(step(pkg, "02-history.sh", [join("vectors", "good.bundle"), work]).code, 0);
+  assert.equal(readFileSync(join(work, "history-ok.txt"), "utf8"), "bundle-history-complete\n");
+
+  // a SECOND step 2, same work directory, different bundle. It refuses — and
+  // what matters is what it leaves: the token it did not write must not be the
+  // token the run before it did.
+  const again = step(pkg, "02-history.sh", [join("vectors", "incremental.bundle"), work]);
+  assert.notEqual(again.code, 0, "step 2 accepted a bundle step 1 never saw");
+  assert.equal(again.stdout, "");
+  assert.ok(!existsSync(join(work, "history-ok.txt")), "the previous run's token survived a refusal");
+
+  // and step 3 is refused on EITHER bundle — including the one that passed.
+  // "The file is there" was the whole of the old permission to continue, and a
+  // work directory that has been run twice can no longer answer which run left
+  // it. The diagnosis of the passing run may stay; the verdict may not.
+  for (const bundle of ["incremental.bundle", "good.bundle"]) {
+    const three = step(pkg, "03-clone.sh", [join("vectors", bundle), work]);
+    assert.notEqual(three.code, 0, `step 3 ran on ${bundle} after the last step 2 refused`);
+    assert.equal(three.stdout, "", `step 3 must print nothing when it refuses on ${bundle}`);
+    assert.match(three.stderr, /history-ok\.txt/, `step 3 must name the missing token on ${bundle}`);
+    assert.doesNotMatch(three.stderr, /prerequisite commits/, "…and must never reach `git clone`");
+    assert.ok(!existsSync(join(work, "clone")), `nothing may be cloned from ${bundle}`);
+  }
+
+  // the diagnosis of the refused run is still readable beside it
+  assert.ok(existsSync(join(work, "bundle-verify.txt")), "the passing run's diagnosis may stay");
 });
 
 test("on the accepted run the two digest files agree, and step 1 leaves its success token", (t) => {
@@ -511,14 +601,36 @@ test("the guards are load-bearing: remove one and the vector it catches slips th
     }
   }
 
-  // g2's GUARD, and it is load-bearing rather than decorative. `git bundle
-  // verify` reads the HEADER, so it accepts a bundle whose packfile is damaged:
-  // remove step 2's `cat` on step 1's token and corrupt.bundle, offered under
-  // the ANNOUNCED digest — the row MATRIX.tsv says dies at step 1 — passes step
-  // 2 as well, printing that it records a complete history.
+  // g2's GUARD on step 1, and it is load-bearing rather than decorative. `git
+  // bundle verify` reads the HEADER, so it accepts a bundle whose packfile is
+  // damaged: with nothing of step 1's left to check, corrupt.bundle offered
+  // under the ANNOUNCED digest — the row MATRIX.tsv says dies at step 1 —
+  // passes step 2 as well, printing that it records a complete history.
+  //
+  // A refused step 1 leaves NEITHER of the two things step 2 reads: no
+  // checksum-ok.txt, because the token is written past the check, and no
+  // bundle-id.sha256, because the binding is written past the same check. Each
+  // stops step 2 on its own, so this mutation is run twice — once dropping only
+  // the token guard, to see the binding catch it and NAME what is missing, and
+  // once dropping both, to see what step 2 does when nothing of step 1 is
+  // required at all. A guard that is backstopped is still load-bearing; it is
+  // simply not the only thing bearing the load, and asserting otherwise would
+  // be asserting the package is weaker than it is.
   {
     const bundle = join("vectors", "corrupt.bundle");
-    const mutant = withoutLine(pkg, "02-history.sh", 'cat "$2/checksum-ok.txt"');
+
+    const tokenOnly = withoutLine(pkg, "02-history.sh", 'cat "$2/checksum-ok.txt"');
+    const workA = join(tmp("sklo-gbv-m8a-"), "w");
+    assert.notEqual(step(tokenOnly, "01-checksum.sh", [bundle, good, workA]).code, 0, "step 1 must refuse the digest");
+    assert.ok(!existsSync(join(workA, "checksum-ok.txt")), "a refused step 1 leaves no token — that is the premise");
+    assert.ok(!existsSync(join(workA, "bundle-id.sha256")), "…and no binding either, for the same reason");
+    const backstopped = step(tokenOnly, "02-history.sh", [bundle, workA]);
+    assert.notEqual(backstopped.code, 0, "the binding must catch what the dropped token guard no longer does");
+    assert.equal(backstopped.stdout, "");
+    assert.match(backstopped.stderr, /bundle-id\.sha256/, "…and the refusal must name the binding it could not read");
+    assert.ok(!existsSync(join(workA, "bundle-verify.txt")), "still before `git bundle verify`");
+
+    const mutant = withoutLine(pkg, "02-history.sh", 'cat "$2/checksum-ok.txt"', 'cmp "$2/bundle-id.sha256"');
     const work = join(tmp("sklo-gbv-m8-"), "w");
     assert.notEqual(step(mutant, "01-checksum.sh", [bundle, good, work]).code, 0, "step 1 must refuse the digest");
     assert.ok(!existsSync(join(work, "checksum-ok.txt")), "a refused step 1 leaves no token — that is the premise");
@@ -537,6 +649,100 @@ test("the guards are load-bearing: remove one and the vector it catches slips th
     assert.equal(shipped.stdout, "");
     assert.match(shipped.stderr, /checksum-ok\.txt/, "the refusal must name the missing artifact");
     assert.ok(!existsSync(join(work2, "bundle-verify.txt")), "the shipped step 2 must refuse before git bundle verify");
+  }
+
+  // g2's BINDING. The token above says a step 1 passed; it does not say on WHAT.
+  // Drop the comparison against step 1's measured digest and a foreign bundle
+  // handed to step 2 after a passing step 1 on the announced one is verified,
+  // agreed with, and recorded as a complete history — all of it true about a
+  // file step 1 never saw.
+  {
+    const mutant = withoutLine(pkg, "02-history.sh", 'cmp "$2/bundle-id.sha256"');
+    const work = join(tmp("sklo-gbv-m10-"), "w");
+    assert.equal(step(mutant, "01-checksum.sh", [join("vectors", "good.bundle"), good, work]).code, 0);
+
+    const weakened = step(mutant, "02-history.sh", [join("vectors", "foreign.bundle"), work]);
+    assert.equal(weakened.code, 0, "expected the unbound step 2 to accept a substituted bundle");
+    assert.equal(weakened.stdout, "bundle-history-complete\n");
+    assert.ok(existsSync(join(work, "history-ok.txt")), "…and to hand step 3 a token earned on the wrong file");
+
+    // the shipped one refuses, and before the probe repository exists
+    const work2 = join(tmp("sklo-gbv-m10b-"), "w");
+    assert.equal(step(pkg, "01-checksum.sh", [join("vectors", "good.bundle"), good, work2]).code, 0);
+    const shipped = step(pkg, "02-history.sh", [join("vectors", "foreign.bundle"), work2]);
+    assert.notEqual(shipped.code, 0, "the shipped step 2 must refuse a switched bundle");
+    assert.equal(shipped.stdout, "");
+    assert.match(shipped.stderr, /bundle-id\.sha256/, "the refusal must name the binding it compared against");
+    assert.ok(!existsSync(join(work2, "probe")), "nothing may be initialised for a bundle step 1 never saw");
+  }
+
+  // g3's BINDING, and it is the one the audit found: `g1 good`, `g2 good`,
+  // `g3 foreign` printed head-commit, head-tree, tracked-files and `clone-ok`
+  // over another repository's bundle. Step 4 then refused — but by comparing two
+  // TREES against the reference, which is defence in depth and not the chain
+  // holding: a substituted bundle carrying the same tree would have passed that
+  // too. Drop the comparison and the acceptance comes back, exit 0 and all.
+  {
+    const mutant = withoutLine(pkg, "03-clone.sh", 'cmp "$2/bundle-id.sha256"');
+    const work = join(tmp("sklo-gbv-m11-"), "w");
+    assert.equal(step(mutant, "01-checksum.sh", [join("vectors", "good.bundle"), good, work]).code, 0);
+    assert.equal(step(mutant, "02-history.sh", [join("vectors", "good.bundle"), work]).code, 0);
+
+    const weakened = step(mutant, "03-clone.sh", [join("vectors", "foreign.bundle"), work]);
+    assert.equal(weakened.code, 0, "expected the unbound step 3 to clone a substituted bundle");
+    assert.match(weakened.stdout, /\nclone-ok\n$/, "…and to report it as a clean clone");
+    assert.ok(existsSync(join(work, "clone")), "the clone directory is the proof `git clone` actually ran");
+
+    // the shipped one refuses BEFORE the clone, so there is no clone/ to judge
+    const work2 = join(tmp("sklo-gbv-m11b-"), "w");
+    assert.equal(step(pkg, "01-checksum.sh", [join("vectors", "good.bundle"), good, work2]).code, 0);
+    assert.equal(step(pkg, "02-history.sh", [join("vectors", "good.bundle"), work2]).code, 0);
+    const shipped = step(pkg, "03-clone.sh", [join("vectors", "foreign.bundle"), work2]);
+    assert.notEqual(shipped.code, 0, "the shipped step 3 must refuse a switched bundle");
+    assert.equal(shipped.stdout, "");
+    assert.match(shipped.stderr, /bundle-id\.sha256/, "the refusal must name the binding it compared against");
+    assert.ok(!existsSync(join(work2, "clone")), "nothing may be cloned for a bundle steps 1 and 2 never saw");
+  }
+
+  // g2's INVALIDATION of its own stale token. Without the `rm -f` at the top of
+  // step 2, a token written by an earlier, passing step 2 survives a later,
+  // REFUSING one — and the presence of the file stops meaning "the last step 2
+  // agreed". Handed the bundle it was originally run on, step 3 then clones on
+  // the strength of a verdict that was overturned.
+  {
+    const incremental = createHash("sha256")
+      .update(readFileSync(join(pkg, "vectors", "incremental.bundle")))
+      .digest("hex");
+    const mutant = withoutLine(pkg, "02-history.sh", 'rm -f "$2/history-ok.txt"');
+    const work = join(tmp("sklo-gbv-m12-"), "w");
+    assert.equal(step(mutant, "01-checksum.sh", [join("vectors", "good.bundle"), good, work]).code, 0);
+    assert.equal(step(mutant, "02-history.sh", [join("vectors", "good.bundle"), work]).code, 0);
+    assert.ok(existsSync(join(work, "history-ok.txt")), "the first step 2 passed and wrote its token");
+
+    // a second step 2, in the SAME work directory, on a different bundle: it
+    // refuses — and leaves the first run's token behind
+    assert.notEqual(step(mutant, "02-history.sh", [join("vectors", "incremental.bundle"), work]).code, 0);
+    assert.ok(existsSync(join(work, "history-ok.txt")), "the stale token survived the refusal — the hazard");
+    const weakened = step(mutant, "03-clone.sh", [join("vectors", "good.bundle"), work]);
+    assert.equal(weakened.code, 0, "expected step 3 to clone on a verdict the last step 2 had overturned");
+    assert.match(weakened.stdout, /\nclone-ok\n$/);
+
+    // the shipped one destroys the token before it does anything else, so the
+    // refusal takes the previous run's verdict with it — on ANY bundle step 3
+    // is then handed, the one that passed included
+    const work2 = join(tmp("sklo-gbv-m12b-"), "w");
+    assert.equal(step(pkg, "01-checksum.sh", [join("vectors", "good.bundle"), good, work2]).code, 0);
+    assert.equal(step(pkg, "02-history.sh", [join("vectors", "good.bundle"), work2]).code, 0);
+    assert.notEqual(step(pkg, "02-history.sh", [join("vectors", "incremental.bundle"), work2]).code, 0);
+    assert.ok(!existsSync(join(work2, "history-ok.txt")), "a refusing step 2 must leave no token, not even a stale one");
+    assert.notEqual(incremental, good, "the two rows must really be different bundles");
+    for (const b of ["good.bundle", "incremental.bundle"]) {
+      const shipped = step(pkg, "03-clone.sh", [join("vectors", b), work2]);
+      assert.notEqual(shipped.code, 0, `step 3 ran on ${b} after the last step 2 refused`);
+      assert.equal(shipped.stdout, "");
+      assert.match(shipped.stderr, /history-ok\.txt/, `step 3 must name the missing token on ${b}`);
+      assert.ok(!existsSync(join(work2, "clone")), `nothing may be cloned from ${b}`);
+    }
   }
 
   // g3's GUARD, the same defect class one joint further along. Put it back on

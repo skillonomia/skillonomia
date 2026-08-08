@@ -36,6 +36,40 @@ after a refusal too. Guarding on either of those is guarding on "the step ran",
 which is not the question. `checksum-ok.txt` and `history-ok.txt` are written
 only past the checks that decide, and they are what the next step reads.
 
+## What a success token proves, and what it does not
+
+A token says **a step agreed**. On its own it does not say **about what**, and
+it does not say **when** — and both gaps were live defects, found by running the
+chain rather than by reading it.
+
+*About what.* `BUNDLE_PATH` is an argument, given again to steps 2 and 3, and
+nothing used to require it to name the same file each time. One work directory
+took `g1 good.bundle`, `g2 good.bundle`, then `g3` on a bundle of an **entirely
+different repository** — and printed `head-commit`, `head-tree`,
+`tracked-files` and `clone-ok` over it. The substitution was noticed at step 4,
+by a comparison against the reference tree that happened to differ; had the
+foreign bundle carried the same tree, nothing would have refused at all. So
+step 1 now writes a **binding** as well as a token: `bundle-id.sha256`, holding
+the SHA-256 it **measured** from the bytes it accepted — the digest alone, with
+no path beside it, because the path is precisely what a substitution
+re-points. Steps 2 and 3 each measure the file actually in front of them and
+compare against that binding before doing anything else. Step 4 remains as
+defence in depth, and stops being the first thing that notices.
+
+*When.* A token used to outlive the run that wrote it. `g1 good.bundle`,
+`g2 good.bundle` — token written; then `g2` again in the **same** work
+directory on an incremental bundle: it refused, and `history-ok.txt` was still
+there, left by the earlier run. `g3` read it, was satisfied, and cloned. So
+step 2 now **destroys `history-ok.txt` as its first action**, before it can
+succeed or fail at anything, and writes it again only past every signal. After
+a refused step 2 there is no usable token — not this run's, not the last one's —
+whichever bundle step 3 is then handed.
+
+Neither of these makes a token proof of a correct run in general. They make it
+proof of *this* run, on *this* artifact, which is what the next step needs. The
+diagnosis files are the opposite and deliberately so: they survive everything,
+because a refusal with nothing left to read is a refusal you cannot act on.
+
 ## What step 1 does NOT prove
 
 `g1` proves that the file in front of you is the one you were told about. It
@@ -162,7 +196,19 @@ divergences 0
   directory whichever way the check goes. What passing this gate means is
   narrow and exact: **the file matches a digest you obtained by another
   channel**, and nothing else. Read *What step 1 does NOT prove* above before
-  treating it as authenticity, or as a diagnosis of the damage.
+  treating it as authenticity, or as a diagnosis of the damage. Passing also
+  writes `bundle-id.sha256` — the **measured** digest on its own line, no path —
+  which is what binds the rest of the chain to this file. A refusal leaves it
+  absent, exactly as it leaves `checksum-ok.txt` absent.
+- `g1-binding` — steps 2 and 3 are about the **same artifact** step 1 accepted.
+  Each measures its own `BUNDLE_PATH` and compares the digest field against
+  `bundle-id.sha256`; a mismatch, or a binding that is not there at all, ends
+  the step with empty stdout and a stderr naming the file. The comparison is
+  made **before** either step does anything else — before `git init`, before
+  the header is read, before `git bundle verify`, before `git clone` — so a
+  substituted bundle leaves no `probe/`, no `bundle-verify.txt` and no `clone/`
+  to be mistaken for progress. The digest is compared, never the path: the path
+  is your argument and is what a substitution changes.
 - `g2-complete-history` — stdout of step 2 is exactly `bundle-history-complete`,
   which requires **two** signals to agree:
   - the **exit status** of `git bundle verify` — the refusal condition. It is
@@ -181,6 +227,12 @@ divergences 0
   be that guard and could never be one: the redirect that captures git's output
   creates the file before the exit status exists, so a refused step 2 leaves it
   behind — see *How failure looks* for what that let through.
+
+  Before any of that, step 2 **removes `history-ok.txt`**. The token is a claim
+  about the run that writes it, and in a work directory a second step 2 may be
+  run in, its mere presence stopped being that claim — see *What a success token
+  proves*. Removing it first means a refusal at **any** later signal leaves the
+  chain with no token to continue on.
 - `g3-clone` — stdout of step 3 ends with `clone-ok`, preceded by the three
   identity lines. Those three lines are the finding worth recording.
 - `g4-matches-reference` — stdout of step 4 is exactly `divergences 0` **and**
@@ -213,6 +265,9 @@ not expect a message.
 | `g3-clone` | 128 | empty | git's own error: `error: inflate: data stream error …` for damaged bytes, `fatal: early EOF` for a truncated file, `error: Repository lacks these prerequisite commits:` for an increment. Exit 128 is git's, not the runbook's. |
 | step 2, no passing step 1 | 1 | empty | `cat: …/checksum-ok.txt: No such file or directory` — step 1 has not run, or ran and **refused**. `actual.sha256` being present is not permission to continue: it is written before the check and says only what was measured. Run the chain in order, and past a `g1` refusal do not run it at all. |
 | step 3, no passing step 2 | 1 | empty | `cat: …/history-ok.txt: No such file or directory` — step 2 has not run, or ran and **refused**. `bundle-verify.txt` being present is not permission to continue: the redirect creates it before `git bundle verify` has an exit status, so it says only what git printed. Nothing is cloned; there is no `clone/`. |
+| step 2 or 3, a DIFFERENT bundle | 1 | empty | `…/bundle-id.sha256 …/step2-input-id.sha256 differ: byte 1, line 1` (or `step3-…`) — the file this step was handed is not the file step 1 accepted. Nothing was initialised, verified or cloned; the two ids are in the work directory to be read side by side. Give every step the same `BUNDLE_PATH`, or start a fresh work directory for the other bundle. |
+| step 2 or 3, no binding | 2 | empty | `cmp: …/bundle-id.sha256: No such file or directory` — step 1 has not run, or ran and **refused**: the binding is written past the same check as the token. |
+| step 3, after a REFUSED second step 2 | 1 | empty | `cat: …/history-ok.txt: No such file or directory`, **even on the bundle the earlier step 2 passed**. Step 2 destroys its own token before it starts, so the last step 2 in this work directory is the only one whose verdict survives. Its diagnosis — `bundle-verify.txt`, `prerequisites.txt` — is still there to read. |
 | step 4, no step 3 | 1 | empty | `cat: …/head-commit.txt: No such file or directory` — step 3 has not run, or did not finish. Run the chain in order. |
 | `g4-matches-reference` | 1 | `divergences N` | The one step that prints on refusal, because the count *is* the finding: anything but `divergences 0` is a refusal, and the count says how large it is. stderr reads `cmp: EOF on …/divergences-expected.txt which is empty`. `divergences.txt` names the paths — either the reference tree carries local edits, or the bundle is not the commit it claims. |
 
@@ -286,22 +341,101 @@ Two facts the matrix makes visible, and neither is obvious:
   disagree is the point; one signal that a caller might not read is the defect
   the earlier version shipped.
 
+### Self-check, part two: the chain, not the bundles
+
+Every row of `MATRIX.tsv` is one bundle walked through the steps in order, and
+that is all the table's shape can say: bundle, digest, the step that refuses it.
+The two defects above are not properties of a bundle — they are properties of a
+**sequence**, and they need two bundles and one work directory to show. So they
+are here, as three runs you can make on the vectors this package already ships.
+Give each its own fresh `WORK_DIR`; `<good>` is `good.bundle`'s digest from
+`MATRIX.tsv`.
+
+**A — the input switched between step 1 and step 2.**
+
+```
+sh scripts/01-checksum.sh vectors/good.bundle    <good> WORK_DIR/A   → bundle-sha256-ok
+sh scripts/02-history.sh  vectors/foreign.bundle        WORK_DIR/A   → refused
+```
+
+Step 2 must exit non-zero with **empty stdout**, stderr naming
+`bundle-id.sha256`, and `WORK_DIR/A` must contain no `probe/`, no
+`prerequisites.txt`, no `bundle-verify.txt` and no `history-ok.txt`. A step 2
+that reports on `foreign.bundle` at all has reported truthfully about the wrong
+artifact.
+
+**B — the input switched between step 2 and step 3.**
+
+```
+sh scripts/01-checksum.sh vectors/good.bundle    <good> WORK_DIR/B   → bundle-sha256-ok
+sh scripts/02-history.sh  vectors/good.bundle           WORK_DIR/B   → bundle-history-complete
+sh scripts/03-clone.sh    vectors/foreign.bundle        WORK_DIR/B   → refused
+```
+
+Step 3 must exit non-zero with empty stdout, stderr naming `bundle-id.sha256`,
+and **no `clone/` in `WORK_DIR/B`**. This is the run that used to print
+`head-commit`, `head-tree`, `tracked-files` and `clone-ok` over another
+repository, and be caught only at step 4.
+
+**C — a stale token from an earlier step 2.**
+
+```
+sh scripts/01-checksum.sh vectors/good.bundle        <good> WORK_DIR/C  → bundle-sha256-ok
+sh scripts/02-history.sh  vectors/good.bundle               WORK_DIR/C  → bundle-history-complete
+sh scripts/02-history.sh  vectors/incremental.bundle        WORK_DIR/C  → refused
+sh scripts/03-clone.sh    vectors/good.bundle               WORK_DIR/C  → refused
+```
+
+The last line is the one worth watching: step 3 is handed the bundle the first
+step 2 **passed**, and must still refuse, naming `history-ok.txt`. The token
+belongs to the run that wrote it, and the run that wrote it has been overtaken
+by one that refused. `bundle-verify.txt` and `prerequisites.txt` from the
+refused run stay — those are diagnosis, and diagnosis is meant to survive.
+
+`MATRIX.tsv` is deliberately left as it is: one row is one bundle, and a table
+that had to name two bundles and their order would stop being the flat,
+machine-readable thing the seven rows are checked by.
+
 ## What each script leaves in the work directory
+
+Two kinds of file, and the difference decides what may be read as permission to
+continue. **Diagnosis** is written whichever way a step goes; its presence says
+only that the step got that far. **Success tokens and the binding** are written
+only past the checks that decide, and they are what the next step reads. Reading
+a diagnosis file as a verdict is the defect this package has now closed three
+times, at three different joints.
+
+### Diagnosis — present after a refusal too, never permission to continue
 
 | Path | Contents |
 |---|---|
-| `git-version.txt`, `git-required.txt`, `git-version-check.txt` | your git, the declared minimum, and the pair the version check read |
+| `git-version.txt`, `git-required.txt` | your git, and the declared minimum |
+| `git-version-check.txt` | the pair `[required, actual]` that `sort --check --version-sort` reads; it is the input to the version gate, not its result |
 | `expected.sha256`, `actual.sha256` | the digest you asserted, and the one measured from the bundle. `actual.sha256` is written **before** the check, so both are here after a refusal too — they are what a refused `g1` leaves instead of a message |
-| `checksum-ok.txt` | written only where `g1` **passed**, and carrying the same `bundle-sha256-ok` the step prints. It is what step 2 refuses to run without: `actual.sha256` cannot serve as that guard now that it survives a refusal |
+| `step2-input.sha256`, `step3-input.sha256` | `sha256sum` over the `BUNDLE_PATH` that step 2 and step 3 were actually handed, name included |
+| `step2-input-id.sha256`, `step3-input-id.sha256` | the digest field of the line above, alone — what is compared against the binding. After a refused binding check, read one of these against `bundle-id.sha256`: that difference *is* the refusal |
 | `probe/` | the throwaway repository `git bundle verify` needs; it holds nothing but `probe/.git`, which is where git init put it |
 | `prerequisites.txt` | the bundle's prerequisite lines. **Empty on success** — a complete bundle names none |
 | `prerequisites-expected.txt` | the empty file the line above is compared against |
 | `bundle-verify.txt` | the full output of `git bundle verify`, including any missing prerequisites. Written by a **redirect**, so it exists whichever way the verify went — it is the diagnosis, never the verdict, and cannot serve as step 3's guard |
-| `history-ok.txt` | written only where `g2` **passed** — past a zero exit status from `git bundle verify` AND a `prerequisites.txt` proven empty — and carrying the same `bundle-history-complete` the step prints. It is what step 3 refuses to run without |
 | `clone/` | the clone |
 | `head-commit.txt`, `head-tree.txt`, `tracked-files.txt` | the three identity facts |
 | `divergences.txt` | one line per tracked path whose bytes differ. **0 bytes is the success case**, not a step that failed to run |
 | `divergences-expected.txt` | the empty file the line above is compared against — the comparison is what turns a non-zero count into a non-zero exit status |
+
+### Success tokens and the binding — written only past a passing check
+
+| Path | Contents |
+|---|---|
+| `checksum-ok.txt` | written only where `g1` **passed**, and carrying the same `bundle-sha256-ok` the step prints. It is what step 2 refuses to run without: `actual.sha256` cannot serve as that guard now that it survives a refusal |
+| `bundle-id.sha256` | the **binding**: the digest step 1 measured, alone on its line with no path beside it, written past the same check as the token. Steps 2 and 3 compare their own input against this before they do anything else, so the chain is about one artifact rather than about a sequence of agreements |
+| `history-ok.txt` | written only where `g2` **passed** — past its binding check, a zero exit status from `git bundle verify` AND a `prerequisites.txt` proven empty — and carrying the same `bundle-history-complete` the step prints. It is what step 3 refuses to run without. **Removed at the start of every step 2**, so it is never the previous run's answer to this run's question |
+
+Step 3 has no token of its own: step 4 guards on `head-commit.txt`, which is
+step 3's finding rather than its verdict. That is a narrower joint than the
+others — step 3's only failure mode is `git clone` failing, which leaves no
+`head-commit.txt` either — but it is not the same shape as the two above, and
+it is listed here so the difference is visible rather than assumed.
 
 ## Notes on the comparison
 
