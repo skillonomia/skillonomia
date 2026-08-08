@@ -55,7 +55,15 @@ Verifying a step-1 row means reading those two files, not looking for a message.
 The last two rows are the ones worth dwelling on. The incremental bundle is the
 only class where the work directory NAMES what is wrong rather than merely
 showing it: `prerequisites.txt` gives the commit you are missing, and
-`bundle-verify.txt` repeats it. And the foreign bundle passes three gates —
+`bundle-verify.txt` repeats it. It is also the row that exercises the joint
+between steps 2 and 3: `bundle-verify.txt` is written by the redirect that
+captures `git bundle verify`, so it is there after the refusal too, and step 3
+therefore guards on `history-ok.txt` — the token step 2 writes only past both of
+its signals. Run step 3 on this row's work directory and it refuses on that name
+before cloning anything. Guarding on `bundle-verify.txt`, as it once did, let
+`git clone` run after a refused step 2 and answer with git's own `error:
+Repository lacks these prerequisite commits:`. And the foreign bundle passes
+three gates —
 right digest, complete history, clean clone — and is caught only by comparison
 with the reference tree, which is the whole reason step 4 exists. It is also the
 only refusal that prints anything: step 4 reports the count first and refuses

@@ -178,7 +178,8 @@ test("the positive control is ACCEPTED — without it, refusing everything would
   const row = matrix(pkg).find((r) => r.refuseAt === 0)!;
   assert.equal(row.bundle, "good.bundle");
 
-  const runs = walk(pkg, row, join(tmp("sklo-gbv-work-"), "w"));
+  const work = join(tmp("sklo-gbv-work-"), "w");
+  const runs = walk(pkg, row, work);
   assert.equal(runs.length, 4, "the run stopped early");
   for (const [i, r] of runs.entries()) {
     assert.equal(r.code, 0, `step ${i + 1} exited ${r.code}: ${r.stderr}`);
@@ -187,6 +188,13 @@ test("the positive control is ACCEPTED — without it, refusing everything would
   assert.equal(runs[1].stdout, "bundle-history-complete\n");
   assert.match(runs[2].stdout, /^head-commit [0-9a-f]{40}\nhead-tree [0-9a-f]{40}\ntracked-files 2\nclone-ok\n$/);
   assert.equal(runs[3].stdout, "divergences 0\n");
+
+  // both success tokens are on disk after an accepted run, each carrying the
+  // same bytes its step printed. They are what the chain is guarded on, so an
+  // accepted run has to leave them — a passing gate that writes no token would
+  // stop the NEXT step just as a refusal does.
+  assert.equal(readFileSync(join(work, "checksum-ok.txt"), "utf8"), "bundle-sha256-ok\n");
+  assert.equal(readFileSync(join(work, "history-ok.txt"), "utf8"), "bundle-history-complete\n");
 });
 
 test("on the accepted run the two digest files agree, and step 1 leaves its success token", (t) => {
@@ -326,6 +334,44 @@ test("every defective vector is refused at the step vectors/MATRIX.tsv names", (
   }
 });
 
+test("a refused g2 leaves its evidence but no success token, and step 3 stops before it clones", (t) => {
+  if (!gitAvailable()) return t.skip("git is not on PATH");
+  const pkg = packed();
+  // the real refusing row, read out of the shipped matrix rather than invented
+  // here: the incremental bundle under its OWN digest, so step 1 passes and
+  // step 2 is what refuses
+  const row = matrix(pkg).find((r) => r.refuseAt === 2)!;
+  assert.equal(row.bundle, "incremental.bundle", "MATRIX.tsv no longer carries the g2 row this checks");
+  const bundle = join("vectors", row.bundle);
+  const work = join(tmp("sklo-gbv-g2-"), "w");
+
+  assert.equal(step(pkg, "01-checksum.sh", [bundle, row.digest, work]).code, 0, "step 1 must pass on its own digest");
+
+  const two = step(pkg, "02-history.sh", [bundle, work]);
+  assert.notEqual(two.code, 0, "step 2 accepted an incremental bundle");
+  assert.equal(two.stdout, "", "a refused step 2 must print nothing on stdout");
+
+  // the DIAGNOSIS survives the refusal, and has to: git's own words about what
+  // is missing, and the list that separates "incremental" from "not a bundle"
+  assert.match(readFileSync(join(work, "bundle-verify.txt"), "utf8"), /[0-9a-f]{40}/);
+  assert.match(readFileSync(join(work, "prerequisites.txt"), "utf8"), /^-[0-9a-f]{40}/);
+
+  // …and the VERDICT does not. bundle-verify.txt is there because a REDIRECT
+  // created it before `git bundle verify` had an exit status — which is exactly
+  // why it cannot be step 3's guard, and why a separate token exists.
+  assert.ok(!existsSync(join(work, "history-ok.txt")), "a refused step 2 must leave no success token");
+
+  const three = step(pkg, "03-clone.sh", [bundle, work]);
+  assert.notEqual(three.code, 0, "step 3 ran after a refused step 2");
+  assert.equal(three.stdout, "", "step 3 must print nothing when it refuses");
+  assert.match(three.stderr, /history-ok\.txt/, "step 3 must name the missing artifact of the step before it");
+  // the refusal is BEFORE the clone, not git's own complaint after one: this is
+  // the whole difference the token makes, and `git clone` removes its target on
+  // failure, so the exit status alone cannot tell the two apart
+  assert.doesNotMatch(three.stderr, /prerequisite commits/, "step 3 must refuse before `git clone` runs");
+  assert.ok(!existsSync(join(work, "clone")), "nothing may be cloned after a refused step 2");
+});
+
 test("git bundle verify accepts damaged bytes — the recorded finding, pinned so it cannot be quietly forgotten", (t) => {
   if (!gitAvailable()) return t.skip("git is not on PATH");
   const pkg = packed();
@@ -463,6 +509,70 @@ test("the guards are load-bearing: remove one and the vector it catches slips th
       const r = step(mutant, "02-history.sh", [join("vectors", "incremental.bundle"), work]);
       assert.notEqual(r.code, 0, `step 2 without \`${dropped}\` accepted an incremental bundle`);
     }
+  }
+
+  // g2's GUARD, and it is load-bearing rather than decorative. `git bundle
+  // verify` reads the HEADER, so it accepts a bundle whose packfile is damaged:
+  // remove step 2's `cat` on step 1's token and corrupt.bundle, offered under
+  // the ANNOUNCED digest — the row MATRIX.tsv says dies at step 1 — passes step
+  // 2 as well, printing that it records a complete history.
+  {
+    const bundle = join("vectors", "corrupt.bundle");
+    const mutant = withoutLine(pkg, "02-history.sh", 'cat "$2/checksum-ok.txt"');
+    const work = join(tmp("sklo-gbv-m8-"), "w");
+    assert.notEqual(step(mutant, "01-checksum.sh", [bundle, good, work]).code, 0, "step 1 must refuse the digest");
+    assert.ok(!existsSync(join(work, "checksum-ok.txt")), "a refused step 1 leaves no token — that is the premise");
+
+    const weakened = step(mutant, "02-history.sh", [bundle, work]);
+    assert.equal(weakened.code, 0, "expected the unguarded step 2 to accept a bundle step 1 had refused");
+    assert.equal(weakened.stdout, "bundle-history-complete\n");
+    assert.match(readFileSync(join(work, "bundle-verify.txt"), "utf8"), /records a complete history/);
+
+    // the shipped one refuses BEFORE `git bundle verify` is reached at all —
+    // no bundle-verify.txt in the work directory, and the missing token named
+    const work2 = join(tmp("sklo-gbv-m8b-"), "w");
+    assert.notEqual(step(pkg, "01-checksum.sh", [bundle, good, work2]).code, 0);
+    const shipped = step(pkg, "02-history.sh", [bundle, work2]);
+    assert.notEqual(shipped.code, 0, "the shipped step 2 must refuse without step 1's token");
+    assert.equal(shipped.stdout, "");
+    assert.match(shipped.stderr, /checksum-ok\.txt/, "the refusal must name the missing artifact");
+    assert.ok(!existsSync(join(work2, "bundle-verify.txt")), "the shipped step 2 must refuse before git bundle verify");
+  }
+
+  // g3's GUARD, the same defect class one joint further along. Put it back on
+  // bundle-verify.txt — the file the REDIRECT creates before `git bundle verify`
+  // has an exit status — and the incremental bundle walks past a REFUSED step 2
+  // into `git clone`, which answers on git's own terms about prerequisite
+  // commits the operator never named.
+  {
+    const bundle = join("vectors", "incremental.bundle");
+    const incremental = createHash("sha256")
+      .update(readFileSync(join(pkg, "vectors", "incremental.bundle")))
+      .digest("hex");
+    const mutant = withoutLine(pkg, "03-clone.sh", 'cat "$2/history-ok.txt"');
+    const path = join(mutant, "scripts", "03-clone.sh");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace("set -eu\n", 'set -eu\ncat "$2/bundle-verify.txt" > /dev/null\n'),
+    );
+
+    const work = join(tmp("sklo-gbv-m9-"), "w");
+    assert.equal(step(mutant, "01-checksum.sh", [bundle, incremental, work]).code, 0);
+    assert.notEqual(step(mutant, "02-history.sh", [bundle, work]).code, 0, "step 2 must refuse the increment");
+    assert.ok(existsSync(join(work, "bundle-verify.txt")), "the redirect wrote it despite the refusal — the hazard");
+    assert.ok(!existsSync(join(work, "history-ok.txt")));
+
+    const weakened = step(mutant, "03-clone.sh", [bundle, work]);
+    assert.notEqual(weakened.code, 0, "git refuses the increment on its own terms — no bad bundle is ACCEPTED here");
+    assert.doesNotMatch(weakened.stderr, /history-ok\.txt/, "expected the weakened step 3 to get past the guard");
+    assert.match(weakened.stderr, /prerequisite commits/, "…and to have actually RUN `git clone`, which is the defect");
+
+    // and the shipped one stops on the token, before the clone
+    const shipped = step(pkg, "03-clone.sh", [bundle, work]);
+    assert.notEqual(shipped.code, 0);
+    assert.equal(shipped.stdout, "");
+    assert.match(shipped.stderr, /history-ok\.txt/, "the shipped step 3 must name the missing token");
+    assert.doesNotMatch(shipped.stderr, /prerequisite commits/, "…and must never reach `git clone`");
   }
 
   // g4's refusal: without the comparison, step 4 goes back to reporting a

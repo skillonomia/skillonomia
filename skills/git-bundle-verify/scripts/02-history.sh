@@ -31,4 +31,24 @@ git --git-dir="$2/probe/.git" bundle verify "$1" > "$2/bundle-verify.txt" 2>&1
 # different actions from the operator; prerequisites.txt is what separates them.
 printf '' > "$2/prerequisites-expected.txt"
 cmp "$2/prerequisites-expected.txt" "$2/prerequisites.txt"
-echo bundle-history-complete
+# The success token, and step 3's guard reads THIS. bundle-verify.txt used to be
+# that guard — step 3 refuses to run unless step 2 left its artifact behind —
+# and it never could be one: the redirect on the verify line CREATES the file
+# before the exit status of `git bundle verify` is known, so a REFUSED step 2
+# leaves it behind too. On incremental.bundle offered with its own digest that
+# was visible end to end: step 2 exited non-zero, bundle-verify.txt was there,
+# and step 3 read it, was satisfied, and went on to run `git clone` — which then
+# died on git's own terms with "Repository lacks these prerequisite commits"
+# instead of the runbook naming the artifact its predecessor never wrote.
+#
+# bundle-verify.txt stays where it is: it is the DIAGNOSIS, git's own words about
+# what is missing, and it has to survive a refusal for prerequisites.txt to be
+# readable beside it. It is simply not the same fact as "step 2 passed". This
+# file is written only past BOTH signals — a zero exit status from the verify
+# above and a prerequisite list proven empty by the cmp above — so it is the one
+# artifact whose existence means the step agreed. Same shape as step 1's
+# checksum-ok.txt, and for the same reason: an artifact of MEASUREMENT is not
+# evidence of a PASS. It carries the same bytes the step prints, and `cat` is
+# what prints them, so the stdout contract of this step is unchanged.
+printf 'bundle-history-complete\n' > "$2/history-ok.txt"
+cat "$2/history-ok.txt"

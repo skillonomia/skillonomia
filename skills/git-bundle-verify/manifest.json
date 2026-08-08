@@ -1,6 +1,6 @@
 {
   "skill_id": "01GTBNDVFY0000000000000000",
-  "semantic_version": "1.2.0",
+  "semantic_version": "1.3.0",
   "title": "git-bundle-verify",
   "capability_statement": "Verify that a git bundle file is the artifact it claims to be: its SHA-256 matches the digest recorded for it, it records a complete history, it clones, and the tree it produces matches a reference checkout byte for byte. The package carries the defective bundles it must refuse, so the refusals are checkable by whoever adopted it.",
   "owner": "skillonomia",
@@ -73,13 +73,13 @@
       },
       {
         "n": 2,
-        "instruction": "Confirm the bundle carries a whole history rather than an increment. Run scripts/02-history.sh with the bundle path and the work directory. It creates an empty probe repository, because git refuses to verify a bundle outside a repository; extracts the bundle header's prerequisite lines into prerequisites.txt BEFORE verifying, so the classifier survives a refusal; and then requires two signals to agree — a zero exit status from git bundle verify, and an empty prerequisite list. The exit status is the refusal condition; the list is the cause, which the status alone cannot name.",
+        "instruction": "Confirm the bundle carries a whole history rather than an increment. Run scripts/02-history.sh with the bundle path and the work directory. It creates an empty probe repository, because git refuses to verify a bundle outside a repository; extracts the bundle header's prerequisite lines into prerequisites.txt BEFORE verifying, so the classifier survives a refusal; and then requires two signals to agree — a zero exit status from git bundle verify, and an empty prerequisite list. The exit status is the refusal condition; the list is the cause, which the status alone cannot name. Past both signals the step writes history-ok.txt, which is what step 3 refuses to run without. bundle-verify.txt is NOT that token and never could be: it is created by the redirect that captures git's output, before that command has an exit status, so it survives a refusal — it holds the diagnosis, not the verdict.",
         "command": "sh scripts/02-history.sh BUNDLE_PATH WORK_DIR",
         "expected": "bundle-history-complete"
       },
       {
         "n": 3,
-        "instruction": "Clone the bundle into a disposable directory and report what it produced. Run scripts/03-clone.sh with the bundle path and the work directory. It prints the HEAD commit id, the HEAD tree id and the number of tracked files, then a completion token. Record all four lines: the three identity lines are the finding, and they are what a second reader compares against. This step, not step 2, is what catches a damaged or truncated packfile, because git bundle verify reads only the header.",
+        "instruction": "Clone the bundle into a disposable directory and report what it produced. Run scripts/03-clone.sh with the bundle path and the work directory. It refuses to run unless step 2 left history-ok.txt behind — the token only a PASSING step 2 writes — so nothing is cloned after a refused completeness check; run out of order it names the missing artifact instead of letting git complain about prerequisite commits the operator never named. It then prints the HEAD commit id, the HEAD tree id and the number of tracked files, then a completion token. Record all four lines: the three identity lines are the finding, and they are what a second reader compares against. This step, not step 2, is what catches a damaged or truncated packfile, because git bundle verify reads only the header.",
         "command": "sh scripts/03-clone.sh BUNDLE_PATH WORK_DIR",
         "expected": "head-commit <40 hex>\nhead-tree <40 hex>\ntracked-files <count>\nclone-ok"
       },
@@ -121,12 +121,12 @@
       {
         "gate_id": "g2-complete-history",
         "check": "git bundle verify accepts the bundle AND the bundle declares no prerequisites",
-        "pass_criteria": "stdout of step 2 == \"bundle-history-complete\", which needs both signals: a zero exit status from git bundle verify (the refusal condition — non-zero for an increment, a damaged header or a file that is not a bundle, and unlike the sentence \"The bundle records a complete history\" neither localizable nor version-dependent), and an empty prerequisites.txt (the classifier that separates \"incomplete history\" from \"not a bundle\")"
+        "pass_criteria": "stdout of step 2 == \"bundle-history-complete\", which needs both signals: a zero exit status from git bundle verify (the refusal condition — non-zero for an increment, a damaged header or a file that is not a bundle, and unlike the sentence \"The bundle records a complete history\" neither localizable nor version-dependent), and an empty prerequisites.txt (the classifier that separates \"incomplete history\" from \"not a bundle\"). Passing also writes history-ok.txt, carrying the same bytes stdout got; a refusal at either signal leaves it absent while bundle-verify.txt and prerequisites.txt remain as evidence"
       },
       {
         "gate_id": "g3-clone",
         "check": "the bundle clones, and the clone's HEAD commit, HEAD tree and tracked-file count are reported",
-        "pass_criteria": "stdout of step 3 ends with \"clone-ok\" and its first three lines read \"head-commit <sha>\", \"head-tree <sha>\", \"tracked-files <n>\""
+        "pass_criteria": "stdout of step 3 ends with \"clone-ok\" and its first three lines read \"head-commit <sha>\", \"head-tree <sha>\", \"tracked-files <n>\". The step is guarded on history-ok.txt, so it does not run at all after a refused step 2: no clone directory is created, stdout is empty, and stderr names the missing token"
       },
       {
         "gate_id": "g4-matches-reference",
@@ -161,12 +161,12 @@
       },
       {
         "mode": "incomplete-history",
-        "symptom": "step 2 prints nothing; prerequisites.txt is NOT empty, and bundle-verify.txt names the missing prerequisite commits",
-        "mitigation": "the bundle is an incremental one; obtain the base repository it was cut against, or a full bundle"
+        "symptom": "step 2 prints nothing; prerequisites.txt is NOT empty, and bundle-verify.txt names the missing prerequisite commits. history-ok.txt is absent, so step 3 refuses before it clones",
+        "mitigation": "the bundle is an incremental one; obtain the base repository it was cut against, or a full bundle. Do not read bundle-verify.txt's presence as step 2 having passed: the redirect writes it before git bundle verify has an exit status"
       },
       {
         "mode": "not-a-bundle",
-        "symptom": "step 2 prints nothing; prerequisites.txt IS empty and bundle-verify.txt carries git's own complaint about the file",
+        "symptom": "step 2 prints nothing; prerequisites.txt IS empty, bundle-verify.txt carries git's own complaint about the file, and history-ok.txt is absent",
         "mitigation": "the file is not a readable bundle — re-obtain it. This is the case the exit status alone cannot tell apart from an incremental bundle, which is why the prerequisite list is parsed"
       },
       {
@@ -176,8 +176,8 @@
       },
       {
         "mode": "step-run-out-of-order",
-        "symptom": "a step prints nothing and stderr names a missing artifact of the previous step, e.g. \"cat: .../head-commit.txt: No such file or directory\" from step 4, or \"cat: .../checksum-ok.txt: No such file or directory\" from step 2",
-        "mitigation": "run the four steps in order against the same work directory; each refuses to run without its predecessor's artifact. Step 2's guard is checksum-ok.txt, which only a PASSING step 1 writes — actual.sha256 is written before the check and survives a refusal, so its presence is not permission to continue"
+        "symptom": "a step prints nothing and stderr names a missing artifact of the previous step, e.g. \"cat: .../head-commit.txt: No such file or directory\" from step 4, \"cat: .../checksum-ok.txt: No such file or directory\" from step 2, or \"cat: .../history-ok.txt: No such file or directory\" from step 3",
+        "mitigation": "run the four steps in order against the same work directory; each refuses to run without its predecessor's SUCCESS TOKEN. Step 2's guard is checksum-ok.txt and step 3's is history-ok.txt, and only a PASSING predecessor writes either. The artifacts they replaced — actual.sha256, written before step 1's check, and bundle-verify.txt, created by the redirect that captures step 2's verify — both survive a refusal, so the presence of either is not permission to continue"
       },
       {
         "mode": "reference-tree-divergence",
@@ -199,7 +199,7 @@
   },
   "evidence": {
     "summary": "Run against the skillonomia-public release bundle and its extracted reference tree: digest matched, git bundle verify reported a complete history, the clone reproduced HEAD and its tree, and all 171 tracked paths compared equal. The refusals are no longer the author's word: the four defect classes ship in vectors/ with their digests and expected refusals in vectors/MATRIX.tsv, and step 5 has an adopter re-run them on the package in hand.",
-    "test_results": "positive: g1-digest pass, g2-complete-history pass, g3-clone pass, g4-matches-reference pass, on the release bundle and on vectors/good.bundle. negative, all seven rows of vectors/MATRIX.tsv: corrupt.bundle with the announced digest -> refused at step 1, no clone attempted; corrupt.bundle with its own digest -> steps 1 and 2 pass, refused at step 3, exit 128, inflate data stream error; truncated.bundle with the announced digest -> refused at step 1; truncated.bundle with its own digest -> refused at step 3, early EOF; incremental.bundle -> refused at step 2, prerequisites.txt names the missing commit; foreign.bundle -> steps 1 to 3 pass and step 4 prints divergences 1 and exits non-zero. Recorded finding: git bundle verify accepts both the corrupt and the truncated bundle, printing that it records a complete history over a file that cannot clone, so g2 is not a damage check. Second recorded finding, from a live run by an outside operator: a refused g1 used to leave expected.sha256 alone, because actual.sha256 was written on the line after the check and set -e never reached it, while the artifact table promised both — the two step-1 rows now leave the asserted and the measured digest side by side, and the repository's own test executes those rows and reads both files.",
+    "test_results": "positive: g1-digest pass, g2-complete-history pass, g3-clone pass, g4-matches-reference pass, on the release bundle and on vectors/good.bundle. negative, all seven rows of vectors/MATRIX.tsv: corrupt.bundle with the announced digest -> refused at step 1, no clone attempted; corrupt.bundle with its own digest -> steps 1 and 2 pass, refused at step 3, exit 128, inflate data stream error; truncated.bundle with the announced digest -> refused at step 1; truncated.bundle with its own digest -> refused at step 3, early EOF; incremental.bundle -> refused at step 2, prerequisites.txt names the missing commit; foreign.bundle -> steps 1 to 3 pass and step 4 prints divergences 1 and exits non-zero. Recorded finding: git bundle verify accepts both the corrupt and the truncated bundle, printing that it records a complete history over a file that cannot clone, so g2 is not a damage check. Second recorded finding, from a live run by an outside operator: a refused g1 used to leave expected.sha256 alone, because actual.sha256 was written on the line after the check and set -e never reached it, while the artifact table promised both — the two step-1 rows now leave the asserted and the measured digest side by side, and the repository's own test executes those rows and reads both files. Third recorded finding, the same defect class one joint further along: step 3 guarded on bundle-verify.txt, which the redirect capturing git bundle verify creates before that command has an exit status. On incremental.bundle offered with its own digest the run went g1 exit 0, g2 exit 1 with bundle-verify.txt present, and step 3 then ran git clone and died at exit 128 on \"error: Repository lacks these prerequisite commits\" — no bad bundle accepted, but a step running after its predecessor refused, and git's error standing in for a named refusal. Step 2 now writes history-ok.txt past BOTH of its signals and step 3 guards on that: g3 exits non-zero with empty stdout, stderr names history-ok.txt, and no clone directory is created.",
     "redaction_level": "none"
   },
   "safety": {

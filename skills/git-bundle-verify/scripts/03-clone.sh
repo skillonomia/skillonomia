@@ -1,8 +1,15 @@
 set -eu
-# Step 2 must have run: its verify output is the evidence this bundle carries a
-# whole history, and cloning an increment produces a confusing git error instead
-# of a named refusal.
-cat "$2/bundle-verify.txt" > /dev/null
+# Step 2 must have PASSED: this token is written only past both of its signals —
+# a zero exit status from `git bundle verify` and a prerequisite list proven
+# empty — and it is what makes this bundle one that carries a whole history.
+#
+# It reads history-ok.txt rather than bundle-verify.txt because bundle-verify.txt
+# is created by the REDIRECT on step 2's verify line, before that command's exit
+# status exists, and therefore survives a refusal — it is evidence of what git
+# said, not evidence that git agreed. Guarding on it let an incremental bundle
+# reach `git clone`, which then failed on git's own terms about prerequisite
+# commits the operator never named.
+cat "$2/history-ok.txt" > /dev/null
 git clone --quiet "$1" "$2/clone"
 git -C "$2/clone" rev-parse HEAD > "$2/head-commit.txt"
 git -C "$2/clone" rev-parse "HEAD^{tree}" > "$2/head-tree.txt"

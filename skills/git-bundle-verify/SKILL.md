@@ -25,8 +25,16 @@ way:
 
 Each step ends the run on failure, so a later step never reports on a bundle an
 earlier step already refused. Each step also refuses to run unless the previous
-step left its artifact behind, so the four are a chain and not four independent
-commands that happen to be listed in order.
+step left its **success token** behind, so the four are a chain and not four
+independent commands that happen to be listed in order.
+
+A success token is not any file the previous step wrote. Steps 1 and 2 both
+leave measurements and diagnoses behind *before* they know their own verdict —
+`actual.sha256` is written before the digest is checked, and `bundle-verify.txt`
+is created by the redirect that captures `git bundle verify`, so both exist
+after a refusal too. Guarding on either of those is guarding on "the step ran",
+which is not the question. `checksum-ok.txt` and `history-ok.txt` are written
+only past the checks that decide, and they are what the next step reads.
 
 ## What step 1 does NOT prove
 
@@ -168,7 +176,11 @@ divergences 0
     the blank line that ends the header.
 
   Step 2 initialises an empty probe repository first, because git refuses to
-  verify a bundle from outside a repository at all.
+  verify a bundle from outside a repository at all. Past both signals it writes
+  `history-ok.txt`, and step 3's guard reads THAT. `bundle-verify.txt` used to
+  be that guard and could never be one: the redirect that captures git's output
+  creates the file before the exit status exists, so a refused step 2 leaves it
+  behind — see *How failure looks* for what that let through.
 - `g3-clone` — stdout of step 3 ends with `clone-ok`, preceded by the three
   identity lines. Those three lines are the finding worth recording.
 - `g4-matches-reference` — stdout of step 4 is exactly `divergences 0` **and**
@@ -196,10 +208,11 @@ not expect a message.
 | `g0-work-dir` | 1 | empty | `rmdir: failed to remove 'WORK_DIR': Directory not empty`. Point the run at a fresh directory; the runbook deletes nothing. |
 | `g0-git-version` | 1 | empty | `sort: …/git-version-check.txt:2: disorder: git version 2.20.1` — the second line is your git, and it is below the minimum. |
 | `g1-digest` | 1 | empty | **Nothing on stderr either**: `sha256sum --status` is silent by contract, and that silence is deliberate. The diagnosis is the pair of files in the work directory — read `expected.sha256` (the digest you asserted) against `actual.sha256` (the digest the file has). They differ, and that difference *is* the refusal. The bundle is not the artifact the digest names — re-obtain it, and do not clone the copy you hold. The step does not say which kind of damage it is; step 3 does. |
-| `g2`, exit status | 1 | empty | `bundle-verify.txt` carries git's own words. If `prerequisites.txt` is **not empty**, it is an incremental bundle and the file names the commits you lack — obtain the base repository, or a full bundle. If `prerequisites.txt` **is** empty, the file is not a readable bundle at all. |
-| `g2`, classifier | 1 | empty | `cmp: EOF on …/prerequisites-expected.txt which is empty` — `git bundle verify` was satisfied, but the bundle declares prerequisites. Same reading as above: incremental. |
+| `g2`, exit status | 1 | empty | `bundle-verify.txt` carries git's own words, and it is there **because the redirect wrote it, not because the step passed** — `history-ok.txt` is what is absent. If `prerequisites.txt` is **not empty**, it is an incremental bundle and the file names the commits you lack — obtain the base repository, or a full bundle. If `prerequisites.txt` **is** empty, the file is not a readable bundle at all. |
+| `g2`, classifier | 1 | empty | `cmp: EOF on …/prerequisites-expected.txt which is empty` — `git bundle verify` was satisfied, but the bundle declares prerequisites. Same reading as above: incremental. `history-ok.txt` is absent here too: it is written past **both** signals or not at all. |
 | `g3-clone` | 128 | empty | git's own error: `error: inflate: data stream error …` for damaged bytes, `fatal: early EOF` for a truncated file, `error: Repository lacks these prerequisite commits:` for an increment. Exit 128 is git's, not the runbook's. |
 | step 2, no passing step 1 | 1 | empty | `cat: …/checksum-ok.txt: No such file or directory` — step 1 has not run, or ran and **refused**. `actual.sha256` being present is not permission to continue: it is written before the check and says only what was measured. Run the chain in order, and past a `g1` refusal do not run it at all. |
+| step 3, no passing step 2 | 1 | empty | `cat: …/history-ok.txt: No such file or directory` — step 2 has not run, or ran and **refused**. `bundle-verify.txt` being present is not permission to continue: the redirect creates it before `git bundle verify` has an exit status, so it says only what git printed. Nothing is cloned; there is no `clone/`. |
 | step 4, no step 3 | 1 | empty | `cat: …/head-commit.txt: No such file or directory` — step 3 has not run, or did not finish. Run the chain in order. |
 | `g4-matches-reference` | 1 | `divergences N` | The one step that prints on refusal, because the count *is* the finding: anything but `divergences 0` is a refusal, and the count says how large it is. stderr reads `cmp: EOF on …/divergences-expected.txt which is empty`. `divergences.txt` names the paths — either the reference tree carries local edits, or the bundle is not the commit it claims. |
 
@@ -247,6 +260,15 @@ each stop at the step the matrix names:
   checkable rather than merely reported. The defects part company at step 3.
 - **incremental** — dies at step 2 with a non-empty `prerequisites.txt`. This is
   the most informative failure in the set: the artifact names what is missing.
+  It is also the row that shows the chain holding: run step 3 anyway, against
+  the same work directory, and it refuses on `history-ok.txt` before it clones
+  anything. It did not always. Step 3 used to guard on `bundle-verify.txt`,
+  which the redirect writes before the verify has an exit status, so a refused
+  step 2 satisfied it and `git clone` ran — refused, in the end, by git's own
+  `error: Repository lacks these prerequisite commits:` rather than by the
+  runbook naming the artifact its predecessor never wrote. No bad bundle was
+  accepted, and that is not the point: a step ran after the step before it
+  refused, which is the one thing the chain exists to prevent.
 - **foreign** — a valid, complete bundle of another repository. Right digest,
   complete history, clean clone, and `divergences 1` at step 4, with a non-zero
   exit status alongside it.
@@ -274,7 +296,8 @@ Two facts the matrix makes visible, and neither is obvious:
 | `probe/` | the throwaway repository `git bundle verify` needs; it holds nothing but `probe/.git`, which is where git init put it |
 | `prerequisites.txt` | the bundle's prerequisite lines. **Empty on success** — a complete bundle names none |
 | `prerequisites-expected.txt` | the empty file the line above is compared against |
-| `bundle-verify.txt` | the full output of `git bundle verify`, including any missing prerequisites |
+| `bundle-verify.txt` | the full output of `git bundle verify`, including any missing prerequisites. Written by a **redirect**, so it exists whichever way the verify went — it is the diagnosis, never the verdict, and cannot serve as step 3's guard |
+| `history-ok.txt` | written only where `g2` **passed** — past a zero exit status from `git bundle verify` AND a `prerequisites.txt` proven empty — and carrying the same `bundle-history-complete` the step prints. It is what step 3 refuses to run without |
 | `clone/` | the clone |
 | `head-commit.txt`, `head-tree.txt`, `tracked-files.txt` | the three identity facts |
 | `divergences.txt` | one line per tracked path whose bytes differ. **0 bytes is the success case**, not a step that failed to run |
