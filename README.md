@@ -369,6 +369,10 @@ REST-only, and the table below ends with them.
 | `assignment.pause` | `POST /v1/assignments/{id}/pause` |
 | `assignment.revoke` | `POST /v1/assignments/{id}/revoke` |
 | `assignment.list` | `GET /v1/assignments` |
+| `fleet.list` | `GET /v1/fleet` |
+| `agent.capabilities` | `GET /v1/fleet/{agent_id}/capabilities` |
+| `capability.get` | `GET /v1/fleet/{agent_id}/capabilities/{name}` |
+| `observation.report` | `POST /v1/observations` |
 | `dashboard.view` | `GET /v1/dashboard/{view}` (`?format=html`) |
 | `migration.count` | `GET /v1/migrations?since_ms=&until_ms=` |
 | `tlog.read` | `GET /v1/tlog?cursor=` |

@@ -386,6 +386,103 @@ export const MCP_TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "fleet.list",
+    description:
+      "§6 part A: the fleet inventory — one row per principal this actor may read, carrying its identity and type as recorded, the runtime it was OBSERVED on (or the one this deployment is configured to read, labelled as configuration), its model, whether a session is active, when it was last active, and a synchronisation status of `in_sync|pending|drifted|failed|unknown`. Every one of those is three-valued: `unknown` is a VALUE and is never rendered as `no`, because the absence of a record is not the absence of a fact. The answer also publishes §4's state × runtime MATRIX itself, which is ASYMMETRIC: Claude Code splits `proposed` into `proposed_now` and `proposed_historical`, Codex has one `proposed` whose value is `unknown` ALWAYS, and `loaded` is shown as an explicit column on neither. Read-only: it walks nothing, writes nothing and observes nothing on its own.",
+    // [I-8]: one step of the loop, and this one READS. `openWorldHint` is TRUE
+    // and that is the honest difference from `assignment.list`: this surface
+    // walks a filesystem that is not this registry's — a fleet member's own
+    // directory, reached through whatever links it contains. `assignment.
+    // activate` carries the same hint for writing into that filesystem; reading
+    // it is a smaller act, not a different KIND of act, and a client deciding
+    // whether to ask deserves to know which of its machines is being touched.
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "agent.capabilities",
+    description:
+      "§6 part A: one agent's capabilities — skills, plugins, MCP servers, MCP tools and connectors — each with §4's six states as SEPARATE COLUMNS, and the column set is the one ITS RUNTIME publishes rather than a shared table with flags. Every cell carries three attributes and is published with none of them missing: which STATE it is about, which SOURCE it was read from (`filesystem|registry|runtime|transcript`) and which SELECTION WINDOW it was taken over (`live_session|period|all_time`). `assigned` is Skillonomia's INTENT and is labelled `intent`; every other column is an observation and is labelled `observation`; the two are never merged and neither is computed from the other. The inventory counts follow SYMBOLIC LINKS, because a shared skill library is normally handed to a fleet through one and a walk that stops at the link undercounts it silently. A count that could not be taken is `unknown` WITH A REASON and never a silent `0`. The answer also carries the intent-versus-fact gap and the DEAD WEIGHT slice: what is registered and has never once been demonstrated to run. Read-only.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: "object",
+      properties: { agent_id: { type: "string" } },
+      required: ["agent_id"],
+    },
+  },
+  {
+    name: "capability.get",
+    description:
+      "§6 part A: one capability of one agent, with §4's matrix row for its runtime — what that runtime CAN and CANNOT report — and the scanner's tuples for it: `(skill version, agent, runtime, time, call_id, result)`. A tuple exists ONLY where a PAIRED call/output record sharing one `call_id` carried THIS version's §5 arrival marker: a lone call, a lone output, or a pair carrying another version's marker produces nothing, and a capability with no tuple is `unknown`, never `no`. A version declaring `runtime.shell: [\"none\"]` ships nothing that can print its marker, so its answer is `unknown` with the machine-distinguishable reason `no_executable_step`. Read-only.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: "object",
+      properties: { agent_id: { type: "string" }, name: { type: "string" } },
+      required: ["agent_id", "name"],
+    },
+  },
+  {
+    name: "observation.report",
+    description:
+      "§6 part A: file what was OBSERVED at one agent's runtime — the model, whether a session is live, when it was last active, and the runtime records themselves. THIS TOOL WRITES. The V-1 requirements list it among the READING surfaces and that classification is contradicted here deliberately: a self-report is an agent telling this registry something, telling is storing, and this call appends to two INSERT-only tables and moves the observation column of every deployment of that agent. [I-8] requires a tool's hints to be TRUE, and `readOnlyHint: true` on a call that writes is a false hint a client acts on by not asking. Requires a `report_outcome` grant scoped to `local_agent` (§6.2). `window` and `window_detail` are REQUIRED: a report that does not say what it looked at is a number with no method [I-3], and it is refused rather than given a default. The records' TEXT is reduced to §5 arrival markers at this boundary and is NOT stored, logged or returned [I-7]. A report can establish that a version RAN; it can never establish that one did not.",
+    // [I-8]: one step of the loop — `report_outcome` — and it WRITES. The hints
+    // say so. `destructiveHint` is true because the tables are INSERT-only and
+    // a filed report cannot be withdrawn; `openWorldHint` is false because this
+    // call reaches nothing outside this registry — the reporter did the
+    // reaching, and what crosses this boundary is its account of it.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string" },
+        runtime: { type: "string", enum: ["claude_code", "codex"] },
+        model: { type: "string" },
+        session_active: { type: "boolean" },
+        last_activity_ms: { type: "number" },
+        window: { type: "string", enum: ["live_session", "period", "all_time"] },
+        window_detail: { type: "string" },
+        proposal_inventory_complete: { type: "boolean" },
+        records: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              role: { type: "string", enum: ["proposal", "call", "output"] },
+              call_id: { type: "string" },
+              at_ms: { type: "number" },
+              marker: { type: "string" },
+              text: { type: "string" },
+              result: { type: "string", enum: ["success", "failure", "unknown"] },
+            },
+            required: ["role"],
+          },
+        },
+        idempotency_key: { type: "string" },
+      },
+      required: ["agent_id", "runtime", "window", "window_detail"],
+    },
+  },
+  {
     name: "principal.create",
     description:
       "Provisioning: create a principal (agent, human or service) in the caller's workspace with a workspace role, and issue its API key. Requires role admin/owner (§6 manage-memberships row); the new role may not outrank the caller's. The api_key is returned EXACTLY ONCE and is never retrievable — this call takes no idempotency_key, because a replay would have to persist that secret.",
@@ -679,6 +776,16 @@ function callTool(registry: Registry, auth: AuthContext, name: string, args: any
     }
     case "assignment.list":
       return { json: JSON.stringify(registry.listAssignments(auth)), replayed: false };
+    case "fleet.list":
+      return { json: JSON.stringify(registry.fleetList(auth)), replayed: false };
+    case "agent.capabilities":
+      return { json: JSON.stringify(registry.agentCapabilities(auth, args?.agent_id)), replayed: false };
+    case "capability.get":
+      return { json: JSON.stringify(registry.capabilityGet(auth, args?.agent_id, args?.name)), replayed: false };
+    case "observation.report": {
+      const out = registry.reportObservation(auth, args ?? {}, idemKey(args));
+      return { json: out.responseJson, replayed: out.replayed };
+    }
     case "principal.create":
       return { json: JSON.stringify(registry.createPrincipal(auth, args ?? {})), replayed: false };
     case "principal.list":

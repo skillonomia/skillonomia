@@ -284,6 +284,15 @@ test("MCP: initialize + tools/list expose exactly the implemented surfaces", () 
       "assignment.pause",
       "assignment.revoke",
       "assignment.list",
+      // §6 part A: the fleet inventory, the six states and the arrival scanner.
+      // Three reads whose open-world hint is TRUE — they walk a filesystem that
+      // is not this registry's — and ONE WRITE, `observation.report`, which
+      // requirements list among the reading surfaces and which stores what it
+      // is told: a hint that called it a read would be a hint a client acts on.
+      "fleet.list",
+      "agent.capabilities",
+      "capability.get",
+      "observation.report",
       // provisioning auxiliaries (Appendix H): principals, their API keys and
       // the signing keys §4.4 step 3 resolves a package's kid against
       "principal.create",

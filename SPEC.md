@@ -1924,10 +1924,10 @@ installs none is conforming.
 
 ## Appendix D. NORMATIVE SQLite DDL
 
-The normative schema is given in **seven** migrations, applied in ascending file
+The normative schema is given in **eight** migrations, applied in ascending file
 order, and the live schema of a conforming registry is their sum. Each is
 embedded below verbatim and is byte-identical to the file this repository ships;
-a test asserts that for all seven. Schema version is tracked in
+a test asserts that for all eight. Schema version is tracked in
 `PRAGMA user_version` and nowhere else — there is no bookkeeping table, because
 the live schema is compared object for object against D.1 plus the deltas below,
 and a table this specification does not name would fail that comparison. A
@@ -1984,17 +1984,30 @@ transaction, so a half-migrated database is not reachable.
   omission: a deployment state written on a mutable row is a reading of whoever
   wrote last, and §5.5 requires the state to be the last event of the journal.
   `PRAGMA user_version` = `7`.
+- **D.1h is the eighth migration**, shipped as
+  `migrations/0008_observed_runtime_records.sql`. It adds two tables and changes
+  nothing existing: `runtime_observations` (§6) — one act of looking, carrying
+  the SELECTION WINDOW it was taken over — and `observed_records`, the records
+  of that report REDUCED TO §5 ARRIVAL MARKERS. There is no column for a
+  record's text and that absence is normative: a transcript line is arbitrary
+  content, none of it is needed to answer which skill version a marker names,
+  and a schema with nowhere to put it cannot be made to keep it (§6, [I-7]).
+  `model`, `session_active` and `last_activity_ms` are nullable and each NULL
+  means `unknown` and never a default — a reporter that did not look does not
+  thereby establish an absence. `call_id` is nullable and a NULL one can never
+  form the PAIR [M-5] requires. `PRAGMA user_version` = `8`.
 - **The live schema a fresh database reports is D.1 as edited by D.1b, D.1c,
-  D.1d, D.1e and D.1f, plus the tables of D.1f and D.1g**, and never D.1 alone.
-  Object counts are 24 tables, 16 triggers and 11 indexes: D.1's 20 tables plus
-  D.1f's two and D.1g's two, D.1's 10 triggers plus the two INSERT-only triggers
-  of `transfers` and D.1g's four, and D.1's 9 indexes plus
-  `idx_transfers_version` and `idx_assignments_agent`. After all seven
-  migrations `PRAGMA user_version` MUST report `7`. A test in this repository
-  asserts the live schema equals D.1 plus exactly those ten edits and the new
-  objects of D.1f and D.1g — the five of D.1b, the one of D.1c, the one of D.1d,
-  the two of D.1e and the one rebuilt table of D.1f — so any further divergence
-  fails.
+  D.1d, D.1e and D.1f, plus the tables of D.1f, D.1g and D.1h**, and never D.1
+  alone. Object counts are 26 tables, 20 triggers and 13 indexes: D.1's 20
+  tables plus D.1f's two, D.1g's two and D.1h's two, D.1's 10 triggers plus the
+  two INSERT-only triggers of `transfers`, D.1g's four and D.1h's four, and
+  D.1's 9 indexes plus `idx_transfers_version`, `idx_assignments_agent`,
+  `idx_runtime_observations_agent` and `idx_observed_records_agent`. After all
+  eight migrations `PRAGMA user_version` MUST report `8`. A test in this
+  repository asserts the live schema equals D.1 plus exactly those ten edits and
+  the new objects of D.1f, D.1g and D.1h — the five of D.1b, the one of D.1c,
+  the one of D.1d, the two of D.1e and the one rebuilt table of D.1f — so any
+  further divergence fails.
 
 ### D.1 NORMATIVE DDL (verbatim)
 
@@ -2806,6 +2819,126 @@ CREATE TRIGGER tg_aevents_no_upd BEFORE UPDATE ON assignment_events BEGIN SELECT
 CREATE TRIGGER tg_aevents_no_del BEFORE DELETE ON assignment_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 ```
 
+### D.1h NORMATIVE DELTA — eighth migration (verbatim)
+
+§6 needs somewhere to put what was OBSERVED, as opposed to what this registry
+DECIDED. D.1g gave a deployment a journal of intent; nothing in the schema could
+hold the other column, so `observed_arrival` was computed over an empty set and
+was `unknown` for every deployment, forever. This delta adds the two tables that
+can change that, and adds nothing else.
+
+The reduction to markers is the load-bearing property. `observed_records` has a
+`marker` column and NO text column: whatever a reporter examined, what is stored
+is which §5 arrival marker each record carried, which role the record had, the
+`call_id` that bound a call to its output, and a time. A record's content is not
+stored, not logged and not returned ([I-7]), and the schema is where that is
+enforced rather than promised.
+
+Three columns of `runtime_observations` are nullable and each NULL means
+`unknown`: `model` is not "no model", `session_active` is not "not running",
+`last_activity_ms` is not "never active". `selection_window` and `window_detail`
+are NOT NULL, because a report that does not say what it looked at is a number
+with no method ([I-3]). Both tables are INSERT-only: an observation that could
+be edited afterwards would record what somebody currently believes rather than
+what was reported.
+
+```sql
+-- SKILLONOMIA — an OBSERVATION is what somebody reported seeing, and it is not
+-- the same kind of thing as a decision this registry made.
+--
+-- WHAT WAS MISSING. D.1g gave a deployment a journal of INTENT: assigned,
+-- queued, activating, active. Every one of those is Skillonomia's own belief.
+-- Nothing in the schema could hold the other column — what was OBSERVED at a
+-- runtime — so `observed_arrival` was computed over an empty set and was
+-- `unknown` for every deployment, forever. These two tables are where the
+-- records that could change that live.
+--
+-- ---------------------------------------------------------------------------
+-- `runtime_observations` — one report, with the boundary it was taken over.
+--
+-- One row is one act of looking: this AGENT, on this RUNTIME, over THIS
+-- SELECTION WINDOW. The window is a column and not a note, because [I-3] is the
+-- rule this whole work exists under — a number without its method is what made
+-- 385 and 386 both true, and 33 and 79 both true, in one canonical note.
+--
+-- THREE COLUMNS ARE NULLABLE AND EACH NULL MEANS `unknown`, NEVER A DEFAULT:
+-- `model` is not "no model", `session_active` is not "not running", and
+-- `last_activity_ms` is not "never active". A reporter that did not look does
+-- not thereby establish an absence [I-1].
+--
+-- `reported_by_type` and `reported_by_role` are SNAPSHOTS, for the reason D.1f
+-- gives about `granted_by_*`: memberships are mutable and this row is not, and a
+-- report filed by an agent holding an administrative role is a different fact
+-- from one filed by the human owner in person [I-5].
+--
+-- ---------------------------------------------------------------------------
+-- `observed_records` — the records, REDUCED TO MARKERS.
+--
+-- THE TEXT OF A RECORD IS NOT STORED, AND THERE IS NO COLUMN THAT COULD HOLD
+-- IT. A transcript line is arbitrary content — a key, a customer's name, an
+-- operator's home directory — and none of it is needed to answer the only
+-- question §6 asks of a record: which skill VERSION does its marker name. So
+-- the reduction happens at the boundary and what reaches this table is a
+-- marker, a role, the id that binds a call to its output, and a time. That is
+-- [I-7] enforced by the absence of a place to put the violation.
+--
+-- `call_id` IS NULLABLE AND A NULL ONE CAN NEVER FORM A PAIR. [M-5] counts a
+-- version as invoked only on a PAIRED call/output record bound by one id; a
+-- record whose runtime gave no id is kept, because it is evidence of something,
+-- and it can never on its own produce a `yes`.
+--
+-- `result` is three-valued with no blank member, and `unknown` is the default in
+-- the strong sense: a task that ended is a task that ended. `success` is written
+-- only where an evaluation contract said what success was [M-6].
+--
+-- Both tables are INSERT-only. An observation that could be edited afterwards
+-- would be a record of what somebody currently believes rather than of what was
+-- reported, and the whole point of the second column is that it is not editable
+-- by the party that holds the first.
+PRAGMA defer_foreign_keys=ON;
+
+CREATE TABLE runtime_observations(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  runtime TEXT NOT NULL CHECK(runtime IN ('claude_code','codex')),
+  model TEXT CHECK(model IS NULL OR length(model) BETWEEN 1 AND 200),
+  session_active INTEGER CHECK(session_active IS NULL OR session_active IN (0,1)),
+  last_activity_ms INTEGER CHECK(last_activity_ms IS NULL OR last_activity_ms>0),
+  selection_window TEXT NOT NULL CHECK(selection_window IN ('live_session','period','all_time')),
+  window_detail TEXT NOT NULL CHECK(length(window_detail) BETWEEN 1 AND 500),
+  proposal_inventory_complete INTEGER NOT NULL CHECK(proposal_inventory_complete IN (0,1)),
+  records_read INTEGER NOT NULL CHECK(records_read>=0),
+  reported_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  reported_by_type TEXT NOT NULL CHECK(reported_by_type IN ('human','agent','service')),
+  reported_by_role TEXT NOT NULL CHECK(reported_by_role IN ('owner','admin','reviewer','member')),
+  grant_id TEXT REFERENCES transfer_grants(id) ON DELETE RESTRICT,
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0),
+  idempotency_key TEXT NOT NULL
+);
+CREATE INDEX idx_runtime_observations_agent ON runtime_observations(agent_id,server_at_ms);
+
+CREATE TABLE observed_records(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  observation_id TEXT NOT NULL REFERENCES runtime_observations(id) ON DELETE RESTRICT,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  runtime TEXT NOT NULL CHECK(runtime IN ('claude_code','codex')),
+  role TEXT NOT NULL CHECK(role IN ('proposal','call','output')),
+  call_id TEXT CHECK(call_id IS NULL OR length(call_id) BETWEEN 1 AND 200),
+  at_ms INTEGER CHECK(at_ms IS NULL OR at_ms>0),
+  marker TEXT NOT NULL CHECK(marker GLOB 'SKLN1-[0-9A-HJKMNP-TV-Z]*' AND length(marker)=22),
+  result TEXT NOT NULL CHECK(result IN ('success','failure','unknown')),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0)
+);
+CREATE INDEX idx_observed_records_agent ON observed_records(agent_id,marker);
+
+-- a report, once filed, is not edited or withdrawn — the rule `transfers`,
+-- `receipt_events` and `assignment_events` live under
+CREATE TRIGGER tg_runtime_obs_no_upd BEFORE UPDATE ON runtime_observations BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_runtime_obs_no_del BEFORE DELETE ON runtime_observations BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_obs_records_no_upd BEFORE UPDATE ON observed_records BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_obs_records_no_del BEFORE DELETE ON observed_records BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+```
+
 ### D.2 SQL negative probes
 
 Every probe below is executed as a test in this repository; each names the
@@ -3375,6 +3508,10 @@ Internal worker surface (NOT public, service-authenticated, single-binary in-pro
 | `assignment.pause` | `POST /v1/assignments/{id}/pause` | member (holder of a `revoke` grant, §6.2) | `{"idempotency_key"?}` | `200 {"action","assignment":{"assignment_id","skill_id","slug","skill_version_id","semantic_version","agent_id","recipient_kind","transfer_id","assigned_by":{"agent_id","type","role"},"created_at_ms","intent_state","intent_state_is":"intent","intent_state_source","intent_event_seq","intent_at_ms","intent_reason","observed_arrival","observed_arrival_is":"observation","observed_arrival_reason","observed_arrival_source","observed_arrival_window","observed_records_read","arrival_marker","has_executable_step","activation_target","native_relpath","managed_copy","requires_new_session","session_effect"},"managed_copy","activation_root_configured","requires_new_session","session_effect"}`, plus `"noop":true` on a convergent repeat. The managed copy is taken out of the native location and the assignment remains, so it can be activated again. `managed_copy` states which of `removed`, `absent` or `retained` happened — a bare success is not an answer — and `requires_new_session` is true with `session_effect` saying that an agent which has already read these instructions still has them (§5.5). Pausing an already-paused deployment is a convergent noop |
 | `assignment.revoke` | `POST /v1/assignments/{id}/revoke` | member (holder of a `revoke` grant, §6.2) | `{"idempotency_key"?}` | `200 {"action","assignment":{"assignment_id","skill_id","slug","skill_version_id","semantic_version","agent_id","recipient_kind","transfer_id","assigned_by":{"agent_id","type","role"},"created_at_ms","intent_state","intent_state_is":"intent","intent_state_source","intent_event_seq","intent_at_ms","intent_reason","observed_arrival","observed_arrival_is":"observation","observed_arrival_reason","observed_arrival_source","observed_arrival_window","observed_records_read","arrival_marker","has_executable_step","activation_target","native_relpath","managed_copy","requires_new_session","session_effect"},"managed_copy","activation_root_configured","requires_new_session","session_effect"}`, plus `"noop":true` on a convergent repeat. Terminal: a revoked assignment is not resumed and handing the skill over again is a fresh push (§6.3). Same `managed_copy` vocabulary and the same `requires_new_session`/`session_effect` obligation as `assignment.pause`. Revoking an already-revoked deployment is a convergent noop |
 | `assignment.list` | `GET /v1/assignments` | member+ | — | `200 {"items":[<the `assignment` object above>…],"counts":{"assignments","intent_active","observed_arrival_yes","observed_arrival_unknown","measurement_state","intent_source","observation_source","window"},"native_inventory":{"skill_files","measurement_state","reason","source","window"}}` — own deployments, or the workspace's for an admin/owner. The two columns of §5.5 are counted SEPARATELY and each count names its own source and window. `native_inventory.skill_files` counts entry files reachable under the configured activation roots WITH SYMBOLIC LINKS FOLLOWED, and is `null` exactly when `measurement_state` is `unknown` — never a silent `0`, because no root configured and no file found are different facts. Read-only: it activates nothing and takes no `idempotency_key` |
+| `fleet.list` | `GET /v1/fleet` | member+ | — | `200 {"agents":[{"agent_id","type","role","name","runtime","runtime_source","model","session_active","last_activity_ms","observation_window","observation_is":"observation","sync_status","sync_status_is":"comparison","sync_status_reason","intent_active","observed_arrival_yes"}…],"counts":{"agents","observed_agents"},"runtimes":["claude_code","codex"],"matrix":[{"state","runtime","observability","source","can_be_no","explicit","note"}…]}` — own row, or the workspace's for an admin/owner. `runtime` is `null` when none has been observed and none configured, and `runtime_source` says which of the two answered; `session_active` is `yes\|no\|unknown` and `unknown` is a VALUE, never rendered as `no`. `sync_status` ∈ `in_sync\|pending\|drifted\|failed\|unknown` and is a COMPARISON of the two columns, labelled as one, published beside the two counts it was made from — a registry MUST NOT present it as a third fact. `matrix` is §4's state × runtime table and is ASYMMETRIC: `proposed` on `codex` MUST carry `can_be_no:false`, and `loaded` MUST carry `explicit:false` on BOTH runtimes. Read-only |
+| `agent.capabilities` | `GET /v1/fleet/{agent_id}/capabilities` | member+ (own agent; admin/owner any of the workspace) | — | `200 {"agent":<the fleet row above>,"columns":[…],"capabilities":[{"kind","name","runtime","skill_version_id","arrival_marker","has_executable_step","columns":[{"column","runtime","value","reason","is","explicit","reliability","observability","state","source","window","window_detail"}…]}…],"inventory":[{"value","measurement_state","reason","state","source","window","window_detail"}×5],"states":[…],"undiscoverable":{},"inventory_reason","gap":[{"agent_id","skill_id","slug","skill_version_id","intent_state","intent_state_is":"intent","intent_state_source","observed_arrival","observed_arrival_is":"observation","observed_arrival_reason","observed_arrival_source","observed_arrival_window","gap","gap_is":"comparison"}…],"dead_weight":{"items":[…],"registered","invoked","dead"}}`. `columns` is the column set of THIS agent's runtime and the two runtimes' sets DIFFER: `claude_code` publishes `proposed_now` and `proposed_historical`, `codex` publishes one `proposed`. Every cell and every number carries all THREE attributes — `state` (one of the six), `source` ∈ `filesystem\|registry\|runtime\|transcript`, `window` ∈ `live_session\|period\|all_time` — and one that lost any of them MUST NOT be published ([I-3]). `assigned` is the INTENT column and carries `is:"intent"`; every other column carries `is:"observation"`; neither is derived from the other ([I-2]). A number that could not be taken is `measurement_state:"unknown"` with `value:null` and a reason, NEVER a silent `0`. The filesystem walk FOLLOWS SYMBOLIC LINKS ([I-4]). An agent of another workspace → `NOT_FOUND`. Read-only |
+| `capability.get` | `GET /v1/fleet/{agent_id}/capabilities/{name}` | member+ (own agent; admin/owner any of the workspace) | — | `200 {"agent":…,"columns":[…],"capability":<one capability object above>,"matrix":[<§4's six cells for this runtime>],"scan":[{"skill_version_id","marker","agent_id","runtime","at_ms","call_id","result"}…],"gap":<one gap row>\|null}`. A `scan` row exists ONLY where a PAIRED call/output record sharing one non-null `call_id` carried THIS version's §5 marker: a lone call, a lone output, or a pair carrying another version's marker produces NO row ([M-5]), and a capability with no row is `unknown`, never `no`. A version declaring `runtime.shell: ["none"]` answers `unknown` with reason `no_executable_step`, machine-distinguishable from `no_paired_record`. A capability this agent does not have → `NOT_FOUND`. Read-only |
+| `observation.report` | `POST /v1/observations` | member (holder of a `report_outcome` grant, §6.2) | `{"agent_id","runtime":"claude_code\|codex","window":"live_session\|period\|all_time","window_detail","model"?,"session_active"?,"last_activity_ms"?,"proposal_inventory_complete"?,"records":[{"role":"proposal\|call\|output","call_id"?,"at_ms"?,"marker"?,"text"?,"result":"success\|failure\|unknown"?}…]?,"idempotency_key"?}` — `window` and `window_detail` are REQUIRED and an absent or empty `window_detail` is `INVALID_SCHEMA`: a report that does not say what it looked at is a number with no method ([I-3]), and a default would describe the wrong search | `201 {"observation_id","agent_id","runtime","records_examined","markers_recorded","window","window_detail","records_text_stored":false,"note"}`. **THIS SURFACE WRITES.** The V-1 requirements list it among the READING surfaces; a self-report is an agent TELLING the registry something, telling is storing, and this call appends to two INSERT-only tables and moves the observation column of every deployment of that agent. Its MCP annotations MUST therefore be those of a write (`readOnlyHint:false`), because [I-8] requires a tool's hints to be true and a client acts on a false one by not asking. The records' TEXT is reduced to §5 arrival markers at this boundary and is NOT stored, logged or returned ([I-7]); `records_text_stored` states that rather than leaving it to be inferred. A report can establish that a version RAN; it can NEVER establish that one did not — a marker absent from a report is `unknown`, never `no`. An agent of another workspace → `NOT_FOUND`; no `report_outcome` grant → `FORBIDDEN`; more than 5000 records → `LIMIT_EXCEEDED` |
 | — | `GET /v1/receipts/{id}` | the adopter, the skill's owner, or an admin/owner of the version's workspace | — | `200 {"receipt_id","adoption_request_id","skill_version_id","adopter_agent_id","derived_state","stalled","events":[{"event","event_seq","server_at_ms","evidence","failure_report","rollback_report","environment_descriptor","recipient"}…]}` — events in ascending `event_seq`, the payload members `null` where the event carries none, `derived_state` per §5.3 (`none` on an empty chain) and `stalled` derived at read time. `environment_descriptor` is the environment declared at handover: non-null on `delivered` rows written by surface 7, `null` on every other row and on a synthesized `delivered`. `recipient` is the TYPED recipient `{"kind","id"}` of a `transferred` row (§5.4) and is `null` on every other row. It is served so an adopter can read back its OWN declaration in its OWN event — the read half of §5.3's rule that a write is confirmed by reading the state back. Anyone else → `NOT_FOUND` |
 | `tlog.read` | `GET /v1/tlog?cursor=&limit=` | any authenticated | `cursor` = the `seq` to read AFTER (decimal, ≥0); `limit` 1–100, default 20 | `200 {"items":[{"seq","event_kind","subject_id","payload_hash","prev_hash","this_hash","server_at_ms"}…],"next_cursor":null\|string}` — ascending `seq`, every column of `transparency_log`, so the §4.4 chain walk can be reproduced from the API alone. A malformed cursor → `INVALID_SCHEMA` |
 | — | `POST /v1/webhooks` | member+, own endpoint only | `{"url"}` — NO `idempotency_key`, for the reason §6.1 gives for the two secret-returning provisioning calls | `201 {"webhook_id","url","secret"}`; `secret` is shown ONCE and the URL is echoed exactly as written (§5.2). A URL the §5.2 registration rules refuse, or one longer than 2000 characters, or one Appendix D.1's `CHECK` cannot store → `INVALID_SCHEMA` with the reason |

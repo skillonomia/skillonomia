@@ -98,6 +98,7 @@ const MIGRATION_BLOCKS: ReadonlyArray<{ heading: string; file: string }> = [
   { heading: "### D.1e NORMATIVE DELTA", file: "migrations/0005_server_side_packing.sql" },
   { heading: "### D.1f NORMATIVE DELTA", file: "migrations/0006_transfer_to_a_named_recipient.sql" },
   { heading: "### D.1g NORMATIVE DELTA", file: "migrations/0007_assignment_and_native_activation.sql" },
+  { heading: "### D.1h NORMATIVE DELTA", file: "migrations/0008_observed_runtime_records.sql" },
 ];
 
 test("every migration file is embedded in Appendix D byte-identically", () => {

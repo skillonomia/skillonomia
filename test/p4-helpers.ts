@@ -9,6 +9,8 @@ import { mintApiKey, type AuthContext, type Role } from "../src/auth.ts";
 import type { SecretStore } from "../src/webhooks.ts";
 import type { ActivationRoots } from "../src/activation.ts";
 import type { RuntimeRecordSource } from "../src/assignments.ts";
+import type { InventoryRoots } from "../src/fleet-scan.ts";
+import type { FleetObservationSource } from "../src/fleet.ts";
 import { ulid } from "../src/ulid.ts";
 
 export { NOW };
@@ -58,6 +60,12 @@ export function p4Fixture(
     /** §5.5: where runtime records come from. Absent = none, so every observed
      *  arrival is `unknown` — again the shipped default. */
     runtimeRecords?: RuntimeRecordSource;
+    /** §6: where an agent's capabilities are READ from. Absent = nowhere, so
+     *  every inventory number is `unknown` — the shipped default. */
+    inventory?: InventoryRoots;
+    /** §6: where the richer §6 snapshot comes from. Absent = the stored
+     *  self-reports, which is also the shipped default. */
+    observations?: FleetObservationSource;
   } = {},
 ): P4Fixture {
   const seed = seedGraph();
@@ -66,6 +74,8 @@ export function p4Fixture(
     secrets: opts.secrets,
     activation: opts.activation,
     runtimeRecords: opts.runtimeRecords,
+    inventory: opts.inventory,
+    observations: opts.observations,
   });
   const reviewer = agentCtx(seed.db, seed, "reviewer-a", "agent", "reviewer");
   const reviewer2 = agentCtx(seed.db, seed, "reviewer-a2", "agent", "reviewer");

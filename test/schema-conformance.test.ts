@@ -195,6 +195,19 @@ const NEW_OBJECTS: ReadonlyArray<{ file: string; names: readonly string[] }> = [
       "tg_aevents_no_del",
     ],
   },
+  {
+    file: "0008_observed_runtime_records.sql",
+    names: [
+      "runtime_observations",
+      "idx_runtime_observations_agent",
+      "observed_records",
+      "idx_observed_records_agent",
+      "tg_runtime_obs_no_upd",
+      "tg_runtime_obs_no_del",
+      "tg_obs_records_no_upd",
+      "tg_obs_records_no_del",
+    ],
+  },
 ];
 
 const ADDED_OBJECT_COUNT = NEW_OBJECTS.reduce((n, m) => n + m.names.length, 0);
@@ -272,26 +285,29 @@ test("live schema is Appendix D.1 plus exactly the Appendix D.1b delta", () => {
   assert.equal(liveSet.size, fileStatements.length + ADDED_OBJECT_COUNT, "live schema has no extra objects");
 });
 
-test("object counts: 24 tables, 16 triggers, 11 indexes; no bookkeeping table", () => {
+test("object counts: 26 tables, 20 triggers, 13 indexes; no bookkeeping table", () => {
   const db = openMigrated();
   const count = (type: string) =>
     (db
       .prepare("SELECT count(*) c FROM sqlite_master WHERE type=? AND name NOT LIKE 'sqlite_%'")
       .get(type) as { c: number }).c;
   // D.1's 20 + D.1f's `transfer_grants` and `transfers` + D.1g's `assignments`
-  // and `assignment_events`; D.1's 10 triggers + the two that keep `transfers`
-  // INSERT-only + D.1g's four; D.1's 9 indexes + `idx_transfers_version` +
-  // `idx_assignments_agent`. The two `receipt_events` triggers and the partial
-  // terminal index are the ORIGINALS re-created verbatim by the D.1f rebuild,
-  // not additions — which is why those counts move by exactly the new objects.
-  assert.equal(count("table"), 24);
-  assert.equal(count("trigger"), 16);
-  assert.equal(count("index"), 11);
+  // and `assignment_events` + D.1h's `runtime_observations` and
+  // `observed_records`; D.1's 10 triggers + the two that keep `transfers`
+  // INSERT-only + D.1g's four + D.1h's four; D.1's 9 indexes +
+  // `idx_transfers_version`, `idx_assignments_agent`,
+  // `idx_runtime_observations_agent` and `idx_observed_records_agent`. The two
+  // `receipt_events` triggers and the partial terminal index are the ORIGINALS
+  // re-created verbatim by the D.1f rebuild, not additions — which is why those
+  // counts move by exactly the new objects.
+  assert.equal(count("table"), 26);
+  assert.equal(count("trigger"), 20);
+  assert.equal(count("index"), 13);
   const uv = db.prepare("PRAGMA user_version").get() as { user_version: number };
   assert.equal(
     uv.user_version,
-    7,
-    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal; tracked in user_version",
+    8,
+    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to; tracked in user_version",
   );
 });
 

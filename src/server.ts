@@ -20,6 +20,8 @@ import { defaultTransport } from "./transport.ts";
 import { sweep, workerId } from "./delivery.ts";
 import { installSeed, seedNotice, demoMode, type SeedResult } from "./seed.ts";
 import { ACTIVATION_TARGETS, FixedActivationRoots, isActivationTarget, type ActivationRoots } from "./activation.ts";
+import { FLEET_RUNTIMES, isFleetRuntime } from "./fleet.ts";
+import { FixedInventoryRoots, type InventoryRoots } from "./fleet-scan.ts";
 
 export { VERSION } from "./version.ts";
 import { VERSION } from "./version.ts";
@@ -36,6 +38,12 @@ export interface ServeOptions {
   seedDir?: string;
   /** false skips installing the §9.1 seed — a real deployment's choice */
   installSeedPackage?: boolean;
+  /**
+   * §6: where the fleet inventory may READ. Same rule as `activation` below and
+   * for the same reason: reading a fleet member's own directory is an act on
+   * somebody else's machine, so there is no default and nothing is derived.
+   */
+  inventory?: InventoryRoots;
   /**
    * §5.5: where native activation may write. Supplying this here OVERRIDES the
    * environment, which is what an embedding caller (and the test suite) wants;
@@ -124,11 +132,31 @@ export function serve(opts: ServeOptions = {}): Instance {
     throw new Error("SKILLONOMIA_ACTIVATION_TARGET is set without SKILLONOMIA_ACTIVATION_ROOT — a target names a layout, not a place");
   }
 
+  // §6: WHERE the inventory may READ, and the answer is NOWHERE unless an
+  // operator wrote it down. The pair behaves exactly like the activation pair
+  // above — both set, or neither — because a root with no layout is a place
+  // this process would have to guess the shape of, and a layout with no place
+  // is a shape with nowhere to apply it.
+  const inventoryRoot = opts.inventory ? null : env("SKILLONOMIA_INVENTORY_ROOT");
+  const inventoryRuntime = env("SKILLONOMIA_INVENTORY_RUNTIME");
+  let inventory = opts.inventory;
+  if (inventoryRoot !== null && inventoryRoot !== undefined) {
+    if (!isFleetRuntime(inventoryRuntime)) {
+      throw new Error(
+        `SKILLONOMIA_INVENTORY_ROOT is set, so SKILLONOMIA_INVENTORY_RUNTIME must be one of ${FLEET_RUNTIMES.join("|")}`,
+      );
+    }
+    inventory = new FixedInventoryRoots(inventoryRoot, inventoryRuntime);
+  } else if (inventoryRuntime !== undefined && opts.inventory === undefined) {
+    throw new Error("SKILLONOMIA_INVENTORY_RUNTIME is set without SKILLONOMIA_INVENTORY_ROOT — a runtime names a layout, not a place");
+  }
+
   mkdirSync(dataDir, { recursive: true });
   const db = openMigrated(join(dataDir, DB_FILENAME));
   const secrets = new FsSecretStore(join(dataDir, "secrets"));
   const registry = new Registry(db, {
     activation,
+    inventory,
     blobs: new FsBlobStore(join(dataDir, "blobs")),
     secrets,
     // §9.1: the outstanding token's HASH, in the data directory. Without this a
@@ -189,6 +217,15 @@ export function serve(opts: ServeOptions = {}): Instance {
       ? `native activation: ON — ${activationTarget ?? "configured by the embedding caller"} under the configured root. ` +
         `\`assignment.activate\` writes managed copies there and NOWHERE else.`
       : "native activation: off — no SKILLONOMIA_ACTIVATION_ROOT. Activations record `queued` and write no file.",
+  );
+  // The other setting that reaches outside this process's own data directory.
+  // Reading is a smaller act than writing and it is still an act on somebody
+  // else's machine, so it is printed on every start, set or not.
+  log(
+    inventory
+      ? `fleet inventory  : ON — ${inventoryRuntime ?? "configured by the embedding caller"} layout under the configured root. ` +
+        `\`agent.capabilities\` READS there and NOWHERE else, following symbolic links.`
+      : "fleet inventory  : off — no SKILLONOMIA_INVENTORY_ROOT. Every inventory number is `unknown`, never zero.",
   );
   if (credentials) {
     log("");

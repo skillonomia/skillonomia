@@ -309,6 +309,35 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       return mutationResponse(registry.revokeAssignment(auth, m[1], idemKey(body)), 200);
     }
 
+    // ---- §6 part A: the fleet inventory and the arrival scanner. The
+    //      inventory ROOT is never taken from a request either, for the same
+    //      reason: which directories this registry reads is configuration.
+
+    if (method === "GET" && path === "/v1/fleet") {
+      return json(200, JSON.stringify(registry.fleetList(auth)));
+    }
+
+    m = /^\/v1\/fleet\/([^/]+)\/capabilities$/.exec(path);
+    if (method === "GET" && m) {
+      return json(200, JSON.stringify(registry.agentCapabilities(auth, decodeURIComponent(m[1]))));
+    }
+
+    m = /^\/v1\/fleet\/([^/]+)\/capabilities\/([^/]+)$/.exec(path);
+    if (method === "GET" && m) {
+      return json(
+        200,
+        JSON.stringify(registry.capabilityGet(auth, decodeURIComponent(m[1]), decodeURIComponent(m[2]))),
+      );
+    }
+
+    // A WRITE, although the requirements list this surface among the reading
+    // ones. A self-report is an agent telling this registry something, and
+    // telling is storing: see `Registry.reportObservation`.
+    if (method === "POST" && path === "/v1/observations") {
+      const body = parseBody(req);
+      return mutationResponse(registry.reportObservation(auth, body, idemKey(body)), 201);
+    }
+
     m = /^\/v1\/versions\/([^/]+)\/ratings$/.exec(path);
     if (method === "POST" && m) {
       const body = parseBody(req);

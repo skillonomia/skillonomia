@@ -46,6 +46,8 @@ loudly rather than continuing with an empty registry.
 | `SKILLONOMIA_ASSETS` | — | explicit asset root |
 | `SKILLONOMIA_ACTIVATION_ROOT` | — | where native activation may write — see **Native activation** |
 | `SKILLONOMIA_ACTIVATION_TARGET` | — | which runtime layout to write under that root |
+| `SKILLONOMIA_INVENTORY_ROOT` | — | where the fleet inventory may read — see **The fleet inventory** |
+| `SKILLONOMIA_INVENTORY_RUNTIME` | — | which runtime layout to read under that root |
 
 ## Native activation
 
@@ -84,6 +86,40 @@ a runtime record carrying the version's arrival marker exists. Likewise
 `assignment.revoke` removes the file and no more: an agent that has already
 loaded the skill keeps those instructions until its session ends, and the answer
 says so.
+
+## The fleet inventory
+
+`agent.capabilities` and `capability.get` walk an agent's own directories to
+answer which skills, plugins and MCP servers are REGISTERED there. **Both
+variables above are unset by default, and with either of them unset the registry
+walks nothing**: every inventory number comes back `unknown` with the reason
+`no_inventory_root_configured` — never a count of zero, because a directory
+nobody looked at and a directory with nothing in it are different facts.
+
+`SKILLONOMIA_INVENTORY_ROOT` must be an ABSOLUTE path to an existing directory,
+and nothing is expanded — no `~`, no `$HOME`, no relative form. Reading is a
+smaller act than writing and it is still an act on somebody else's machine, so
+it happens only because an operator wrote these two variables down.
+
+`SKILLONOMIA_INVENTORY_RUNTIME` picks the layout read under the root:
+
+| Value | Read at |
+|---|---|
+| `claude_code` | `<root>/.claude/skills/<name>/SKILL.md`, `<root>/.claude/plugins/<name>/`, and `mcpServers` declared in `<root>/.mcp.json` or `<root>/.claude/settings.json` |
+| `codex` | `<root>/.agents/skills/<name>/SKILL.md` |
+
+**The walk FOLLOWS SYMBOLIC LINKS.** Handing a fleet one shared skill library by
+linking a directory at it is the ordinary arrangement, and a walk that stopped at
+the link would report a systematically low number with nothing to show that it
+had. Cycles end the walk rather than the process.
+
+**What the inventory does not do.** It counts what is THERE, not what this
+registry put there, and only for the kinds a directory listing can establish. MCP
+*tools* are what a server offers once something connects to it, and connectors
+are not a filesystem concept at all: both come back `unknown` with their own
+reason, and no amount of walking turns either into a zero. What is registered is
+also not what has RUN — the arrival columns beside it stay `unknown` until a
+runtime record carrying a version's arrival marker exists.
 
 ## The network boundary
 

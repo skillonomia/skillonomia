@@ -35,6 +35,7 @@ import {
   arrivalMarker,
   checkArrivalIdentity,
   embedArrivalStep,
+  markersIn,
   renderArrivalScript,
   shipsArrivalScript,
 } from "./marker.ts";
@@ -93,6 +94,56 @@ import {
   type AssignmentView,
   type RuntimeRecordSource,
 } from "./assignments.ts";
+import {
+  CAPABILITY_KINDS,
+  CAPABILITY_STATES,
+  FLEET_RUNTIMES,
+  NO_FLEET_OBSERVATIONS,
+  NO_SNAPSHOT_WINDOW,
+  SELECTION_WINDOWS,
+  capabilityColumns,
+  columnsOf,
+  countedNumber,
+  stateOfColumn,
+  deadWeightOf,
+  fleetMatrixRows,
+  gapOf,
+  isFleetRuntime,
+  isSelectionWindow,
+  matrixCell,
+  scanArrivals,
+  syncStatusOf,
+  unknownNumber,
+  type AgentInventoryRow,
+  type ArrivalScanRow,
+  type CapabilityKind,
+  type CapabilityState,
+  type ColumnName,
+  type DeadWeightAnswer,
+  type EvidenceSource,
+  type FleetObservationSource,
+  type FleetRuntime,
+  type IntentFactGap,
+  type MatrixCell,
+  type MeasuredNumber,
+  type ObservedRecord,
+  type RegisteredCapability,
+  type RuntimeSnapshot,
+  type ScanSubject,
+  type SelectionWindow,
+  type StateColumn,
+  type Trivalent,
+} from "./fleet.ts";
+import {
+  NO_INVENTORY_ROOTS,
+  NO_INVENTORY_WINDOW,
+  inventoryUnder,
+  type InventoryResult,
+  type InventoryRoots,
+  type InventorySite,
+  type UndiscoverableKinds,
+} from "./fleet-scan.ts";
+import { StoredObservations, recordObservationInTx } from "./fleet-store.ts";
 import {
   createGrant,
   findGrant,
@@ -232,6 +283,25 @@ export interface RegistryOptions {
    * perimeter sent.
    */
   runtimeRecords?: RuntimeRecordSource;
+  /**
+   * §6: where the richer §6 snapshot comes from — records, plus the model, the
+   * session and the boundary they were taken over.
+   *
+   * The default reads the self-reports `observation.report` stores. Pointing it
+   * at a transcript directory instead is `TranscriptObservations`, and in V-2 it
+   * is a third implementation receiving a message from an agent outside this
+   * perimeter. None of the three is visible to anything above this seam [M-7].
+   */
+  observations?: FleetObservationSource;
+  /**
+   * §6: where an agent's capabilities are READ from the filesystem.
+   *
+   * The root is a PARAMETER for the reason D-7 gives about activation: reading
+   * a fleet member's real directories is an act on somebody else's machine and
+   * is authorized separately from the code that knows how. The shipped default
+   * walks nothing and every inventory number is `unknown`, never zero.
+   */
+  inventory?: InventoryRoots;
 }
 
 // ------------------------------------------- §5.5 deployment answer shapes
@@ -285,6 +355,125 @@ export interface AssignmentListResponse {
   items: AssignmentView[];
   counts: AssignmentCounts;
   native_inventory: NativeInventory;
+}
+
+// ------------------------------------------------- §6 part A answer shapes
+
+/** Everything one agent's fleet answer is assembled from, gathered once and
+ *  kept SEPARATE: intent, observation and filesystem never merge. */
+interface FleetContext {
+  agentId: string;
+  /** COLUMN ONE — the registry's decisions, exactly as §5.5 publishes them */
+  views: AssignmentView[];
+  /** COLUMN TWO — what was observed, or null when nothing ever was */
+  snapshot: RuntimeSnapshot | null;
+  site: InventorySite | null;
+  inventory: InventoryResult | null;
+  inventoryReason: string | null;
+  registered: RegisteredCapability[];
+  runtime: FleetRuntime | null;
+  runtimeSource: EvidenceSource | "none";
+  index: Map<string, { skill_version_id: string; manifest_json: string; slug: string }>;
+  scan: ArrivalScanRow[];
+  subjects: ScanSubject[];
+}
+
+/** One capability, with the column set ITS RUNTIME publishes. */
+export interface CapabilityRow {
+  kind: CapabilityKind;
+  name: string;
+  /** null when no runtime has been observed and none is configured */
+  runtime: FleetRuntime | null;
+  skill_version_id: string | null;
+  arrival_marker: string | null;
+  has_executable_step: boolean;
+  columns: StateColumn[];
+}
+
+export interface FleetCounts {
+  agents: MeasuredNumber;
+  observed_agents: MeasuredNumber;
+}
+
+export interface FleetListResponse {
+  agents: AgentInventoryRow[];
+  counts: FleetCounts;
+  runtimes: FleetRuntime[];
+  /** §4's matrix, published with the answer rather than assumed by a renderer */
+  matrix: MatrixCell[];
+}
+
+export interface AgentCapabilitiesResponse {
+  agent: AgentInventoryRow;
+  /** the runtime's OWN column set — Claude Code's and Codex's differ [A-3] */
+  columns: ColumnName[];
+  /**
+   * Why the column set is empty, or null when it is not.
+   *
+   * WHICH columns exist is a property of the RUNTIME, so an agent whose runtime
+   * has neither been observed nor configured has no column set to publish. That
+   * is an `unknown` like any other and it carries a reason rather than being an
+   * empty table a reader would take for an empty inventory [I-1].
+   */
+  columns_reason: string | null;
+  capabilities: CapabilityRow[];
+  /** [A-2]: one number per kind, each carrying its three attributes [I-3] */
+  inventory: MeasuredNumber[];
+  /** one number per published column, counted over the capabilities above */
+  states: MeasuredNumber[];
+  undiscoverable: UndiscoverableKinds;
+  inventory_reason: string | null;
+  /** [A-4]: intent beside fact, one row per deployment */
+  gap: IntentFactGap[];
+  /** [A-5]: registered and never once demonstrated to have run */
+  dead_weight: DeadWeightAnswer;
+}
+
+export interface CapabilityGetResponse {
+  agent: AgentInventoryRow;
+  columns: ColumnName[];
+  columns_reason: string | null;
+  capability: CapabilityRow;
+  /** §4's row for this capability's runtime, both what it can and cannot say */
+  matrix: MatrixCell[];
+  /** [A-6]'s tuples: version, agent, runtime, time, call_id, result */
+  scan: ArrivalScanRow[];
+  gap: IntentFactGap | null;
+}
+
+/**
+ * The sentence `observation.report` returns, and the reason it is a constant.
+ *
+ * It states the two things a reporter must be able to rely on and a reader must
+ * not have to infer: the text of a record is not kept, and a report is evidence
+ * FOR a run and never evidence against one.
+ */
+/** A manifest as an object, or null. An unreadable one fails CLOSED in the
+ *  direction that produces MORE checking — see `subjectOf`. */
+function safeManifest(json: string): unknown {
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+export const OBSERVATION_REPORT_NOTE =
+  "Records were reduced to §5 arrival markers at this boundary: no record text is stored, logged or returned. " +
+  "A report can establish that a version RAN; it can never establish that one did not — a marker that is absent " +
+  "from a report is `unknown`, never `no`.";
+
+export interface ObservationReportResponse {
+  observation_id: string;
+  agent_id: string;
+  runtime: FleetRuntime;
+  records_examined: number;
+  markers_recorded: number;
+  window: SelectionWindow;
+  window_detail: string;
+  /** always false, and stated rather than implied [I-7] */
+  records_text_stored: false;
+  note: string;
 }
 
 export interface CreateInput {
@@ -599,11 +788,24 @@ export class Registry {
   private readonly activation: ActivationRoots;
   /** §5.5: where runtime records come from. Nowhere, by default. */
   private readonly runtimeRecords: RuntimeRecordSource;
+  /** §6: where §6's richer snapshots come from. The stored self-reports, by
+   *  default — a report that moved nothing would be a report for nobody. */
+  private readonly observations: FleetObservationSource;
+  /** §6: where an agent's capabilities are READ from. Nowhere, by default:
+   *  an inventory with no configured root inventories nothing and says so. */
+  private readonly inventory: InventoryRoots;
 
   constructor(db: Db, opts: RegistryOptions = {}) {
     this.db = db;
     this.activation = opts.activation ?? NO_ACTIVATION_ROOTS;
-    this.runtimeRecords = opts.runtimeRecords ?? NO_RUNTIME_RECORDS;
+    // The default is NOT `NO_RUNTIME_RECORDS`: `observation.report` writes the
+    // records a §5 arrival is assessed from, and a registry that stored them
+    // and then read from nowhere would publish `unknown` beside its own
+    // evidence. With no report filed, `StoredObservations` answers `null` —
+    // which is the same "nothing was searched" the shipped default meant.
+    this.runtimeRecords = opts.runtimeRecords ?? new StoredObservations(db);
+    this.observations = opts.observations ?? new StoredObservations(db);
+    this.inventory = opts.inventory ?? NO_INVENTORY_ROOTS;
     this.blobs = opts.blobs ?? new MemoryBlobStore();
     this.secrets = opts.secrets ?? new MemorySecretStore();
     this.limiter = new RateLimiter(opts.rateLimit ?? DEFAULT_RATE_LIMIT);
@@ -3355,6 +3557,546 @@ export class Registry {
             };
     }
     return { items, counts, native_inventory: inventory };
+  }
+
+  // ==================================================================
+  // §6 PART A — the fleet inventory, the six states, and the scanner
+  // ==================================================================
+
+  /** The agents this actor may read: its own, or the workspace's as admin/owner. */
+  private fleetAgentIds(auth: AuthContext): string[] {
+    const wide = auth.role === "admin" || auth.role === "owner";
+    if (!wide) return [auth.agent_id];
+    return (
+      this.db.prepare("SELECT id FROM agents WHERE workspace_id=? ORDER BY id").all(auth.workspace_id) as Array<{
+        id: string;
+      }>
+    ).map((r) => r.id);
+  }
+
+  /**
+   * Every marker this workspace's versions derive, mapped back to the version.
+   *
+   * The marker is derived from the version id and NEVER stored, so the reverse
+   * direction is a computation over the versions a reader may see rather than a
+   * lookup. That is the honest shape: a marker found on a disk that belongs to
+   * no version this workspace holds resolves to NOTHING, which is precisely the
+   * dead-weight case [A-5] must be able to report.
+   */
+  private markerIndex(workspaceId: string): Map<string, { skill_version_id: string; manifest_json: string; slug: string }> {
+    const rows = this.db
+      .prepare(
+        `SELECT v.id AS id, v.manifest_json AS manifest_json, s.slug AS slug
+           FROM skill_versions v JOIN skills s ON s.id = v.skill_id WHERE s.workspace_id = ? ORDER BY v.id`,
+      )
+      .all(workspaceId) as Array<{ id: string; manifest_json: string; slug: string }>;
+    const out = new Map<string, { skill_version_id: string; manifest_json: string; slug: string }>();
+    for (const r of rows) {
+      out.set(arrivalMarker(r.id), { skill_version_id: r.id, manifest_json: r.manifest_json, slug: r.slug });
+    }
+    return out;
+  }
+
+  /** D-2: whether this version declares what success is. Without a contract the
+   *  `outcome` column is `unknown` — a finished task is not a success [M-6]. */
+  private hasOutcomeContract(manifestJson: string): boolean {
+    try {
+      const m = JSON.parse(manifestJson) as { outcome_contract?: unknown } | null;
+      return !!m && typeof m === "object" && m.outcome_contract !== undefined && m.outcome_contract !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Everything one agent's answer is assembled from, gathered once.
+   *
+   * The three inputs are kept SEPARATE all the way down and are never derived
+   * from one another: `views` is the registry's intent, `snapshot` is what was
+   * observed, `inventory` is what is on a disk. Each carries its own window.
+   */
+  private fleetContext(agentId: string, workspaceId: string): FleetContext {
+    const rows = assignmentsForAgents(this.db, [agentId]);
+    const views = rows.map((row) =>
+      assignmentView(
+        row,
+        headFrom(eventsOf(this.db, [row.id])),
+        observedArrival(this.runtimeRecords.recordsFor(row.agent_id), subjectOf(row)),
+      ),
+    );
+    const snapshot = this.observations.snapshotFor(agentId);
+    const site = this.inventory.rootFor(agentId);
+    let inventory: InventoryResult | null = null;
+    let inventoryReason: string | null = site ? null : "no_inventory_root_configured";
+    if (site) {
+      try {
+        inventory = inventoryUnder(site, agentId);
+      } catch {
+        inventoryReason = "inventory_root_unreadable";
+      }
+    }
+    const index = this.markerIndex(workspaceId);
+    const registered: RegisteredCapability[] = (inventory?.items ?? []).map((item) => ({
+      ...item,
+      skill_version_id: item.marker !== null ? (index.get(item.marker)?.skill_version_id ?? null) : null,
+    }));
+    // THE RUNTIME. Observed if anything was reported; otherwise the layout this
+    // deployment was configured to read, which is this registry's own setting
+    // and is labelled as such; otherwise unknown, and never a guess.
+    const runtime: FleetRuntime | null = snapshot?.runtime ?? site?.runtime ?? null;
+    const runtimeSource: EvidenceSource | "none" = snapshot ? "runtime" : site ? "registry" : "none";
+    const subjects: ScanSubject[] = [];
+    const seenSubject = new Set<string>();
+    for (const v of views) {
+      if (seenSubject.has(v.skill_version_id)) continue;
+      seenSubject.add(v.skill_version_id);
+      subjects.push({
+        skill_version_id: v.skill_version_id,
+        marker: v.arrival_marker,
+        has_executable_step: v.has_executable_step,
+      });
+    }
+    for (const r of registered) {
+      if (r.skill_version_id === null || seenSubject.has(r.skill_version_id)) continue;
+      seenSubject.add(r.skill_version_id);
+      const known = index.get(r.marker ?? "");
+      subjects.push({
+        skill_version_id: r.skill_version_id,
+        marker: r.marker!,
+        has_executable_step: known ? shipsArrivalScript(safeManifest(known.manifest_json)) : true,
+      });
+    }
+    const scan = scanArrivals(snapshot?.records ?? [], subjects);
+    return { agentId, views, snapshot, site, inventory, inventoryReason, registered, runtime, runtimeSource, index, scan, subjects };
+  }
+
+  /** [A-1]'s row: identity, runtime, model, session, last activity, sync. */
+  private agentRow(ctx: FleetContext): AgentInventoryRow {
+    const principal = loadPrincipal(this.db, ctx.agentId);
+    const named = this.db.prepare("SELECT name FROM agents WHERE id=?").get(ctx.agentId) as { name: string } | undefined;
+    const intentActive = ctx.views.filter((v) => v.intent_state === "active").length;
+    const arrivalYes = ctx.views.filter((v) => v.observed_arrival === "yes").length;
+    const sync = syncStatusOf({
+      observed: ctx.snapshot !== null,
+      headStates: ctx.views.map((v) => v.intent_state),
+      intentActive,
+      arrivalYes,
+    });
+    const observationWindow = ctx.snapshot
+      ? ctx.snapshot.window_detail
+      : ctx.site
+        ? "no runtime observation has been reported; the runtime below is this deployment's own configuration, not a report"
+        : NO_SNAPSHOT_WINDOW;
+    return {
+      agent_id: ctx.agentId,
+      type: principal?.type ?? "agent",
+      role: principal?.role ?? null,
+      name: named?.name ?? ctx.agentId,
+      runtime: ctx.runtime,
+      runtime_source: ctx.runtimeSource,
+      model: ctx.snapshot?.model ?? null,
+      session_active: ctx.snapshot?.session_active ?? "unknown",
+      last_activity_ms: ctx.snapshot?.last_activity_ms ?? null,
+      observation_window: observationWindow,
+      observation_is: "observation",
+      sync_status: sync.status,
+      sync_status_is: "comparison",
+      sync_status_reason: sync.reason,
+      // the two columns the comparison was made FROM, published beside it so it
+      // is never mistaken for a third fact [I-2]
+      intent_active: countedNumber(intentActive, {
+        state: "assigned",
+        source: "registry",
+        window: "all_time",
+        window_detail: ASSIGNMENT_INTENT_SOURCE,
+      }),
+      observed_arrival_yes: countedNumber(arrivalYes, {
+        state: "invoked",
+        source: "transcript",
+        window: ctx.snapshot?.window ?? "all_time",
+        window_detail: ctx.snapshot?.window_detail ?? NO_SNAPSHOT_WINDOW,
+      }),
+    };
+  }
+
+  /**
+   * `fleet.list` — who is in the fleet, and what is known about each of them.
+   *
+   * Strictly reading. The §4 matrix travels WITH the answer rather than being
+   * assumed by whoever renders it: a reader holding one response can tell that
+   * `proposed` on Codex is `unknown` by construction and not by accident.
+   */
+  fleetList(auth: AuthContext): FleetListResponse {
+    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    const agents = this.fleetAgentIds(auth).map((id) => this.agentRow(this.fleetContext(id, auth.workspace_id)));
+    const observed = agents.filter((a) => a.runtime_source === "runtime").length;
+    return {
+      agents,
+      counts: {
+        agents: countedNumber(agents.length, {
+          state: "assigned",
+          source: "registry",
+          window: "all_time",
+          window_detail: "the principals of this workspace this actor may read",
+        }),
+        observed_agents: countedNumber(
+          observed,
+          {
+            state: "proposed",
+            source: "runtime",
+            window: "all_time",
+            window_detail: "principals for which at least one runtime observation has been reported",
+          },
+          observed === agents.length ? null : `${agents.length - observed} principal(s) have never been observed`,
+        ),
+      },
+      runtimes: [...FLEET_RUNTIMES],
+      matrix: fleetMatrixRows(),
+    };
+  }
+
+  /**
+   * `agent.capabilities` — [A-2] the inventory, [A-3] the six states, [A-4] the
+   * gap and [A-5] the dead weight, for one agent.
+   *
+   * The COLUMN SET depends on the runtime and that is the point: Claude Code
+   * publishes `proposed_now` and `proposed_historical`, Codex publishes one
+   * `proposed` whose value is `unknown` always. They are not one table with a
+   * flag, and a caller cannot render them as one.
+   */
+  agentCapabilities(auth: AuthContext, agentId: unknown): AgentCapabilitiesResponse {
+    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    if (typeof agentId !== "string" || agentId.length === 0) {
+      throw new ApiError("INVALID_SCHEMA", "agent_id (string) required");
+    }
+    if (!this.fleetAgentIds(auth).includes(agentId)) throw new ApiError("NOT_FOUND", "agent not found");
+    const ctx = this.fleetContext(agentId, auth.workspace_id);
+    const agent = this.agentRow(ctx);
+    const capabilities = this.capabilityRows(ctx);
+    const dead = deadWeightOf({
+      registered: ctx.registered,
+      scan: ctx.scan,
+      intent_active_version_ids: ctx.views.filter((v) => v.intent_state === "active").map((v) => v.skill_version_id),
+      attribution: {
+        registeredWindow: ctx.inventory?.window_detail ?? NO_INVENTORY_WINDOW,
+        invokedWindow: ctx.snapshot?.window_detail ?? NO_SNAPSHOT_WINDOW,
+        invokedSelection: ctx.snapshot?.window ?? "all_time",
+      },
+    });
+    return {
+      agent,
+      columns: ctx.runtime ? [...columnsOf(ctx.runtime)] : [],
+      columns_reason: ctx.runtime
+        ? null
+        : "runtime_unknown: no runtime has been observed for this agent and none is configured, so which of §4's column sets applies is not established",
+      capabilities,
+      inventory: this.inventoryCounts(ctx),
+      states: this.stateCounts(ctx, capabilities),
+      undiscoverable: ctx.inventory?.undiscoverable ?? {},
+      inventory_reason: ctx.inventoryReason,
+      gap: ctx.views.map((v) => gapOf(v)),
+      dead_weight: dead,
+    };
+  }
+
+  /** `capability.get` — one capability, its matrix row and its scan rows. */
+  capabilityGet(auth: AuthContext, agentId: unknown, name: unknown): CapabilityGetResponse {
+    if (typeof name !== "string" || name.length === 0) throw new ApiError("INVALID_SCHEMA", "name (string) required");
+    const all = this.agentCapabilities(auth, agentId);
+    const capability = all.capabilities.find((c) => c.name === name);
+    if (!capability) throw new ApiError("NOT_FOUND", "capability not found for this agent");
+    const ctx = this.fleetContext(agentId as string, auth.workspace_id);
+    return {
+      agent: all.agent,
+      columns: all.columns,
+      columns_reason: all.columns_reason,
+      capability,
+      matrix: capability.runtime ? CAPABILITY_STATES.map((s) => matrixCell(s, capability.runtime!)) : [],
+      scan: ctx.scan.filter((r) => r.skill_version_id === capability.skill_version_id),
+      gap: all.gap.find((g) => g.skill_version_id === capability.skill_version_id) ?? null,
+    };
+  }
+
+  /** One row per capability: everything on the disk, plus everything assigned. */
+  private capabilityRows(ctx: FleetContext): CapabilityRow[] {
+    const runtime = ctx.runtime;
+    const rows: CapabilityRow[] = [];
+    const claimed = new Set<string>();
+    const viewByVersion = new Map(ctx.views.map((v) => [v.skill_version_id, v]));
+    const rootWalked = ctx.inventory !== null;
+    const registeredWindow = ctx.inventory?.window_detail ?? NO_INVENTORY_WINDOW;
+
+    for (const item of ctx.registered) {
+      const view = item.skill_version_id ? viewByVersion.get(item.skill_version_id) : undefined;
+      if (item.skill_version_id) claimed.add(item.skill_version_id);
+      rows.push(
+        this.capabilityRow(ctx, {
+          kind: item.kind,
+          name: item.name,
+          skill_version_id: item.skill_version_id,
+          marker: item.marker,
+          view,
+          registered: { value: "yes", reason: null, window_detail: registeredWindow },
+          runtime,
+        }),
+      );
+    }
+    for (const view of ctx.views) {
+      if (claimed.has(view.skill_version_id)) continue;
+      claimed.add(view.skill_version_id);
+      rows.push(
+        this.capabilityRow(ctx, {
+          kind: "skill",
+          name: view.slug,
+          skill_version_id: view.skill_version_id,
+          marker: view.arrival_marker,
+          view,
+          // a root that WAS walked and did not hold this copy answers `no`;
+          // one that was never configured answers `unknown`. Collapsing the two
+          // would report an unwalked disk as an empty one [I-1].
+          registered: rootWalked
+            ? { value: "no", reason: "not_found_under_the_inventory_root", window_detail: registeredWindow }
+            : { value: "unknown", reason: ctx.inventoryReason, window_detail: NO_INVENTORY_WINDOW },
+          runtime,
+        }),
+      );
+    }
+    rows.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+    return rows;
+  }
+
+  private capabilityRow(
+    ctx: FleetContext,
+    input: {
+      kind: CapabilityKind;
+      name: string;
+      skill_version_id: string | null;
+      marker: string | null;
+      view: AssignmentView | undefined;
+      registered: { value: Trivalent; reason: string | null; window_detail: string };
+      runtime: FleetRuntime | null;
+    },
+  ): CapabilityRow {
+    const known = input.marker ? ctx.index.get(input.marker) : undefined;
+    const manifestJson = known?.manifest_json ?? null;
+    const subject: ScanSubject = {
+      skill_version_id: input.skill_version_id ?? "",
+      marker: input.marker ?? "",
+      has_executable_step: manifestJson ? shipsArrivalScript(safeManifest(manifestJson)) : true,
+    };
+    const columns = input.runtime
+      ? capabilityColumns({
+          runtime: input.runtime,
+          subject,
+          registered: input.registered,
+          intent: input.view ? { state: input.view.intent_state, source: input.view.intent_state_source } : null,
+          snapshot: ctx.snapshot,
+          outcome_contract: manifestJson ? this.hasOutcomeContract(manifestJson) : false,
+        })
+      : [];
+    return {
+      kind: input.kind,
+      name: input.name,
+      runtime: input.runtime,
+      skill_version_id: input.skill_version_id,
+      arrival_marker: input.marker,
+      has_executable_step: subject.has_executable_step,
+      columns,
+    };
+  }
+
+  /** [A-2]: one number per KIND, and each of them carries its method [I-3]. */
+  private inventoryCounts(ctx: FleetContext): MeasuredNumber[] {
+    const out: MeasuredNumber[] = [];
+    const window_detail = ctx.inventory?.window_detail ?? NO_INVENTORY_WINDOW;
+    for (const kind of CAPABILITY_KINDS) {
+      const a = {
+        state: "registered" as const,
+        source: "filesystem" as const,
+        window: "all_time" as const,
+        window_detail,
+      };
+      if (!ctx.inventory) {
+        out.push(unknownNumber(a, ctx.inventoryReason ?? "no_inventory_root_configured"));
+        continue;
+      }
+      const why = ctx.inventory.undiscoverable[kind];
+      if (why !== undefined) {
+        // NOT zero. A kind this adapter cannot see from a disk is `unknown`,
+        // and the reason says which of the ways it cannot see it.
+        out.push(unknownNumber(a, why));
+        continue;
+      }
+      out.push(countedNumber(ctx.registered.filter((r) => r.kind === kind).length, { ...a, state: "registered" }));
+    }
+    return out;
+  }
+
+  /** One number per COLUMN of this runtime, counted over the capability rows. */
+  private stateCounts(ctx: FleetContext, rows: readonly CapabilityRow[]): MeasuredNumber[] {
+    if (!ctx.runtime) return [];
+    const out: MeasuredNumber[] = [];
+    for (const column of columnsOf(ctx.runtime)) {
+      const cells = rows.map((r) => r.columns.find((c) => c.column === column)).filter((c): c is StateColumn => !!c);
+      const first = cells[0];
+      // THE STATE COMES FROM THE COLUMN'S DECLARED NAME, never from a cell that
+      // happened to be built. With no capabilities there is no cell to read,
+      // and a fallback would publish a number attributed to the wrong state —
+      // which is what [I-3] is for. The source and the window are properties of
+      // HOW the column is answered, so they are taken from the matrix and from
+      // the observation's own boundary, and only the phrasing of the boundary
+      // comes from a cell when there is one.
+      const state = stateOfColumn(column);
+      const matrix = matrixCell(state, ctx.runtime);
+      const a = {
+        state,
+        source: (matrix.source === "none" ? "transcript" : matrix.source) as EvidenceSource,
+        window:
+          column === "proposed_now"
+            ? ("live_session" as SelectionWindow)
+            : (first?.window ?? ctx.snapshot?.window ?? ("all_time" as SelectionWindow)),
+        window_detail: first?.window_detail ?? ctx.snapshot?.window_detail ?? NO_SNAPSHOT_WINDOW,
+      };
+      const yes = cells.filter((c) => c.value === "yes").length;
+      const unknown = cells.filter((c) => c.value === "unknown").length;
+      out.push(
+        countedNumber(
+          yes,
+          a,
+          unknown === 0
+            ? null
+            : `${unknown} of ${cells.length} capabilities answer \`unknown\` for this column — unobserved, NOT known to be absent [I-1]`,
+        ),
+      );
+    }
+    return out;
+  }
+
+  /**
+   * `observation.report` — A WRITE, although the V-1 requirements list it
+   * among the READING surfaces.
+   *
+   * THE LIST IS FOLLOWED WHERE IT CAN BE AND CONTRADICTED WHERE IT CANNOT. A
+   * self-report by [M-7] is an agent TELLING this registry something, and
+   * telling is storing: this call appends to two INSERT-only tables and moves
+   * the observation column of every deployment of that agent. [I-8] requires a
+   * tool's hints to be TRUE, and a `readOnlyHint: true` on a call that writes is
+   * a false hint that a client will act on by not asking. So the tool is
+   * annotated as a write, and the divergence from that list is stated rather
+   * than papered over.
+   *
+   * The permission is the §6.2 `report_outcome` grant — the step of the loop
+   * this is, and no new role.
+   *
+   * [I-7]: the records' TEXT is reduced to §5 markers HERE, at the boundary, and
+   * the text is not stored, not logged and not echoed. What comes back is how
+   * many markers were kept and how many records were examined.
+   */
+  reportObservation(
+    auth: AuthContext,
+    input: unknown,
+    idempotencyKey?: string,
+  ): IdempotentOutcome<ObservationReportResponse> {
+    return withIdempotency(this.db, auth.agent_id, "observation.report", idempotencyKey, this.now(), () =>
+      this.reportObservationInner(auth, input),
+    );
+  }
+
+  private reportObservationInner(auth: AuthContext, raw: unknown): ObservationReportResponse {
+    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    const input = (raw ?? {}) as Record<string, unknown>;
+    const agentId = input.agent_id;
+    if (typeof agentId !== "string" || agentId.length === 0) {
+      throw new ApiError("INVALID_SCHEMA", "agent_id (string) required");
+    }
+    const subject = loadPrincipal(this.db, agentId);
+    if (!subject || subject.workspace_id !== auth.workspace_id) throw new ApiError("NOT_FOUND", "agent not found");
+    if (!isFleetRuntime(input.runtime)) {
+      throw new ApiError("INVALID_SCHEMA", `runtime must be one of ${FLEET_RUNTIMES.join("|")}`);
+    }
+    if (!isSelectionWindow(input.window)) {
+      throw new ApiError("INVALID_SCHEMA", `window must be one of ${SELECTION_WINDOWS.join("|")}`);
+    }
+    const windowDetail = input.window_detail;
+    if (typeof windowDetail !== "string" || windowDetail.length === 0 || windowDetail.length > 500) {
+      // [I-3]: a report with no boundary is a number with no method, and it is
+      // refused rather than given a default that would describe the wrong search
+      throw new ApiError("INVALID_SCHEMA", "window_detail (1..500 chars) required: a report states what it looked at");
+    }
+    const model = input.model === undefined || input.model === null ? null : String(input.model).slice(0, 200);
+    const sessionActive =
+      input.session_active === undefined || input.session_active === null ? null : input.session_active === true;
+    const lastActivity =
+      Number.isInteger(input.last_activity_ms) && (input.last_activity_ms as number) > 0
+        ? (input.last_activity_ms as number)
+        : null;
+    const rawRecords = input.records === undefined ? [] : input.records;
+    if (!Array.isArray(rawRecords)) throw new ApiError("INVALID_SCHEMA", "records must be an array");
+    if (rawRecords.length > 5000) throw new ApiError("LIMIT_EXCEEDED", "a report carries at most 5000 records");
+
+    const reduced: Array<Omit<ObservedRecord, "agent_id" | "runtime">> = [];
+    for (const item of rawRecords) {
+      const r = (item ?? {}) as Record<string, unknown>;
+      const role = r.role;
+      if (role !== "proposal" && role !== "call" && role !== "output") {
+        throw new ApiError("INVALID_SCHEMA", "records[].role must be proposal|call|output");
+      }
+      // THE REDUCTION. Whatever the reporter sent as text, only markers survive
+      // it, and the text is referenced nowhere below this line [I-7].
+      const markers = typeof r.text === "string" ? markersIn(r.text) : [];
+      const declared = typeof r.marker === "string" ? markersIn(r.marker) : [];
+      const all = [...new Set([...markers, ...declared])];
+      const callId =
+        typeof r.call_id === "string" && r.call_id.length > 0 && r.call_id.length <= 200 ? r.call_id : null;
+      const atMs = Number.isInteger(r.at_ms) && (r.at_ms as number) > 0 ? (r.at_ms as number) : null;
+      const result = r.result === "success" || r.result === "failure" ? r.result : "unknown";
+      for (const marker of all) reduced.push({ role, call_id: callId, at_ms: atMs, marker, result });
+    }
+
+    const actorRow = loadPrincipal(this.db, auth.agent_id);
+    if (!actorRow || actorRow.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    const reportedBy: GrantPrincipal = { agent_id: actorRow.id, type: actorRow.type, role: actorRow.role };
+    const grant = findGrant(this.db, actorRow.id, "report_outcome", "local_agent");
+    if (!grant) {
+      throw new ApiError("FORBIDDEN", "this principal holds no `report_outcome` grant scoped to `local_agent` (§6.2)");
+    }
+    const now = this.now();
+    const db = this.db;
+    db.exec("BEGIN IMMEDIATE");
+    let written: { observation_id: string };
+    try {
+      written = recordObservationInTx(db, {
+        agentId,
+        runtime: input.runtime as FleetRuntime,
+        model,
+        sessionActive,
+        lastActivityMs: lastActivity,
+        window: input.window as SelectionWindow,
+        windowDetail,
+        proposalInventoryComplete: input.proposal_inventory_complete === true,
+        records: reduced,
+        reportedBy,
+        grantId: grant.id,
+        idempotencyKey: `observation:${ulid(now)}`,
+        nowMs: now,
+      });
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+    return {
+      observation_id: written.observation_id,
+      agent_id: agentId,
+      runtime: input.runtime as FleetRuntime,
+      /** how many records the reporter examined, and how many markers survived */
+      records_examined: rawRecords.length,
+      markers_recorded: reduced.length,
+      window: input.window as SelectionWindow,
+      window_detail: windowDetail,
+      records_text_stored: false,
+      note: OBSERVATION_REPORT_NOTE,
+    };
   }
 
   private adoptedCountOf(versionId: string): number {
