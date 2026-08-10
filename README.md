@@ -390,11 +390,15 @@ principal and receives its API key **once**, and the principal registers its
 **own** Ed25519 signing key — never anyone else's, at any role, because `kid` →
 `manifest.author_agent` is what makes a signed package attributable.
 
-The dashboard has six read-only views — **library, evidence, receipts,
-approvals, dead letters, migrations** — each a rendering of the same API fields,
-scoped by the same access rules as the underlying read. Webhook health
+The dashboard has eleven read-only views — **library, evidence, receipts,
+approvals, dead letters, migrations**, and §9's five screens **fleet, agent,
+skill_approval, capability, outcomes** — each a rendering of the same API
+fields, scoped by the same access rules as the underlying read. Webhook health
 (`active` → `failing` → `dead`) sits on the dead-letter view, because
-undeliverability is meant to be loud.
+undeliverability is meant to be loud. On every one of the eleven, a cell carries
+an answer *and* its method: `unknown` is written as the word and never as a
+blank or a dash, and every number states which state was counted, from which
+source, over which selection window.
 
 The migrations view, and `migration.count` behind it, answer the question the
 registry exists for: how often each skill actually moved to an agent that ran

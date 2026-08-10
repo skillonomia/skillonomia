@@ -125,7 +125,20 @@ function rowsOf(p: DashboardPayload, key: string): Array<Record<string, any>> {
 
 test("the dashboard is exactly the named views, on both adapters", async () => {
   const f = await fixture();
-  const NAMES = ["library", "evidence", "receipts", "approvals", "dead_letters", "migrations"];
+  // the phase plan's five, the migration counter, then §9's five screens
+  const NAMES = [
+    "library",
+    "evidence",
+    "receipts",
+    "approvals",
+    "dead_letters",
+    "migrations",
+    "fleet",
+    "agent",
+    "skill_approval",
+    "capability",
+    "outcomes",
+  ];
   assert.deepEqual([...DASHBOARD_VIEWS], NAMES);
   const index = rest(f.fx, "GET", "/v1/dashboard", f.fx.keys.owner);
   assert.equal(index.status, 200);
@@ -317,13 +330,48 @@ test("the dashboard does not widen any ACL it composes", async () => {
   assert.ok(!reviewerReceipts.some((r) => r.receipt_id === f.receiptId), "another adopter's receipt is hidden");
   assert.ok(rowsOf(view(f.fx, "receipts", f.fx.keys.owner), "receipts").some((r) => r.receipt_id === f.receiptId), "the skill owner reads it");
 
-  // a cross-workspace actor sees nothing anywhere
+  // A CROSS-WORKSPACE ACTOR SEES NOTHING OF THIS WORKSPACE.
+  //
+  // For the six P6 views that is literally no row at all. §9's five screens are
+  // scoped to the READER'S OWN workspace and its own principals, so the outsider
+  // — a member of wsB — legitimately sees THEMSELVES on the fleet and agent
+  // screens, and would see their own versions if they had any. Asserting "no
+  // rows" there would assert something false about the product; asserting
+  // "nothing of wsA" is both true and the property the ACL is actually for, so
+  // that is what is checked, over the JSON AND over the rendered page.
+  const P6_VIEWS = ["library", "evidence", "receipts", "approvals", "dead_letters", "migrations"] as const;
+  const wsAIdentifiers = [
+    ...(f.fx.db.prepare("SELECT id FROM agents WHERE workspace_id=?").all(f.fx.seed.wsA) as Array<{ id: string }>).map(
+      (r) => r.id,
+    ),
+    ...(f.fx.db.prepare("SELECT slug FROM skills WHERE workspace_id=?").all(f.fx.seed.wsA) as Array<{ slug: string }>).map(
+      (r) => r.slug,
+    ),
+    f.receiptId,
+    f.deadRequestId,
+    f.heldRequestId,
+    f.version.versionId,
+    f.held.versionId,
+  ];
+  assert.ok(wsAIdentifiers.length > 8, "the leak sweep must have something to look for");
   for (const name of DASHBOARD_VIEWS) {
     const payload = view(f.fx, name, f.fx.keys.outsider);
-    for (const section of payload.sections) {
-      assert.deepEqual(section.rows, [], `${name}/${section.key} leaked to a cross-workspace actor`);
+    if ((P6_VIEWS as readonly string[]).includes(name)) {
+      for (const section of payload.sections) {
+        assert.deepEqual(section.rows, [], `${name}/${section.key} leaked to a cross-workspace actor`);
+      }
+    }
+    const raw = rest(f.fx, "GET", `/v1/dashboard/${name}`, f.fx.keys.outsider).raw;
+    const html = rest(f.fx, "GET", `/v1/dashboard/${name}?format=html`, f.fx.keys.outsider).raw;
+    for (const id of wsAIdentifiers) {
+      assert.ok(!raw.includes(id), `${name}: the JSON carries wsA's ${id} to a cross-workspace actor`);
+      assert.ok(!html.includes(id), `${name}: the page carries wsA's ${id} to a cross-workspace actor`);
     }
   }
+  // …and on the §9 screens the outsider sees exactly one principal: themselves
+  const outsiderFleet = rowsOf(view(f.fx, "fleet", f.fx.keys.outsider), "fleet");
+  assert.equal(outsiderFleet.length, 1, "a plain member reads one principal: their own");
+  assert.ok(String(outsiderFleet[0].agent).includes(f.fx.outsider.agent_id));
   f.fx.db.close();
 });
 
@@ -359,6 +407,7 @@ test("rendering escapes hostile field values instead of emitting them as markup"
     title: "Library",
     views: DASHBOARD_VIEWS,
     demo_mode: false,
+    notices: [],
     sections: [
       {
         key: "library",

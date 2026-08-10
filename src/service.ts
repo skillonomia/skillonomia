@@ -167,10 +167,28 @@ import { demoMode } from "./seed.ts";
 import {
   DASHBOARD_VIEWS,
   isDashboardView,
+  type DashboardNotice,
   type DashboardPayload,
   type DashboardSection,
   type DashboardView,
 } from "./dashboard.ts";
+import {
+  APPROVAL_NOTICES,
+  RECONCILIATION_LEGEND,
+  agentSections,
+  approvalSections,
+  capabilitySections,
+  fleetSections,
+  outcomeSections,
+  registryCount,
+  type AgentCapabilityInput,
+  type ApprovalDecisionInput,
+  type ApprovalSubjectInput,
+  type CapabilityVersionInput,
+  type FleetAgentInput,
+  type OutcomeReceiptInput,
+  type OutcomeVersionInput,
+} from "./fleet-dashboard.ts";
 import {
   ALL_TIME,
   describeWindow,
@@ -457,6 +475,25 @@ function safeManifest(json: string): unknown {
     return null;
   }
 }
+
+/** The selection boundary every outcome number on §9's screens is counted over. */
+const RECEIPT_JOURNAL = "receipt_events (registry journal, INSERT-only), all time";
+
+/** The DECLARED SECTIONS a manifest diff compares. It is a comparison of what
+ *  two versions SAY about themselves, not a textual diff of two packages, and
+ *  the screen says so beside every answer it produces. */
+const MANIFEST_SECTIONS = [
+  "title",
+  "capability_statement",
+  "access_policy",
+  "scope",
+  "runtime",
+  "procedure",
+  "evidence",
+  "safety",
+  "lifecycle",
+  "integrity",
+] as const;
 
 export const OBSERVATION_REPORT_NOTE =
   "Records were reduced to §5 arrival markers at this boundary: no record text is stored, logged or returned. " +
@@ -2510,13 +2547,28 @@ export class Registry {
         return this.dashDeadLetters(auth, params);
       case "migrations":
         return this.dashMigrations(auth, params);
+      case "fleet":
+        return this.dashFleet(auth);
+      case "agent":
+        return this.dashAgent(auth);
+      case "skill_approval":
+        return this.dashSkillApproval(auth, params);
+      case "capability":
+        return this.dashCapability(auth, params);
+      case "outcomes":
+        return this.dashOutcomes(auth, params);
     }
   }
 
-  private payload(view: DashboardView, title: string, sections: DashboardSection[]): DashboardPayload {
+  private payload(
+    view: DashboardView,
+    title: string,
+    sections: DashboardSection[],
+    notices: DashboardNotice[] = [],
+  ): DashboardPayload {
     // §9.1: the demo-mode label is part of every view's payload, so both
     // adapters carry it and the rendered page can show it prominently.
-    return { view, title, views: DASHBOARD_VIEWS, sections, demo_mode: demoMode(this.db) };
+    return { view, title, views: DASHBOARD_VIEWS, sections, demo_mode: demoMode(this.db), notices };
   }
 
   /** Library — surface 5's items, including the registry-computed Reputation. */
@@ -3023,6 +3075,465 @@ export class Registry {
         next_cursor: counted.next_cursor,
       },
     ]);
+  }
+
+  // ================================================================ §9 =====
+  // THE FIVE SCREENS, MINIMAL VERSIONS ([D-1]..[D-5]).
+  //
+  // Every one of them is a READ LAYER over what §6 part A and §5.5 already
+  // publish. Nothing below computes a state, a verdict about a runtime, or a
+  // number the surfaces do not already return with its method attached: the
+  // screens exist to RENDER those answers honestly, and `src/fleet-dashboard.ts`
+  // holds the grammar plus the sweep that proves the rendering did not lose
+  // anything on the way out.
+  //
+  // The parts of §9 that belong to work that does not exist yet are declared as
+  // `capability_absent` notices and are NOT rendered as empty tables — an
+  // absent capability and an empty result set are different facts [I-1].
+
+  /** The manifest of one version as an object, or null when unreadable. */
+  private manifestOfVersion(versionId: string): any {
+    const row = this.db.prepare("SELECT manifest_json FROM skill_versions WHERE id=?").get(versionId) as
+      | { manifest_json: string }
+      | undefined;
+    if (!row) return null;
+    return safeManifest(row.manifest_json);
+  }
+
+  /** The last deployment event of one agent that recorded a failure or a drift. */
+  private lastDeploymentFailure(agentId: string): FleetAgentInput["last_failure"] {
+    const row = this.db
+      .prepare(
+        `SELECT e.event AS state, e.server_at_ms AS at_ms, e.reason AS reason, s.slug AS slug
+           FROM assignment_events e
+           JOIN assignments a ON a.id = e.assignment_id
+           JOIN skills s ON s.id = a.skill_id
+          WHERE a.agent_id = ? AND e.event IN ('failed','drifted')
+          ORDER BY e.server_at_ms DESC, e.id DESC LIMIT 1`,
+      )
+      .get(agentId) as { state: string; at_ms: number; reason: string | null; slug: string } | undefined;
+    return row ?? null;
+  }
+
+  /** The last rating this principal recorded. */
+  private lastFeedback(agentId: string): FleetAgentInput["last_feedback"] {
+    const row = this.db
+      .prepare(
+        `SELECT r.score AS score, r.created_at_ms AS at_ms, r.note AS note, s.slug AS slug
+           FROM ratings r
+           JOIN skill_versions v ON v.id = r.skill_version_id
+           JOIN skills s ON s.id = v.skill_id
+          WHERE r.rater_agent_id = ?
+          ORDER BY r.created_at_ms DESC, r.id DESC LIMIT 1`,
+      )
+      .get(agentId) as { score: number; at_ms: number; note: string | null; slug: string } | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * [D-1] THE FLEET — every agent, and the state of the reconciliation.
+   *
+   * The three numbers §9 asks for are three DIFFERENT measurements and are kept
+   * apart on purpose: `intent_assigned` is read from the assignment journal,
+   * `fact_available` from the filesystem under the configured inventory root,
+   * `fact_invoked` from paired call/output records. Merging any two of them
+   * into a single "coverage" figure would be the intent column answering for
+   * the fact column, which is the failure [I-2] exists for.
+   */
+  private dashFleet(auth: AuthContext): DashboardPayload {
+    const list = this.fleetList(auth);
+    const agents: FleetAgentInput[] = list.agents.map((agent) => {
+      const ctx = this.fleetContext(agent.agent_id, auth.workspace_id);
+      return {
+        agent,
+        dead_weight: this.deadWeightOfContext(ctx),
+        last_failure: this.lastDeploymentFailure(agent.agent_id),
+        last_feedback: this.lastFeedback(agent.agent_id),
+      };
+    });
+    return this.payload("fleet", "Fleet", fleetSections({ agents, counts: list.counts }), [RECONCILIATION_LEGEND]);
+  }
+
+  /** [A-5] for one already-gathered context, so the fleet view and the agent
+   *  view read one answer rather than two that could drift. */
+  private deadWeightOfContext(ctx: FleetContext): DeadWeightAnswer {
+    return deadWeightOf({
+      registered: ctx.registered,
+      scan: ctx.scan,
+      intent_active_version_ids: ctx.views.filter((v) => v.intent_state === "active").map((v) => v.skill_version_id),
+      attribution: {
+        registeredWindow: ctx.inventory?.window_detail ?? NO_INVENTORY_WINDOW,
+        invokedWindow: ctx.snapshot?.window_detail ?? NO_SNAPSHOT_WINDOW,
+        invokedSelection: ctx.snapshot?.window ?? "all_time",
+      },
+    });
+  }
+
+  /**
+   * [D-2] THE AGENT — the full capability list, in §4's six states.
+   *
+   * The two runtimes get two tables, because §4's column sets differ. The
+   * `never_used` block is [A-5], counted from records and never from what this
+   * registry intended.
+   */
+  private dashAgent(auth: AuthContext): DashboardPayload {
+    const entries = this.fleetAgentIds(auth).map((id) => {
+      const ctx = this.fleetContext(id, auth.workspace_id);
+      const agent = this.agentRow(ctx);
+      const dead = this.deadWeightOfContext(ctx);
+      const viewByVersion = new Map(ctx.views.map((v) => [v.skill_version_id, v]));
+      const lastInvoked = new Map<string, number | null>();
+      for (const row of ctx.scan) {
+        const before = lastInvoked.get(row.skill_version_id);
+        if (before === undefined || (row.at_ms !== null && (before === null || row.at_ms > before))) {
+          lastInvoked.set(row.skill_version_id, row.at_ms);
+        }
+      }
+      const observationWindow = ctx.snapshot?.window_detail ?? NO_SNAPSHOT_WINDOW;
+      const capabilities: AgentCapabilityInput[] = this.capabilityRows(ctx).map((c) => {
+        const view = c.skill_version_id ? viewByVersion.get(c.skill_version_id) : undefined;
+        const invokedAt = c.skill_version_id ? lastInvoked.get(c.skill_version_id) : undefined;
+        return {
+          kind: c.kind,
+          name: c.name,
+          runtime: c.runtime,
+          skill_version_id: c.skill_version_id,
+          semantic_version: view?.semantic_version ?? null,
+          columns: c.columns,
+          origin: view
+            ? `handed over by transfer ${view.transfer_id} to a recipient of kind \`${view.recipient_kind}\``
+            : "found under the configured inventory root with no assignment of this registry behind it",
+          assigned_by: view
+            ? { agent_id: view.assigned_by.agent_id, type: view.assigned_by.type, role: view.assigned_by.role }
+            : null,
+          assigned_at_ms: view?.created_at_ms ?? null,
+          last_invoked_ms: invokedAt ?? null,
+          last_invoked_reason:
+            invokedAt !== undefined && invokedAt !== null
+              ? "the latest PAIRED call/output record carrying this version's marker [M-5]"
+              : "no paired call/output record carrying this version's marker was found — unobserved, NOT known never to have run [I-1]",
+          observation_window: observationWindow,
+        };
+      });
+      return {
+        agent,
+        columns_reason: ctx.runtime
+          ? null
+          : "runtime_unknown: no runtime has been observed for this agent and none is configured",
+        capabilities,
+        dead_weight: dead,
+        dead_items: dead.items.map((i) => ({
+          kind: i.kind,
+          name: i.name,
+          skill_version_id: i.skill_version_id,
+          reason: i.reason,
+        })),
+      };
+    });
+    return this.payload("agent", "Agent", agentSections({ agents: entries }));
+  }
+
+  /**
+   * [D-3] REGISTER AS A SKILL — the MEANING of a capability, not its manifest.
+   *
+   * [B-6] is the whole point of this screen: a person deciding whether to
+   * approve reads what the thing does, when it applies, what rights it needs,
+   * what went into it and what its author deliberately left out. The JSON is not
+   * shown, and nobody is asked to read one to decide.
+   *
+   * [B-7]/[I-5]: every recorded decision names the TYPE of the principal who
+   * made it, and distinguishes the workspace owner from a principal holding a
+   * role.
+   *
+   * WHAT IS NOT HERE, AND SAYS SO: the drafts inbox with its marking and
+   * redaction preview ([B-2]/[B-3], work 9) and the register of refusals
+   * ([B-5], work 10). Both are declared as absent capabilities rather than
+   * rendered as empty tables.
+   */
+  private dashSkillApproval(auth: AuthContext, params: SearchParams): DashboardPayload {
+    const { items, next_cursor } = this.search(auth, params);
+    const subjects: ApprovalSubjectInput[] = items.map((item) => {
+      const manifest = this.manifestOfVersion(item.skill_version_id);
+      const readable = manifest !== null && typeof manifest === "object";
+      const scope = readable ? (manifest.scope ?? {}) : {};
+      const safety = readable ? (manifest.safety ?? {}) : {};
+      const runtime = readable ? (manifest.runtime ?? {}) : {};
+      const procedure = readable ? (manifest.procedure ?? {}) : {};
+      const strings = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)) : []);
+      return {
+        slug: item.slug,
+        skill_version_id: item.skill_version_id,
+        semantic_version: item.semantic_version,
+        state: item.state,
+        title: readable && typeof manifest.title === "string" ? manifest.title : null,
+        capability_statement:
+          readable && typeof manifest.capability_statement === "string" ? manifest.capability_statement : null,
+        problem_class: typeof scope.problem_class === "string" ? scope.problem_class : null,
+        prerequisites: strings(scope.prerequisites),
+        non_goals: strings(scope.non_goals),
+        risk_level: typeof scope.risk_level === "string" ? scope.risk_level : null,
+        sandbox_requirement: typeof safety.sandbox_requirement === "string" ? safety.sandbox_requirement : null,
+        forbidden_actions: strings(safety.forbidden_actions),
+        secrets_policy: typeof safety.secrets_policy === "string" ? safety.secrets_policy : null,
+        url_allowlist: strings(safety.url_allowlist),
+        cloud_iam_assumptions: strings(runtime.cloud_iam_assumptions),
+        mcp_dependencies: Array.isArray(runtime.mcp_dependencies)
+          ? runtime.mcp_dependencies.map((d: any) => `${String(d?.registry_id)}@${String(d?.version)}`)
+          : [],
+        step_count: Array.isArray(procedure.steps) ? procedure.steps.length : null,
+        file_count: readable && Array.isArray(manifest.integrity) ? manifest.integrity.length : null,
+        required_approvals: strings(scope.required_approvals),
+        approval_state: this.approvalStateOf(item.skill_version_id, strings(scope.required_approvals)),
+        manifest_readable: readable,
+      };
+    });
+
+    const visible = new Set(items.map((i) => i.skill_version_id));
+    const decisionRows = this.db
+      .prepare(
+        `SELECT a.id AS approval_id, a.skill_version_id, a.scope, a.decision, a.note, a.created_at_ms,
+                a.approver_agent_id, s.slug AS slug, v.semantic_version AS semantic_version
+           FROM approvals a
+           JOIN skill_versions v ON v.id = a.skill_version_id
+           JOIN skills s ON s.id = v.skill_id
+          ORDER BY a.created_at_ms DESC, a.id DESC`,
+      )
+      .all() as Array<{
+      approval_id: string;
+      skill_version_id: string;
+      scope: string;
+      decision: string;
+      note: string | null;
+      created_at_ms: number;
+      approver_agent_id: string;
+      slug: string;
+      semantic_version: string;
+    }>;
+    const decisions: ApprovalDecisionInput[] = [];
+    for (const d of decisionRows) {
+      // a decision about a version this actor may not see is not acknowledged
+      if (!visible.has(d.skill_version_id)) continue;
+      const principal = loadPrincipal(this.db, d.approver_agent_id);
+      decisions.push({
+        approval_id: d.approval_id,
+        slug: d.slug,
+        semantic_version: d.semantic_version,
+        scope: d.scope,
+        decision: d.decision,
+        note: d.note,
+        created_at_ms: d.created_at_ms,
+        approver: {
+          agent_id: d.approver_agent_id,
+          type: principal?.type ?? "unknown",
+          role: principal?.role ?? null,
+        },
+      });
+    }
+    return this.payload(
+      "skill_approval",
+      "Register as a skill",
+      approvalSections({ subjects, decisions, next_cursor }),
+      [...APPROVAL_NOTICES],
+    );
+  }
+
+  /** Which of a version's declared approvals have been recorded. Never a bare
+   *  "approved": a version needing none and a version whose approval was
+   *  recorded are different facts. */
+  private approvalStateOf(versionId: string, required: readonly string[]): string {
+    const rows = this.db
+      .prepare("SELECT scope, decision FROM approvals WHERE skill_version_id=? ORDER BY created_at_ms, id")
+      .all(versionId) as Array<{ scope: string; decision: string }>;
+    if (required.length === 0) {
+      return rows.length === 0
+        ? "none required, and none recorded"
+        : `none required; ${rows.length} decision(s) recorded anyway`;
+    }
+    const parts = required.map((scope) => {
+      const decided = rows.filter((r) => r.scope === scope);
+      if (decided.length === 0) return `${scope}: no decision recorded`;
+      return `${scope}: ${decided[decided.length - 1]!.decision}`;
+    });
+    return parts.join(" | ");
+  }
+
+  /**
+   * [D-4] THE CAPABILITY — its versions, where each came from, who holds it,
+   * where it worked, where it broke, how often it migrated [C-1], and what its
+   * rollback is.
+   *
+   * The `diff` is between the DECLARED SECTIONS of two manifests, and it says
+   * so: it is not a textual diff of the packages, and a version with no
+   * predecessor gets `unknown` with the reason rather than an empty cell.
+   */
+  private dashCapability(auth: AuthContext, params: SearchParams): DashboardPayload {
+    const { items, next_cursor } = this.search(auth, params);
+    const readable = new Set(this.fleetAgentIds(auth));
+    const migrationsBySkill = new Map(
+      countMigrationsPerSkill(
+        this.db,
+        [...new Map(items.map((i) => [i.skill_id, { skill_id: i.skill_id, slug: i.slug }])).values()],
+        ALL_TIME,
+      ).map((m) => [m.skill_id, m]),
+    );
+    const versions: CapabilityVersionInput[] = items.map((item) => {
+      const row = this.db
+        .prepare("SELECT author_agent_id, created_at_ms, manifest_json FROM skill_versions WHERE id=?")
+        .get(item.skill_version_id) as
+        | { author_agent_id: string; created_at_ms: number; manifest_json: string }
+        | undefined;
+      const manifest = row ? safeManifest(row.manifest_json) : null;
+      const supersedes =
+        manifest && typeof manifest === "object" && typeof (manifest as any).lifecycle?.supersedes === "string"
+          ? ((manifest as any).lifecycle.supersedes as string)
+          : null;
+      const diff = this.manifestDiff(manifest, supersedes);
+      const holders = this.db
+        .prepare("SELECT DISTINCT agent_id FROM assignments WHERE skill_version_id=? ORDER BY agent_id")
+        .all(item.skill_version_id) as Array<{ agent_id: string }>;
+      const shown = holders.filter((h) => readable.has(h.agent_id)).map((h) => h.agent_id);
+      const hidden = holders.length - shown.length;
+      const assigned = [...shown];
+      if (hidden > 0) assigned.push(`${hidden} further recipient(s) this actor may not read`);
+      const migration = migrationsBySkill.get(item.skill_id);
+      const rollback =
+        manifest && typeof manifest === "object" && Array.isArray((manifest as any).procedure?.rollback)
+          ? ((manifest as any).procedure.rollback as unknown[]).length
+          : null;
+      return {
+        skill_id: item.skill_id,
+        slug: item.slug,
+        skill_version_id: item.skill_version_id,
+        semantic_version: item.semantic_version,
+        state: item.state,
+        author_agent_id: row?.author_agent_id ?? "unknown",
+        created_at_ms: row?.created_at_ms ?? 0,
+        supersedes,
+        diff_sections: diff.sections,
+        diff_reason: diff.reason,
+        assigned_to: assigned,
+        worked: registryCount(item.registry.reputation.adopted_count, "outcome", RECEIPT_JOURNAL),
+        broke: registryCount(item.registry.reputation.failed_count, "outcome", RECEIPT_JOURNAL),
+        rolled_back: registryCount(item.registry.reputation.rolled_back_count, "outcome", RECEIPT_JOURNAL),
+        migrations: registryCount(
+          migration?.migrations ?? 0,
+          "outcome",
+          `${MIGRATION_SOURCE} — ${describeWindow(ALL_TIME)}`,
+          migration === undefined
+            ? "this skill was not among the counted subjects"
+            : `${migration.distinct_recipients} distinct recipient(s), ${migration.runtimes_unknown} migration(s) whose declared runtime could not be read`,
+        ),
+        rollback_steps: rollback,
+      };
+    });
+    return this.payload("capability", "Capability", capabilitySections({ versions, next_cursor }));
+  }
+
+  /** Which DECLARED SECTIONS of two manifests differ. Not a textual diff, and
+   *  it never pretends to be one. */
+  private manifestDiff(manifest: unknown, predecessorId: string | null): { sections: string[] | null; reason: string } {
+    if (!manifest || typeof manifest !== "object") {
+      return { sections: null, reason: "this version's manifest could not be read, so nothing could be compared" };
+    }
+    if (predecessorId === null) {
+      return { sections: null, reason: "this version supersedes nothing: there is no predecessor to compare with" };
+    }
+    const previous = this.manifestOfVersion(predecessorId);
+    if (!previous || typeof previous !== "object") {
+      return {
+        sections: null,
+        reason: `the predecessor ${predecessorId} is not a version of this registry, or its manifest could not be read`,
+      };
+    }
+    const differ: string[] = [];
+    for (const key of MANIFEST_SECTIONS) {
+      const a = JSON.stringify((manifest as any)[key] ?? null);
+      const b = JSON.stringify((previous as any)[key] ?? null);
+      if (a !== b) differ.push(key);
+    }
+    return { sections: differ, reason: `compared section by section against ${predecessorId}` };
+  }
+
+  /**
+   * [D-5] RESULTS — what worked, what broke, and what needs a new version.
+   *
+   * `nothing_reported` is a verdict of its own. A version nobody has closed a
+   * receipt over has NOT been shown to work, and rendering it beside the ones
+   * that did — under a heading that reads "worked" — would be the same collapse
+   * of `unknown` into an answer that [I-1] exists to prevent.
+   */
+  private dashOutcomes(auth: AuthContext, params: SearchParams): DashboardPayload {
+    const { items, next_cursor } = this.search(auth, params);
+    const versions: OutcomeVersionInput[] = items.map((item) => {
+      const r = item.registry.reputation;
+      const bad = r.failed_count + r.rolled_back_count;
+      const verdict: OutcomeVersionInput["verdict"] =
+        bad > 0 ? "needs_new_version" : r.adopted_count > 0 ? "worked" : "nothing_reported";
+      const reason =
+        bad > 0
+          ? `${r.failed_count} chain(s) ended \`failed\` and ${r.rolled_back_count} ended \`rolled_back\``
+          : r.adopted_count > 0
+            ? `${r.adopted_count} chain(s) ended \`adopted\` and none ended \`failed\` or \`rolled_back\``
+            : "no adoption chain over this version has reached a terminal event: nothing was reported, which is not the same as working";
+      return {
+        slug: item.slug,
+        skill_version_id: item.skill_version_id,
+        semantic_version: item.semantic_version,
+        state: item.state,
+        worked: registryCount(r.adopted_count, "outcome", RECEIPT_JOURNAL),
+        broke: registryCount(r.failed_count, "outcome", RECEIPT_JOURNAL),
+        rolled_back: registryCount(r.rolled_back_count, "outcome", RECEIPT_JOURNAL),
+        avg_rating: r.avg_rating,
+        failure_modes: r.failure_modes_observed,
+        verdict,
+        verdict_reason: reason,
+      };
+    });
+
+    const limit = parseLimit(params.limit);
+    const chains = this.db
+      .prepare(
+        `SELECT r.id AS receipt_id, r.adopter_agent_id, s.slug AS slug, s.workspace_id, s.owner_agent_id,
+                (SELECT MAX(server_at_ms) FROM receipt_events WHERE adoption_receipt_id = r.id) AS at_ms,
+                (SELECT failure_report_json FROM receipt_events WHERE adoption_receipt_id = r.id
+                  AND failure_report_json IS NOT NULL ORDER BY event_seq DESC LIMIT 1) AS failure_json
+           FROM adoption_receipts r
+           JOIN skill_versions v ON v.id = r.skill_version_id
+           JOIN skills s ON s.id = v.skill_id
+          ORDER BY r.created_at_ms DESC, r.id DESC`,
+      )
+      .all() as Array<{
+      receipt_id: string;
+      adopter_agent_id: string;
+      slug: string;
+      workspace_id: string;
+      owner_agent_id: string;
+      at_ms: number | null;
+      failure_json: string | null;
+    }>;
+    const receipts: OutcomeReceiptInput[] = [];
+    for (const c of chains) {
+      if (receipts.length === limit) break;
+      if (!this.mayReadReceipt(auth, c)) continue;
+      let summary: string | null = null;
+      if (c.failure_json !== null) {
+        const parsed = safeManifest(c.failure_json) as any;
+        summary =
+          parsed && typeof parsed === "object"
+            ? `${String(parsed.category ?? "unknown category")}: ${String(parsed.summary ?? "no summary")}`
+            : "the failure report could not be read";
+      }
+      receipts.push({
+        receipt_id: c.receipt_id,
+        slug: c.slug,
+        derived_state: derivedState(this.db, c.receipt_id),
+        adopter_agent_id: c.adopter_agent_id,
+        at_ms: c.at_ms ?? 0,
+        failure_summary: summary,
+        stalled: isStalled(this.db, c.receipt_id, this.now()),
+      });
+    }
+    return this.payload("outcomes", "Results", outcomeSections({ versions, receipts, next_cursor }));
   }
 
   /**
@@ -3773,16 +4284,7 @@ export class Registry {
     const ctx = this.fleetContext(agentId, auth.workspace_id);
     const agent = this.agentRow(ctx);
     const capabilities = this.capabilityRows(ctx);
-    const dead = deadWeightOf({
-      registered: ctx.registered,
-      scan: ctx.scan,
-      intent_active_version_ids: ctx.views.filter((v) => v.intent_state === "active").map((v) => v.skill_version_id),
-      attribution: {
-        registeredWindow: ctx.inventory?.window_detail ?? NO_INVENTORY_WINDOW,
-        invokedWindow: ctx.snapshot?.window_detail ?? NO_SNAPSHOT_WINDOW,
-        invokedSelection: ctx.snapshot?.window ?? "all_time",
-      },
-    });
+    const dead = this.deadWeightOfContext(ctx);
     return {
       agent,
       columns: ctx.runtime ? [...columnsOf(ctx.runtime)] : [],

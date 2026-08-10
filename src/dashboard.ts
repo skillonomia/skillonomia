@@ -5,19 +5,22 @@
 // shows is a field of an API response (search + registry view, receipt read,
 // the approval matrix, `deadLetters()`, webhook health, `migrationCounts()`).
 //
-// Appendix H's `dashboard.view` row fixes what the envelope must be: the six
-// view names, the ACL scoping, `demo_mode`, and `fields` naming "the API fields
+// Appendix H's `dashboard.view` row fixes what the envelope must be: the view
+// names, the ACL scoping, `demo_mode`, and `fields` naming "the API fields
 // of the numbered surfaces that the section's `rows` carry — the dashboard
 // computes nothing of its own and is a rendering, never a second source of
 // truth". The CHOICE of sections it deliberately leaves to the rendering, and
 // ranking or visual polish is not a property of this format at all.
 //
 // So the contract this module implements is exactly that and nothing more:
-//   * the five views named as the internal phase plan names them, and
+//   * the five views named as the internal phase plan names them,
 //     `migrations` — the per-skill migration counter, which is a product
 //     surface rather than a phase-plan view: the operator who installed this
 //     registry has to be able to see whether anything ever migrated, and every
-//     number on it states its source, its selection window and its state;
+//     number on it states its source, its selection window and its state —
+//     and §9's five screens ([D-1]..[D-5]), whose CONTENT is built in
+//     `src/fleet-dashboard.ts` and whose two extra rendering devices (a section
+//     `note`, a row class taken from a named field) live here;
 //   * each view declares the API FIELDS it renders (`fields` on every section),
 //     which makes "renders the corresponding API fields" a checkable property
 //     rather than an opinion — a test asserts both the field names and the row
@@ -32,12 +35,29 @@
 
 import { ApiError } from "./errors.ts";
 
-export type DashboardView = "library" | "evidence" | "receipts" | "approvals" | "dead_letters" | "migrations";
+export type DashboardView =
+  | "library"
+  | "evidence"
+  | "receipts"
+  | "approvals"
+  | "dead_letters"
+  | "migrations"
+  | "fleet"
+  | "agent"
+  | "skill_approval"
+  | "capability"
+  | "outcomes";
 
 /**
- * The five views of the internal phase plan, in the order it lists them, and
+ * The five views of the internal phase plan, in the order it lists them,
  * `migrations` after them — added later, and appended rather than inserted, so
- * the phase plan's own order stays readable.
+ * the phase plan's own order stays readable — and then §9's five screens
+ * ([D-1]..[D-5]), appended for the same reason.
+ *
+ * The §9 five are the MINIMAL versions: they carry every fact their §9 row
+ * names, and where a part of a screen belongs to work that does not exist yet
+ * they say so in a `capability_absent` notice rather than rendering an empty
+ * table that a reader would take for "nothing found" [I-1].
  */
 export const DASHBOARD_VIEWS: readonly DashboardView[] = [
   "library",
@@ -46,6 +66,11 @@ export const DASHBOARD_VIEWS: readonly DashboardView[] = [
   "approvals",
   "dead_letters",
   "migrations",
+  "fleet",
+  "agent",
+  "skill_approval",
+  "capability",
+  "outcomes",
 ] as const;
 
 export function isDashboardView(v: unknown): v is DashboardView {
@@ -69,6 +94,30 @@ export function parseDashboardFormat(v: unknown): DashboardFormat {
   throw new ApiError("INVALID_SCHEMA", "format must be json or html");
 }
 
+/**
+ * A block of a view that is NOT a table of data.
+ *
+ * It exists because of one distinction §9 turns on and a table cannot make:
+ * AN ABSENT CAPABILITY IS NOT AN EMPTY RESULT SET [I-1]. A screen whose
+ * drafts inbox has not been built yet must not render an empty drafts table
+ * under the caption "no draft found" — that reads as "we looked and there was
+ * nothing", which is a claim about the data and not about the software.
+ *
+ * `capability_absent` says the part does not exist, and names the work it
+ * belongs to. `legend` explains what a rendering DEVICE means — the colour of a
+ * row, in the fleet view's case — so the meaning is on the page beside the
+ * thing it decodes rather than in a commit message.
+ */
+export type DashboardNoticeKind = "capability_absent" | "legend";
+
+export interface DashboardNotice {
+  kind: DashboardNoticeKind;
+  /** a short name for what is being declared */
+  subject: string;
+  /** the sentence a reader of the page gets, in full */
+  detail: string;
+}
+
 export interface DashboardSection {
   key: string;
   title: string;
@@ -77,6 +126,24 @@ export interface DashboardSection {
   rows: Array<Record<string, unknown>>;
   /** shown when `rows` is empty, so an empty view is still legible */
   empty: string;
+  /**
+   * A sentence rendered with the section whether or not it has rows — for
+   * saying what the table is counted over, or what it deliberately leaves out.
+   * `empty` cannot carry that: it disappears the moment one row arrives.
+   */
+  note?: string;
+  /**
+   * The name of the row field whose VALUE decides the row's CSS class
+   * (`row-<value>`).
+   *
+   * §9's [D-1] requires the colour of a fleet row to encode THE STATE OF THE
+   * RECONCILIATION between what the registry intends and what a runtime
+   * reported — not an abstract "all is well". Naming a FIELD rather than
+   * passing a function keeps the payload JSON, keeps the two adapters serving
+   * one answer, and makes the colour checkable from the shipped bytes: the
+   * class of a row and the value in its own cell must agree.
+   */
+  row_class_field?: string;
   /**
    * Appendix H pagination, for the sections that page over versions: the
    * opaque cursor to pass back as `?cursor=`. Absent where the section is not
@@ -98,6 +165,13 @@ export interface DashboardPayload {
    * in the rendered page, not a comment in the README.
    */
   demo_mode: boolean;
+  /**
+   * The non-table blocks of this view. Always present — empty on the views
+   * that declare nothing. An OPTIONAL field would let a screen quietly omit
+   * the statement that a part of it does not exist, and that omission is
+   * exactly the [I-1] failure this field was added for.
+   */
+  notices: DashboardNotice[];
 }
 
 // --------------------------------------------------------------- rendering
@@ -126,17 +200,46 @@ export function renderValue(v: unknown): string {
   return String(v);
 }
 
+/**
+ * The CSS class a row's class field yields: `row-` plus the field's own value,
+ * reduced to a class-safe token.
+ *
+ * The value is NOT translated into a palette word here, and that is the point.
+ * A mapping step is where "pending" quietly becomes "warning" and "in_sync"
+ * becomes "ok"; keeping the class the value itself means the colour on the page
+ * and the word in the cell cannot drift apart, and a check over the rendered
+ * bytes can insist they agree.
+ */
+export function rowClassOf(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const token = String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "-")
+    .slice(0, 40);
+  return token.length === 0 ? null : `row-${token}`;
+}
+
+function renderNotice(n: DashboardNotice): string {
+  return `<div class="notice notice-${escapeHtml(n.kind)}"><h3>${escapeHtml(n.kind)}: ${escapeHtml(n.subject)}</h3>
+<p>${escapeHtml(n.detail)}</p></div>`;
+}
+
 function renderSection(s: DashboardSection): string {
   const head = s.fields.map((f) => `<th>${escapeHtml(f)}</th>`).join("");
+  const note = s.note === undefined ? "" : `\n<p class="note">${escapeHtml(s.note)}</p>`;
   if (s.rows.length === 0) {
-    return `<section id="${escapeHtml(s.key)}"><h2>${escapeHtml(s.title)}</h2>
+    return `<section id="${escapeHtml(s.key)}"><h2>${escapeHtml(s.title)}</h2>${note}
 <table><thead><tr>${head}</tr></thead><tbody></tbody></table>
 <p class="empty">${escapeHtml(s.empty)}</p></section>`;
   }
   const body = s.rows
-    .map((row) => `<tr>${s.fields.map((f) => `<td>${escapeHtml(renderValue(row[f]))}</td>`).join("")}</tr>`)
+    .map((row) => {
+      const cls = s.row_class_field === undefined ? null : rowClassOf(row[s.row_class_field]);
+      const open = cls === null ? "<tr>" : `<tr class="${escapeHtml(cls)}">`;
+      return `${open}${s.fields.map((f) => `<td>${escapeHtml(renderValue(row[f]))}</td>`).join("")}</tr>`;
+    })
     .join("\n");
-  return `<section id="${escapeHtml(s.key)}"><h2>${escapeHtml(s.title)}</h2>
+  return `<section id="${escapeHtml(s.key)}"><h2>${escapeHtml(s.title)}</h2>${note}
 <table><thead><tr>${head}</tr></thead><tbody>
 ${body}
 </tbody></table></section>`;
@@ -155,14 +258,32 @@ export function renderDashboard(payload: DashboardPayload): string {
     ? `<p class="demo"><strong>DEMO MODE</strong> — this instance has exactly one human principal (SPEC §9.1). ` +
       `That principal may review the built-in seed package. Demo mode ends automatically when a second human principal is created.</p>`
     : "";
+  const notices = payload.notices.length === 0 ? "" : payload.notices.map(renderNotice).join("\n");
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Skillonomia — ${escapeHtml(payload.title)}</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skillonomia — ${escapeHtml(payload.title)}</title>
 <style>body{font-family:system-ui,sans-serif;margin:2rem}table{border-collapse:collapse;margin:1rem 0}
 th,td{border:1px solid #ccc;padding:.3rem .6rem;text-align:left;vertical-align:top;font-size:.9rem}
-th{background:#f3f3f3}.empty{color:#666}
-.demo{background:#fff3cd;border:1px solid #e0b400;padding:.6rem 1rem;margin:1rem 0;font-size:.95rem}</style></head>
+th{background:#f3f3f3}.empty{color:#666}.note{color:#444;font-size:.9rem;margin:.2rem 0 .6rem}
+.demo{background:#fff3cd;border:1px solid #e0b400;padding:.6rem 1rem;margin:1rem 0;font-size:.95rem}
+.notice{border-left:.35rem solid #666;padding:.5rem 1rem;margin:1rem 0;font-size:.95rem;background:#f7f7f7}
+.notice-capability_absent{border-left-color:#7b1fa2;background:#f6effa}
+/* [D-1] the colour of a fleet row is the state of the RECONCILIATION between
+   what the registry intends and what a runtime reported. It is not a health
+   indicator: an unknown reconciliation is not a failure, and in_sync is not a compliment. */
+tr.row-in_sync td{background:#eef7ee}
+tr.row-pending td{background:#fff6e0}
+tr.row-drifted td{background:#ffeedd}
+tr.row-failed td{background:#fdeceb}
+tr.row-unknown td{background:#eceff1}
+/* the owner reads this on a phone: a cell WRAPS, and no column is dropped —
+   losing a column is how an attribute of a number goes missing [I-3] */
+td{overflow-wrap:anywhere}
+@media (max-width:640px){body{margin:.6rem}th,td{font-size:.8rem;padding:.25rem .35rem}
+section{overflow-x:auto}}</style></head>
 <body><h1>${escapeHtml(payload.title)}</h1><nav>${nav}</nav>
 ${banner}
+${notices}
 ${payload.sections.map(renderSection).join("\n")}
 </body></html>`;
 }
