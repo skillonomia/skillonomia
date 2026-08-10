@@ -69,7 +69,7 @@ this is".
 
 ## Validation
 
-The suite in `test/` runs 714 tests on Node 22 and on Bun 1.3, covering the
+The suite in `test/` runs on Node 22 and on Bun 1.3, covering the
 package format, the signing and verification vectors, the state machines, the
 gates, the access rules, the CLI, provisioning, the outbound transport, the
 transparency-log namespace, the bind address, the network boundary of every
@@ -117,9 +117,9 @@ download one:
   not run it.
 - There is **no `skillonomia/skillonomia` container image** in any registry.
 - The Linux x86_64 binary is produced by `npm run build:binary` from a
-  checkout; it is not downloadable anywhere.
+  checkout; no release of this project ships one.
 
-Until a release exists, every path below starts from a checkout of this
+Every path below starts from a checkout of this
 repository, and the Docker path builds the image locally from the `Dockerfile`
 in it. When artifacts are published, the commands that consume them will be
 added here — not before.
@@ -339,8 +339,11 @@ Two rules do most of the work:
 
 ## Interfaces
 
-Every surface exists twice — REST under `/v1` and MCP tools on the same listener
-at `/mcp` — over one service layer, so the two cannot diverge.
+Nearly every surface exists twice — REST under `/v1` and MCP tools on the same
+listener at `/mcp` — over one service layer, so the two cannot diverge. The
+exceptions are named in [`docs/API.md`](docs/API.md): `GET /health`,
+`POST /v1/auth/bootstrap`, `GET /v1/receipts/{id}` and webhook management are
+REST-only, and the table below ends with them.
 
 | MCP tool | REST |
 |---|---|
@@ -359,6 +362,7 @@ at `/mcp` — over one service layer, so the two cannot diverge.
 | `skill.deprecate` | `POST /v1/versions/{id}/deprecate` |
 | `skill.approve` | `POST /v1/versions/{id}/approvals` |
 | `dashboard.view` | `GET /v1/dashboard/{view}` (`?format=html`) |
+| `migration.count` | `GET /v1/migrations?since_ms=&until_ms=` |
 | `tlog.read` | `GET /v1/tlog?cursor=` |
 | `principal.create` | `POST /v1/principals` |
 | `principal.list` | `GET /v1/principals` |
@@ -374,18 +378,27 @@ principal and receives its API key **once**, and the principal registers its
 **own** Ed25519 signing key — never anyone else's, at any role, because `kid` →
 `manifest.author_agent` is what makes a signed package attributable.
 
-The dashboard has five read-only views — **library, evidence, receipts,
-approvals, dead letters** — each a rendering of the same API fields, scoped by
-the same access rules as the underlying read. Webhook health
+The dashboard has six read-only views — **library, evidence, receipts,
+approvals, dead letters, migrations** — each a rendering of the same API fields,
+scoped by the same access rules as the underlying read. Webhook health
 (`active` → `failing` → `dead`) sits on the dead-letter view, because
 undeliverability is meant to be loud.
+
+The migrations view, and `migration.count` behind it, answer the question the
+registry exists for: how often each skill actually moved to an agent that ran
+it. Per skill it counts the migrations, the distinct recipients and the distinct
+declared runtimes — all three out of the append-only receipt journal, never out
+of any mutable column, so the figure cannot be raised after the fact. A skill
+that never migrated is a row of zeroes rather than a missing row, a runtime that
+could not be read is reported as unknown rather than silently dropped to zero,
+and every row states its source and the window it was counted over.
 
 See `docs/API.md` for the full request and response shapes, and
 `docs/OPERATIONS.md` for running one.
 
 ## Packaging
 
-Three paths, all of them built from this checkout. None of them downloads a
+Four paths, all of them built from this checkout. None of them downloads a
 published artifact, because there is none yet (see
 [Availability of prebuilt artifacts](#availability-of-prebuilt-artifacts)).
 
@@ -393,9 +406,10 @@ published artifact, because there is none yet (see
 |---|---|---|
 | Docker | `docker build -t skillonomia:local .` → `docker run -p 127.0.0.1:7431:7431 -v skillonomia-data:/data skillonomia:local` | the normative quickstart target; the publish is loopback-only |
 | Node | `npm ci` → `npm start -- --port 7431 --data ./skillonomia-data` | needs Node ≥22.6 |
+| npm tarball | `npm pack` → `npm install -g ./skillonomia-0.1.0.tgz` → `skillonomia serve` | packed here and installed **from the file**, never from a registry; `prepack` builds the plain-JS entry point the installed package runs |
 | Linux x86_64 binary | `npm run build:binary` → `dist/skillonomia serve` | ships `migrations/`, `schema/` and `seed/` next to the executable |
 
-All three rows are **local**: each one puts a plain-HTTP listener on the
+All four rows are **local**: each one puts a plain-HTTP listener on the
 loopback and on nothing else. Serving another host is not a flag on any of
 them, it is a different topology — a **TLS-terminating** reverse proxy in front,
 with the registry port not published at all (see
@@ -478,7 +492,7 @@ keeps only a hash plus a reference into the deployment-local store.
 npm ci
 npm run typecheck     # tsc --noEmit, strict
 npm test              # Node 22
-bun test              # Bun 1.3.14 (canonical runtime)
+npm run test:bun      # Bun 1.3.14 (canonical runtime)
 npm start             # a local instance on :7431
 npm run gen-seed      # regenerate the built-in seed package
 npm run verify -- <pkg> <db>     # §4.4 over a package, against a registry
@@ -487,9 +501,11 @@ npm run verify-log -- <db>       # walk and recompute the transparency-log chain
 
 `verify` and `verify-log` are subcommands of the one executable
 (`src/cli.ts`), so the same five commands exist on every packaging path — from a
-checkout as `npm run …` above, inside the container as
-`docker exec <container> bun run /app/src/cli.ts …`, and from the compiled
-binary as `./dist/skillonomia …`:
+checkout as `node --experimental-strip-types --no-warnings src/cli.ts …` (the
+`npm run …` lines above are aliases for three of the five, and `package.json`
+defines no script for `version` or `help`), inside the container as
+`docker exec <container> bun run /app/src/cli.ts …`, from an installed tarball
+as `skillonomia …`, and from the compiled binary as `./dist/skillonomia …`:
 
 ```bash
 skillonomia verify <package> [--db PATH] [--json]     # 0 verified, 1 not, 2 usage
@@ -509,7 +525,7 @@ opens — so on a running deployment neither needs a path.
 | `src/gates.ts` | the eight safety gates and their severity tables |
 | `src/service.ts` | the one logic layer behind both adapters |
 | `src/receipts.ts`, `src/delivery.ts`, `src/webhooks.ts`, `src/transport.ts` | receipts, the delivery machine, webhook push, and the SSRF-constrained outbound transport |
-| `src/dashboard.ts` | the five dashboard views |
+| `src/dashboard.ts` | the dashboard's view list, payload shape and renderer |
 | `src/server.ts`, `src/cli-commands.ts`, `bin/`, `Dockerfile` | the runnable deployment and its command line |
 | `vectors/`, `seed/` | published test vectors and the built-in seed package |
 | `docs/` | operations and API reference |

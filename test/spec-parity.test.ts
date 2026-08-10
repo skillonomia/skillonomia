@@ -413,6 +413,8 @@ const RESPONSE_SHAPES: ReadonlyArray<{ row: string; file: string; iface: string 
   { row: "`GET /v1/receipts/{id}`", file: "src/service.ts", iface: "ReceiptView" },
   { row: "`tlog.read`", file: "src/tlog.ts", iface: "TlogRow" },
   { row: "`POST /v1/webhooks`", file: "src/webhooks.ts", iface: "RegisteredWebhook" },
+  { row: "`migration.count`", file: "src/skill-migrations.ts", iface: "MigrationCountResponse" },
+  { row: "`migration.count`", file: "src/skill-migrations.ts", iface: "SkillMigrationCount" },
   { row: "`dashboard.view`", file: "src/dashboard.ts", iface: "DashboardPayload" },
   { row: "`dashboard.view`", file: "src/dashboard.ts", iface: "DashboardSection" },
 ];
@@ -968,10 +970,12 @@ test("§2 names every field of both CLI --json envelopes", () => {
 // let an invented runtime id be written over a closed adoption's environment,
 // raising a release counter that read from that column.
 //
-// So three things have to stay true together: the declared environment is
-// written to the INSERT-only event rather than to the mutable request row; the
-// response has no `noop` member to hide a refusal in; and the sentence that
-// grants a byte-for-byte repeat says IN THE SAME BREATH what bounds it.
+// So four things have to stay true together, and each is checked against the
+// code rather than restated: the declared environment is written to the
+// INSERT-only event rather than to the mutable request row; the counter does
+// not read the mutable column; the response has no `noop` member to hide a
+// refusal in; and the sentence that grants a byte-for-byte repeat says IN THE
+// SAME BREATH what bounds it.
 // ===========================================================================
 
 test("the declared environment lives on the event, in the document and in the code", () => {
@@ -993,6 +997,30 @@ test("the declared environment lives on the event, in the document and in the co
     event < cache,
     "the mutable request row is written before the INSERT-only event — that ordering is what made the declaration forgeable",
   );
+
+  assert.ok(
+    FLAT.includes("**The declared environment lives on the event, and this is a defence of the release gate rather than a matter of tidy writing.**"),
+    "§5.3 must present the rule as a defence of the acceptance figure, not as write hygiene",
+  );
+  assert.ok(
+    FLAT.includes("A registry MUST NOT compute this conjunct from `adoption_requests.requester_context_json`"),
+    "§5.3 must forbid counting the gate from the mutable column by name",
+  );
+});
+
+test("the migration counters are computed from the journal, in the document and in the code", () => {
+  // The query used to live in the release gate. It is now the SHIPPED
+  // counter's, and the gate calls it — so this guard follows it there, and the
+  // rule it enforces now protects a product surface as well as the acceptance
+  // figure.
+  const counter = read("src/skill-migrations.ts");
+  const query = /function selectPairs\([\s\S]*?\.all\(\.\.\.params\)/.exec(counter);
+  assert.ok(query, "the counting query was not found — this guard is reading the wrong thing");
+  assert.ok(
+    !/requester_context_json/.test(query[0]),
+    "the migration counter reads `requester_context_json` again — that column is mutable and the figure was forgeable through it",
+  );
+  assert.ok(/receipt_events/.test(query[0]) && /environment_json/.test(query[0]), "it must read the delivered events");
 
   assert.ok(
     FLAT.includes("**The declared environment lives on the event, and this is a defence of the release gate rather than a matter of tidy writing.**"),

@@ -6,7 +6,11 @@
 // carry — the dashboard computes nothing of its own and is a rendering, never a
 // second source of truth". What sections a view is CUT into is presentation and
 // is deliberately not fixed there, so nothing below asserts a ranking or a
-// visual opinion.
+// visual opinion. The `migrations` view came later and is not one of the phase
+// plan's five: it is the product surface of the migration counter, and its own
+// suite (test/migration-count.test.ts) checks what its numbers mean. What the
+// generic assertions here still owe it is everything they owe the others —
+// the envelope, the rendered fields, and the ACL it must not widen.
 //
 // So this suite checks exactly that, plus the one thing a read layer can get
 // dangerously wrong: it must not widen the ACL of the reads it composes, and it
@@ -47,7 +51,7 @@ interface Fixture {
 }
 
 /**
- * One graph exercising all five views, built through the surfaces: a validated
+ * One graph exercising every view, built through the surfaces: a validated
  * adoption + rating, a §7.3 hold with a recorded decision, and a dead-lettered
  * request whose endpoint died under §5.2's endpoint-health rules.
  */
@@ -117,14 +121,15 @@ function rowsOf(p: DashboardPayload, key: string): Array<Record<string, any>> {
   return s!.rows;
 }
 
-// ------------------------------------------------------- the five views exist
+// ------------------------------------------------------------ the views exist
 
-test("the dashboard is exactly the five named views, on both adapters", async () => {
+test("the dashboard is exactly the named views, on both adapters", async () => {
   const f = await fixture();
-  assert.deepEqual([...DASHBOARD_VIEWS], ["library", "evidence", "receipts", "approvals", "dead_letters"]);
+  const NAMES = ["library", "evidence", "receipts", "approvals", "dead_letters", "migrations"];
+  assert.deepEqual([...DASHBOARD_VIEWS], NAMES);
   const index = rest(f.fx, "GET", "/v1/dashboard", f.fx.keys.owner);
   assert.equal(index.status, 200);
-  assert.deepEqual(index.body.views, ["library", "evidence", "receipts", "approvals", "dead_letters"]);
+  assert.deepEqual(index.body.views, NAMES);
   for (const name of DASHBOARD_VIEWS) {
     const payload = view(f.fx, name, f.fx.keys.owner);
     assert.equal(payload.view, name);

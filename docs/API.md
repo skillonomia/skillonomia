@@ -202,7 +202,8 @@ re-deprecating converges (`noop:true`) and does not move the recorded date.
 | `GET /v1/webhooks` | your endpoints with `status` and `failure_count` |
 | `DELETE /v1/webhooks/{id}` | your endpoints only |
 | `GET /v1/dashboard` | the list of views |
-| `GET /v1/dashboard/{view}` | one of `library`, `evidence`, `receipts`, `approvals`, `dead_letters`; `?format=json` (default) or `?format=html`. Any other value is `INVALID_SCHEMA` on both adapters. Each section declares the API fields it renders; rows are scoped by the same rules as the underlying read. `demo_mode` is on the payload. |
+| `GET /v1/dashboard/{view}` | one of `library`, `evidence`, `receipts`, `approvals`, `dead_letters`, `migrations`; `?format=json` (default) or `?format=html`. Any other value is `INVALID_SCHEMA` on both adapters. Each section declares the API fields it renders; rows are scoped by the same rules as the underlying read. `demo_mode` is on the payload. |
+| `GET /v1/migrations` | the migration counter (`migration.count`): one row per skill you can see, with `migrations`, `distinct_recipients`, `distinct_runtimes`, the runtime list and `runtimes_unknown`. Counted from the append-only receipt journal — a terminal `adopted` event with server-validated evidence — and never from `adoption_requests.requester_context_json`. Optional `since_ms`/`until_ms` bound the window; a non-integer bound, or a pair in the wrong order, is `INVALID_SCHEMA`. Every row restates its `source`, its `window` and its `measurement_state`, and a skill that never migrated is a row of zeroes rather than a missing row. Strictly reading. |
 
 ## MCP
 
@@ -210,7 +211,10 @@ re-deprecating converges (`noop:true`) and does not move the recorded date.
 advertised tools are the thirteen surface names above, plus `skill.approve`,
 `principal.create`, `principal.list`, `principal.issue_api_key`,
 `principal.revoke_api_key`, `signing_key.register`, `signing_key.list`,
-`signing_key.revoke`, `tlog.read` and `dashboard.view`. Arguments are the REST
+`signing_key.revoke`, `tlog.read`, `migration.count` and `dashboard.view`.
+The reading tools and the writing ones are separate names — `migration.count`
+carries `readOnlyHint`, and there is no general-purpose tool that could stand in
+for either kind. Arguments are the REST
 body fields with the path parameter folded in (`skill_version_id`,
 `adoption_request_id`, `receipt_id`, `principal_id`, `api_key_id`, `kid`,
 `view`). Errors come back as a tool result with `isError: true` carrying the

@@ -315,7 +315,26 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       return json(200, JSON.stringify(registry.search(auth, searchParamsOf(url))));
     }
 
-    // ---- P6: the five dashboard views (Appendix H, `dashboard.view`)
+    // The migration counter (Appendix H, `migration.count`): a read, with the
+    // surface-5 filters and an optional selection window. The window bounds are
+    // parsed by the same parser the MCP adapter uses, so a malformed one is
+    // INVALID_SCHEMA on both.
+    if (method === "GET" && path === "/v1/migrations") {
+      const since = url.searchParams.get("since_ms");
+      const until = url.searchParams.get("until_ms");
+      return json(
+        200,
+        JSON.stringify(
+          registry.migrationCounts(auth, {
+            ...searchParamsOf(url),
+            since_ms: since === null ? undefined : since,
+            until_ms: until === null ? undefined : until,
+          }),
+        ),
+      );
+    }
+
+    // ---- P6: the dashboard views (Appendix H, `dashboard.view`)
 
     if (method === "GET" && path === "/v1/dashboard") {
       return json(200, JSON.stringify({ views: DASHBOARD_VIEWS }));

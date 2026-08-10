@@ -304,9 +304,42 @@ export const MCP_TOOLS = [
     },
   },
   {
+    name: "migration.count",
+    description:
+      "How often each visible skill MIGRATED: distinct (version, recipient) pairs with a terminal `adopted` receipt, distinct recipients, and distinct declared runtimes — counted from the INSERT-only receipt journal. Optional since_ms/until_ms bound the selection window; every row states its source, window and measurement state. Read-only: it counts, and changes nothing.",
+    // Every tool here is one step of the loop, and the reading ones are not the
+    // writing ones. This tool reads: the hints say so, so a client can call it
+    // without an approval prompt and can never mistake it for a step that
+    // appends an event. `idempotentHint` is trivially true for a read, and
+    // `openWorldHint` false because it touches this registry and nothing else.
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        since_ms: { type: "number" },
+        until_ms: { type: "number" },
+        q: { type: "string" },
+        capability: { type: "string" },
+        runtime: { type: "string" },
+        tool: { type: "string" },
+        risk: { type: "string" },
+        state: { type: "string" },
+        min_adopted: { type: "number" },
+        min_rating: { type: "number" },
+        limit: { type: "number" },
+        cursor: { type: "string" },
+      },
+    },
+  },
+  {
     name: "dashboard.view",
     description:
-      "P6 dashboard: one of the five views (library, evidence, receipts, approvals, dead_letters), scoped by the same ACL as the underlying reads. format=html renders the same payload.",
+      "P6 dashboard: one of the six views (library, evidence, receipts, approvals, dead_letters, migrations), scoped by the same ACL as the underlying reads. format=html renders the same payload.",
     inputSchema: {
       type: "object",
       properties: {
@@ -460,6 +493,8 @@ function callTool(registry: Registry, auth: AuthContext, name: string, args: any
     }
     case "tlog.read":
       return { json: JSON.stringify(registry.readTlog(auth, args ?? {})), replayed: false };
+    case "migration.count":
+      return { json: JSON.stringify(registry.migrationCounts(auth, (args ?? {}) as SearchParams)), replayed: false };
     case "dashboard.view": {
       const format = parseDashboardFormat(args?.format);
       const payload = registry.dashboard(auth, args?.view, (args ?? {}) as SearchParams);

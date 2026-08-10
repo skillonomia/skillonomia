@@ -1,10 +1,11 @@
-// P6 dashboard — the five views the internal phase plan names (library,
-// evidence, receipts, approvals, dead letters) as a THIN READ LAYER over the
+// P6 dashboard — the views the internal phase plan names (library, evidence,
+// receipts, approvals, dead letters), plus the migration counter the registry
+// exists to make countable, as a THIN READ LAYER over the
 // service functions the earlier phases already ship. It computes nothing of its own: every value it
 // shows is a field of an API response (search + registry view, receipt read,
-// the approval matrix, `deadLetters()`, webhook health).
+// the approval matrix, `deadLetters()`, webhook health, `migrationCounts()`).
 //
-// Appendix H's `dashboard.view` row fixes what the envelope must be: the five
+// Appendix H's `dashboard.view` row fixes what the envelope must be: the six
 // view names, the ACL scoping, `demo_mode`, and `fields` naming "the API fields
 // of the numbered surfaces that the section's `rows` carry — the dashboard
 // computes nothing of its own and is a rendering, never a second source of
@@ -12,7 +13,11 @@
 // ranking or visual polish is not a property of this format at all.
 //
 // So the contract this module implements is exactly that and nothing more:
-//   * five views, named as the internal phase plan names them;
+//   * the five views named as the internal phase plan names them, and
+//     `migrations` — the per-skill migration counter, which is a product
+//     surface rather than a phase-plan view: the operator who installed this
+//     registry has to be able to see whether anything ever migrated, and every
+//     number on it states its source, its selection window and its state;
 //   * each view declares the API FIELDS it renders (`fields` on every section),
 //     which makes "renders the corresponding API fields" a checkable property
 //     rather than an opinion — a test asserts both the field names and the row
@@ -27,15 +32,20 @@
 
 import { ApiError } from "./errors.ts";
 
-export type DashboardView = "library" | "evidence" | "receipts" | "approvals" | "dead_letters";
+export type DashboardView = "library" | "evidence" | "receipts" | "approvals" | "dead_letters" | "migrations";
 
-/** The five views of the internal phase plan, in the order it lists them. */
+/**
+ * The five views of the internal phase plan, in the order it lists them, and
+ * `migrations` after them — added later, and appended rather than inserted, so
+ * the phase plan's own order stays readable.
+ */
 export const DASHBOARD_VIEWS: readonly DashboardView[] = [
   "library",
   "evidence",
   "receipts",
   "approvals",
   "dead_letters",
+  "migrations",
 ] as const;
 
 export function isDashboardView(v: unknown): v is DashboardView {

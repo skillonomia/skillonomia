@@ -280,7 +280,10 @@ test("MCP: initialize + tools/list expose exactly the implemented surfaces", () 
       "signing_key.revoke",
       // auxiliary (Appendix H): the public transparency-log read
       "tlog.read",
-      // P6 auxiliary: the five dashboard views (not one of the 11)
+      // auxiliary (Appendix H): the per-skill migration counter — a READ, and
+      // separate from every tool that appends a receipt event
+      "migration.count",
+      // P6 auxiliary: the dashboard views (not one of the 11)
       "dashboard.view",
     ],
     "every Appendix H surface is advertised exactly once",

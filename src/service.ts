@@ -58,6 +58,15 @@ import {
   type DashboardSection,
   type DashboardView,
 } from "./dashboard.ts";
+import {
+  ALL_TIME,
+  describeWindow,
+  migrationCounts as countMigrationsPerSkill,
+  parseMigrationWindow,
+  MIGRATION_SOURCE,
+  type MigrationCountResponse,
+  type MigrationWindow,
+} from "./skill-migrations.ts";
 import { checkCompatibility, mismatchBlocks, type CompatResult } from "./compat.ts";
 import { approvalConditions } from "./approvals.ts";
 import {
@@ -1836,6 +1845,8 @@ export class Registry {
         return this.dashApprovals(auth, params);
       case "dead_letters":
         return this.dashDeadLetters(auth, params);
+      case "migrations":
+        return this.dashMigrations(auth, params);
     }
   }
 
@@ -2264,6 +2275,89 @@ export class Registry {
         fields: ["webhook_id", "agent_id", "url", "status", "failure_count", "last_error", "updated_at_ms"],
         rows: webhookHealth(this.db, agentIds) as unknown as Array<Record<string, unknown>>,
         empty: "no webhook endpoint is registered for this actor",
+      },
+    ]);
+  }
+
+  // ------------------------------------------- the migration counter (read)
+
+  /**
+   * `GET /v1/migrations` and MCP `migration.count` — how often each skill
+   * MIGRATED: how many times it moved to an agent that ran it and closed a
+   * receipt over it, how many distinct recipients that was, and across how many
+   * distinct declared runtimes.
+   *
+   * Strictly reading, and it must stay so: it appends no event, transitions
+   * nothing and takes no idempotency key, because there is nothing to replay.
+   *
+   * The rows are the skills VISIBLE to this actor, resolved by surface 5 —
+   * counting is not a way around §5.1 visibility × access policy, so a skill an
+   * actor may not see is not counted for them and is not acknowledged to exist.
+   * A visible skill that never migrated gets a row of zeroes: the registry
+   * always knows whether it looked, and an absent row would say otherwise.
+   */
+  migrationCounts(
+    auth: AuthContext,
+    params: SearchParams & { since_ms?: unknown; until_ms?: unknown } = {},
+  ): MigrationCountResponse {
+    return this.countMigrations(auth, params, parseMigrationWindow(params));
+  }
+
+  private countMigrations(
+    auth: AuthContext,
+    params: SearchParams,
+    window: MigrationWindow,
+  ): MigrationCountResponse {
+    const { items, next_cursor } = this.search(auth, params);
+    // Surface 5 pages over VERSIONS; the migration counter's subject is the
+    // SKILL, so two visible versions of one skill are one row, counted once.
+    const subjects: Array<{ skill_id: string; slug: string }> = [];
+    const seen = new Set<string>();
+    for (const item of items) {
+      if (seen.has(item.skill_id)) continue;
+      seen.add(item.skill_id);
+      subjects.push({ skill_id: item.skill_id, slug: item.slug });
+    }
+    return {
+      source: MIGRATION_SOURCE,
+      window: describeWindow(window),
+      window_since_ms: window.since_ms,
+      window_until_ms: window.until_ms,
+      items: countMigrationsPerSkill(this.db, subjects, window),
+      next_cursor,
+    };
+  }
+
+  /**
+   * Migrations — the same counter as a view. Every row carries the three
+   * attributes the number is meaningless without: `source` (this registry's
+   * receipt journal), `window` (all time, on this view) and
+   * `measurement_state`, so no cell on the page is a bare figure and none is
+   * blank. `runtimes_unknown` is kept beside `distinct_runtimes` because a
+   * migration whose declared runtime could not be read is an unknown, not a
+   * zero, and the two must not render the same.
+   */
+  private dashMigrations(auth: AuthContext, params: SearchParams): DashboardPayload {
+    const counted = this.countMigrations(auth, params, ALL_TIME);
+    return this.payload("migrations", "Migrations", [
+      {
+        key: "migrations",
+        title: "Skill migrations, counted from terminal `adopted` receipts (§5.3) over all time",
+        fields: [
+          "skill_id",
+          "slug",
+          "migrations",
+          "distinct_recipients",
+          "distinct_runtimes",
+          "runtimes",
+          "runtimes_unknown",
+          "measurement_state",
+          "source",
+          "window",
+        ],
+        rows: counted.items as unknown as Array<Record<string, unknown>>,
+        empty: "no skill is visible to this actor, so nothing was counted",
+        next_cursor: counted.next_cursor,
       },
     ]);
   }
