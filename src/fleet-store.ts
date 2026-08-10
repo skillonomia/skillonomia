@@ -20,6 +20,7 @@ import type { Db } from "./sqlite.ts";
 import { ulid } from "./ulid.ts";
 import {
   NO_SNAPSHOT_WINDOW,
+  arrivalRecordsOf,
   type FleetObservationSource,
   type FleetRuntime,
   type ObservedRecord,
@@ -116,10 +117,17 @@ export function recordObservationInTx(db: Db, input: RecordObservationInput): { 
     `INSERT INTO observed_records(id, observation_id, agent_id, runtime, role, call_id, at_ms, marker, result,
        server_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?)`,
   );
-  let n = 0;
+  // ONE CLOCK, NOT A CLOCK PLUS AN OFFSET. `ulid` is already monotonic within a
+  // millisecond, so repeating `input.nowMs` orders the records of one report by
+  // insertion. Adding `n` to the timestamp instead pushed the generator's clock
+  // PAST the report's own, and the next report filed in the same millisecond
+  // then got a fresh RANDOM tail — an id that could sort BELOW the report
+  // before it. `latestObservation` breaks its tie on that id, so "the latest
+  // report wins" silently became "one of the two reports wins", and which
+  // records §5 and §6 had searched depended on 16 random characters.
   for (const r of input.records) {
     insert.run(
-      ulid(input.nowMs + n++),
+      ulid(input.nowMs),
       id,
       input.agentId,
       input.runtime,
@@ -200,15 +208,14 @@ export class StoredObservations implements FleetObservationSource, RuntimeRecord
     };
   }
 
+  /** [M-5]: `arrivalRecordsOf`, and never a hand-written projection. The one
+   *  this replaced dropped `call_id`, which is the only thing that makes a call
+   *  and an output ONE pair — so the assignments surface read a pair where the
+   *  capability surface read none, from these very rows. */
   recordsFor(agentId: string): RuntimeRecordWindow | null {
     const snapshot = this.snapshotFor(agentId);
     if (!snapshot) return null;
-    return {
-      records: snapshot.records
-        .filter((r) => r.role === "call" || r.role === "output")
-        .map((r) => ({ role: r.role as "call" | "output", text: r.marker })),
-      window: snapshot.window_detail,
-    };
+    return { records: arrivalRecordsOf(snapshot.records), window: snapshot.window_detail };
   }
 }
 

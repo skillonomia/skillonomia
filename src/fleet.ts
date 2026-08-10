@@ -48,6 +48,7 @@
 import {
   MARKER_RE,
   assessArrival,
+  matchArrivalPairs,
   type ArrivalRecord,
   type ArrivalSubject,
   type ArrivalUnknownReason,
@@ -446,11 +447,13 @@ export const REGISTERED_SOURCE =
   "the filesystem under the configured inventory root, symbolic links followed [I-4]";
 
 /** Records of one agent, narrowed to the two roles `assessArrival` understands.
- *  It is a narrowing and not a translation: the marker is the record's own. */
+ *  It is a narrowing and not a translation: the marker and the `call_id` are
+ *  the record's own, and the `call_id` TRAVELS — without it the narrowing would
+ *  destroy the only thing that makes a call and an output one pair [M-5]. */
 export function arrivalRecordsOf(records: readonly ObservedRecord[]): ArrivalRecord[] {
   const out: ArrivalRecord[] = [];
   for (const r of records) {
-    if (r.role === "call" || r.role === "output") out.push({ role: r.role, text: r.marker });
+    if (r.role === "call" || r.role === "output") out.push({ role: r.role, call_id: r.call_id, text: r.marker });
   }
   return out;
 }
@@ -482,14 +485,6 @@ export interface ArrivalScanRow {
    *  pair, and without a pair there is no row [M-5]. */
   call_id: string;
   result: "success" | "failure" | "unknown";
-}
-
-/** What binds a call to ITS output: the same agent, the same runtime, the same
- *  `call_id`, the same marker. Built through JSON so that no value can be
- *  forged into another by containing the separator — a `call_id` holding the
- *  delimiter must not be able to look like a different pair. */
-function pairKey(r: ObservedRecord): string {
-  return JSON.stringify([r.agent_id, r.runtime, r.call_id, r.marker]);
 }
 
 /**
@@ -524,33 +519,30 @@ export function scanArrivals(
     // a subject that cannot print its marker can never be demonstrated by one
     if (s.has_executable_step && MARKER_RE.test(s.marker)) bySubjectMarker.set(s.marker, s);
   }
-  const calls = new Map<string, ObservedRecord>();
-  const outputs: ObservedRecord[] = [];
-  for (const r of records) {
-    if (!r || typeof r.marker !== "string" || r.call_id === null || r.call_id === undefined) continue;
-    if (r.role === "call") calls.set(pairKey(r), r);
-    else if (r.role === "output") outputs.push(r);
-  }
+  // THE PAIR RULE IS NOT RESTATED HERE. It is `matchArrivalPairs`
+  // (src/marker.ts), the same call §5's `assessArrival` makes, because the two
+  // surfaces answering the same question from the same records with two
+  // implementations of "a pair" is the defect this file was corrected for.
+  // What §6 adds is the SCOPE — the agent and the runtime — and a scope is a
+  // narrowing, never a different rule.
   const rows: ArrivalScanRow[] = [];
-  const seen = new Set<string>();
-  for (const out of outputs) {
-    const key = pairKey(out);
-    // THE PAIR. Not "an output exists", not "a call exists" — both, bound by the
-    // id the runtime itself used to bind them.
-    if (!calls.has(key)) continue;
+  for (const pair of matchArrivalPairs(records, (r) =>
+    r && typeof r.marker === "string"
+      ? { role: r.role, call_id: r.call_id, markers: [r.marker], scope: [r.agent_id, r.runtime] }
+      : null,
+  )) {
     // THE VERSION. The marker on the record decides which subject this is
     // evidence for; it is never the subject the caller happened to ask about.
-    const subject = bySubjectMarker.get(out.marker);
+    const subject = bySubjectMarker.get(pair.marker);
     if (!subject) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const out = pair.output;
     rows.push({
       skill_version_id: subject.skill_version_id,
-      marker: out.marker,
+      marker: pair.marker,
       agent_id: out.agent_id,
       runtime: out.runtime,
       at_ms: out.at_ms ?? null,
-      call_id: out.call_id as string,
+      call_id: pair.call_id,
       result: out.result === "success" || out.result === "failure" ? out.result : "unknown",
     });
   }
@@ -778,21 +770,24 @@ export function capabilityColumns(ev: CapabilityEvidence): StateColumn[] {
     invoked === "yes" ? null : ev.subject.has_executable_step ? "no_paired_record" : "no_executable_step";
   out.push(column("invoked", "invoked", runtime, invoked, invokedReason, "transcript", win));
 
-  // §6'S RULE IS STRICTER THAN §5'S, AND THE DIRECTION MATTERS.
+  // §5 AND §6 NOW ANSWER BY THE SAME RULE, AND THIS ASSERTS IT ON REAL RECORDS.
   //
-  // `assessArrival` (src/marker.ts) counts SOME call record and SOME output
-  // record carrying the marker. §6 additionally requires the two to be bound by
-  // ONE `call_id` — the id the runtime itself used to bind them — because a
-  // call of version X and an unrelated output mentioning X are not one
-  // invocation, and a scanner that produced a `(version, agent, time, call_id)`
-  // tuple from them would have to invent the call_id.
+  // They did not always. `assessArrival` used to count SOME call record and
+  // SOME output record carrying the marker, while §6 required the two to be
+  // bound by ONE `call_id`. The gap was not academic: one set of records was a
+  // pair on the assignments surface and not a pair on the capability surface,
+  // at the same moment, from the same rows — and each surface cited [M-5].
+  // Both now call `matchArrivalPairs` (src/marker.ts); §6 adds the agent and
+  // the runtime as a SCOPE, which narrows within one snapshot and never widens.
   //
-  // So the two ANSWERS may legitimately differ, in exactly one direction: a §6
-  // `yes` is always a §5 `yes`, and never the reverse. That implication is
-  // checked, and a violation is a defect in one of the two — not a state a
-  // caller's records can reach.
+  // So on the records of ONE agent's snapshot the two answers are EQUAL, in
+  // both directions, and a disagreement in either is a defect in one of the two
+  // rather than a state a caller's records can reach.
   if (invoked === "yes" && assessment.verdict !== "yes") {
     throw new Error("the §6 scanner found a pair the §5 assessment does not: one of the two is reporting something other than what it says");
+  }
+  if (assessment.verdict === "yes" && invoked !== "yes") {
+    throw new Error("the §5 assessment found a pair the §6 scanner does not: one of the two is reporting something other than what it says");
   }
 
   // ---- outcome: a contract, or `unknown`. Completion is not success [M-6].
@@ -1148,8 +1143,15 @@ export function syncStatusOf(input: {
   if (input.arrivalYes >= input.intentActive) {
     return { status: "in_sync", reason: "every deployment intended active has an observed arrival" };
   }
+  // [I-3]: the reason NAMES the two numbers it compared and does not restate a
+  // derived count in prose. A figure inside a sentence carries no measurement
+  // state, no source and no window; the two cells it would be derived from
+  // carry all three, and they stand on this very row.
   return {
     status: "pending",
-    reason: `${input.intentActive - input.arrivalYes} deployment(s) intended active have no observed arrival — unobserved, NOT known to be absent`,
+    reason:
+      "fewer deployments have an observed arrival than this registry intends active — compare the `intent_assigned` " +
+      "and `fact_invoked` cells of this row, each with its own source and window. The difference is UNOBSERVED, and " +
+      "never known to be absent",
   };
 }

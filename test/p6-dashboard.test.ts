@@ -115,6 +115,22 @@ function view(fx: P4Fixture, name: string, key: string, query = ""): DashboardPa
   return res.body as DashboardPayload;
 }
 
+/**
+ * THE ANSWER PART OF A CELL.
+ *
+ * Every row value of every view is now a CELL — an answer followed by its
+ * method — because [I-1] and [I-3] are invariants over all eleven views and the
+ * first six used to put raw values into rows: a null rendered as `—`, and a
+ * count rendered as a bare figure with no state, source or boundary. The
+ * assertions below therefore compare ANSWERS, and the method that travels with
+ * each one is swept separately by `auditRenderedHtml`.
+ */
+function answer(cell: unknown): string {
+  const text = String(cell ?? "");
+  const i = text.indexOf(" · ");
+  return (i < 0 ? text : text.slice(0, i)).trim();
+}
+
 function rowsOf(p: DashboardPayload, key: string): Array<Record<string, any>> {
   const s = p.sections.find((x) => x.key === key);
   assert.ok(s, `section ${key} exists`);
@@ -214,10 +230,14 @@ test("library: the search item's own fields, Reputation included", async () => {
   const item = rest(f.fx, "GET", "/v1/skills?q=dash-adopted", f.fx.keys.member).body.items[0];
   assert.equal(row!.skill_version_id, item.skill_version_id);
   assert.equal(row!.state, item.state);
-  assert.equal(row!.adopted_count, item.registry.reputation.adopted_count);
-  assert.equal(row!.adopted_count, 1);
-  assert.equal(row!.avg_rating, 5);
-  assert.equal(row!.adoption_attempts, item.registry.reputation.adoption_attempts);
+  assert.equal(answer(row!.adopted_count), String(item.registry.reputation.adopted_count));
+  assert.equal(answer(row!.adopted_count), "1");
+  assert.equal(answer(row!.avg_rating), "5");
+  assert.equal(answer(row!.adoption_attempts), String(item.registry.reputation.adoption_attempts));
+  // …and each of those figures carries its method [I-3]
+  for (const f of ["adopted_count", "avg_rating", "adoption_attempts", "failed_count", "rolled_back_count"]) {
+    assert.match(String(row![f]), /kind: measured_number/, `${f} is published as a number cell`);
+  }
   // the view is a read layer: the same search filters narrow it
   const filtered = view(f.fx, "library", f.fx.keys.member, "?q=dash-held");
   assert.deepEqual(
@@ -233,8 +253,8 @@ test("evidence: the server-validated gate results behind each adopted receipt", 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].receipt_id, f.receiptId);
   assert.equal(rows[0].adopter_agent_id, f.fx.member.agent_id);
-  assert.deepEqual(rows[0].gate_results, ["g1=pass"]);
-  assert.equal(rows[0].event_seq, 3, "delivered → attempted → adopted");
+  assert.equal(answer(rows[0].gate_results), "g1=pass");
+  assert.equal(answer(rows[0].event_seq), "3", "delivered → attempted → adopted");
   // a version without a validated adoption contributes no evidence row
   assert.deepEqual(rowsOf(view(f.fx, "evidence", f.fx.keys.member, "?q=dash-held"), "evidence"), []);
   f.fx.db.close();
@@ -246,9 +266,11 @@ test("receipts: the chain in event_seq order, with the delivery request's state"
   const row = rows.find((r) => r.receipt_id === f.receiptId);
   assert.ok(row, "the adopter sees their own receipt");
   assert.equal(row!.derived_state, "adopted");
-  assert.equal(row!.stalled, false);
+  assert.match(answer(row!.stalled), /^no —/, "[I-1]: a boolean is a sentence, never a bare `false`");
   assert.deepEqual(
-    (row!.events as string[]).map((e) => e.split(":")[1].split("@")[0]),
+    answer(row!.events)
+      .split(" | ")
+      .map((e) => e.split(": ")[1]!.split(" at ")[0]),
     ["delivered", "attempted", "adopted"],
   );
   const api = rest(f.fx, "GET", `/v1/receipts/${f.receiptId}`, f.fx.keys.member).body;
@@ -263,14 +285,22 @@ test("approvals: the §7.3 hold with its matrix conditions, and the recorded dec
   const hold = rowsOf(payload, "holds").find((r) => r.adoption_request_id === f.heldRequestId);
   assert.ok(hold, "the held request is visible to the workspace admin");
   assert.equal(hold!.state, "approval_pending");
-  assert.deepEqual(hold!.conditions, ["risk_high"]);
+  assert.equal(answer(hold!.conditions), "risk_high");
   assert.equal(hold!.slug, "dash-held");
 
   const decision = rowsOf(payload, "decisions")[0];
   assert.equal(decision.scope, "adopt_high_risk");
   assert.equal(decision.decision, "approved");
-  assert.equal(decision.approver_agent_id, f.fx.admin.agent_id);
-  assert.equal(decision.note, "sandboxed rollout approved");
+  assert.equal(answer(decision.note), "sandboxed rollout approved");
+  // [I-5]: WHO, and WHAT KIND OF PRINCIPAL. `approved by the workspace owner in
+  // person` and `approved by an agent holding a role` are different facts, and
+  // this view used to publish an opaque id that told a reader neither.
+  const approver = String(decision.approved_by);
+  console.log(`[I-5] approvals/decisions approved_by → ${approver.slice(0, 120)}`);
+  assert.match(approver, new RegExp(f.fx.admin.agent_id));
+  assert.match(approver, /type: human/);
+  assert.match(approver, /role: admin/);
+  assert.match(approver, /principal: role_holder \(admin\)/);
   f.fx.db.close();
 });
 
@@ -279,21 +309,21 @@ test("dead letters: the loud §5.2 row AND the endpoint health that explains it"
   const payload = view(f.fx, "dead_letters", f.fx.keys.reviewer);
   const dl = rowsOf(payload, "dead_letters").find((r) => r.adoption_request_id === f.deadRequestId);
   assert.ok(dl, "the dead-lettered request is visible to its adopter");
-  assert.equal(dl!.reason, "max_attempts");
-  assert.equal(dl!.attempt_count, MAX_ATTEMPTS);
+  assert.equal(answer(dl!.reason), "max_attempts");
+  assert.equal(answer(dl!.attempt_count), String(MAX_ATTEMPTS));
   assert.equal(dl!.slug, "dash-adopted");
 
   const hook = rowsOf(payload, "webhook_health").find((r) => r.webhook_id === f.webhookId);
   assert.ok(hook, "the endpoint's health is on the same view");
   assert.equal(hook!.status, "dead", "five consecutive failures kill the endpoint (§5.2)");
-  assert.equal(hook!.failure_count, MAX_ATTEMPTS);
+  assert.equal(answer(hook!.failure_count), String(MAX_ATTEMPTS));
   assert.match(String(hook!.last_error), /receiver refused the push/);
   assert.equal(hook!.url, "https://hooks.example/skillonomia");
 
   // and the same numbers the webhook API itself serves
   const api = rest(f.fx, "GET", "/v1/webhooks", f.fx.keys.reviewer).body.items[0];
   assert.equal(hook!.status, api.status);
-  assert.equal(hook!.failure_count, api.failure_count);
+  assert.equal(answer(hook!.failure_count), String(api.failure_count));
   f.fx.db.close();
 });
 
@@ -307,7 +337,7 @@ test("a FAILING (not yet dead) endpoint is shown as failing — the health rule 
     (r) => r.webhook_id === registered.body.webhook_id,
   );
   assert.equal(hook!.status, "failing");
-  assert.equal(hook!.failure_count, 1);
+  assert.equal(answer(hook!.failure_count), "1");
   f.fx.db.close();
 });
 

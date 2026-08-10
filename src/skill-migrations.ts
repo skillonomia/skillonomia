@@ -40,11 +40,31 @@
 // WHO THE RECIPIENT IS, AND WHERE THAT COMES FROM. Since §5.4 a movement can
 // be initiated by a SENDER, and the sender names a typed recipient. That
 // recipient is recorded on the `transferred` event, in the transaction that
-// records the transfer, and this counter reads it from there — see
-// `recipientOf` below. A chain that no transfer opened has no such event and
-// falls back to the receipt shell, which is INSERT-only by trigger and written
-// once. Neither source is `adoption_requests`, and neither can be edited after
-// the fact.
+// records the transfer, and this counter reads it from there. A chain that NO
+// TRANSFER OPENED has no such event and never had one — the recipient asked for
+// the version itself — and its recipient is the receipt shell's own adopter,
+// which is INSERT-only by trigger (`tg_receipts_no_upd`/`tg_receipts_no_del`)
+// and written once when the chain begins. Neither source is
+// `adoption_requests`, and neither can be edited after the fact.
+//
+// [I-6], AND WHAT IT COST TO GET WRONG. Those are two DIFFERENT chains, and
+// this counter used to treat them as one: a chain that HAD a `transferred`
+// event whose `recipient_json` was missing or unparseable fell through to the
+// receipt shell and was counted anyway. That is fail-OPEN, and it is worse than
+// it looks — the chain's own statement of where the version went was broken,
+// and the counter answered from somewhere else without saying so. A recipient
+// event that cannot be read now contributes NOTHING: no migration, no
+// recipient, no runtime. The chain is reported as `recipients_unattributed`,
+// for the same reason `runtimes_unknown` is reported: a migration that was
+// dropped and a migration that never happened are different facts.
+//
+// [I-3], AND THE SOURCE THAT MUST NAME THE TRUTH. `source` used to be one
+// constant naming `receipt_events`, printed on every row whatever the row was
+// counted from — so a `migrations` figure whose (version, recipient) keys came
+// half from the receipt shell still published `receipt_events` as its source.
+// A number that names a source it was not obtained from is [I-3]'s failure with
+// an attribution attached. `source` is now DERIVED from what each answer
+// actually read, and names both journals when both were read.
 //
 // FAIL-CLOSED, AND THE DIFFERENCE BETWEEN "none" AND "unknown". An adoption
 // whose declared runtime cannot be read — no `delivered` event carried one, or
@@ -62,8 +82,42 @@
 import type { Db } from "./sqlite.ts";
 import { ApiError } from "./errors.ts";
 
-/** The one source these counts may be read from, named in every answer. */
+/** The journal the QUALIFYING EVENT is selected from — always this one. */
 export const MIGRATION_SOURCE = "receipt_events (registry journal, INSERT-only)";
+
+/** The journal a recipient identity may come from when a TRANSFER opened the
+ *  chain: the `transferred` event's own `recipient_json` [I-6]. */
+export const RECIPIENT_SOURCE_EVENT = "receipt_events";
+
+/** …and when NO transfer opened it: the INSERT-only receipt shell, which is
+ *  where a chain the recipient opened for itself records who that was. */
+export const RECIPIENT_SOURCE_SHELL = "adoption_receipts";
+
+/** Where the recipient half of a (version, recipient) key was read from. */
+export type RecipientSource = typeof RECIPIENT_SOURCE_EVENT | typeof RECIPIENT_SOURCE_SHELL;
+
+/**
+ * THE SOURCE PHRASE, DERIVED FROM WHAT WAS READ — never a constant printed over
+ * whatever happened [I-3].
+ *
+ * It names JOURNALS and carries NO FIGURE. A count inside a sentence has no
+ * measurement state, no source and no window of its own, and this string is
+ * rendered into a cell beside numbers that have all three; `recipient_sources`
+ * carries the same fact structurally, for a reader that needs to branch on it.
+ *
+ * A `migrations` figure is a count of (version, recipient) keys, so the journal
+ * a recipient came from is half the provenance of the number. When every
+ * recipient came from a `transferred` event the phrase names that journal
+ * alone; when any came from the receipt shell it names both, and says how many.
+ */
+export function describeSource(read: { from_event: number; from_shell: number }): string {
+  if (read.from_shell === 0) return MIGRATION_SOURCE;
+  return (
+    `${MIGRATION_SOURCE}; the recipient of at least one counted migration was read from ` +
+    `${RECIPIENT_SOURCE_SHELL} (INSERT-only receipt shell), that chain having been opened by the recipient ` +
+    `itself and carrying no transfer event`
+  );
+}
 
 /** The selection boundary of a count. `null` on both sides means all time. */
 export interface MigrationWindow {
@@ -119,6 +173,20 @@ export interface MigrationCounters {
   runtimes: string[];
   /** migrations whose declared runtime could not be read: unknown, never "none" */
   runtimes_unknown: number;
+  /**
+   * CHAINS DROPPED BECAUSE THEIR OWN RECIPIENT EVENT COULD NOT BE READ [I-6].
+   *
+   * A chain a transfer opened states where the version went, on the
+   * INSERT-only `transferred` event. When that statement is missing or does not
+   * parse, the chain contributes NOTHING — no migration, no recipient, no
+   * runtime — because the alternative is to answer from a source the chain did
+   * not name. It is REPORTED rather than silently dropped: a migration nobody
+   * could attribute and a migration that never happened are different facts,
+   * and a reader who cannot tell them apart has been told nothing.
+   */
+  recipients_unattributed: number;
+  /** which journals the counted recipients were actually read from [I-3] */
+  recipient_sources: RecipientSource[];
 }
 
 /**
@@ -135,6 +203,10 @@ export interface SkillMigrationCount {
   distinct_runtimes: number;
   runtimes: string[];
   runtimes_unknown: number;
+  /** chains whose own recipient event could not be read, and were dropped [I-6] */
+  recipients_unattributed: number;
+  /** the journals this row's recipients were read from [I-3] */
+  recipient_sources: RecipientSource[];
   /**
    * Three-valued and never blank. `migrated` and `not_migrated` are both
    * MEASURED answers — the journal was read over the stated window and either
@@ -168,10 +240,16 @@ export interface MigrationCountResponse {
 interface PairRow {
   skill_id: string;
   version: string;
-  /** the receipt shell's adopter — the fallback, see `recipientOf` */
+  /** the receipt shell's own adopter — the recipient of a chain NO transfer
+   *  opened, and never a substitute for a transfer's broken statement */
   recipient: string;
   ctx: string | null;
-  /** the `recipient_json` of this chain's `transferred` event, when it has one */
+  /** the id of this chain's `transferred` event, or null when it has none.
+   *  It is selected SEPARATELY from the payload so that "no transfer opened
+   *  this chain" and "a transfer opened it and its statement is unreadable"
+   *  are two different rows here, as they are two different facts [I-6]. */
+  transfer_event_id: string | null;
+  /** the `recipient_json` of that event — null when the event carried none */
   transferred_to: string | null;
 }
 
@@ -179,10 +257,14 @@ interface Accumulator {
   pairs: Map<string, Set<string>>;
   recipients: Set<string>;
   runtimes: Set<string>;
+  /** chains dropped because their own recipient event could not be read [I-6] */
+  unattributed: number;
+  /** how many counted (version, recipient) keys came from each journal [I-3] */
+  from: Map<RecipientSource, number>;
 }
 
 function emptyAccumulator(): Accumulator {
-  return { pairs: new Map(), recipients: new Set(), runtimes: new Set() };
+  return { pairs: new Map(), recipients: new Set(), runtimes: new Set(), unattributed: 0, from: new Map() };
 }
 
 function counters(acc: Accumulator): MigrationCounters {
@@ -194,7 +276,17 @@ function counters(acc: Accumulator): MigrationCounters {
     distinct_runtimes: acc.runtimes.size,
     runtimes: [...acc.runtimes].sort(),
     runtimes_unknown: unknown,
+    recipients_unattributed: acc.unattributed,
+    recipient_sources: [...acc.from.keys()].sort() as RecipientSource[],
   };
+}
+
+/** The source phrase this accumulator's numbers were actually obtained from. */
+function sourceOf(acc: Accumulator): string {
+  return describeSource({
+    from_event: acc.from.get(RECIPIENT_SOURCE_EVENT) ?? 0,
+    from_shell: acc.from.get(RECIPIENT_SOURCE_SHELL) ?? 0,
+  });
 }
 
 /**
@@ -224,49 +316,61 @@ function selectPairs(db: Db, window: MigrationWindow, skillIds?: readonly string
   }
   return db
     .prepare(
+      // The `transferred` join carries NO condition on `recipient_json`. It
+      // used to, and that was the fail-open: an event whose payload was NULL
+      // dropped out of the join and the chain then looked exactly like one no
+      // transfer ever opened, so the receipt shell answered for a statement the
+      // chain HAD made and could not read back [I-6].
       `SELECT DISTINCT v.skill_id AS skill_id, r.skill_version_id AS version, r.adopter_agent_id AS recipient,
-              d.environment_json AS ctx, t.recipient_json AS transferred_to
+              d.environment_json AS ctx, t.id AS transfer_event_id, t.recipient_json AS transferred_to
          FROM adoption_receipts r
          JOIN skill_versions v ON v.id = r.skill_version_id
          JOIN receipt_events e ON e.adoption_receipt_id = r.id
          LEFT JOIN receipt_events d
                 ON d.adoption_receipt_id = r.id AND d.event = 'delivered' AND d.environment_json IS NOT NULL
          LEFT JOIN receipt_events t
-                ON t.adoption_receipt_id = r.id AND t.event = 'transferred' AND t.recipient_json IS NOT NULL
+                ON t.adoption_receipt_id = r.id AND t.event = 'transferred'
         WHERE ${where.join(" AND ")}`,
     )
     .all(...params) as PairRow[];
 }
 
 /**
- * WHO RECEIVED IT — read from the transfer EVENT wherever there is one.
+ * WHO RECEIVED IT — and WHICH JOURNAL SAID SO [I-6], [I-3].
  *
- * §5.4 records the recipient on the `transferred` row, typed, in the same
- * transaction as the transfer. That row is the registry's statement of where a
- * version was sent, and it is the statement this counter reads: `recipient_json`
- * first, the receipt shell second.
+ * There are exactly two kinds of chain and they are answered differently:
  *
- * The fallback is not a weakening and is not a mutable source. A chain opened
- * by surface 6 has no transfer to read — the recipient asked for the version
- * itself — and `adoption_receipts` is INSERT-only by trigger
- * (`tg_receipts_no_upd`/`tg_receipts_no_del`), written once when the chain
- * begins and never afterwards. What the counter must never read is
- * `adoption_requests`, the one mutable table in this path, and it does not.
+ *   A TRANSFER OPENED IT. §5.4 records the recipient on the `transferred` row,
+ *   typed, in the same transaction as the transfer. That row is the chain's own
+ *   statement of where the version went, and it is the ONLY thing this function
+ *   will accept for such a chain. If the statement is absent or does not parse,
+ *   the answer is `null` — the chain contributes nothing at all.
  *
- * Fail-closed the same way the runtime is: a `recipient_json` that does not
- * parse, or names no string id, contributes nothing of its own rather than a
- * placeholder recipient.
+ *   NOBODY TRANSFERRED IT. The recipient asked for the version itself, so there
+ *   is no transfer event and there never was one. The recipient is the receipt
+ *   shell's own adopter, written once when the chain began and INSERT-only by
+ *   trigger. That is not a fallback from a broken statement: it is the only
+ *   statement this kind of chain ever makes.
+ *
+ * WHAT IT IS NOT ALLOWED TO BE. It used to return `row.recipient` for BOTH,
+ * which meant a `transferred` event with a corrupt payload was answered from
+ * somewhere it did not name — fail-open, and with the wrong source printed
+ * beside the number. Never `adoption_requests`, in either branch: that is the
+ * one mutable table in this path.
  */
-function recipientOf(row: PairRow): string {
-  if (row.transferred_to !== null) {
+function recipientOf(row: PairRow): { id: string; from: RecipientSource } | null {
+  if (row.transfer_event_id !== null) {
+    if (row.transferred_to === null) return null;
     try {
       const id = JSON.parse(row.transferred_to)?.id;
-      if (typeof id === "string" && id.length > 0) return id;
+      if (typeof id === "string" && id.length > 0) return { id, from: RECIPIENT_SOURCE_EVENT };
     } catch {
-      // an unreadable declaration is not a recipient — fall through
+      // an unreadable declaration is not a recipient, and nothing stands in
+      // for it: this chain contributes zero
     }
+    return null;
   }
-  return row.recipient;
+  return { id: row.recipient, from: RECIPIENT_SOURCE_SHELL };
 }
 
 /** The declared runtime id of one `delivered` payload, or null if unreadable. */
@@ -285,13 +389,20 @@ function accumulate(rows: PairRow[], into: (skillId: string) => Accumulator): vo
   for (const row of rows) {
     const acc = into(row.skill_id);
     const recipient = recipientOf(row);
-    const key = `${row.version}\u0000${recipient}`;
+    if (recipient === null) {
+      // [I-6] fail-closed: no migration, no recipient, no runtime. Counted so
+      // that a dropped chain is visible as a dropped chain.
+      acc.unattributed += 1;
+      continue;
+    }
+    const key = `${row.version}\u0000${recipient.id}`;
     let runtimes = acc.pairs.get(key);
     if (runtimes === undefined) {
       runtimes = new Set<string>();
       acc.pairs.set(key, runtimes);
+      acc.from.set(recipient.from, (acc.from.get(recipient.from) ?? 0) + 1);
     }
-    acc.recipients.add(recipient);
+    acc.recipients.add(recipient.id);
     const id = runtimeIdOf(row.ctx);
     if (id !== null) {
       runtimes.add(id);
@@ -324,7 +435,8 @@ export function migrationCounts(
 
   const windowText = describeWindow(window);
   return subjects.map((subject) => {
-    const c = counters(bySkill.get(subject.skill_id) ?? emptyAccumulator());
+    const acc = bySkill.get(subject.skill_id) ?? emptyAccumulator();
+    const c = counters(acc);
     return {
       skill_id: subject.skill_id,
       slug: subject.slug,
@@ -333,8 +445,12 @@ export function migrationCounts(
       distinct_runtimes: c.distinct_runtimes,
       runtimes: c.runtimes,
       runtimes_unknown: c.runtimes_unknown,
+      recipients_unattributed: c.recipients_unattributed,
+      recipient_sources: c.recipient_sources,
       measurement_state: c.migrations > 0 ? "migrated" : "not_migrated",
-      source: MIGRATION_SOURCE,
+      // [I-3]: the source of THIS row's numbers, derived from the journals this
+      // row's recipients were actually read from — never a constant.
+      source: sourceOf(acc),
       window: windowText,
     };
   });
@@ -350,4 +466,14 @@ export function migrationTotals(db: Db, window: MigrationWindow = ALL_TIME): Mig
   const acc = emptyAccumulator();
   accumulate(selectPairs(db, window), () => acc);
   return counters(acc);
+}
+
+/** The same totals WITH the source phrase they were obtained from [I-3]. */
+export function migrationTotalsWithSource(
+  db: Db,
+  window: MigrationWindow = ALL_TIME,
+): { counters: MigrationCounters; source: string } {
+  const acc = emptyAccumulator();
+  accumulate(selectPairs(db, window), () => acc);
+  return { counters: counters(acc), source: sourceOf(acc) };
 }

@@ -179,8 +179,15 @@ import {
   approvalSections,
   capabilitySections,
   fleetSections,
+  instant,
+  list,
+  numberCell,
+  observationCell,
   outcomeSections,
+  plain,
+  principalCell,
   registryCount,
+  registryUnknown,
   type AgentCapabilityInput,
   type ApprovalDecisionInput,
   type ApprovalSubjectInput,
@@ -195,6 +202,9 @@ import {
   migrationCounts as countMigrationsPerSkill,
   parseMigrationWindow,
   MIGRATION_SOURCE,
+  RECIPIENT_SOURCE_EVENT,
+  RECIPIENT_SOURCE_SHELL,
+  describeSource,
   type MigrationCountResponse,
   type MigrationWindow,
 } from "./skill-migrations.ts";
@@ -478,6 +488,21 @@ function safeManifest(json: string): unknown {
 
 /** The selection boundary every outcome number on §9's screens is counted over. */
 const RECEIPT_JOURNAL = "receipt_events (registry journal, INSERT-only), all time";
+
+/** The boundary every value read out of a SIGNED manifest was taken over. */
+const MANIFEST_BOUNDARY = "the version's manifest, as signed";
+
+/** The boundary a receipt-backed rating average was taken over. */
+const RATING_BOUNDARY = "ratings bound to a closed adoption receipt, all time";
+
+/** The boundary the request/queue rows were read over. */
+const REQUEST_BOUNDARY = "adoption_requests (registry), all time";
+
+/** The boundary a recorded §7.3 decision was read over. */
+const APPROVAL_BOUNDARY = "approvals (registry journal), all time";
+
+/** The boundary the endpoint health rows were read over. */
+const WEBHOOK_BOUNDARY = "webhooks (registry), all time";
 
 /** The DECLARED SECTIONS a manifest diff compares. It is a comparison of what
  *  two versions SAY about themselves, not a textual diff of two packages, and
@@ -2560,6 +2585,37 @@ export class Registry {
     }
   }
 
+  // ---------------------------------------------------------------------
+  // THE OLDER VIEWS' CELLS.
+  //
+  // [I-1] and [I-3] are invariants over EVERY view, and the first six were
+  // built before either had a shape: they put raw values into rows, so a null
+  // rendered as `—` and a count rendered as a bare figure. The five §9 screens
+  // were then built with cell BUILDERS, tested with a sweep over the rendered
+  // bytes, and the sweep was pointed only at them — so a live
+  // `/v1/dashboard/library?format=html` carried three dashes and four naked
+  // numbers while the suite reported the invariants held.
+  //
+  // The helpers below give the older six the same cells the five use. They are
+  // not a rendering convenience: `—` is a claim that there is nothing, and a
+  // figure with no method is the defect the whole of §6 was written about.
+  // ---------------------------------------------------------------------
+
+  /** A count over one of this registry's own journals [I-3]. */
+  private countCell(value: number, state: CapabilityState, boundary: string, reason: string | null = null): string {
+    return numberCell(registryCount(value, state, boundary, reason));
+  }
+
+  /** A count that could not be taken, and the reason it could not [I-3]. */
+  private unknownCell(state: CapabilityState, boundary: string, reason: string): string {
+    return numberCell(registryUnknown(state, boundary, reason));
+  }
+
+  /** One observed value of this registry's own records, with its method. */
+  private registryCell(observation: string, answer: string | null, why: string, boundary: string): string {
+    return observationCell({ observation, answer, why, source: "registry", window: "all_time", boundary });
+  }
+
   private payload(
     view: DashboardView,
     title: string,
@@ -2574,22 +2630,48 @@ export class Registry {
   /** Library — surface 5's items, including the registry-computed Reputation. */
   private dashLibrary(auth: AuthContext, params: SearchParams): DashboardPayload {
     const { items, next_cursor } = this.search(auth, params);
-    const rows = items.map((i) => ({
-      skill_id: i.skill_id,
-      slug: i.slug,
-      skill_version_id: i.skill_version_id,
-      semantic_version: i.semantic_version,
-      state: i.state,
-      risk_level: i.risk_level ?? null,
-      access_policy: i.access_policy,
-      warning: i.warning ?? null,
-      adoption_attempts: i.registry.reputation.adoption_attempts,
-      adopted_count: i.registry.reputation.adopted_count,
-      failed_count: i.registry.reputation.failed_count,
-      rolled_back_count: i.registry.reputation.rolled_back_count,
-      avg_rating: i.registry.reputation.avg_rating,
-      failure_modes_observed: i.registry.reputation.failure_modes_observed,
-    }));
+    const rows = items.map((i) => {
+      const r = i.registry.reputation;
+      return {
+        skill_id: plain(i.skill_id, "unknown"),
+        slug: plain(i.slug, "unnamed"),
+        skill_version_id: plain(i.skill_version_id, "unknown"),
+        semantic_version: plain(i.semantic_version, "unknown"),
+        state: plain(i.state, "unknown"),
+        // [I-1]: a version that declares no risk level is `unknown`, in the
+        // word, and never a dash — a dash reads as "there is no risk".
+        risk_level: this.registryCell(
+          "risk_level",
+          i.risk_level ?? null,
+          i.risk_level ? "declared_by_the_manifest" : "this version's manifest declares no risk level",
+          MANIFEST_BOUNDARY,
+        ),
+        access_policy: plain(i.access_policy, "unknown"),
+        warning: this.registryCell(
+          "warning",
+          i.warning ?? null,
+          i.warning ? "raised_by_the_registry" : "this registry raises no warning about this version",
+          "the registry's own view of this version, all time",
+        ),
+        adoption_attempts: this.countCell(r.adoption_attempts, "outcome", RECEIPT_JOURNAL),
+        adopted_count: this.countCell(r.adopted_count, "outcome", RECEIPT_JOURNAL),
+        failed_count: this.countCell(r.failed_count, "outcome", RECEIPT_JOURNAL),
+        rolled_back_count: this.countCell(r.rolled_back_count, "outcome", RECEIPT_JOURNAL),
+        avg_rating:
+          r.avg_rating === null
+            ? this.unknownCell("outcome", RATING_BOUNDARY, "no receipt-backed rating has been recorded for this version")
+            : numberCell({
+                ...registryCount(0, "outcome", RATING_BOUNDARY, "receipt_backed_average"),
+                value: r.avg_rating,
+              }),
+        failure_modes_observed: this.registryCell(
+          "failure_modes_observed",
+          list(r.failure_modes_observed, ""),
+          r.failure_modes_observed.length === 0 ? "no failure mode has been reported for this version" : "reported_by_adopters",
+          RECEIPT_JOURNAL,
+        ),
+      };
+    });
     return this.payload("library", "Library", [
       {
         key: "library",
@@ -2651,16 +2733,31 @@ export class Registry {
           gates = ["unreadable evidence payload"];
         }
         rows.push({
-          slug: item.slug,
-          skill_version_id: item.skill_version_id,
-          semantic_version: item.semantic_version,
-          state: item.state,
-          receipt_id: e.receipt_id,
-          adopter_agent_id: e.adopter_agent_id,
-          event_seq: e.event_seq,
-          server_at_ms: e.server_at_ms,
-          gate_results: gates,
-          reviewer_notes: item.registry.reviewer_notes,
+          slug: plain(item.slug, "unnamed"),
+          skill_version_id: plain(item.skill_version_id, "unknown"),
+          semantic_version: plain(item.semantic_version, "unknown"),
+          state: plain(item.state, "unknown"),
+          receipt_id: plain(e.receipt_id, "unknown"),
+          adopter_agent_id: plain(e.adopter_agent_id, "unknown"),
+          event_seq: this.countCell(e.event_seq, "outcome", RECEIPT_JOURNAL, "the position of this event in its chain"),
+          recorded_at: this.registryCell(
+            "recorded_at",
+            instant(e.server_at_ms),
+            "recorded_by_the_receipt_journal",
+            RECEIPT_JOURNAL,
+          ),
+          gate_results: this.registryCell(
+            "gate_results",
+            list(gates, ""),
+            gates.length === 0 ? "the validated payload declared no gate result" : "validated_at_append_time",
+            RECEIPT_JOURNAL,
+          ),
+          reviewer_notes: this.registryCell(
+            "reviewer_notes",
+            plain(item.registry.reviewer_notes, ""),
+            "recorded_by_the_review_surface",
+            "the reviewer attestation on this version, all time",
+          ),
         });
       }
     }
@@ -2676,7 +2773,7 @@ export class Registry {
           "receipt_id",
           "adopter_agent_id",
           "event_seq",
-          "server_at_ms",
+          "recorded_at",
           "gate_results",
           "reviewer_notes",
         ],
@@ -2725,18 +2822,44 @@ export class Registry {
       // admin/owner of the skill's workspace
       if (!this.mayReadReceipt(auth, r)) continue;
       const evs = events.all(r.receipt_id) as Array<{ event: string; event_seq: number; server_at_ms: number }>;
+      const stalled = isStalled(this.db, r.receipt_id, this.now());
       rows.push({
-        receipt_id: r.receipt_id,
-        adoption_request_id: r.adoption_request_id,
-        skill_version_id: r.skill_version_id,
-        slug: r.slug,
-        adopter_agent_id: r.adopter_agent_id,
-        derived_state: derivedState(this.db, r.receipt_id),
-        stalled: isStalled(this.db, r.receipt_id, this.now()),
-        request_state: r.request_state,
-        dead_letter_reason: r.dead_letter_reason,
-        attempt_count: r.attempt_count,
-        events: evs.map((e) => `${e.event_seq}:${e.event}@${e.server_at_ms}`),
+        receipt_id: plain(r.receipt_id, "unknown"),
+        adoption_request_id: plain(r.adoption_request_id, "unknown"),
+        skill_version_id: plain(r.skill_version_id, "unknown"),
+        slug: plain(r.slug, "unnamed"),
+        adopter_agent_id: plain(r.adopter_agent_id, "unknown"),
+        derived_state: plain(derivedState(this.db, r.receipt_id), "unknown"),
+        stalled: this.registryCell(
+          "stalled",
+          stalled
+            ? "yes — no terminal event within the staleness window"
+            : "no — the chain is closed or still inside the window",
+          "compared_against_the_staleness_window",
+          RECEIPT_JOURNAL,
+        ),
+        request_state: this.registryCell(
+          "request_state",
+          r.request_state,
+          r.request_state === null ? "this chain has no adoption request row" : "recorded_by_the_request_queue",
+          REQUEST_BOUNDARY,
+        ),
+        dead_letter_reason: this.registryCell(
+          "dead_letter_reason",
+          r.dead_letter_reason,
+          r.dead_letter_reason === null ? "this request was not dead-lettered" : "recorded_by_the_delivery_queue",
+          REQUEST_BOUNDARY,
+        ),
+        attempt_count:
+          r.attempt_count === null
+            ? this.unknownCell("outcome", REQUEST_BOUNDARY, "this chain has no adoption request row to count attempts on")
+            : this.countCell(r.attempt_count, "outcome", REQUEST_BOUNDARY),
+        events: this.registryCell(
+          "events",
+          list(evs.map((e) => `seq ${e.event_seq}: ${e.event} at ${instant(e.server_at_ms) ?? "no time was recorded"}`), ""),
+          evs.length === 0 ? "no event has been appended to this chain" : "read_from_the_receipt_journal",
+          RECEIPT_JOURNAL,
+        ),
       });
     }
     return this.payload("receipts", "Receipts", [
@@ -2818,26 +2941,46 @@ export class Registry {
       } catch {
         manifest = null;
       }
+      const conditions = approvalConditions(manifest, { adoptedCount: this.adoptedCountOf(h.skill_version_id) });
       holds.push({
-        adoption_request_id: h.adoption_request_id,
-        skill_version_id: h.skill_version_id,
-        slug: h.slug,
-        adopter_agent_id: h.adopter_agent_id,
-        state: h.state,
-        conditions: approvalConditions(manifest, { adoptedCount: this.adoptedCountOf(h.skill_version_id) }),
-        created_at_ms: h.created_at_ms,
+        adoption_request_id: plain(h.adoption_request_id, "unknown"),
+        skill_version_id: plain(h.skill_version_id, "unknown"),
+        slug: plain(h.slug, "unnamed"),
+        adopter_agent_id: plain(h.adopter_agent_id, "unknown"),
+        state: plain(h.state, "unknown"),
+        conditions: this.registryCell(
+          "matrix_conditions",
+          list(conditions as readonly string[], ""),
+          conditions.length === 0 ? "no §7.3 matrix condition is recorded against this request" : "evaluated_from_the_signed_manifest",
+          MANIFEST_BOUNDARY,
+        ),
+        held_since: this.registryCell(
+          "held_since",
+          instant(h.created_at_ms),
+          "recorded_by_the_request_queue",
+          REQUEST_BOUNDARY,
+        ),
       });
     }
 
     const decisionRows = this.db
       .prepare(
+        // [I-5]: the approver's TYPE and ROLE are selected, not just its id.
+        // "approved by the workspace owner in person" and "approved by an agent
+        // holding a role" are different facts, and this view published neither
+        // — it printed an opaque `approver_agent_id` and left a reader to guess
+        // which of the two they were looking at.
         `SELECT a.id AS approval_id, a.skill_version_id, a.adoption_request_id, a.approver_agent_id,
                 a.scope, a.decision, a.note, a.created_at_ms,
-                s.slug, s.workspace_id, s.owner_agent_id, v.author_agent_id, q.adopter_agent_id
+                s.slug, s.workspace_id, s.owner_agent_id, v.author_agent_id, q.adopter_agent_id,
+                ap.type AS approver_type,
+                (SELECT m.role FROM workspace_memberships m
+                  WHERE m.agent_id = ap.id AND m.workspace_id = ap.workspace_id) AS approver_role
            FROM approvals a
            JOIN skill_versions v ON v.id = a.skill_version_id
            JOIN skills s ON s.id = v.skill_id
            LEFT JOIN adoption_requests q ON q.id = a.adoption_request_id
+           LEFT JOIN agents ap ON ap.id = a.approver_agent_id
           ORDER BY a.created_at_ms DESC, a.id DESC`,
       )
       .all() as Array<{
@@ -2854,6 +2997,8 @@ export class Registry {
       owner_agent_id: string;
       author_agent_id: string;
       adopter_agent_id: string | null;
+      approver_type: string | null;
+      approver_role: string | null;
     }>;
     const decisions: Array<Record<string, unknown>> = [];
     for (const d of decisionRows) {
@@ -2866,15 +3011,38 @@ export class Registry {
         isWsAdmin(d.workspace_id);
       if (!party) continue;
       decisions.push({
-        approval_id: d.approval_id,
-        skill_version_id: d.skill_version_id,
-        slug: d.slug,
-        adoption_request_id: d.adoption_request_id,
-        scope: d.scope,
-        decision: d.decision,
-        approver_agent_id: d.approver_agent_id,
-        note: d.note,
-        created_at_ms: d.created_at_ms,
+        approval_id: plain(d.approval_id, "unknown"),
+        skill_version_id: plain(d.skill_version_id, "unknown"),
+        slug: plain(d.slug, "unnamed"),
+        adoption_request_id: this.registryCell(
+          "adoption_request_id",
+          d.adoption_request_id,
+          d.adoption_request_id === null ? "this decision was recorded against the version, not against one request" : "recorded_by_the_approval_journal",
+          APPROVAL_BOUNDARY,
+        ),
+        scope: plain(d.scope, "unknown"),
+        decision: plain(d.decision, "unknown"),
+        // [I-5]: WHO, and WHAT KIND OF PRINCIPAL — the same cell the §9 screen
+        // uses, so the two surfaces cannot answer this differently.
+        approved_by: principalCell({
+          agent_id: d.approver_agent_id,
+          type: d.approver_type,
+          role: d.approver_role,
+          observation: "approved_by",
+          source: "registry",
+        }),
+        note: this.registryCell(
+          "note",
+          d.note,
+          d.note === null ? "the decision carried no note" : "recorded_by_the_approval_journal",
+          APPROVAL_BOUNDARY,
+        ),
+        decided_at: this.registryCell(
+          "decided_at",
+          instant(d.created_at_ms),
+          "recorded_by_the_approval_journal",
+          APPROVAL_BOUNDARY,
+        ),
       });
     }
 
@@ -2889,7 +3057,7 @@ export class Registry {
           "adopter_agent_id",
           "state",
           "conditions",
-          "created_at_ms",
+          "held_since",
         ],
         rows: holds,
         empty: "no adoption request is waiting for a human approval",
@@ -2904,9 +3072,9 @@ export class Registry {
           "adoption_request_id",
           "scope",
           "decision",
-          "approver_agent_id",
+          "approved_by",
           "note",
-          "created_at_ms",
+          "decided_at",
         ],
         rows: decisions,
         empty: "no approval decision is visible to this actor",
@@ -2940,17 +3108,22 @@ export class Registry {
       if (!d) continue;
       if (!this.mayReadReceipt(auth, { adopter_agent_id: dl.adopter_agent_id, ...d })) continue;
       rows.push({
-        adoption_request_id: dl.id,
+        adoption_request_id: plain(dl.id, "unknown"),
         // which message failed to arrive: an adoption notification, or a
         // surface-11 revocation notice. Undeliverable is loud either way, but
         // an operator needs to know WHICH adopter was not told what.
-        notification_kind: dl.notification_kind,
-        reason: dl.reason,
-        adopter_agent_id: dl.adopter_agent_id,
-        skill_version_id: dl.skill_version_id,
-        slug: d.slug,
-        attempt_count: d.attempt_count,
-        created_at_ms: d.created_at_ms,
+        notification_kind: plain(dl.notification_kind, "unknown"),
+        reason: this.registryCell(
+          "dead_letter_reason",
+          dl.reason,
+          dl.reason === null ? "the delivery queue recorded no reason" : "recorded_by_the_delivery_queue",
+          REQUEST_BOUNDARY,
+        ),
+        adopter_agent_id: plain(dl.adopter_agent_id, "unknown"),
+        skill_version_id: plain(dl.skill_version_id, "unknown"),
+        slug: plain(d.slug, "unnamed"),
+        attempt_count: this.countCell(d.attempt_count, "outcome", REQUEST_BOUNDARY, "delivery attempts recorded for this request"),
+        queued_since: this.registryCell("queued_since", instant(d.created_at_ms), "recorded_by_the_request_queue", REQUEST_BOUNDARY),
       });
     }
 
@@ -2979,7 +3152,7 @@ export class Registry {
           "skill_version_id",
           "slug",
           "attempt_count",
-          "created_at_ms",
+          "queued_since",
         ],
         rows,
         empty: "no dead-lettered adoption request is visible to this actor",
@@ -2987,8 +3160,27 @@ export class Registry {
       {
         key: "webhook_health",
         title: "Webhook endpoint health (§5.2: active | failing | dead)",
-        fields: ["webhook_id", "agent_id", "url", "status", "failure_count", "last_error", "updated_at_ms"],
-        rows: webhookHealth(this.db, agentIds) as unknown as Array<Record<string, unknown>>,
+        fields: ["webhook_id", "agent_id", "url", "status", "failure_count", "last_error", "updated_at"],
+        rows: webhookHealth(this.db, agentIds).map((w) => ({
+          webhook_id: plain(w.webhook_id, "unknown"),
+          agent_id: plain(w.agent_id, "unknown"),
+          // never the secret and never its reference (Appendix H)
+          url: plain(w.url, "unknown"),
+          status: plain(w.status, "unknown"),
+          failure_count: this.countCell(w.failure_count, "outcome", WEBHOOK_BOUNDARY, "consecutive delivery failures"),
+          last_error: this.registryCell(
+            "last_error",
+            w.last_error,
+            w.last_error === null ? "this endpoint has recorded no error" : "recorded_by_the_delivery_queue",
+            WEBHOOK_BOUNDARY,
+          ),
+          updated_at: this.registryCell(
+            "updated_at",
+            instant(w.updated_at_ms),
+            "recorded_by_the_delivery_queue",
+            WEBHOOK_BOUNDARY,
+          ),
+        })),
         empty: "no webhook endpoint is registered for this actor",
       },
     ]);
@@ -3033,12 +3225,19 @@ export class Registry {
       seen.add(item.skill_id);
       subjects.push({ skill_id: item.skill_id, slug: item.slug });
     }
+    const rows = countMigrationsPerSkill(this.db, subjects, window);
     return {
-      source: MIGRATION_SOURCE,
+      // [I-3]: the ENVELOPE's source names what the rows under it were actually
+      // read from. A constant here would republish `receipt_events` over an
+      // answer whose recipients came, in part, from the receipt shell.
+      source: describeSource({
+        from_event: rows.filter((r) => r.recipient_sources.includes(RECIPIENT_SOURCE_EVENT)).length,
+        from_shell: rows.filter((r) => r.recipient_sources.includes(RECIPIENT_SOURCE_SHELL)).length,
+      }),
       window: describeWindow(window),
       window_since_ms: window.since_ms,
       window_until_ms: window.until_ms,
-      items: countMigrationsPerSkill(this.db, subjects, window),
+      items: rows,
       next_cursor,
     };
   }
@@ -3054,6 +3253,46 @@ export class Registry {
    */
   private dashMigrations(auth: AuthContext, params: SearchParams): DashboardPayload {
     const counted = this.countMigrations(auth, params, ALL_TIME);
+    // [I-3]: the counter's own rows already carry a source, a window and a
+    // measurement state as FIELDS — and the page used to print the figures
+    // beside them as bare integers anyway, so the method sat in a neighbouring
+    // column instead of travelling with the number. Every figure here is a
+    // number cell, and the boundary each one names is the counter's own.
+    const boundary = `${MIGRATION_SOURCE} — ${counted.window}`;
+    const rows = counted.items.map((m) => ({
+      skill_id: plain(m.skill_id, "unknown"),
+      slug: plain(m.slug, "unnamed"),
+      migrations: this.countCell(m.migrations, "outcome", boundary, m.measurement_state),
+      distinct_recipients: this.countCell(m.distinct_recipients, "outcome", boundary, m.measurement_state),
+      distinct_runtimes: this.countCell(m.distinct_runtimes, "outcome", boundary, m.measurement_state),
+      runtimes: this.registryCell(
+        "runtimes",
+        list(m.runtimes, ""),
+        m.runtimes.length === 0 ? "no migration of this skill carried a runtime this registry could read" : "declared_by_the_adopter",
+        boundary,
+      ),
+      runtimes_unknown: this.countCell(
+        m.runtimes_unknown,
+        "outcome",
+        boundary,
+        "migrations whose declared runtime could not be read — unknown, and never `none`",
+      ),
+      recipients_unattributed: this.countCell(
+        m.recipients_unattributed,
+        "outcome",
+        boundary,
+        "chains dropped because their own recipient event could not be read [I-6]",
+      ),
+      recipient_sources: this.registryCell(
+        "recipient_sources",
+        list(m.recipient_sources, ""),
+        m.recipient_sources.length === 0 ? "no recipient was read for this skill, so no journal is named" : "the journals these recipients were read from",
+        boundary,
+      ),
+      measurement_state: plain(m.measurement_state, "unknown"),
+      source: plain(m.source, "unknown"),
+      window: plain(m.window, "unknown"),
+    }));
     return this.payload("migrations", "Migrations", [
       {
         key: "migrations",
@@ -3066,11 +3305,13 @@ export class Registry {
           "distinct_runtimes",
           "runtimes",
           "runtimes_unknown",
+          "recipients_unattributed",
+          "recipient_sources",
           "measurement_state",
           "source",
           "window",
         ],
-        rows: counted.items as unknown as Array<Record<string, unknown>>,
+        rows,
         empty: "no skill is visible to this actor, so nothing was counted",
         next_cursor: counted.next_cursor,
       },
@@ -3469,11 +3710,15 @@ export class Registry {
       const bad = r.failed_count + r.rolled_back_count;
       const verdict: OutcomeVersionInput["verdict"] =
         bad > 0 ? "needs_new_version" : r.adopted_count > 0 ? "worked" : "nothing_reported";
+      // [I-3]: the reason NAMES the cells it compared and restates no figure.
+      // A count inside a sentence carries no measurement state, no source and
+      // no window; `worked`, `broke` and `rolled_back` stand on this row and
+      // each carries all three.
       const reason =
         bad > 0
-          ? `${r.failed_count} chain(s) ended \`failed\` and ${r.rolled_back_count} ended \`rolled_back\``
+          ? "chains over this version ended `failed` or `rolled_back` — the counts are the `broke` and `rolled_back` cells of this row"
           : r.adopted_count > 0
-            ? `${r.adopted_count} chain(s) ended \`adopted\` and none ended \`failed\` or \`rolled_back\``
+            ? "chains over this version ended `adopted` and none ended `failed` or `rolled_back` — the count is the `worked` cell of this row"
             : "no adoption chain over this version has reached a terminal event: nothing was reported, which is not the same as working";
       return {
         slug: item.slug,

@@ -405,7 +405,22 @@ class SpySecretStore implements SecretStore {
   }
 }
 
-test("no private signing material reaches the package, the response, the database, the tlog or a log line", () => {
+/**
+ * WHAT THIS TEST CAN AND CANNOT PROVE — stated, because it used to overstate it.
+ *
+ * It searches SAVED BYTES: the archive, the response, every table of the live
+ * database, every lint report and error message. That is a real sweep and it
+ * covers everything whose saved form still contains what was written.
+ *
+ * IT DOES NOT COVER THE TRANSPARENCY LOG, and cannot. That table saves
+ * `sha256(jcs(payload))` and never the payload, so a seed placed in a payload
+ * would be stored as a hash and no search of any row could find it — this test
+ * passed, unchanged, with the seed added to the payload. The log is covered at
+ * its APPEND SITE instead, over the preimage, by `appendKeyRegistrationTlog`
+ * (src/system-key.ts), and `test/p14-r2-invariants.test.ts` runs that very
+ * mutation and requires the pack to REFUSE.
+ */
+test("no private signing material reaches the package, the response, the database or a log line", () => {
   const seed = seedGraph();
   const secrets = new SpySecretStore();
   const registry = new Registry(seed.db, { now: () => NOW, secrets });
@@ -656,8 +671,8 @@ test("[M-5]: `invoked` needs a PAIR, and everything else is `unknown` — never 
   assert.equal(
     arrivalVerdict(
       [
-        { role: "call", text: `sh ./${ARRIVAL_SCRIPT_PATH}` },
-        { role: "output", text: `skln-arrival-marker: ${marker}` },
+        { role: "call", call_id: "c-1", text: `sh ./${ARRIVAL_SCRIPT_PATH}` },
+        { role: "output", call_id: "c-1", text: `skln-arrival-marker: ${marker}` },
       ],
       marker,
     ),
@@ -667,17 +682,55 @@ test("[M-5]: `invoked` needs a PAIR, and everything else is `unknown` — never 
   assert.equal(
     arrivalVerdict(
       [
-        { role: "call", text: `echo ${marker}` },
-        { role: "output", text: `skln-arrival-marker: ${marker}` },
+        { role: "call", call_id: "c-1", text: `echo ${marker}` },
+        { role: "output", call_id: "c-1", text: `skln-arrival-marker: ${marker}` },
       ],
       marker,
     ),
     "yes",
-    "call AND output, both carrying this version's marker",
+    "call AND output, both carrying this version's marker, bound by ONE call_id",
   );
-  assert.equal(arrivalVerdict([{ role: "call", text: marker }], marker), "unknown", "a call alone is not a pair");
+  // [M-5]: a pair is what the RUNTIME bound, and the id is what says so
   assert.equal(
-    arrivalVerdict([{ role: "output", text: marker }], marker),
+    arrivalVerdict(
+      [
+        { role: "call", call_id: "c-1", text: `echo ${marker}` },
+        { role: "output", call_id: "c-2", text: `skln-arrival-marker: ${marker}` },
+      ],
+      marker,
+    ),
+    "unknown",
+    "a call of one invocation and an output of another are two facts, not one pair",
+  );
+  assert.equal(
+    arrivalVerdict(
+      [
+        { role: "call", call_id: null, text: `echo ${marker}` },
+        { role: "output", call_id: null, text: `skln-arrival-marker: ${marker}` },
+      ],
+      marker,
+    ),
+    "unknown",
+    "a runtime that bound nothing produced no pair: a null call_id can never pair",
+  );
+  assert.equal(
+    arrivalVerdict(
+      [
+        { role: "call", call_id: "", text: `echo ${marker}` },
+        { role: "output", call_id: "", text: `skln-arrival-marker: ${marker}` },
+      ],
+      marker,
+    ),
+    "unknown",
+    "an EMPTY call_id is not an id: two records bound by nothing are not a pair",
+  );
+  assert.equal(
+    arrivalVerdict([{ role: "call", call_id: "c-1", text: marker }], marker),
+    "unknown",
+    "a call alone is not a pair",
+  );
+  assert.equal(
+    arrivalVerdict([{ role: "output", call_id: "c-1", text: marker }], marker),
     "unknown",
     "an output alone is not a pair",
   );
@@ -685,8 +738,8 @@ test("[M-5]: `invoked` needs a PAIR, and everything else is `unknown` — never 
   assert.equal(
     arrivalVerdict(
       [
-        { role: "call", text: otherMarker },
-        { role: "output", text: otherMarker },
+        { role: "call", call_id: "c-1", text: otherMarker },
+        { role: "output", call_id: "c-1", text: otherMarker },
       ],
       marker,
     ),
@@ -697,11 +750,11 @@ test("[M-5]: `invoked` needs a PAIR, and everything else is `unknown` — never 
   const values = new Set(
     [
       arrivalVerdict([], marker),
-      arrivalVerdict([{ role: "call", text: marker }], marker),
+      arrivalVerdict([{ role: "call", call_id: "c-1", text: marker }], marker),
       arrivalVerdict(
         [
-          { role: "call", text: marker },
-          { role: "output", text: marker },
+          { role: "call", call_id: "c-1", text: marker },
+          { role: "output", call_id: "c-1", text: marker },
         ],
         marker,
       ),
@@ -855,12 +908,12 @@ test("D-6 degenerate case: a package WITH a script never gets the two-place chec
 test("D-6: the two reasons for `unknown` are distinguishable as values, not as prose", () => {
   const marker = arrivalMarker("01K1M83S80EZJBJVYBH8XEK5ZR");
   const pair: ArrivalRecord[] = [
-    { role: "call", text: `sh ./${ARRIVAL_SCRIPT_PATH}` },
-    { role: "output", text: `skln-arrival-marker: ${marker}` },
+    { role: "call", call_id: "c-1", text: `sh ./${ARRIVAL_SCRIPT_PATH}` },
+    { role: "output", call_id: "c-1", text: `skln-arrival-marker: ${marker}` },
   ];
   const markedPair: ArrivalRecord[] = [
-    { role: "call", text: `sh ./${ARRIVAL_SCRIPT_PATH} # ${marker}` },
-    { role: "output", text: `skln-arrival-marker: ${marker}` },
+    { role: "call", call_id: "c-1", text: `sh ./${ARRIVAL_SCRIPT_PATH} # ${marker}` },
+    { role: "output", call_id: "c-1", text: `skln-arrival-marker: ${marker}` },
   ];
 
   // (a) a version that CAN be demonstrated, with nothing found yet

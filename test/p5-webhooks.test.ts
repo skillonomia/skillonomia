@@ -475,8 +475,12 @@ test("an adopter with no endpoint is a LOUD dead letter, and the view says which
   const view = rest(fx, "GET", "/v1/dashboard/dead_letters", fx.keys.owner).body;
   const section = view.sections.find((s: any) => s.key === "dead_letters");
   assert.ok(section.fields.includes("notification_kind"), "the view declares the field it renders");
+  // the reason is a CELL now — an answer with its method — because [I-1] and
+  // [I-3] hold on every one of the eleven views, not only on the newest five
   assert.ok(
-    section.rows.some((r: any) => r.notification_kind === "revocation" && r.reason === "endpoint_missing"),
+    section.rows.some(
+      (r: any) => r.notification_kind === "revocation" && String(r.reason).startsWith("endpoint_missing ·"),
+    ),
     "an operator can see WHICH adopter was not told WHAT",
   );
   fx.db.close();

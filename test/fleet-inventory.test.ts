@@ -117,12 +117,19 @@ function sha256(text: string): string {
  *   * the line before and the line after are PRINTED, so a reader of the output
  *     can see which code was broken rather than take it on trust.
  *
- * Only `src/fleet.ts` and `src/fleet-scan.ts` are mutated here, and both are
- * deliberately shallow: `fleet.ts` imports one module, `fleet-scan.ts` imports
- * two. So the copied graph that gets loaded is small and cannot drift from the
- * shipped one in some third file.
+ * Only `src/marker.ts`, `src/fleet.ts` and `src/fleet-scan.ts` are mutated
+ * here, and all three are deliberately shallow: `marker.ts` imports one type,
+ * `fleet.ts` imports one module, `fleet-scan.ts` imports two. So the copied
+ * graph that gets loaded is small and cannot drift from the shipped one in some
+ * third file.
+ *
+ * `mutantIn` breaks the mutated file APART from the loaded one, because [M-5]'s
+ * pairing rule now lives in `src/marker.ts` and is CALLED by `src/fleet.ts`.
+ * That is the point of moving it — one rule, one implementation — and a harness
+ * that could only mutate the file it loads could no longer break that rule from
+ * §6's side and watch §6 answer wrongly.
  */
-async function mutant(file: string, ...edits: Array<[from: string, to: string]>): Promise<any> {
+async function mutantIn(file: string, load: string, edits: Array<[from: string, to: string]>): Promise<any> {
   const dir = tempBase("skln-fleet-mutant-");
   cpSync(new URL("../src", import.meta.url), join(dir, "src"), { recursive: true });
   const path = join(dir, "src", file);
@@ -140,8 +147,13 @@ async function mutant(file: string, ...edits: Array<[from: string, to: string]>)
   const afterSha = sha256(text);
   assert.notEqual(afterSha, beforeSha, `the substitution did not change the bytes of ${file}`);
   writeFileSync(path, text);
-  console.log(`[mutation] ${file}  sha256 ${beforeSha.slice(0, 12)} → ${afterSha.slice(0, 12)}`);
-  return await import(pathToFileURL(path).href);
+  console.log(`[mutation] ${file}  sha256 ${beforeSha.slice(0, 12)} → ${afterSha.slice(0, 12)} (loading ${load})`);
+  return await import(pathToFileURL(join(dir, "src", load)).href);
+}
+
+/** The ordinary case: mutate a file and load that same file. */
+async function mutant(file: string, ...edits: Array<[from: string, to: string]>): Promise<any> {
+  return await mutantIn(file, file, edits);
 }
 
 /** Assert that `fn` throws or fails an assertion — the mutant must be killed. */
@@ -533,10 +545,10 @@ test("[M-5] DEGENERATE 3: a LONE record is not an invocation, and the mutation t
     assert.equal(cellOf(columns, "invoked").reason, "no_paired_record");
   }
 
-  // §6's rule is STRICTER than §5's, and the column must survive the gap
-  // rather than crash in it: a call and an output that both carry the marker
-  // but were never bound by one `call_id` satisfy §5's assessment and NOT §6's,
-  // and the answer for that is `unknown` with a reason.
+  // A call and an output that both carry the marker but were never bound by one
+  // `call_id` are two facts about two invocations. §5 and §6 now say so with
+  // ONE rule, so the column answers `unknown` WITH A REASON and does not crash
+  // in a gap between two implementations of [M-5] — because there is no gap.
   const straddling = capabilityColumns(
     evidence({
       snapshot: snapshot([
@@ -548,27 +560,61 @@ test("[M-5] DEGENERATE 3: a LONE record is not an invocation, and the mutation t
   assert.equal(cellOf(straddling, "invoked").value, "unknown", "an unbound call/output pair was read as an invocation");
   assert.equal(cellOf(straddling, "invoked").reason, "no_paired_record");
 
-  // …and the implication that IS checked runs the other way. A symmetric check
-  // would treat §6 being stricter than §5 as a contradiction and refuse to
-  // answer at all — a crash on ordinary records, which is why the direction is
-  // asserted here rather than left to read correctly.
-  const symmetric = await mutant("fleet.ts", [
-    `  if (invoked === "yes" && assessment.verdict !== "yes") {`,
-    `  if ((invoked === "yes") !== (assessment.verdict === "yes")) {`,
+  // THE MUTATION THAT SHIPPED, PUT BACK. §5's `assessArrival` used to count
+  // SOME call and SOME output carrying the marker, with no shared id, while §6
+  // required the pair. On exactly the records above that made the assignments
+  // surface say `yes` and the capability surface say `unknown` — one set of
+  // records, two verdicts, both citing [M-5]. The consistency check in
+  // `capabilityColumns` is symmetric now, so it REFUSES rather than publishes.
+  const lax = await mutantIn("marker.ts", "fleet.ts", [
+    [
+      `  for (const pair of matchArrivalPairs(records, viewOfArrivalRecord)) {
+    if (pair.marker === subject.marker) return { verdict: "yes", reason: null };
+  }`,
+      `  let sawCall = false;
+  let sawOutput = false;
+  for (const r of records) {
+    if (!r || typeof r.text !== "string" || !markersIn(r.text).includes(subject.marker)) continue;
+    if (r.role === "call") sawCall = true;
+    else if (r.role === "output") sawOutput = true;
+    if (sawCall && sawOutput) return { verdict: "yes", reason: null };
+  }`,
+    ],
   ]);
-  killed("a symmetric consistency check refused to answer for an unbound call/output pair", () => {
-    const cols = symmetric.capabilityColumns(
+  killed("§5 read an unbound call/output as a pair while §6 did not, and the page published one of the two", () => {
+    lax.capabilityColumns(
       evidence({
         snapshot: snapshot([record({ role: "call", call_id: "a-1" }), record({ role: "output", call_id: "a-2" })]),
       }),
     );
-    assert.equal(cols.find((c: StateColumn) => c.column === "invoked").value, "unknown");
   });
 
-  // THE MUTATION: stop requiring the call.
-  const m = await mutant("fleet.ts", [`    if (!calls.has(key)) continue;`, `    if (false) continue;`]);
+  // THE MUTATION: stop requiring the call. It is made in `src/marker.ts`, where
+  // the rule now lives, and §6 is loaded on top of it — so a §5 that stopped
+  // requiring a pair would carry §6 with it.
+  const m = await mutantIn("marker.ts", "fleet.ts", [
+    [`    if (call === undefined) continue;`, `    if (false) continue;`],
+  ]);
   killed("a lone output was accepted as an invocation [M-5]", () => {
     assert.deepEqual(m.scanArrivals([record({ role: "output" })], subjects), []);
+  });
+
+  // …and the same for the id itself: a rule that ignored `call_id` would make
+  // the mismatched-id case above a pair again.
+  const idBlind = await mutantIn("fleet.ts", "fleet.ts", [
+    [
+      `      ? { role: r.role, call_id: r.call_id, markers: [r.marker], scope: [r.agent_id, r.runtime] }`,
+      `      ? { role: r.role, call_id: "one", markers: [r.marker], scope: [r.agent_id, r.runtime] }`,
+    ],
+  ]);
+  killed("two records the runtime bound to DIFFERENT invocations were read as one pair [M-5]", () => {
+    assert.deepEqual(
+      idBlind.scanArrivals(
+        [record({ role: "call", call_id: "c-1" }), record({ role: "output", call_id: "c-2" })],
+        subjects,
+      ),
+      [],
+    );
   });
 });
 
@@ -613,8 +659,8 @@ test("[M-5] DEGENERATE 4: a pair carrying ANOTHER version's marker is evidence f
 
   // THE MUTATION: credit whichever subject was asked about first.
   const m = await mutant("fleet.ts", [
-    `    const subject = bySubjectMarker.get(out.marker);`,
-    `    const subject = bySubjectMarker.get(out.marker) ?? subjects[0];`,
+    `    const subject = bySubjectMarker.get(pair.marker);`,
+    `    const subject = bySubjectMarker.get(pair.marker) ?? subjects[0];`,
   ]);
   killed("a pair carrying another version's marker was credited to the first subject", () => {
     const mutated = m.scanArrivals(
@@ -1361,12 +1407,32 @@ test("[I-8] the hints are true: three reads that touch a foreign disk, and one w
   assert.match(report.description, /THIS TOOL WRITES/);
   assert.match(report.description, /list it among the READING surfaces/);
 
-  // read and write are separate NAMES: no tool takes a mode argument
-  for (const name of ["fleet.list", "agent.capabilities", "capability.get", "observation.report"]) {
-    for (const p of Object.keys(byName[name].inputSchema.properties ?? {})) {
-      assert.ok(!/^(mode|action|op)$/.test(p), `${name} carries a mode argument — read and write are separate tools`);
+  // READ AND WRITE ARE SEPARATE NAMES — over EVERY tool, not the four this test
+  // is about. [I-8] says so of the whole table, and a check over four entries
+  // proves it of four entries: the very shape of finding that put 23 tools into
+  // production with no annotations at all.
+  //
+  // The rule as it can honestly be stated: a tool advertised as READING may not
+  // take an argument that could switch it into writing. `skill.review.request`
+  // and `transfer_grant.create` do take an `action`, and both are writes in
+  // every branch — the argument chooses WHICH write, never whether to write.
+  let swept = 0;
+  const switches: string[] = [];
+  for (const tool of MCP_TOOLS as ReadonlyArray<any>) {
+    swept += 1;
+    for (const p of Object.keys(tool.inputSchema?.properties ?? {})) {
+      if (!/^(mode|op)$/.test(p)) {
+        if (!(p === "action" && tool.annotations?.readOnlyHint === false)) {
+          if (/^(mode|action|op)$/.test(p)) switches.push(`${tool.name}: ${p}`);
+        }
+        continue;
+      }
+      switches.push(`${tool.name}: ${p}`);
     }
   }
+  console.log(`[I-8] tools swept for a read/write mode argument: ${swept}`);
+  assert.equal(swept, MCP_TOOLS.length, "the sweep must cover the whole tool table");
+  assert.deepEqual(switches, [], "tools that could switch between reading and writing on an argument [I-8]");
 });
 
 test("the §6 surfaces enforce the same ACL and the same permission as the rest of the loop", () => {

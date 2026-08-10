@@ -863,7 +863,13 @@ test("[D-3]/[I-5] the approval screen shows MEANING, and names the TYPE of the p
   assert.match(at("rights_required"), /risk: high/);
   assert.match(at("rights_required"), /sandbox: /);
   assert.match(at("deliberately_excluded"), /it does not touch production/);
-  assert.match(at("included"), /steps: \d+/);
+  // [I-3]: what went in is TWO NUMBERS with their method, not two figures
+  // inside a sentence — `steps: N | files: N` was invisible to the sweep
+  for (const n of ["steps", "files"]) {
+    assert.equal(cellAttr(at(n), "kind"), "measured_number", `${n} is published as a number cell`);
+    assert.match(at(n), /^(\d+|unknown) /, `${n} is a figure or the word`);
+  }
+  assert.match(at("steps"), /^\d+ /, "the fixture must declare steps, or the check is vacuous");
   assert.match(at("approval_required"), /adopt_high_risk/);
   assert.match(at("approval_state"), /adopt_high_risk: approved/);
   // [B-6]: the MANIFEST is not what is shown
@@ -892,13 +898,14 @@ test("[D-4] the capability screen carries the origin, the diff, the holders, the
   console.log(`[D-4] diff       → ${at("diff").slice(0, 100)}`);
   console.log(`[D-4] assigned_to→ ${at("assigned_to").slice(0, 100)}`);
   console.log(`[D-4] migrations → ${at("migrations").slice(0, 100)}`);
-  console.log(`[D-4] rollback   → ${at("rollback").slice(0, 100)}`);
+  console.log(`[D-4] rollback   → ${at("rollback_steps").slice(0, 100)} · ${at("rollback").slice(0, 80)}`);
   assert.match(at("origin"), /author: /);
   assert.match(at("diff"), /^unknown/, "a first version has no predecessor, and says so rather than showing nothing");
   assert.match(at("diff"), /there is no predecessor to compare with/);
   assert.ok(at("assigned_to").startsWith(s.claudeAgent), "the recipient of the transfer must be named");
   assert.equal(cellAttr(at("migrations"), "kind"), "measured_number");
-  assert.match(at("rollback"), /declared steps: \d+/);
+  assert.equal(cellAttr(at("rollback_steps"), "kind"), "measured_number", "a declared step count is a number cell [I-3]");
+  assert.match(at("rollback_steps"), /^\d+ /, "the fixture must declare a rollback, or the check is vacuous");
   for (const n of ["worked", "broke", "rolled_back"]) assert.equal(cellAttr(at(n), "kind"), "measured_number");
   s.fx.db.close();
 });

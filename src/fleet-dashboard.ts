@@ -100,6 +100,9 @@ export const RECONCILIATION_FIELD = "reconciliation_state";
  * `fallback` — which every caller states as a sentence about WHY there is
  * nothing, never as a dash.
  */
+/** The boundary a receipt-backed rating was taken over. */
+export const RATING_BOUNDARY = "ratings bound to a closed adoption receipt, all time";
+
 export function plain(v: unknown, fallback: string): string {
   const s = v === null || v === undefined ? "" : String(v);
   const cleaned = s.replace(/·/g, "|").replace(/\s+/g, " ").trim();
@@ -266,6 +269,32 @@ function answerOf(text: string): string {
 }
 
 /**
+ * A RUN OF DIGITS A READER READS AS A COUNT — anywhere in a cell's answer, not
+ * only as the whole of it.
+ *
+ * WHY THIS EXISTS. The sweep used to recognise a number only when the ENTIRE
+ * cell was digits, or when the cell already declared `kind: measured_number`.
+ * So `steps: 4 | files: 7` and `declared steps: 3` walked straight past it:
+ * `auditRenderedHtml` reported ZERO violations and `number_cells: 0` for pages
+ * carrying them. A guard that cannot see the thing it exists to check is worse
+ * than no guard, because its silence is read as a pass.
+ *
+ * The boundary is deliberately narrow, and each exclusion is a real value on
+ * these pages rather than a convenience:
+ *
+ *   `1.0.0`                    a semantic version — digits joined by dots
+ *   `01K1M83S80…`              a ULID — digits joined to letters
+ *   `2026-08-10T00:00:00.000Z` an instant — digits joined by `-`, `:` and `.`
+ *   `4/5`, `v2`, `sha256:…`    joined by `/`, letters, `:`
+ *
+ * What is left is a standalone integer, which on these pages is always a COUNT
+ * and therefore always something [I-3] requires a measurement state for.
+ */
+export function embeddedNumbers(answer: string): string[] {
+  return answer.match(/(?<![\w.:\-\/])\d+(?![\w.:\-\/])/g) ?? [];
+}
+
+/**
  * A `state_column` cell text, back into the shape work 2's guards take.
  *
  * It is rebuilt FROM THE PAGE. Nothing here reaches into the structure the
@@ -355,6 +384,22 @@ export function auditCells(cells: readonly ParsedCell[]): RenderAudit {
       }
       continue;
     }
+    // A NUMBER INSIDE A CELL IS STILL A NUMBER [I-3]. Whatever else this cell
+    // is, a standalone integer in its ANSWER is a count, and a count that is
+    // not in a `measured_number` cell is a figure with no measurement state.
+    // The two cells that got past the old sweep — `steps: N | files: N` and
+    // `declared steps: N` — were exactly this.
+    if (kind !== "measured_number") {
+      const embedded = embeddedNumbers(answer);
+      if (embedded.length > 0) {
+        numbers += embedded.length;
+        violations.push({
+          where: cell.where,
+          problem: `a bare number \`${embedded[0]}\` embedded in a \`${kind ?? "plain"}\` cell: a count is published as a number cell with its state, source and boundary, or not at all [I-3]`,
+        });
+        continue;
+      }
+    }
     if (kind === undefined) {
       if (TRIVALENT_WORDS.includes(answer)) {
         violations.push({
@@ -386,7 +431,9 @@ export function auditCells(cells: readonly ParsedCell[]): RenderAudit {
     }
     if (kind === "measured_number") {
       numbers += 1;
-      if (!/^\d+$/.test(answer) && answer !== "unknown") {
+      // a figure, or the word. A rating average is a measured number too, so a
+      // decimal is a figure; anything else is prose wearing a number's clothes.
+      if (!/^\d+(?:\.\d+)?$/.test(answer) && answer !== "unknown") {
         violations.push({ where: cell.where, problem: `a number that is neither a figure nor \`unknown\`: ${JSON.stringify(answer)}` });
       }
       const missing = missingAttribute({
@@ -706,6 +753,7 @@ export const FLEET_FIELDS = [
   "reconciliation_state",
   "reconciliation",
   "last_failure",
+  "last_feedback_score",
   "last_feedback",
 ];
 
@@ -783,6 +831,15 @@ export function fleetSections(input: FleetViewInput): DashboardSection[] {
               window: "all_time",
               boundary: "assignment_events (registry journal, INSERT-only), all time",
             }),
+      // [I-3]: the SCORE is a number and is published as one. It used to ride
+      // inside the sentence as `score N of 5`, where it carried no measurement
+      // state — and the sweep, which recognised a number only when the whole
+      // cell was digits, never looked at it.
+      last_feedback_score: numberCell(
+        a.last_feedback === null
+          ? registryUnknown("outcome", RATING_BOUNDARY, "this principal has recorded no rating")
+          : registryCount(a.last_feedback.score, "outcome", RATING_BOUNDARY, "the most recent rating this principal recorded, out of 5"),
+      ),
       last_feedback:
         a.last_feedback === null
           ? observationCell({
@@ -791,15 +848,15 @@ export function fleetSections(input: FleetViewInput): DashboardSection[] {
               why: "this principal has recorded no rating",
               source: "registry",
               window: "all_time",
-              boundary: "ratings (one per principal per version), all time",
+              boundary: RATING_BOUNDARY,
             })
           : observationCell({
               observation: "last_feedback",
-              answer: `score ${a.last_feedback.score} of 5 | ${plain(a.last_feedback.slug, "unknown skill")} | ${instantOr(a.last_feedback.at_ms, "no time was recorded")}`,
+              answer: `${plain(a.last_feedback.slug, "unknown skill")} | ${instantOr(a.last_feedback.at_ms, "no time was recorded")} | the score is the \`last_feedback_score\` cell of this row`,
               why: plain(a.last_feedback.note, "the rating carried no note"),
               source: "registry",
               window: "all_time",
-              boundary: "ratings (one per principal per version), all time",
+              boundary: RATING_BOUNDARY,
             }),
     };
   });
@@ -1092,10 +1149,13 @@ export interface ApprovalViewInput {
   next_cursor?: string | null;
 }
 
-function list(values: readonly string[], fallback: string): string {
+export function list(values: readonly string[], fallback: string): string {
   const cleaned = values.map((v) => plain(v, "")).filter((v) => v.length > 0);
   return cleaned.length === 0 ? fallback : cleaned.join(" | ");
 }
+
+/** The boundary every number read out of a signed manifest was taken over. */
+const MANIFEST_BOUNDARY = "the version's manifest, as signed";
 
 export function approvalSections(input: ApprovalViewInput): DashboardSection[] {
   const rows = input.subjects.map((s) => ({
@@ -1122,10 +1182,21 @@ export function approvalSections(input: ApprovalViewInput): DashboardSection[] {
       `cloud/iam: ${list(s.cloud_iam_assumptions, "none assumed")}`,
       `mcp: ${list(s.mcp_dependencies, "none declared")}`,
     ].join(" | "),
-    included: [
-      `steps: ${s.step_count === null ? "unknown" : String(s.step_count)}`,
-      `files: ${s.file_count === null ? "unknown" : String(s.file_count)}`,
-    ].join(" | "),
+    // [I-3]: WHAT WENT IN, as two NUMBERS rather than two figures inside a
+    // sentence. They used to be rendered as `steps: N | files: N` in a plain
+    // cell, which the sweep could not see as numbers at all — it recognised a
+    // number only when the whole cell was digits, so this page audited clean
+    // with `number_cells: 0` while carrying two unattributed counts.
+    steps: numberCell(
+      s.step_count === null
+        ? registryUnknown("registered", MANIFEST_BOUNDARY, "this version's manifest declares no procedure step this registry can count")
+        : registryCount(s.step_count, "registered", MANIFEST_BOUNDARY),
+    ),
+    files: numberCell(
+      s.file_count === null
+        ? registryUnknown("registered", MANIFEST_BOUNDARY, "this version's manifest declares no file list this registry can count")
+        : registryCount(s.file_count, "registered", MANIFEST_BOUNDARY),
+    ),
     // [B-6] — AND WHAT WAS DELIBERATELY LEFT OUT. The author's own non-goals,
     // shown beside what went in, because a reader approving a capability is
     // approving its boundary as much as its content.
@@ -1178,7 +1249,8 @@ export function approvalSections(input: ApprovalViewInput): DashboardSection[] {
         "what_it_does",
         "when_it_applies",
         "rights_required",
-        "included",
+        "steps",
+        "files",
         "deliberately_excluded",
         "approval_required",
         "approval_state",
@@ -1261,13 +1333,25 @@ export function capabilitySections(input: CapabilityViewInput): DashboardSection
     worked: numberCell(v.worked),
     broke: numberCell(v.broke),
     migrations: numberCell(v.migrations),
+    // [I-3]: the declared rollback is a COUNT, and it is published as one.
+    // It used to be `declared steps: N` inside an observation cell — a figure
+    // with no measurement state, which the old sweep did not recognise as a
+    // number and therefore never checked.
+    rollback_steps: numberCell(
+      v.rollback_steps === null
+        ? registryUnknown("registered", MANIFEST_BOUNDARY, "this version declares no rollback procedure this registry can count")
+        : registryCount(v.rollback_steps, "registered", MANIFEST_BOUNDARY, "the version's own declared rollback procedure"),
+    ),
     rollback: observationCell({
       observation: "rollback",
-      answer: `declared steps: ${v.rollback_steps === null ? "unknown" : String(v.rollback_steps)}`,
-      why: "the version's own declared rollback procedure; performing one is `skill.supersede` or `skill.revoke` and is not this screen",
+      answer:
+        v.rollback_steps === null
+          ? null
+          : "this version declares a rollback procedure; its length is the `rollback_steps` cell of this row",
+      why: "performing a rollback is `skill.supersede` or `skill.revoke` and is not this screen",
       source: "registry",
       window: "all_time",
-      boundary: "the version's manifest, as signed",
+      boundary: MANIFEST_BOUNDARY,
     }),
     rolled_back: numberCell(v.rolled_back),
   }));
@@ -1277,7 +1361,20 @@ export function capabilitySections(input: CapabilityViewInput): DashboardSection
       title: "[D-4] One capability across its versions: where it came from, who holds it, where it worked, where it broke",
       note:
         "`worked`, `broke`, `rolled_back` and `migrations` are counted from terminal receipt events (§5.3) — this registry's record of what adopters reported, over all time. None of them is a claim about a run nobody reported.",
-      fields: ["slug", "version", "state", "origin", "diff", "assigned_to", "worked", "broke", "rolled_back", "migrations", "rollback"],
+      fields: [
+        "slug",
+        "version",
+        "state",
+        "origin",
+        "diff",
+        "assigned_to",
+        "worked",
+        "broke",
+        "rolled_back",
+        "migrations",
+        "rollback_steps",
+        "rollback",
+      ],
       rows,
       empty: "no version is visible to this actor",
       next_cursor: input.next_cursor,
@@ -1327,14 +1424,13 @@ export function outcomeSections(input: OutcomeViewInput): DashboardSection[] {
     worked: numberCell(v.worked),
     broke: numberCell(v.broke),
     rolled_back: numberCell(v.rolled_back),
-    avg_rating: observationCell({
-      observation: "avg_rating",
-      answer: v.avg_rating === null ? null : `${v.avg_rating} of 5`,
-      why: v.avg_rating === null ? "no receipt-backed rating has been recorded for this version" : "receipt_backed_average",
-      source: "registry",
-      window: "all_time",
-      boundary: "ratings bound to a closed adoption receipt, all time",
-    }),
+    // [I-3]: an average IS a measured number, `of 5` and all — the scale is in
+    // the boundary, where a method belongs, and the figure carries its state.
+    avg_rating: numberCell(
+      v.avg_rating === null
+        ? registryUnknown("outcome", RATING_BOUNDARY, "no receipt-backed rating has been recorded for this version")
+        : { ...registryCount(0, "outcome", RATING_BOUNDARY, "receipt_backed_average, out of 5"), value: v.avg_rating },
+    ),
     failure_modes: list(v.failure_modes, "no failure mode has been reported"),
     verdict: plain(v.verdict, "unknown"),
     why: observationCell({

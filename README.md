@@ -403,11 +403,17 @@ source, over which selection window.
 The migrations view, and `migration.count` behind it, answer the question the
 registry exists for: how often each skill actually moved to an agent that ran
 it. Per skill it counts the migrations, the distinct recipients and the distinct
-declared runtimes — all three out of the append-only receipt journal, never out
-of any mutable column, so the figure cannot be raised after the fact. A skill
-that never migrated is a row of zeroes rather than a missing row, a runtime that
-could not be read is reported as unknown rather than silently dropped to zero,
-and every row states its source and the window it was counted over.
+declared runtimes, so the figure cannot be raised after the fact. The qualifying
+event is always the append-only receipt journal. The recipient comes from the
+`transferred` event of a chain a transfer opened, and from the INSERT-only
+receipt shell of a chain the recipient opened for itself — never from any
+mutable column, and never from the shell when a transfer event exists but
+cannot be read: such a chain contributes nothing and is reported as
+`recipients_unattributed`. Each row names the journals its own numbers came
+from. A skill that never migrated is a row of zeroes rather than a missing row,
+a runtime that could not be read is reported as unknown rather than silently
+dropped to zero, and every row states its source and the window it was counted
+over.
 
 See `docs/API.md` for the full request and response shapes, and
 `docs/OPERATIONS.md` for running one.

@@ -104,7 +104,7 @@ class RecordBox implements RuntimeRecordSource {
   recordsFor(): RuntimeRecordWindow | null {
     return this.window;
   }
-  set(records: Array<{ role: "call" | "output"; text: string }>): void {
+  set(records: Array<{ role: "call" | "output"; call_id: string | null; text: string }>): void {
     this.window = { records, window: `${records.length} records, supplied by the test harness` };
   }
 }
@@ -225,12 +225,13 @@ function noShellManifest(base: any): Record<string, unknown> {
   };
 }
 
-/** A call/output PAIR carrying a marker — the only thing [M-5] counts. */
-function pair(marker: string): Array<{ role: "call" | "output"; text: string }> {
+/** A call/output PAIR carrying a marker AND ONE `call_id` — the only thing
+ *  [M-5] counts. Without the shared id these are three unrelated records. */
+function pair(marker: string): Array<{ role: "call" | "output"; call_id: string | null; text: string }> {
   return [
-    { role: "call", text: `./scripts/skln-arrive.sh` },
-    { role: "output", text: `skln-arrival-marker: ${marker}` },
-    { role: "call", text: `skln-arrival-marker: ${marker}` },
+    { role: "call", call_id: "k-1", text: `./scripts/skln-arrive.sh` },
+    { role: "output", call_id: "k-1", text: `skln-arrival-marker: ${marker}` },
+    { role: "call", call_id: "k-1", text: `skln-arrival-marker: ${marker}` },
   ];
 }
 
@@ -284,10 +285,26 @@ test("a successful activation produces NO observed arrival: the fact column move
   const marker = arrivalMarker(d.versionId);
   const seqBefore = journal(fx, d.assignmentId).length;
   for (const [why, given] of [
-    ["a call alone", [{ role: "call" as const, text: marker }]],
-    ["an output alone", [{ role: "output" as const, text: marker }]],
+    ["a call alone", [{ role: "call" as const, call_id: "k-1", text: marker }]],
+    ["an output alone", [{ role: "output" as const, call_id: "k-1", text: marker }]],
     ["a pair carrying another version's marker", pair(arrivalMarker("01OTHERVERSIONIDXXXXXXXXXX"))],
-    ["records with no marker at all", [{ role: "call" as const, text: "hello" }, { role: "output" as const, text: "world" }]],
+    [
+      // [M-5]: the two halves exist, they carry THIS marker, and the runtime
+      // bound them to different invocations. That is not a pair.
+      "a call and an output under DIFFERENT call_ids",
+      [
+        { role: "call" as const, call_id: "k-1", text: marker },
+        { role: "output" as const, call_id: "k-2", text: marker },
+      ],
+    ],
+    [
+      "a call and an output the runtime bound to NOTHING",
+      [
+        { role: "call" as const, call_id: null, text: marker },
+        { role: "output" as const, call_id: null, text: marker },
+      ],
+    ],
+    ["records with no marker at all", [{ role: "call" as const, call_id: "k-1", text: "hello" }, { role: "output" as const, call_id: "k-1", text: "world" }]],
   ] as const) {
     records.set(given as any);
     const row = listed(fx, fx.keys.owner, d.assignmentId);

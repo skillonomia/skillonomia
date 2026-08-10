@@ -276,16 +276,132 @@ export function markerInArrivalScript(script: string): string | null {
 }
 
 /**
- * One record of a runtime transcript, reduced to the two things §5 needs of it.
+ * One record of a runtime transcript, reduced to the three things §5 needs.
  *
  * `role` distinguishes the record that ASKED for something from the record that
  * REPORTED what happened. [M-5] counts a version as invoked only on a PAIR, and
  * a shape that cannot tell a call from an output cannot express that rule.
+ *
+ * `call_id` IS THE OTHER HALF OF THAT RULE, and it is required rather than
+ * optional. A pair is not "some call and some output that both mention a
+ * marker" — it is the call and the output THE RUNTIME ITSELF BOUND, and the id
+ * it bound them with is the only thing that says so. A shape that let a
+ * producer omit the field would let a producer decide, silently, that this rule
+ * did not apply to its records; that is precisely how `recordsFor` came to drop
+ * it and how one set of records came to be a pair on one surface and not on
+ * another. `null` is a runtime that gave no id, and a null can never pair.
  */
 export interface ArrivalRecord {
   role: "call" | "output";
+  /** what binds a call to ITS output. `null` — no id — never forms a pair. */
+  call_id: string | null;
   /** the record's text, as a record — never a path to one */
   text: string;
+}
+
+/**
+ * How one record of ANY shape looks to the pairing rule below.
+ *
+ * It exists so that the rule can be written ONCE and read by every §5 and §6
+ * surface, whatever the records happen to be: `ArrivalRecord`s carrying text,
+ * `ObservedRecord`s already reduced to a marker, or whatever V-2's self-report
+ * turns out to be. The alternative — each surface implementing "a pair" for
+ * itself — is what this repository has just paid for.
+ */
+export interface ArrivalPairView {
+  role: string;
+  /** the id the runtime bound a call to its output with, if it gave one */
+  call_id: string | null | undefined;
+  /** the complete §5 markers this record carries */
+  markers: readonly string[];
+  /**
+   * Everything BEYOND (`call_id`, marker) that two records must share to be one
+   * pair — the agent and the runtime, where the caller knows them. It is a
+   * NARROWING and never a widening: a caller that supplies no scope gets the
+   * rule applied within whatever window it handed over.
+   */
+  scope?: readonly string[];
+}
+
+/** One demonstrated invocation: the two records, and what bound them. */
+export interface ArrivalPair<T> {
+  marker: string;
+  /** never null and never empty: without one there is no pair [M-5] */
+  call_id: string;
+  call: T;
+  output: T;
+}
+
+/**
+ * [M-5], IN ONE PLACE, FOR EVERY SURFACE.
+ *
+ * A pair exists when, and only when:
+ *
+ *   * a `call` record and an `output` record carry the SAME complete marker,
+ *   * both carry the SAME non-empty `call_id` — the id the runtime used to
+ *     bind them, never one this code invented, and
+ *   * both agree on whatever else the caller put in `scope` (the agent and the
+ *     runtime, wherever those are known).
+ *
+ * Anything short of the full conjunction yields NO PAIR, and no pair means
+ * `unknown` — never `no` [I-1], [A-0]. A lone call says an agent tried. A lone
+ * output says something quoted a marker. A call of one invocation and an
+ * output of a different one are two facts about two invocations, and reading
+ * them as one is how a surface comes to report an arrival nobody demonstrated.
+ *
+ * At most one pair per (scope, call_id, marker): a runtime that repeated an
+ * output does not thereby produce two invocations.
+ */
+export function matchArrivalPairs<T>(
+  records: Iterable<T>,
+  viewOf: (record: T) => ArrivalPairView | null,
+): Array<ArrivalPair<T>> {
+  const keysOf = (view: ArrivalPairView): Array<{ key: string; marker: string; call_id: string }> => {
+    const callId = typeof view.call_id === "string" && view.call_id.length > 0 ? view.call_id : null;
+    // a record the runtime bound to nothing cannot be half of a pair
+    if (callId === null) return [];
+    const scope = view.scope ?? [];
+    const out: Array<{ key: string; marker: string; call_id: string }> = [];
+    for (const marker of new Set(view.markers)) {
+      if (typeof marker !== "string" || !MARKER_RE.test(marker)) continue;
+      // built through JSON so that no value can be forged into another by
+      // containing the separator: a `call_id` holding the delimiter must not be
+      // able to look like a different pair
+      out.push({ key: JSON.stringify([...scope, callId, marker]), marker, call_id: callId });
+    }
+    return out;
+  };
+
+  const calls = new Map<string, T>();
+  const outputs: Array<{ record: T; at: { key: string; marker: string; call_id: string } }> = [];
+  for (const record of records) {
+    if (record === null || record === undefined) continue;
+    const view = viewOf(record);
+    if (view === null) continue;
+    if (view.role !== "call" && view.role !== "output") continue;
+    for (const at of keysOf(view)) {
+      if (view.role === "call") calls.set(at.key, record);
+      else outputs.push({ record, at });
+    }
+  }
+
+  const pairs: Array<ArrivalPair<T>> = [];
+  const seen = new Set<string>();
+  for (const { record, at } of outputs) {
+    const call = calls.get(at.key);
+    if (call === undefined) continue;
+    if (seen.has(at.key)) continue;
+    seen.add(at.key);
+    pairs.push({ marker: at.marker, call_id: at.call_id, call, output: record });
+  }
+  return pairs;
+}
+
+/** The `ArrivalPairView` of one `ArrivalRecord` — the marker set is read out of
+ *  the record's own text, and the text goes no further. */
+function viewOfArrivalRecord(record: ArrivalRecord): ArrivalPairView | null {
+  if (!record || typeof record.text !== "string") return null;
+  return { role: record.role, call_id: record.call_id, markers: markersIn(record.text) };
 }
 
 /** [I-1]: three answers, and the third is the default. `"no"` is not a value
@@ -335,10 +451,17 @@ export interface ArrivalSubject {
 /**
  * [M-5] + D-6: the full §5 answer for one version against one set of records.
  *
- * `yes` iff SOME call record and SOME output record BOTH carry this version's
- * marker. The asymmetry is the whole point: a call alone says an agent tried, an
- * output alone can be anything that quoted a marker, and only the pair says the
- * step ran and the runtime saw it finish.
+ * `yes` iff a call record and an output record carrying this version's marker
+ * SHARE ONE NON-EMPTY `call_id` — the id the runtime itself bound them with.
+ * The rule is `matchArrivalPairs`'s, called and not restated, because the one
+ * defect this whole module exists to prevent is two surfaces disagreeing about
+ * what a pair is while both claiming to implement [M-5].
+ *
+ * It used to be looser here — some call, some output, no shared id — and the
+ * looseness was not a simplification. It made ONE set of records a pair on the
+ * assignments surface and not a pair on the capability surface, so the same
+ * database answered `observed_arrival: yes` and `invoked: unknown` at the same
+ * moment, and each surface could cite [M-5] for its answer.
  *
  * A version with no executable step short-circuits to `unknown` BEFORE the
  * records are read, and deliberately: it ships nothing that prints its marker,
@@ -348,14 +471,8 @@ export interface ArrivalSubject {
 export function assessArrival(records: Iterable<ArrivalRecord>, subject: ArrivalSubject): ArrivalAssessment {
   if (!subject.has_executable_step) return { verdict: "unknown", reason: "no_executable_step" };
   if (!MARKER_RE.test(subject.marker)) return { verdict: "unknown", reason: "no_paired_record" };
-  let call = false;
-  let output = false;
-  for (const record of records) {
-    if (!record || typeof record.text !== "string") continue;
-    if (!markersIn(record.text).includes(subject.marker)) continue;
-    if (record.role === "call") call = true;
-    else if (record.role === "output") output = true;
-    if (call && output) return { verdict: "yes", reason: null };
+  for (const pair of matchArrivalPairs(records, viewOfArrivalRecord)) {
+    if (pair.marker === subject.marker) return { verdict: "yes", reason: null };
   }
   return { verdict: "unknown", reason: "no_paired_record" };
 }

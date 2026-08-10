@@ -23,6 +23,13 @@
 //     that claim — it is the check, run over the actual bytes of everything
 //     `skill.create_from_dir` produces.
 //
+//     THE TRANSPARENCY LOG IS CHECKED SOMEWHERE ELSE, AND HAS TO BE. That table
+//     stores `sha256(jcs(payload))` and never the payload, so searching what was
+//     saved could not find a secret in it even in principle — a hash of a leak
+//     looks exactly like a hash of anything else. The check therefore runs on
+//     the PREIMAGE, at the append site (`appendKeyRegistrationTlog` below), and
+//     refuses the append. The guarantee and the check now describe the same act.
+//
 // WHOSE KEY IT IS. Per principal, not per deployment. §4.4 step 3 resolves a
 // package's `kid` against `manifest.author_agent`, and `skill.create`'s defect-2
 // rule already forces `author_agent` to equal the authenticated agent. A single
@@ -34,7 +41,8 @@ import { randomBytes, type KeyObject } from "node:crypto";
 import type { Db } from "./sqlite.ts";
 import type { SecretStore } from "./webhooks.ts";
 import { keyFromSeedHex } from "./signing.ts";
-import { appendTlogInTx } from "./tlog.ts";
+import { appendTlogInTx, type TlogRow } from "./tlog.ts";
+import { jcsBytes, type JcsValue } from "./jcs.ts";
 import { TLOG_KEY_REGISTERED } from "./provision.ts";
 import { ulid } from "./ulid.ts";
 
@@ -76,6 +84,47 @@ function loadSeed(secrets: SecretStore, ref: string): string {
     throw new Error(`system signing key: the secret store holds no usable seed at ${ref}`);
   }
   return seedHex;
+}
+
+/** The subject name the transparency-log check reports under. */
+export const TLOG_PAYLOAD_SUBJECT = "the transparency-log payload (its PREIMAGE, before hashing)";
+
+/**
+ * THE ONE PLACE THIS MODULE APPENDS TO THE TRANSPARENCY LOG — and the check
+ * runs over the PREIMAGE, because the row does not keep one.
+ *
+ * WHAT WAS WRONG, AND WHY IT WAS WORSE THAN A BUG. `assertNoPrivateMaterial`
+ * documented itself as covering "the transparency-log payload", and the packing
+ * path never handed it one: the subjects it received were the archive, the
+ * stored manifest, the signature, the marker and the response body. The test
+ * that called itself the proof searched the SAVED BYTES, and the transparency
+ * log saves only `sha256(jcs(payload))` — so a seed placed in the payload would
+ * have been hashed, stored as a hash, and found by nobody. An independent
+ * reviewer demonstrated exactly that: adding `seedHex` to the payload below
+ * left every test green.
+ *
+ * No secret was leaking. What was shipping was a GUARANTEE NOBODY WAS
+ * CHECKING — the class of defect §3 puts first, and the one this repository has
+ * paid for before.
+ *
+ * A hash is a one-way function, so there is no way to check a stored row after
+ * the fact. The only moment the material is visible is BEFORE hashing, and this
+ * is that moment: the check runs over `jcsBytes(payload)` — the exact bytes
+ * `payloadHash` will digest — and refuses the append rather than reporting it.
+ *
+ * Every append this module makes goes through here. A test asserts that: it
+ * greps this file and requires exactly one `appendTlogInTx` call site, so a
+ * second one added later cannot quietly skip the check.
+ */
+function appendKeyRegistrationTlog(
+  db: Db,
+  kid: string,
+  payload: JcsValue,
+  seedHex: string,
+  nowMs: number,
+): TlogRow {
+  assertNoPrivateMaterial(seedHex, [[TLOG_PAYLOAD_SUBJECT, jcsBytes(payload)]]);
+  return appendTlogInTx(db, TLOG_KEY_REGISTERED, kid, payload, nowMs);
 }
 
 /**
@@ -142,12 +191,14 @@ export function systemSigningKey(
     ).run(rowId, agentId, kid, publicKeyB64url, nowMs, secretRef);
     // §4.4 step 3 makes the kid→agent binding a trust input, so it is logged
     // exactly as `signing_key.register` logs one. The payload carries the
-    // PUBLIC half and the handle; there is no member for anything else.
-    appendTlogInTx(
+    // PUBLIC half and the handle; there is no member for anything else — and
+    // `appendKeyRegistrationTlog` CHECKS that, over the preimage, before the
+    // row is written.
+    appendKeyRegistrationTlog(
       db,
-      TLOG_KEY_REGISTERED,
       kid,
       { kid, agent_id: agentId, public_key_ed25519: publicKeyB64url, secret_ref: secretRef },
+      seedHex,
       nowMs,
     );
     db.exec("COMMIT");
@@ -168,8 +219,14 @@ export function systemSigningKey(
  *
  * Every encoding the 32-byte seed could plausibly take on its way out — hex in
  * either case, standard base64, base64url, and the raw bytes themselves — is
- * searched for in every observable output of a packing call: the package bytes,
- * the stored manifest, the response body, the transparency-log payload.
+ * searched for in the SUBJECTS THE CALLER HANDS IT, and in nothing else.
+ *
+ * That last clause used to be a sentence about "every observable output of a
+ * packing call: … the transparency-log payload", and the packing path did not
+ * pass one. A guard's documentation is not coverage. What a caller does not
+ * hand this function is not checked by it, and the doc now says so — the
+ * transparency log is checked at its own append site, over the preimage,
+ * because its stored form is a hash and a hash cannot be searched.
  *
  * The message names the SUBJECT and never the material, because an exception
  * message is itself an observable output and a check that leaked what it caught

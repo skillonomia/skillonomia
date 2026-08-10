@@ -340,7 +340,26 @@ test("`migration.count` is advertised as reading, and counting writes no row", (
   assert.equal(viewed.status, 200, viewed.raw);
   const section = viewed.body.sections.find((s: any) => s.key === "migrations");
   assert.ok(section, "the view has its section");
-  assert.deepEqual(section.rows, viaRest.items, "the page shows the API's own rows");
+  // The page renders the API's own rows as CELLS: [I-1] and [I-3] hold on every
+  // one of the eleven views, so a figure on a page carries its measurement
+  // state, its source and its boundary rather than sitting beside them in a
+  // neighbouring column. The ANSWER of each cell is the API's own value.
+  const answerOf = (cell: unknown): string => {
+    const text = String(cell ?? "");
+    const i = text.indexOf(" · ");
+    return (i < 0 ? text : text.slice(0, i)).trim();
+  };
+  assert.equal(section.rows.length, viaRest.items.length, "the page shows the API's own rows");
+  section.rows.forEach((row: any, i: number) => {
+    const api = viaRest.items[i];
+    for (const field of ["migrations", "distinct_recipients", "distinct_runtimes", "runtimes_unknown"]) {
+      assert.equal(answerOf(row[field]), String(api[field]), `${field} on the page is the API's own number`);
+      assert.match(String(row[field]), /kind: measured_number/, `${field} is published with its method [I-3]`);
+    }
+    assert.equal(row.slug, api.slug);
+    assert.equal(row.measurement_state, api.measurement_state);
+    assert.equal(row.source, api.source);
+  });
   for (const field of ["migrations", "distinct_recipients", "distinct_runtimes", "runtimes_unknown", "measurement_state", "source", "window"]) {
     assert.ok(section.fields.includes(field), `the view declares ${field}`);
   }

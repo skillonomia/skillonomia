@@ -37,6 +37,7 @@ import { markerInSkillMd, markersIn } from "./marker.ts";
 import {
   CAPABILITY_KINDS,
   NO_SNAPSHOT_WINDOW,
+  arrivalRecordsOf,
   isFleetRuntime,
   type CapabilityKind,
   type FleetObservationSource,
@@ -515,15 +516,13 @@ export class TranscriptObservations implements FleetObservationSource, RuntimeRe
     };
   }
 
+  /** [M-5]: `arrivalRecordsOf`, and never a hand-written projection — the
+   *  `call_id` is what makes a call and an output ONE pair, and a projection
+   *  that drops it hands §5 a looser set of records than §6 reads. */
   recordsFor(agentId: string): RuntimeRecordWindow | null {
     const snapshot = this.snapshotFor(agentId);
     if (!snapshot) return null;
-    return {
-      records: snapshot.records
-        .filter((r) => r.role === "call" || r.role === "output")
-        .map((r) => ({ role: r.role as "call" | "output", text: r.marker })),
-      window: snapshot.window_detail,
-    };
+    return { records: arrivalRecordsOf(snapshot.records), window: snapshot.window_detail };
   }
 }
 

@@ -92,7 +92,7 @@ export const ASSIGNMENT_INTENT_SOURCE = "assignment_events (registry journal, IN
 
 /** The one source an ARRIVAL may be read from, named in every answer. */
 export const ARRIVAL_OBSERVATION_SOURCE =
-  "runtime transcript records, matched by the §5 arrival marker on a PAIRED call/output record";
+  "runtime transcript records, matched by the §5 arrival marker on a PAIRED call/output record sharing one call_id";
 
 /** The selection boundary when no record source is configured. Not zero
  *  records examined out of many — no search at all, which is a different fact. */

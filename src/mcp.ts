@@ -27,6 +27,16 @@ export const MCP_TOOLS = [
     name: "skill.create",
     description:
       "Create a skill (idempotent on workspace+slug) and a new version in draft from a §4.1b package archive.",
+    // [I-8]: a WRITE. It creates a skill and a draft version and appends to
+    // the transparency log. `idempotentHint` is true in the sense the API means
+    // it: an `idempotency_key` replays the original response byte for byte, and
+    // the same (workspace, slug) converges on one skill.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -70,6 +80,16 @@ export const MCP_TOOLS = [
   {
     name: "skill.lint",
     description: "Run the §7.1 gates on a version; draft transitions to linted iff zero FAIL.",
+    // [I-8]: a WRITE, and one that is easy to mistake for a read. Running the
+    // §7.1 gates TRANSITIONS the version from `draft` to `linted` when they all
+    // pass, and that transition is a recorded fact about a version other
+    // callers can see.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: { skill_version_id: { type: "string" }, idempotency_key: { type: "string" } },
@@ -80,6 +100,18 @@ export const MCP_TOOLS = [
     name: "skill.verify",
     description:
       "Surface 4, both forms (Appendix H): with skill_version_id, the registry checks the §5.1 verified-gate conjunction and transitions; with archive_base64, the stateless §4.4 verification of an uploaded package.",
+    // [I-8]: a WRITE in one of its two forms, so the hint is false for both.
+    // With `skill_version_id` it checks the §5.1 conjunction and TRANSITIONS the
+    // version; with `archive_base64` it verifies uploaded bytes and changes
+    // nothing. A single tool whose hint were true for one form and false for the
+    // other would be a hint a client cannot act on, so it takes the honest
+    // reading of the pair: this tool may write.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -92,6 +124,14 @@ export const MCP_TOOLS = [
   {
     name: "skill.search",
     description: "Search skills; results filtered by §5.1 visibility × access policy.",
+    // [I-8]: a READ. It filters by §5.1 visibility × access policy and appends
+    // nothing; a client may call it without an approval prompt.
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -112,6 +152,14 @@ export const MCP_TOOLS = [
     name: "skill.review.request",
     description:
       "Surface 3: request review, or record a reviewer verdict. An approve verdict atomically writes the reviewer attestation.",
+    // [I-8]: a WRITE. It records a review request or a reviewer's verdict, and
+    // an approving verdict atomically writes the reviewer attestation.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -128,6 +176,13 @@ export const MCP_TOOLS = [
     name: "skill.publish",
     description:
       "Surface 12: publish a `verified` version — the §4.3.8 registry countersign is appended in the same transaction. Requires workspace role admin/owner; a version the §7.3 matrix flags needs a human `publish` approval first. Republishing is a noop.",
+    // [I-8]: a WRITE — the §5.1 state transition to `published`.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -140,6 +195,14 @@ export const MCP_TOOLS = [
   {
     name: "skill.supersede",
     description: "Surface 10: link a successor version; both versions' lifecycle fields move atomically and are transparency-logged.",
+    // [I-8]: a WRITE. It supersedes one version by another, which is a
+    // statement about the older version that cannot be taken back.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -154,6 +217,13 @@ export const MCP_TOOLS = [
     name: "skill.deprecate",
     description:
       "Surface 13: deprecate a published version. It stays visible and adoptable with a warning (§5.1); the registry stamps `deprecation_date` and transparency-logs the retirement. Author, skill owner or workspace admin/owner.",
+    // [I-8]: a WRITE — the transition to `deprecated`.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -166,6 +236,14 @@ export const MCP_TOOLS = [
   {
     name: "skill.revoke",
     description: "Surface 11: revoke a published version with a reason; immediate effect on skill.verify verdicts and search.",
+    // [I-8]: a WRITE, and the most destructive of them: a revoked version is
+    // withdrawn and the state is terminal.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -180,6 +258,14 @@ export const MCP_TOOLS = [
     name: "skill.approve",
     description:
       "§7.3 human-approval matrix: record an approval decision. Requires agents.type='human' with workspace role admin/owner; adopt_high_risk binds one exact adoption_request_id.",
+    // [I-8]: a WRITE. It records a §7.3 human approval decision in the approval
+    // journal, and a recorded decision is not withdrawn by calling again.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -197,6 +283,13 @@ export const MCP_TOOLS = [
     name: "skill.request_adoption",
     description:
       "Surface 6: create an adoption request + receipt shell. A §7.3 condition holds the request in approval_pending until a human approval names it.",
+    // [I-8]: a WRITE. It opens an adoption request and its receipt chain.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: { skill_version_id: { type: "string" }, idempotency_key: { type: "string" } },
@@ -207,6 +300,14 @@ export const MCP_TOOLS = [
     name: "skill.adopt",
     description:
       "Surface 7: adopter-side compatibility check, then package handover and the `delivered` receipt event. The request's adopter only.",
+    // [I-8]: a WRITE. It appends to the INSERT-only receipt journal, and an
+    // appended event cannot be withdrawn.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -221,6 +322,13 @@ export const MCP_TOOLS = [
     name: "skill.validate_outcome",
     description:
       "Surface 8: append attempted/adopted/failed/rolled_back to your own receipt, per the §5.3 table. `adopted` requires evidence matching the declared validation gates.",
+    // [I-8]: a WRITE. It appends the terminal outcome event to a receipt chain.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -237,6 +345,14 @@ export const MCP_TOOLS = [
   {
     name: "skill.rate",
     description: "Surface 9: rate a version. Requires one of your own receipts whose terminal event is `adopted`.",
+    // [I-8]: a WRITE. A rating is bound to a closed adoption receipt and
+    // recorded against the version.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -486,6 +602,17 @@ export const MCP_TOOLS = [
     name: "principal.create",
     description:
       "Provisioning: create a principal (agent, human or service) in the caller's workspace with a workspace role, and issue its API key. Requires role admin/owner (§6 manage-memberships row); the new role may not outrank the caller's. The api_key is returned EXACTLY ONCE and is never retrievable — this call takes no idempotency_key, because a replay would have to persist that secret.",
+    // [I-8]: a WRITE. It creates a principal and its workspace membership.
+    // `idempotentHint` is FALSE, and truthfully: this call takes no
+    // `idempotency_key` — a replay would have to persist the returned secret —
+    // so calling it twice creates two principals, and a hint claiming otherwise
+    // is one a client acts on by retrying.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -501,12 +628,28 @@ export const MCP_TOOLS = [
     name: "principal.list",
     description:
       "The workspace roster for an admin/owner; a member sees exactly its own row — which is how a principal learns the principal_id it must put in manifest.author_agent. Never returns a key, a hash or a key reference.",
+    // [I-8]: a READ — the roster this actor may see, and nothing is issued.
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "principal.issue_api_key",
     description:
       "Issue a replacement API key for a principal of the caller's workspace. Admin/owner, and never for a principal whose role outranks the caller's. Returned EXACTLY ONCE; no idempotency_key, for the same reason as principal.create.",
+    // [I-8]: a WRITE. It mints an API key: the plaintext is returned ONCE and
+    // the row that records it cannot be un-issued, only revoked. `idempotentHint`
+    // is FALSE and that is the honest value — calling twice mints two keys.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: { principal_id: { type: "string" } },
@@ -517,6 +660,13 @@ export const MCP_TOOLS = [
     name: "principal.revoke_api_key",
     description:
       "Revoke one API key. The principal may revoke its own; an admin/owner may revoke any in the workspace. Revoking an already-revoked key converges on the original revocation time.",
+    // [I-8]: a WRITE, and a withdrawal: a revoked key stays revoked.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -531,6 +681,14 @@ export const MCP_TOOLS = [
     name: "signing_key.register",
     description:
       "Register the CALLER's own Ed25519 signing key (kid + unpadded base64url raw public key) — §4.4 step 3 resolves a package's kid against manifest.author_agent, so this is what makes a signed package attributable. A key is registered for the authenticated principal and for no one else, at every role: registering on another principal's behalf would forge authorship. Transparency-logged.",
+    // [I-8]: a WRITE. It binds a `kid` to a principal and appends that binding
+    // to the transparency log, where §4.4 step 3 reads it as a trust input.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -545,12 +703,28 @@ export const MCP_TOOLS = [
     name: "signing_key.list",
     description:
       "Own signing keys with their revocation status; an admin/owner sees the workspace's. Public halves only.",
+    // [I-8]: a READ. It publishes public halves, handles and scopes — never
+    // private material [I-7] — and registers nothing.
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "signing_key.revoke",
     description:
       "Revoke a signing key by kid. The holder may revoke its own; an admin/owner may revoke any in the workspace, because revocation removes capability and can never forge authorship. Takes effect on FUTURE §4.4 verifications (step 7); versions already verified or published keep their state. Transparency-logged, and the recorded time never moves.",
+    // [I-8]: a WRITE, and terminal: §4.4 step 7 never re-registers a revoked
+    // kid, so the revocation cannot be undone by calling anything.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: { kid: { type: "string" }, idempotency_key: { type: "string" } },
@@ -560,6 +734,14 @@ export const MCP_TOOLS = [
   {
     name: "tlog.read",
     description: "Public read of the §4.4 hash-chained transparency log.",
+    // [I-8]: a READ over the append-only transparency log. It appends nothing —
+    // a log surface that wrote while reading would make its own chain unverifiable.
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: { cursor: { type: "string" }, limit: { type: "number" } },
@@ -601,7 +783,17 @@ export const MCP_TOOLS = [
   {
     name: "dashboard.view",
     description:
-      "P6 dashboard: one of the six views (library, evidence, receipts, approvals, dead_letters, migrations), scoped by the same ACL as the underlying reads. format=html renders the same payload.",
+      "The dashboard: one of the ELEVEN views — library, evidence, receipts, approvals, dead_letters, migrations, and §9's five screens fleet, agent, skill_approval, capability, outcomes — scoped by the same ACL as the underlying reads. format=html renders the same payload. Every cell of every view carries an answer AND its method: `unknown` is written as the word and never as a blank or a dash [I-1], and every number states which state was counted, from which source, over which selection window [I-3].",
+    // [I-8]: a READ. Every view is a rendering of surfaces the caller may
+    // already read, under the SAME access rules, and none of them writes: a
+    // dashboard that widened visibility or recorded a visit would be a second
+    // source of truth rather than a view.
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: "object",
       properties: {
