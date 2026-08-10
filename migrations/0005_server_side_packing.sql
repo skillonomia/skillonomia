@@ -1,0 +1,42 @@
+-- SKILLONOMIA — the registry packs, and the registry signs.
+--
+-- Two columns, both nullable, both additive. They exist because packing moved
+-- from the author's shell to the server, and that move needs exactly two facts
+-- recorded that the schema had nowhere to put.
+--
+-- `signing_keys.secret_ref` — WHERE THE PRIVATE HALF IS NOT.
+--
+-- Until now every row of `signing_keys` described a key whose private half the
+-- registry had never seen: an author signed locally and registered the public
+-- half. `skill.create_from_dir` inverts that — the system generates the key and
+-- signs on the caller's behalf, so a private half now exists that belongs to
+-- this deployment. It does NOT go in this column, and it does not go in SQLite
+-- at all: the column holds a REFERENCE into the deployment's secret store, the
+-- same indirection `webhooks.secret_ref` already uses for the §5.2 signing
+-- secret, for the same reason [I-7] gives — a database dump, a backup or a
+-- read-only audit connection must not be a way to obtain signing capability.
+--
+-- The column is also what tells the two kinds of key apart. A row with a NULL
+-- `secret_ref` is a key the registry can only VERIFY against; a row with one is
+-- a key it can also SIGN with. Nothing infers that distinction from a naming
+-- convention, because a naming convention is something a caller can imitate.
+--
+-- `skill_versions.source_hash` — WHAT THE VERSION WAS PACKED FROM.
+--
+-- Server-side packing writes the §5 arrival marker INTO the package, and the
+-- marker is derived from the version id, so two versions packed from one
+-- identical source are byte-different by construction. `manifest_hash` and
+-- `content_hash` therefore stop being able to answer "is this the same
+-- submission again?" — they answer it, but always with "no", and a resubmission
+-- would silently mint a new version instead of converging.
+--
+-- So the convergence check moves to the SOURCE, before the marker exists, and
+-- this column is where that identity is kept. Rows written before this
+-- migration carry NULL, which never equals a computed source hash: history that
+-- was packed elsewhere converges with nothing, rather than converging by
+-- accident with the first submission that arrives.
+--
+-- Strictly additive. No table is rebuilt, no constraint is relaxed, no row is
+-- touched, and the 20-table shape of Appendix D.1 is unchanged.
+ALTER TABLE signing_keys ADD COLUMN secret_ref TEXT;
+ALTER TABLE skill_versions ADD COLUMN source_hash TEXT;

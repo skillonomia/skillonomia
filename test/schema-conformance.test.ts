@@ -84,11 +84,18 @@ test("migrations/0001_init.sql is byte-identical to the spec's Appendix D.1 bloc
  *     `migrations/0004_declared_environment_on_the_event.sql`), which is where
  *     the environment an adopter declares at handover is recorded, so that
  *     the release gate's runtime conjunct is counted from an INSERT-only row
- *     instead of a rewritable column.
+ *     instead of a rewritable column;
+ *   * `signing_keys.secret_ref` and `skill_versions.source_hash` (Appendix
+ *     D.1e, applied by `migrations/0005_server_side_packing.sql`) — the
+ *     indirection to a system-held private half, which [I-7] keeps out of
+ *     SQLite exactly as `webhooks.secret_ref` already does, and the identity of
+ *     the SOURCE a version was packed from, which is what
+ *     `skill.create_from_dir` converges on now that the §5 arrival marker makes
+ *     every packing of one source byte-different.
  *
  * Each entry rewrites a D.1 statement into what the live schema must then be,
- * EXACTLY — so any other change to those three tables, and any change at all to
- * the other seventeen, still fails this test.
+ * EXACTLY — so any other change to those five tables, and any change at all to
+ * the other fifteen, still fails this test.
  */
 const AUTHORIZED_P5_EDITS: ReadonlyArray<{ readonly from: string; readonly to: string }> = [
   // the rebuild quotes the table name (ALTER TABLE … RENAME TO)
@@ -125,6 +132,20 @@ const AUTHORIZED_P5_EDITS: ReadonlyArray<{ readonly from: string; readonly to: s
   {
     from: "idempotency_key TEXT NOT NULL, UNIQUE(adoption_receipt_id,idempotency_key)",
     to: "idempotency_key TEXT NOT NULL, environment_json TEXT, UNIQUE(adoption_receipt_id,idempotency_key)",
+  },
+  // D.1e: the handle to a system-held private half. The material is NOT here —
+  // this column names where it is kept, outside SQLite, exactly as
+  // `webhooks.secret_ref` does for the §5.2 signing secret [I-7]
+  {
+    from: "public_key_ed25519 TEXT NOT NULL CHECK(length(public_key_ed25519)=43), created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0), revoked_at_ms INTEGER )",
+    to: "public_key_ed25519 TEXT NOT NULL CHECK(length(public_key_ed25519)=43), created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0), revoked_at_ms INTEGER , secret_ref TEXT)",
+  },
+  // D.1e: the identity of the SOURCE this version was packed from — the value
+  // `skill.create_from_dir` converges on, because the §5 arrival marker makes
+  // the PACKED bytes different on every packing of one unchanged source
+  {
+    from: "deprecation_at_ms INTEGER, created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0), UNIQUE(skill_id,semantic_version)",
+    to: "deprecation_at_ms INTEGER, created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0), source_hash TEXT, UNIQUE(skill_id,semantic_version)",
   },
 ];
 
@@ -163,7 +184,11 @@ test("live schema is Appendix D.1 plus exactly the Appendix D.1b delta", () => {
     );
     edited += 1;
   }
-  assert.equal(edited, 3, "exactly three tables carry the authorized delta: adoption_requests, webhooks and receipt_events");
+  assert.equal(
+    edited,
+    5,
+    "exactly five tables carry the authorized delta: adoption_requests, webhooks, receipt_events, signing_keys and skill_versions",
+  );
   assert.equal(liveSet.size, fileStatements.length, "live schema has no extra objects");
 });
 
@@ -179,8 +204,8 @@ test("object counts: 20 tables, 10 triggers, 9 indexes; no bookkeeping table", (
   const uv = db.prepare("PRAGMA user_version").get() as { user_version: number };
   assert.equal(
     uv.user_version,
-    4,
-    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json; tracked in user_version",
+    5,
+    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash; tracked in user_version",
   );
 });
 

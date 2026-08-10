@@ -39,6 +39,35 @@ export const MCP_TOOLS = [
     },
   },
   {
+    name: "skill.create_from_dir",
+    description:
+      "Surface 14: pack, sign and create a version from a SOURCE tree (`manifest.json` + `SKILL.md` + files) in one call. The registry mints the version id, derives the §5 arrival marker from it, writes the marker into `SKILL.md` and `scripts/skln-arrive.sh`, computes §4.3 `integrity` over those bytes and signs with a system-held key it generates on first use. No seed, no kid, no hand-written `integrity`, no packing step: the caller supplies no cryptographic material at all, and none is returned. The source archive is bytes the CLIENT read from its own directory — the registry never opens a path a caller names.",
+    // [I-8]: every tool is one step of the loop, and this one WRITES. It mints
+    // a version, generates a signing key on first use and appends to the
+    // transparency log, so `readOnlyHint` is false and `destructiveHint` is
+    // true — a client must be given the chance to ask before it runs.
+    // `idempotentHint` is true in the sense the API means it: resubmitting the
+    // SAME source converges on the version already packed from it, and an
+    // `idempotency_key` replays the original response byte for byte.
+    // `openWorldHint` is false — it touches this registry and nothing else.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string" },
+        skill_id: { type: "string" },
+        source_base64: { type: "string" },
+        idempotency_key: { type: "string" },
+      },
+      required: ["source_base64"],
+    },
+  },
+  {
     name: "skill.lint",
     description: "Run the §7.1 gates on a version; draft transitions to linted iff zero FAIL.",
     inputSchema: {
@@ -394,6 +423,17 @@ function callTool(registry: Registry, auth: AuthContext, name: string, args: any
       const out = registry.createVersion(
         auth,
         { slug: args?.slug, skill_id: args?.skill_id, archive: decodeArchive(args) },
+        idemKey(args),
+      );
+      return { json: out.responseJson, replayed: out.replayed };
+    }
+    case "skill.create_from_dir": {
+      if (typeof args?.source_base64 !== "string" || args.source_base64.length === 0) {
+        throw new ApiError("INVALID_SCHEMA", "source_base64 (non-empty string) required");
+      }
+      const out = registry.createFromDir(
+        auth,
+        { slug: args?.slug, skill_id: args?.skill_id, source: Buffer.from(args.source_base64, "base64") },
         idemKey(args),
       );
       return { json: out.responseJson, replayed: out.replayed };

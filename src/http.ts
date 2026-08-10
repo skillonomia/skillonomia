@@ -63,6 +63,17 @@ function decodeArchive(body: any): Buffer {
   return Buffer.from(body.archive, "base64");
 }
 
+/** Surface 14's upload: the SOURCE tree, base64 of a §4.1b archive. It carries
+ *  its own field name rather than reusing `archive`, because a source tree and
+ *  a packed package are different documents and a route that accepted either
+ *  under one name would make the difference invisible at the call site. */
+function decodeSource(body: any): Buffer {
+  if (typeof body.source !== "string" || body.source.length === 0) {
+    throw new ApiError("INVALID_SCHEMA", "source (base64 string of the source tree) required");
+  }
+  return Buffer.from(body.source, "base64");
+}
+
 /** No coercion (verdict 1 major #2): a non-string key is INVALID_SCHEMA. */
 function idemKey(body: any): string | undefined {
   if (body.idempotency_key !== undefined && typeof body.idempotency_key !== "string") {
@@ -144,6 +155,22 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
     if (method === "POST" && m) {
       const body = parseBody(req);
       const out = registry.createVersion(auth, { skill_id: m[1], archive: decodeArchive(body) }, idemKey(body));
+      return mutationResponse(out, 201);
+    }
+
+    // -- surface 14: the registry packs and signs. `source` is the SOURCE tree
+    // as an archive, never a path — the server reads bytes a client sent, and
+    // never a location a caller named.
+    if (method === "POST" && path === "/v1/skills/from-source") {
+      const body = parseBody(req);
+      const out = registry.createFromDir(auth, { slug: body.slug, source: decodeSource(body) }, idemKey(body));
+      return mutationResponse(out, 201);
+    }
+
+    m = /^\/v1\/skills\/([^/]+)\/versions\/from-source$/.exec(path);
+    if (method === "POST" && m) {
+      const body = parseBody(req);
+      const out = registry.createFromDir(auth, { skill_id: m[1], source: decodeSource(body) }, idemKey(body));
       return mutationResponse(out, 201);
     }
 

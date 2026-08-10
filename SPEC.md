@@ -95,7 +95,7 @@ not themselves normative.
 - **Storage:** SQLite in WAL mode, one database file per instance. No external
   database.
 - **Surfaces:** an MCP server (streamable HTTP) as the primary contract, a REST
-  mirror of the same thirteen operations, and a local read-mostly dashboard —
+  mirror of the same fourteen operations, and a local read-mostly dashboard —
   all served by the same process. Adapters carry no logic; both surfaces call
   one internal service layer, which is why they answer identically, including
   their errors.
@@ -797,7 +797,7 @@ to the immutable content they examined.
 Delivery is the one mutable machine in the model. A worker identity is
 `lease_owner = "worker:<host>:<pid>:<ulid>"`. Workers use an internal surface
 (`delivery.poll` / `renew` / `complete` / `fail`), which is process-internal and
-authenticated as the service itself; it is not one of the thirteen public
+authenticated as the service itself; it is not one of the fourteen public
 surfaces.
 
 **Normative transition table:**
@@ -1147,6 +1147,7 @@ Appendix H.
 | 11 | `skill.revoke` | The version's author, the skill's owner, or a workspace admin/owner; requires a reason; takes immediate effect on `skill.verify` verdicts and on search defaults; transparency-logged. **Active adopters are notified through the §5.2 delivery machine**: in the same transaction as the state change, one `notification_kind='revocation'` row is queued per adopter holding a receipt for this version whose chain carries no `failed` and no `rolled_back` event — one notice per adopter however many receipts it holds. From there the notices are ordinary jobs: claimed, leased, retried with backoff, and dead-lettered loudly (an adopter with no endpoint gets `endpoint_missing`). A convergent re-revoke queues nothing. |
 | 12 | `skill.publish` | Workspace admin/owner moves a `verified` version to `published`. The §4.3.9 registry countersign is appended in the SAME transaction — this is publication's only entry point, and the generic transition refuses `published` for that reason. Refuses with `FORBIDDEN` + `current_state` while the §7.3 publish column demands a human approval this version does not have. Republishing is a convergent noop. |
 | 13 | `skill.deprecate` | Author, skill owner or workspace admin retires a `published` version without naming a successor. The registry stamps `deprecation_date` from its own clock in the same transaction and transparency-logs the retirement. The version stays visible and adoptable with a warning (§5.1). Re-deprecating is a convergent noop that does not move the recorded date. |
+| 14 | `skill.create_from_dir` | The author sends a SOURCE tree — `manifest.json`, `SKILL.md` and files — and receives a signed version. The registry mints the `skill_version_id`, derives the §5 arrival marker from it, writes that marker into `SKILL.md` and into the generated `scripts/skln-arrive.sh`, refuses to pack unless both agree with the marker the id derives, computes §4.3 `integrity` over the resulting bytes and signs with a system-held key it generates for the author on first use. The author enters no cryptographic material, and none is returned. The registry reads bytes the client sent, never a path the caller named. Convergence is judged on the SOURCE, because the marker makes every packing of one source byte-different. |
 
 Auxiliary surfaces (not numbered, fixed in Appendix H): the §7.3 approval
 recorder `skill.approve` / `POST /v1/versions/{id}/approvals`, the
@@ -1620,10 +1621,10 @@ installs none is conforming.
 
 ## Appendix D. NORMATIVE SQLite DDL
 
-The normative schema is given in **four** migrations, applied in ascending file
+The normative schema is given in **five** migrations, applied in ascending file
 order, and the live schema of a conforming registry is their sum. Each is
 embedded below verbatim and is byte-identical to the file this repository ships;
-a test asserts that for all four. Schema version is tracked in
+a test asserts that for all five. Schema version is tracked in
 `PRAGMA user_version` and nowhere else — there is no bookkeeping table, because
 the live schema is compared object for object against D.1 plus the deltas below,
 and a table this specification does not name would fail that comparison. A
@@ -1653,12 +1654,23 @@ transaction, so a half-migrated database is not reachable.
   INSERT-only event rather than on the mutable request row, because the release
   gate's cross-runtime conjunct (§5.3) is counted from it.
   `PRAGMA user_version` = `4`.
-- **The live schema a fresh database reports is D.1 as edited by D.1b, D.1c and
-  D.1d**, and never D.1 alone. Object counts are unchanged at 20 tables, 10
-  triggers and 9 indexes. After all four migrations `PRAGMA user_version` MUST
-  report `4`. A test in this repository asserts the live schema equals D.1 plus
-  exactly those seven edits — the five of D.1b, the one of D.1c and the one of
-  D.1d — so any further divergence fails.
+- **D.1e is the fifth migration**, shipped as
+  `migrations/0005_server_side_packing.sql`. It is additive and changes exactly
+  two things: the column `signing_keys.secret_ref`, which REFERENCES a private
+  half held outside SQLite in the deployment's secret store — the same
+  indirection `webhooks.secret_ref` uses, for the same reason — and the column
+  `skill_versions.source_hash`, which records the identity of the SOURCE a
+  version was packed from. The second exists because server-side packing writes
+  the §5 arrival marker into the package, so `manifest_hash` and `content_hash`
+  can no longer answer "is this the same submission again?" — the answer is
+  taken on the source, before the marker exists. `PRAGMA user_version` = `5`.
+- **The live schema a fresh database reports is D.1 as edited by D.1b, D.1c,
+  D.1d and D.1e**, and never D.1 alone. Object counts are unchanged at 20
+  tables, 10 triggers and 9 indexes. After all five migrations
+  `PRAGMA user_version` MUST report `5`. A test in this repository asserts the
+  live schema equals D.1 plus exactly those nine edits — the five of D.1b, the
+  one of D.1c, the one of D.1d and the two of D.1e — so any further divergence
+  fails.
 
 ### D.1 NORMATIVE DDL (verbatim)
 
@@ -2084,6 +2096,85 @@ requests, and MUST NOT be the input to any gate.
 -- history that was never recorded cannot be inferred, only recounted on a fresh
 -- instance.
 ALTER TABLE receipt_events ADD COLUMN environment_json TEXT;
+```
+
+### D.1e NORMATIVE DELTA — fifth migration (verbatim)
+
+Server-side packing (`skill.create_from_dir`, Appendix H surface 14) needs two
+facts recorded that D.1 had nowhere to put, and the shape of both is decided by
+[I-7] and by §5's arrival marker rather than by convenience.
+
+`signing_keys.secret_ref`. Every row of `signing_keys` used to describe a key
+whose private half the registry had never seen. Surface 14 inverts that: the
+system generates the key and signs on the caller's behalf, so a private half now
+exists that belongs to the deployment. It does NOT go in this column and does not
+go in SQLite at all — the column holds a REFERENCE into the deployment's secret
+store, exactly as `webhooks.secret_ref` does for the §5.2 signing secret, so that
+a database dump, a backup or a read-only audit connection is never a way to
+obtain signing capability. The column is also what distinguishes the two kinds of
+key: NULL means the registry can only verify against it, non-NULL means it can
+also sign with it. Nothing infers that from a naming convention, because a naming
+convention is something a caller can imitate.
+
+`skill_versions.source_hash`. The §5 arrival marker is derived from the skill
+version id and written INTO the package, so two versions packed from one
+identical source are byte-different by construction. `manifest_hash` and
+`content_hash` therefore stop being able to answer "is this the same submission
+again?": they answer it, always with "no", and a resubmitted source would mint a
+new version silently and for ever. The convergence check moves to the SOURCE,
+computed before the marker exists, and this column is where that identity is
+kept.
+
+Strictly additive: two nullable columns on two tables. No table is rebuilt, no
+constraint is relaxed, no row is touched, and Appendix D.1's twenty-table shape
+is unchanged. Rows written before this migration carry NULL in both, and NULL
+never equals a computed source hash — history packed elsewhere converges with
+nothing, rather than converging by accident with the first submission that
+arrives.
+
+```sql
+-- SKILLONOMIA — the registry packs, and the registry signs.
+--
+-- Two columns, both nullable, both additive. They exist because packing moved
+-- from the author's shell to the server, and that move needs exactly two facts
+-- recorded that the schema had nowhere to put.
+--
+-- `signing_keys.secret_ref` — WHERE THE PRIVATE HALF IS NOT.
+--
+-- Until now every row of `signing_keys` described a key whose private half the
+-- registry had never seen: an author signed locally and registered the public
+-- half. `skill.create_from_dir` inverts that — the system generates the key and
+-- signs on the caller's behalf, so a private half now exists that belongs to
+-- this deployment. It does NOT go in this column, and it does not go in SQLite
+-- at all: the column holds a REFERENCE into the deployment's secret store, the
+-- same indirection `webhooks.secret_ref` already uses for the §5.2 signing
+-- secret, for the same reason [I-7] gives — a database dump, a backup or a
+-- read-only audit connection must not be a way to obtain signing capability.
+--
+-- The column is also what tells the two kinds of key apart. A row with a NULL
+-- `secret_ref` is a key the registry can only VERIFY against; a row with one is
+-- a key it can also SIGN with. Nothing infers that distinction from a naming
+-- convention, because a naming convention is something a caller can imitate.
+--
+-- `skill_versions.source_hash` — WHAT THE VERSION WAS PACKED FROM.
+--
+-- Server-side packing writes the §5 arrival marker INTO the package, and the
+-- marker is derived from the version id, so two versions packed from one
+-- identical source are byte-different by construction. `manifest_hash` and
+-- `content_hash` therefore stop being able to answer "is this the same
+-- submission again?" — they answer it, but always with "no", and a resubmission
+-- would silently mint a new version instead of converging.
+--
+-- So the convergence check moves to the SOURCE, before the marker exists, and
+-- this column is where that identity is kept. Rows written before this
+-- migration carry NULL, which never equals a computed source hash: history that
+-- was packed elsewhere converges with nothing, rather than converging by
+-- accident with the first submission that arrives.
+--
+-- Strictly additive. No table is rebuilt, no constraint is relaxed, no row is
+-- touched, and the 20-table shape of Appendix D.1 is unchanged.
+ALTER TABLE signing_keys ADD COLUMN secret_ref TEXT;
+ALTER TABLE skill_versions ADD COLUMN source_hash TEXT;
 ```
 
 ### D.2 SQL negative probes
@@ -2605,7 +2696,7 @@ EOL-listed never reach this rule, so the table carries only window-old ones):
 
 ---
 
-## Appendix H. NORMATIVE API / MCP contracts (13 surfaces + auxiliaries + auth + internal worker API)
+## Appendix H. NORMATIVE API / MCP contracts (14 surfaces + auxiliaries + auth + internal worker API)
 
 Conventions binding for every surface: REST base `/v1`; MCP tool names as listed, served as streamable HTTP at `POST /mcp` on the same listener — one JSON-RPC 2.0 message per request, methods `initialize`, `tools/list` and `tools/call`, with a surface failure returned as the §6 error envelope inside a tool result carrying `isError: true`. AuthN: `Authorization: Bearer <api_key>`. AuthZ: role requirements per the §6 ACL matrix — enforced identically on REST and MCP. Errors: JSON `{"error":{"code","message","current_state"?}}` with the twelve codes §6 closes over — `UNAUTHORIZED | FORBIDDEN | NOT_FOUND | CONFLICT | PRECONDITION_FAILED | INVALID_SCHEMA | RATE_LIMITED | UNKNOWN_KEY | BAD_SIGNATURE | TAMPERED_CONTENT | MALFORMED_ARCHIVE | LIMIT_EXCEEDED` — and their fixed HTTP statuses; `PRECONDITION_FAILED`/`CONFLICT` MUST include `current_state` (converging-conflict rule, §6). The §4.4 verdicts, `NOT_LOGGED` included, are NEVER error codes: they are values of a successful response's `verdict` field. Idempotency: every mutating call takes optional `idempotency_key` (string ≤128); replay returns the persisted original response with header `Idempotency-Replayed: true` and identical body — and the same HTTP status as the original, so a replay is indistinguishable from the first call except by the header. **Convergent noops carry `"noop": true` in the success body**, in addition to the fields the row below lists, whenever a mutation found the resource already in the state it asks for; the row says which fields such a body repeats. Pagination (search/list): `?limit=` (1–100, default 20) + `?cursor=` (opaque); response `{"items":[...],"next_cursor":null|string}`. Search filters: the declared filter set of surface 5 is exactly `q`, `capability`, `runtime`, `tool`, `risk`, `state`, `min_adopted` and `min_rating`, and they combine with AND; `limit` and `cursor` are pagination controls, not filters. The two trust-threshold filters read only the registry-computed Reputation group, never an author-declared field: `min_adopted` admits a version whose `reputation.adopted_count` is ≥ the given value, and `min_rating` admits a version whose `reputation.avg_rating` is non-null and ≥ the given value — a version with no rating yet fails a `min_rating` threshold rather than passing it by default. Request/response bodies validate against Appendix E schemas; body fields never override AuthContext identity.
 
@@ -2624,6 +2715,7 @@ Conventions binding for every surface: REST base `/v1`; MCP tool names as listed
 | 11 | `skill.revoke` | `POST /v1/versions/{id}/revoke` | author/skill owner/admin/owner | `{"reason","idempotency_key"?}` — `reason` a non-empty string of ≤2000 characters, or `INVALID_SCHEMA` | `200 {"skill_version_id","state":"revoked","reason","tlog_seq","notified_adopters"}` — `notified_adopters` is the count of §5.2 revocation notices queued in the same transaction (§6 surface 11); already revoked → the same body plus `"noop":true`, the ORIGINAL reason, and no second tlog row or notice |
 | 12 | `skill.publish` | `POST /v1/versions/{id}/publish` | admin/owner | `{"idempotency_key"?}` | `200 {"skill_version_id","state":"published","manifest_hash","countersign_seq"}`; already published → the same body plus `"noop":true`; §7.3 approval missing → `FORBIDDEN{current_state}`; state ≠ `verified` → `PRECONDITION_FAILED{current_state}`, retired tails (`deprecated`/`superseded`/`revoked`) included; `CONFLICT{current_state}` only when the transition is legal (state `verified`) and a §4.3.9 countersign for this `manifest_hash` already exists |
 | 13 | `skill.deprecate` | `POST /v1/versions/{id}/deprecate` | author/skill owner/admin/owner | `{"idempotency_key"?}` | `200 {"skill_version_id","state":"deprecated","deprecation_date","tlog_seq"}`; already deprecated → the same body plus `"noop":true` and the ORIGINAL `deprecation_date`, no second tlog row; state ≠ `published` → `PRECONDITION_FAILED{current_state}` |
+| 14 | `skill.create_from_dir` | `POST /v1/skills/from-source` (new skill) · `POST /v1/skills/{skill_id}/versions/from-source` (new version) | member (author) | `{"slug"?,"source":"<base64 §4.1b archive of the SOURCE tree>","idempotency_key"?}`; the new-version form takes `skill_id` from the path (MCP: from the arguments object, and the upload field is `source_base64`). The source tree carries `manifest.json` and `SKILL.md` and MUST NOT carry `skill.json` or `SIGNATURE.jws` — those are produced here, and a source carrying them is `INVALID_SCHEMA` naming surface 1. The caller supplies NO cryptographic material: no seed, no `kid`, no `integrity`. `scripts/skln-arrive.sh` is a RESERVED path, generated here and overwritten if present | `201 {"skill_id","skill_version_id","state":"draft","arrival_marker","kid","manifest_hash","content_hash"}`. The registry mints `skill_version_id`, derives the §5 arrival marker from it, writes that marker into `SKILL.md`'s generated block AND into `scripts/skln-arrive.sh`, refuses to pack unless those two and the marker the id derives are the SAME value, computes §4.3 `integrity` over the resulting bytes and signs with a system-held key it generates for the caller on first use. The private half never crosses this boundary, in any direction: it is not an input, not an output, not a log line and not part of an error message [I-7]. Re-posting an unchanged SOURCE converges on the version already packed from it — the same fields, that version's CURRENT state, the marker THAT version derives, plus `"noop":true`. A different source under a `semantic_version` that already exists → `CONFLICT{current_state}` |
 
 Provisioning auxiliaries (§6.1, normative there; request/response shapes fixed here):
 
@@ -2639,7 +2731,7 @@ Provisioning auxiliaries (§6.1, normative there; request/response shapes fixed 
 
 Internal worker surface (NOT public, service-authenticated, single-binary in-process): `delivery.poll` (claim batch, CAS §5.2), `delivery.renew`, `delivery.complete`, `delivery.fail`.
 
-**Auxiliary public surfaces** (non-numbered; the contracts below are as normative as the thirteen above). Where the MCP column is `—` the surface is REST-only, which §6 names as the one exception to the one-to-one mirror.
+**Auxiliary public surfaces** (non-numbered; the contracts below are as normative as the fourteen above). Where the MCP column is `—` the surface is REST-only, which §6 names as the one exception to the one-to-one mirror.
 
 | MCP tool | REST | Auth (min role) | Request | Success response |
 |---|---|---|---|---|

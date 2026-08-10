@@ -252,6 +252,9 @@ test("MCP: initialize + tools/list expose exactly the implemented surfaces", () 
     [
       // P2: surfaces 1, 2, 4-read, 5
       "skill.create",
+      // surface 14: the registry packs and signs from a SOURCE tree, so §5's
+      // arrival marker can be derived from the version id the registry mints
+      "skill.create_from_dir",
       "skill.lint",
       "skill.verify",
       "skill.search",

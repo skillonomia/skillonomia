@@ -348,6 +348,7 @@ REST-only, and the table below ends with them.
 | MCP tool | REST |
 |---|---|
 | `skill.create` | `POST /v1/skills`, `POST /v1/skills/{id}/versions` |
+| `skill.create_from_dir` | `POST /v1/skills/from-source`, `POST /v1/skills/{id}/versions/from-source` |
 | `skill.lint` | `POST /v1/versions/{id}/lint` |
 | `skill.review.request` | `POST /v1/versions/{id}/reviews` |
 | `skill.verify` | `POST /v1/versions/{id}/verify`, `POST /v1/verify` |

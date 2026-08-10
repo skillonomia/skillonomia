@@ -58,7 +58,7 @@ curl -s -XPOST $B/v1/signing-keys -H "authorization: Bearer $PUBLISHER" \
 package signed by a key the author never registered verifies as `UNKNOWN_KEY`,
 not as a bad signature. See "Auxiliary endpoints" for the full provisioning set.
 
-## The thirteen surfaces
+## The fourteen surfaces
 
 ### 1. `skill.create` — `POST /v1/skills`, `POST /v1/skills/{skill_id}/versions`
 
@@ -183,6 +183,40 @@ is admitted to `supersede` only because naming a successor judges a replacement
 package. Returns
 `{"skill_version_id","state":"deprecated","deprecation_date","tlog_seq"}`;
 re-deprecating converges (`noop:true`) and does not move the recorded date.
+
+### 14. `skill.create_from_dir` — `POST /v1/skills/from-source`, `POST /v1/skills/{skill_id}/versions/from-source`
+
+Body: `{"slug"?, "source": "<base64 tar of the SOURCE tree>", "idempotency_key"?}`
+(over MCP the field is `source_base64`). The source tree is what you keep in
+version control — `manifest.json`, `SKILL.md`, `scripts/`, fixtures — and it must
+NOT contain `skill.json` or `SIGNATURE.jws`: those are produced here, and a
+source carrying them is `INVALID_SCHEMA` pointing you at surface 1.
+
+You supply no cryptographic material. There is no `--seed-hex`, no `kid`, no
+hand-written `integrity` list and no packing step. The registry:
+
+1. mints the `skill_version_id`;
+2. derives this version's §5 arrival marker from that id;
+3. writes the marker into a generated block at the head of `SKILL.md`'s
+   procedure AND into a generated `scripts/skln-arrive.sh` (a RESERVED path —
+   yours is overwritten if you ship one);
+4. refuses to pack unless the marker in `SKILL.md`, the marker in the script and
+   the marker the id derives are the SAME value — a disagreement is a refusal,
+   never a warning;
+5. computes `integrity` over the resulting bytes, so the signature covers the
+   marker;
+6. signs with a system-held Ed25519 key it generates for you on first use.
+
+That key's private half lives in the deployment's secret store, never in SQLite,
+and never crosses the API in either direction — it is not an input, not an
+output, not a log line and not part of an error message.
+
+Returns `201 {"skill_id","skill_version_id","state":"draft","arrival_marker",`
+`"kid","manifest_hash","content_hash"}`. Re-posting an UNCHANGED source
+converges on the version already packed from it (`noop:true`), reporting that
+version's marker; a different source under an existing `semantic_version` is a
+`CONFLICT`. Convergence is judged on the source rather than on the packed bytes,
+because the marker makes every packing of one source byte-different.
 
 ## Auxiliary endpoints
 

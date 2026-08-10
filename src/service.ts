@@ -27,9 +27,17 @@ import {
 import { withIdempotency, type IdempotentOutcome } from "./idempotency.ts";
 import { RateLimiter, DEFAULT_RATE_LIMIT, type RateLimitOptions } from "./ratelimit.ts";
 import { ArchiveError, readPackage, computeIntegrity, writeTar, type PackageFiles } from "./archive.ts";
-import { parseJsonStrict, utf8Decode } from "./jcs.ts";
+import { parseJsonStrict, utf8Decode, jcsBytes } from "./jcs.ts";
 import { validateManifest } from "./manifest.ts";
-import { manifestHash, contentHash } from "./signing.ts";
+import { manifestHash, contentHash, signManifest } from "./signing.ts";
+import {
+  ARRIVAL_SCRIPT_PATH,
+  arrivalMarker,
+  checkArrivalIdentity,
+  embedArrivalStep,
+  renderArrivalScript,
+} from "./marker.ts";
+import { assertNoPrivateMaterial, systemSigningKey } from "./system-key.ts";
 import { transitionVersion, type VersionState } from "./transitions.ts";
 import { publishVersion as countersignAndPublish, COUNTERSIGN_EVENT } from "./countersign.ts";
 import { verifyPackage, type VerifyOutcome } from "./verify.ts";
@@ -166,6 +174,40 @@ export interface CreateResponse {
   skill_version_id: string;
   state: VersionState;
   /** present (true) only when the call converged on an existing identical version */
+  noop?: boolean;
+}
+
+/**
+ * [B-1]: the input of `skill.create_from_dir` — a SOURCE tree, not a package.
+ *
+ * "From a directory" is what the author experiences; what crosses the wire is
+ * an archive of that directory, and the distinction is a security boundary, not
+ * a packaging detail. The registry never reads a path the caller names: a
+ * server that opened `/etc/…` because a request asked it to would be a file-read
+ * primitive with an API in front of it. The client reads its own directory; the
+ * server reads bytes.
+ */
+export interface CreateFromDirInput {
+  /** new-skill form: slug of the skill to create-or-reuse */
+  slug?: string;
+  /** new-version form: the existing skill this version belongs to */
+  skill_id?: string;
+  /** the SOURCE tree as a §4.1b archive — `manifest.json` + `SKILL.md` + files */
+  source: Buffer;
+}
+
+export interface CreateFromDirResponse {
+  skill_id: string;
+  skill_version_id: string;
+  state: VersionState;
+  /** D-1's §5 marker, derived from `skill_version_id`. Not a secret [M-2] */
+  arrival_marker: string;
+  /** the system-held key that signed it; its private half exists only in the
+   *  deployment's secret store and appears in no response, ever [I-7] */
+  kid: string;
+  manifest_hash: string;
+  content_hash: string;
+  /** present (true) only when this SOURCE had already been packed as this version */
   noop?: boolean;
 }
 
@@ -584,8 +626,269 @@ export class Registry {
     }
   }
 
+  // ------------------------------------- surface 14: skill.create_from_dir
+  //
+  // [B-1] and §5's arrival marker are ONE operation because they share one
+  // foundation. §5 requires a marker derived from the SKILL VERSION ID, and the
+  // version id is minted by the registry — so a packer that never speaks to the
+  // registry has nothing to derive from. `tools/pack-skill.ts` says so in its
+  // own header: it "talks to no database and no registry". Server-side packing
+  // is therefore a CONSEQUENCE of [M-1], not a preference.
+  //
+  // ---------------------------------------------------------------------------
+  // THE ORDER, and why there is only one that is consistent
+  // ---------------------------------------------------------------------------
+  //
+  //     mint the version ULID
+  //       → derive the marker from it
+  //         → write the marker into SKILL.md and scripts/skln-arrive.sh
+  //           → compute §4.3 `integrity` over those bytes
+  //             → sign
+  //               → INSERT the row under THE SAME id
+  //
+  // `skill.create` mints its version id AFTER `integrity` is computed, because
+  // it receives a package that is already sealed. That order cannot carry a
+  // marker: `integrity` would cover a package the marker was added to
+  // afterwards, and the signature would attest a package that is not the one
+  // that ships. So the id is minted first here and carried to the INSERT.
+  //
+  // Deriving the marker from `content_hash` instead would remove the need to
+  // mint early and is FORBIDDEN: the marker changes the content, the content
+  // decides the hash, and the hash would decide the marker. That is a circle,
+  // and it is also not what [M-1] says.
+  //
+  // ---------------------------------------------------------------------------
+  // CONVERGENCE, and why it is judged on the source
+  // ---------------------------------------------------------------------------
+  //
+  // Because the marker is derived from a freshly minted id, packing one source
+  // twice yields two byte-different packages. `skill.create` converges by
+  // comparing `manifest_hash` and `content_hash`; that comparison here would
+  // never be equal, so a second submission of an unchanged source would mint a
+  // second version, silently, for ever.
+  //
+  // The comparison therefore happens on the SOURCE, computed BEFORE the marker
+  // exists, and is stored in `skill_versions.source_hash`. Move it back onto the
+  // packed bytes and `test/create-from-dir.test.ts`'s convergence test fails —
+  // which is the point of that test.
+
+  createFromDir(
+    auth: AuthContext,
+    input: CreateFromDirInput,
+    idempotencyKey?: string,
+  ): IdempotentOutcome<CreateFromDirResponse> {
+    return withIdempotency(this.db, auth.agent_id, "skill.create_from_dir", idempotencyKey, this.now(), () =>
+      this.createFromDirInner(auth, input),
+    );
+  }
+
+  private createFromDirInner(auth: AuthContext, input: CreateFromDirInput): CreateFromDirResponse {
+    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+
+    const source = readArchiveBytes(input.source);
+    const rawManifest = source.get("manifest.json");
+    if (!rawManifest) {
+      throw new ApiError("INVALID_SCHEMA", "manifest.json missing from the source tree (§4.1 source layout)");
+    }
+    if (!source.has("SKILL.md")) throw new ApiError("INVALID_SCHEMA", "SKILL.md missing at source root (§4.1)");
+    // A source tree is not a package. `skill.json` and `SIGNATURE.jws` are
+    // PRODUCED here; a source carrying them is either a packed archive sent to
+    // the wrong surface or an attempt to supply a signature the registry is
+    // about to make. Either way the answer is the same, and it names the
+    // surface that does accept a sealed package.
+    for (const produced of ["skill.json", "SIGNATURE.jws"]) {
+      if (source.has(produced)) {
+        throw new ApiError(
+          "INVALID_SCHEMA",
+          `${produced} is produced by packing and must not be in the source tree — an already-packed archive goes to skill.create`,
+        );
+      }
+    }
+
+    let manifest: any;
+    try {
+      manifest = parseJsonStrict(utf8Decode(rawManifest));
+    } catch (e: any) {
+      throw new ApiError("INVALID_SCHEMA", `manifest.json: ${e.message}`);
+    }
+    // Defect #2, at the one place a packer could otherwise decide it: the author
+    // is the authenticated agent. Unlike `skill.create` this is not a refusal
+    // but an assignment — there is no author-supplied signature to invalidate,
+    // and [B-1] says the owner fills in nothing. What a payload still cannot do
+    // is name a DIFFERENT author.
+    if (manifest.author_agent !== undefined && manifest.author_agent !== auth.agent_id) {
+      throw new ApiError(
+        "FORBIDDEN",
+        "author_agent must equal the authenticated agent (actor from auth, never payload)",
+      );
+    }
+    manifest.author_agent = auth.agent_id;
+
+    // The files that ship, minus the manifest — which becomes `skill.json` and
+    // is excluded for the reason tools/pack-skill.ts gives: shipping both would
+    // put an unsigned near-copy of the manifest inside the integrity list.
+    const files: PackageFiles = new Map();
+    for (const [path, bytes] of source) {
+      if (path === "manifest.json") continue;
+      files.set(path, bytes);
+    }
+
+    // The source manifest is validated HERE, before anything is resolved or
+    // written, for the reason `skill.create` validates before its transaction:
+    // `resolveTargetSkill` reads `manifest.skill_id` and the row carries
+    // `semantic_version`, so a manifest that is merely junk would otherwise
+    // surface as a database binding error instead of a typed INVALID_SCHEMA.
+    //
+    // `integrity` is the one field a SOURCE legitimately lacks — packing
+    // computes it, and it cannot be computed before the marker exists — so the
+    // check runs against a copy carrying the pre-marker list. Its VALUE is
+    // discarded; only the shape of the surrounding document is being judged,
+    // and the real list is computed and validated again after the marker lands.
+    const shapeCheck = validateManifest({ ...manifest, integrity: computeIntegrity(files) });
+    if (!shapeCheck.valid) throw new ApiError("INVALID_SCHEMA", shapeCheck.errors.slice(0, 5).join("; "));
+
+    // The convergence identity, computed on the SOURCE and therefore BEFORE the
+    // marker is written. Canonical rather than byte-wise: reformatting
+    // `manifest.json` without changing what it says still converges.
+    const sourceHash = sourceIdentity(files, manifest);
+
+    // The signing key is obtained BEFORE the packing transaction opens: minting
+    // one needs its own `BEGIN IMMEDIATE`, and SQLite has no nested one.
+    const now = this.now();
+    const key = systemSigningKey(this.db, this.secrets, auth.agent_id, now);
+    // Read back for the [I-7] check below. `systemSigningKey` has already
+    // established that this handle resolves, so an absence here is a store that
+    // changed under us — refused, and named without naming what is missing.
+    const seedHex = this.secrets.get(key.secret_ref);
+    if (seedHex === undefined) throw new Error(`system signing key: nothing at ${key.secret_ref}`);
+
+    const db = this.db;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const skillId = this.resolveTargetSkill(auth, input, manifest, now);
+
+      const existing = db
+        .prepare("SELECT id, state, source_hash FROM skill_versions WHERE skill_id=? AND semantic_version=?")
+        .get(skillId, manifest.semantic_version) as
+        | { id: string; state: VersionState; source_hash: string | null }
+        | undefined;
+      if (existing) {
+        db.exec("ROLLBACK");
+        if (existing.source_hash !== null && existing.source_hash === sourceHash) {
+          // Convergent: this exact SOURCE is already this version. The marker
+          // reported is the one the EXISTING id derives, so a caller that
+          // resubmits gets the marker of the package that actually shipped.
+          const row = db
+            .prepare("SELECT manifest_hash, content_hash FROM skill_versions WHERE id=?")
+            .get(existing.id) as { manifest_hash: string; content_hash: string };
+          return {
+            skill_id: skillId,
+            skill_version_id: existing.id,
+            state: existing.state,
+            arrival_marker: arrivalMarker(existing.id),
+            kid: key.kid,
+            manifest_hash: row.manifest_hash,
+            content_hash: row.content_hash,
+            noop: true,
+          };
+        }
+        throw new ApiError(
+          "CONFLICT",
+          `version ${manifest.semantic_version} of this skill already exists, packed from a different source`,
+          existing.state,
+        );
+      }
+
+      // ---- the order [M-1] forces, from here to the INSERT
+      const versionId = ulid(now);
+      const marker = arrivalMarker(versionId);
+      files.set(
+        "SKILL.md",
+        Buffer.from(embedArrivalStep(files.get("SKILL.md")!.toString("utf8"), versionId), "utf8"),
+      );
+      files.set(ARRIVAL_SCRIPT_PATH, Buffer.from(renderArrivalScript(versionId), "utf8"));
+
+      // D-1's guard: SKILL.md, the script and the version id must name ONE
+      // marker. A disagreement refuses the pack; it is never a report.
+      const identity = checkArrivalIdentity(files, versionId);
+      if (!identity.ok) {
+        throw new ApiError("TAMPERED_CONTENT", `arrival marker identity check failed: ${identity.reason}`);
+      }
+
+      // `integrity` is computed LAST over the files that ship, so it covers the
+      // marker. Everything after this point is attesting these exact bytes.
+      manifest.integrity = computeIntegrity(files);
+      const val = validateManifest(manifest);
+      if (!val.valid) throw new ApiError("INVALID_SCHEMA", val.errors.slice(0, 5).join("; "));
+
+      let mHash: string;
+      try {
+        mHash = manifestHash(manifest);
+      } catch (e: any) {
+        throw new ApiError("INVALID_SCHEMA", `canonicalization: ${e.message}`);
+      }
+      const cHash = contentHash(manifest.integrity);
+      const { jws } = signManifest(manifest as never, key.privateKey, key.kid);
+      const manifestJson = JSON.stringify(manifest);
+      files.set("skill.json", Buffer.from(manifestJson, "utf8"));
+      files.set("SIGNATURE.jws", Buffer.from(jws, "utf8"));
+
+      const tar = writeTar(files);
+      const blobRef = `sha256:${createHash("sha256").update(tar).digest("hex")}`;
+
+      // [I-7]/[M-2], checked over the actual bytes rather than promised: the
+      // package, the stored manifest, the signature, the marker and the response
+      // are searched for the private seed in every encoding it could wear.
+      const response: CreateFromDirResponse = {
+        skill_id: skillId,
+        skill_version_id: versionId,
+        state: "draft",
+        arrival_marker: marker,
+        kid: key.kid,
+        manifest_hash: mHash,
+        content_hash: cHash,
+      };
+      assertNoPrivateMaterial(seedHex, [
+        ["the package archive", tar],
+        ["the stored manifest", manifestJson],
+        ["SIGNATURE.jws", jws],
+        ["the arrival marker", marker],
+        ["the response body", JSON.stringify(response)],
+      ]);
+
+      db.prepare(
+        `INSERT INTO skill_versions(id, skill_id, semantic_version, author_agent_id, manifest_json,
+           manifest_hash, content_hash, package_blob_ref, signature_jws, state, created_at_ms, source_hash)
+         VALUES (?,?,?,?,?,?,?,?,?, 'draft', ?,?)`,
+      ).run(
+        versionId,
+        skillId,
+        manifest.semantic_version,
+        auth.agent_id,
+        manifestJson,
+        mHash,
+        cHash,
+        blobRef,
+        jws,
+        now,
+        sourceHash,
+      );
+      db.exec("COMMIT");
+      this.blobs.put(blobRef, tar); // after commit, as `skill.create` does
+      return response;
+    } catch (e) {
+      rollbackIfOpen(db);
+      throw e;
+    }
+  }
+
   /** Create-or-reuse the target skill row; returns its id. Caller holds the tx. */
-  private resolveTargetSkill(auth: AuthContext, input: CreateInput, manifest: any, now: number): string {
+  private resolveTargetSkill(
+    auth: AuthContext,
+    input: { slug?: string; skill_id?: string },
+    manifest: any,
+    now: number,
+  ): string {
     const db = this.db;
     if (input.skill_id !== undefined) {
       if (typeof input.skill_id !== "string") throw new ApiError("INVALID_SCHEMA", "skill_id must be a string");
@@ -2775,6 +3078,31 @@ function rollbackIfOpen(db: Db): void {
   } catch {
     // transaction already closed (committed or rolled back) — nothing to undo
   }
+}
+
+/**
+ * The identity of a SOURCE tree — the value `skill.create_from_dir` converges
+ * on, computed before a marker exists.
+ *
+ * Two halves, because a source is two things: the files it ships and what its
+ * manifest says. Changing either changes the version, so both are covered.
+ *
+ * `integrity` is dropped from the manifest half deliberately: the source
+ * manifest's `integrity` is whatever the author left there, the packer
+ * overwrites it, and a source that differs only in a field about to be
+ * discarded is the same source. Canonical (JCS) rather than byte-wise for the
+ * same reason: reformatting `manifest.json` changes no claim it makes.
+ */
+function sourceIdentity(sourceFiles: PackageFiles, manifest: any): string {
+  const { integrity: _dropped, ...claims } = manifest as Record<string, unknown>;
+  return createHash("sha256")
+    .update(
+      jcsBytes({
+        files: computeIntegrity(sourceFiles) as unknown as never,
+        manifest: manifestHash(claims as never),
+      }),
+    )
+    .digest("hex");
 }
 
 /** §4.1b archive bytes → PackageFiles; gzip sniffed by magic. */
