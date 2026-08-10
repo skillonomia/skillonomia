@@ -46,6 +46,7 @@ import { ApiError } from "./errors.ts";
 import type { AuthContext } from "./auth.ts";
 import { arrivalMarker } from "./marker.ts";
 import { appendReceiptEventInTx } from "./receipts.ts";
+import { createAssignmentInTx, supersedeAssignmentsInTx } from "./assignments.ts";
 import { selectWebhook } from "./delivery.ts";
 import { ulid } from "./ulid.ts";
 import {
@@ -97,6 +98,17 @@ export interface TransferResponse {
   event_seq: number;
   /** the §5.2 queue state of the request this transfer opened */
   request_state: string;
+  /**
+   * §5.5 — the DEPLOYMENT this push opened. A transfer is the owner's half of a
+   * push, and a push has a lifetime: the assignment is where that lifetime is
+   * recorded, and it starts in `assigned` because nothing has been placed
+   * anywhere yet.
+   */
+  assignment_id: string;
+  /** the deployment state the assignment starts in: an INTENT, never a report */
+  deployment_intent_state: "assigned";
+  /** standing assignments of the same skill at the same agent this one replaces */
+  superseded_assignment_ids: string[];
   /** the §7.3 conditions holding it, present exactly when it is held */
   approval_required?: string[];
   /**
@@ -283,6 +295,37 @@ export function recordTransfer(
       appended.event_seq,
       now,
     );
+
+    // §5.5: the DEPLOYMENT. A push is a decision with a lifetime, and this is
+    // where that lifetime begins — in the same transaction as the movement that
+    // carried it, because an assignment whose transfer was rolled back would be
+    // a decision nobody made. It starts in `assigned`: nothing has been placed
+    // at the recipient and nothing may say otherwise.
+    const skillId = (
+      db.prepare("SELECT skill_id AS id FROM skill_versions WHERE id=?").get(ctx.versionId) as { id: string }
+    ).id;
+    const assignedBy: GrantPrincipal = { agent_id: sender.id, type: sender.type, role: sender.role };
+    const assignment = createAssignmentInTx(db, {
+      skillId,
+      skillVersionId: ctx.versionId,
+      agentId: to.id,
+      recipientKind: recipient.kind,
+      transferId: transferId,
+      assignedBy,
+      grantId: grant.id,
+      grantAction: grant.action,
+      nowMs: now,
+    });
+    // one agent holds at most one standing assignment per skill: this push
+    // replaces whatever was standing, and the replacement is written as an
+    // event on the OLD assignment rather than as an edit of it
+    const superseded = supersedeAssignmentsInTx(db, {
+      skillId,
+      agentId: to.id,
+      successorAssignmentId: assignment.assignment_id,
+      actor: assignedBy,
+      nowMs: now,
+    });
     db.exec("COMMIT");
 
     const res: TransferResponse = {
@@ -307,6 +350,9 @@ export function recordTransfer(
       receipt_event: "transferred",
       event_seq: appended.event_seq,
       request_state: ctx.requestState,
+      assignment_id: assignment.assignment_id,
+      deployment_intent_state: "assigned",
+      superseded_assignment_ids: superseded,
       intent: "the registry recorded that this version is to go to this recipient",
       observed_state: "unknown",
       observed_state_source:

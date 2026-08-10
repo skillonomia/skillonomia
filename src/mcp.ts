@@ -321,6 +321,71 @@ export const MCP_TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "assignment.activate",
+    description:
+      "§5.5: materialize a deployment's managed copy in the runtime's NATIVE location and record that Skillonomia believes it activated it. The activation ROOT is deployment configuration, never a call argument: with no root configured this writes nothing anywhere and records `queued`. With one configured it writes the package under `<root>/<native location>` for the configured target (Claude Code personal/project/plugin, or Codex `.agents/skills/<name>/SKILL.md`), reads the entry file back FROM there, and only then records `active`. `active` is SKILLONOMIA'S INTENT and is labelled as one on every row: the answer carries the observed arrival as a SEPARATE column, and that column stays `unknown` until a runtime record carrying this version's §5 marker exists — a file on disk is not a run. Requires an `activate` grant scoped to the assignment's recipient kind (§6.2). Re-activating an unchanged copy is a convergent noop; one that has drifted is recorded as `drifted` and rewritten.",
+    // [I-8]: one step of the loop, and it WRITES — to this registry's journal
+    // and to a filesystem that is not this registry's. `openWorldHint` is TRUE
+    // for exactly that reason and is the honest difference from every other
+    // tool here: `skill.transfer` reaches nothing outside the registry, and
+    // this one does.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: "object",
+      properties: { assignment_id: { type: "string" }, idempotency_key: { type: "string" } },
+      required: ["assignment_id"],
+    },
+  },
+  {
+    name: "assignment.pause",
+    description:
+      "§5.5: suspend a deployment — the managed copy is taken out of the native location and the assignment stays, so it can be activated again. Requires a `revoke` grant scoped to the assignment's recipient kind (§6.2): pausing and revoking exercise the same capability on the runtime and differ only in whether the deployment can be resumed. The answer states what became of the copy — `removed`, `absent` or `retained`, never a bare success — and states that a new session is required before the withdrawal changes what an agent is working from. It does NOT claim that an agent which has already read these instructions no longer has them.",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: "object",
+      properties: { assignment_id: { type: "string" }, idempotency_key: { type: "string" } },
+      required: ["assignment_id"],
+    },
+  },
+  {
+    name: "assignment.revoke",
+    description:
+      "§5.5: end a deployment and take the managed copy out of the native location. Terminal: a revoked assignment is not resumed, and handing the skill over again is a fresh push. Requires a `revoke` grant scoped to the assignment's recipient kind (§6.2). The answer states what became of the copy — `removed`, `absent` or `retained` (a copy that is still there because the registry could not reach it) — and carries the limit of the operation in words: removing a file does not reach into a session that has already loaded the skill, so a new session is required before the withdrawal has any effect on what that agent is working from.",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: "object",
+      properties: { assignment_id: { type: "string" }, idempotency_key: { type: "string" } },
+      required: ["assignment_id"],
+    },
+  },
+  {
+    name: "assignment.list",
+    description:
+      "§5.5: the deployments this actor may read — its own, or the workspace's for an admin/owner. Every row carries TWO COLUMNS that are never merged: `intent_state` (what Skillonomia decided, read from the INSERT-only assignment journal, labelled `intent`) and `observed_arrival` (what a runtime record showed, computed only from the §5 arrival marker on a paired call/output record, `yes` or `unknown` and never `no`). Each states its own source and selection window, so no cell is a bare value. A version declaring `runtime.shell: [\"none\"]` reports `unknown` with the reason `no_executable_step`, which is machine-distinguishable from `no_paired_record`. Read-only: it activates nothing and changes nothing.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "principal.create",
     description:
       "Provisioning: create a principal (agent, human or service) in the caller's workspace with a workspace role, and issue its API key. Requires role admin/owner (§6 manage-memberships row); the new role may not outrank the caller's. The api_key is returned EXACTLY ONCE and is never retrievable — this call takes no idempotency_key, because a replay would have to persist that secret.",
@@ -600,6 +665,20 @@ function callTool(registry: Registry, auth: AuthContext, name: string, args: any
     }
     case "transfer_grant.list":
       return { json: JSON.stringify(registry.listGrants(auth)), replayed: false };
+    case "assignment.activate": {
+      const out = registry.activateAssignment(auth, args?.assignment_id, idemKey(args));
+      return { json: out.responseJson, replayed: out.replayed };
+    }
+    case "assignment.pause": {
+      const out = registry.pauseAssignment(auth, args?.assignment_id, idemKey(args));
+      return { json: out.responseJson, replayed: out.replayed };
+    }
+    case "assignment.revoke": {
+      const out = registry.revokeAssignment(auth, args?.assignment_id, idemKey(args));
+      return { json: out.responseJson, replayed: out.replayed };
+    }
+    case "assignment.list":
+      return { json: JSON.stringify(registry.listAssignments(auth)), replayed: false };
     case "principal.create":
       return { json: JSON.stringify(registry.createPrincipal(auth, args ?? {})), replayed: false };
     case "principal.list":

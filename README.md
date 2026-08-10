@@ -365,6 +365,10 @@ REST-only, and the table below ends with them.
 | `skill.approve` | `POST /v1/versions/{id}/approvals` |
 | `transfer_grant.create` | `POST /v1/transfer-grants` |
 | `transfer_grant.list` | `GET /v1/transfer-grants` |
+| `assignment.activate` | `POST /v1/assignments/{id}/activate` |
+| `assignment.pause` | `POST /v1/assignments/{id}/pause` |
+| `assignment.revoke` | `POST /v1/assignments/{id}/revoke` |
+| `assignment.list` | `GET /v1/assignments` |
 | `dashboard.view` | `GET /v1/dashboard/{view}` (`?format=html`) |
 | `migration.count` | `GET /v1/migrations?since_ms=&until_ms=` |
 | `tlog.read` | `GET /v1/tlog?cursor=` |

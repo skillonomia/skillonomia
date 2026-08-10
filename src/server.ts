@@ -19,6 +19,7 @@ import { FsSecretStore, runWorkerOnce, type WebhookTransport } from "./webhooks.
 import { defaultTransport } from "./transport.ts";
 import { sweep, workerId } from "./delivery.ts";
 import { installSeed, seedNotice, demoMode, type SeedResult } from "./seed.ts";
+import { ACTIVATION_TARGETS, FixedActivationRoots, isActivationTarget, type ActivationRoots } from "./activation.ts";
 
 export { VERSION } from "./version.ts";
 import { VERSION } from "./version.ts";
@@ -35,6 +36,13 @@ export interface ServeOptions {
   seedDir?: string;
   /** false skips installing the §9.1 seed — a real deployment's choice */
   installSeedPackage?: boolean;
+  /**
+   * §5.5: where native activation may write. Supplying this here OVERRIDES the
+   * environment, which is what an embedding caller (and the test suite) wants;
+   * leaving it out and setting neither variable means nothing is activated
+   * anywhere, which is the shipped default.
+   */
+  activation?: ActivationRoots;
   log?: (line: string) => void;
 }
 
@@ -96,10 +104,31 @@ export function serve(opts: ServeOptions = {}): Instance {
   // 0 means "ask the OS for an ephemeral port" — how the test suite binds
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`invalid port ${port}`);
 
+  // §5.5: WHERE native activation may write, and the answer is NOWHERE unless an
+  // operator wrote it down. Both variables must be set: a root with no target,
+  // or a target with no root, activates nothing. Nothing is expanded — no `~`,
+  // no `$HOME`, no relative form — because a root this process DERIVED would be
+  // a place the operator did not choose, and writing into a runtime's own
+  // directory is an action on somebody's machine.
+  const activationRoot = opts.activation ? null : env("SKILLONOMIA_ACTIVATION_ROOT");
+  const activationTarget = env("SKILLONOMIA_ACTIVATION_TARGET");
+  let activation = opts.activation;
+  if (activationRoot !== null && activationRoot !== undefined) {
+    if (!isActivationTarget(activationTarget)) {
+      throw new Error(
+        `SKILLONOMIA_ACTIVATION_ROOT is set, so SKILLONOMIA_ACTIVATION_TARGET must be one of ${ACTIVATION_TARGETS.join("|")}`,
+      );
+    }
+    activation = new FixedActivationRoots(activationRoot, activationTarget);
+  } else if (activationTarget !== undefined && opts.activation === undefined) {
+    throw new Error("SKILLONOMIA_ACTIVATION_TARGET is set without SKILLONOMIA_ACTIVATION_ROOT — a target names a layout, not a place");
+  }
+
   mkdirSync(dataDir, { recursive: true });
   const db = openMigrated(join(dataDir, DB_FILENAME));
   const secrets = new FsSecretStore(join(dataDir, "secrets"));
   const registry = new Registry(db, {
+    activation,
     blobs: new FsBlobStore(join(dataDir, "blobs")),
     secrets,
     // §9.1: the outstanding token's HASH, in the data directory. Without this a
@@ -152,6 +181,15 @@ export function serve(opts: ServeOptions = {}): Instance {
 
   log(`skillonomia ${VERSION} listening on http://${host}:${port}  (data: ${dataDir})`);
   log(`health           : GET /health   (unauthenticated)`);
+  // The one setting that lets this process write outside its own data
+  // directory is printed on every start, set or not: an operator has to be able
+  // to see it without reading the unit file.
+  log(
+    activation
+      ? `native activation: ON — ${activationTarget ?? "configured by the embedding caller"} under the configured root. ` +
+        `\`assignment.activate\` writes managed copies there and NOWHERE else.`
+      : "native activation: off — no SKILLONOMIA_ACTIVATION_ROOT. Activations record `queued` and write no file.",
+  );
   if (credentials) {
     log("");
     log("first start — these two one-time credentials are printed ONCE (SPEC §9.1):");

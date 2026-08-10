@@ -44,6 +44,46 @@ loudly rather than continuing with an empty registry.
 | `SKILLONOMIA_HOST` | `127.0.0.1` | bind address — see **The network boundary** |
 | `SKILLONOMIA_WORKER_MS` | `1000` | delivery-worker interval; `0` disables it |
 | `SKILLONOMIA_ASSETS` | — | explicit asset root |
+| `SKILLONOMIA_ACTIVATION_ROOT` | — | where native activation may write — see **Native activation** |
+| `SKILLONOMIA_ACTIVATION_TARGET` | — | which runtime layout to write under that root |
+
+## Native activation
+
+`assignment.activate` materializes a managed copy of a skill in a runtime's own
+native location. **Both variables above are unset by default, and with either of
+them unset the registry activates nothing**: an activation records `queued`,
+writes no file anywhere, and says so in its answer. That is the shipped
+behaviour and it is deliberate — writing into somebody's runtime directory is an
+action on their machine, and it happens only because an operator wrote these two
+variables down.
+
+`SKILLONOMIA_ACTIVATION_ROOT` must be an ABSOLUTE path to an existing directory.
+Nothing is expanded: there is no `~`, no `$HOME`, no relative form. The registry
+writes only under that root — it resolves every component of a native location
+through symbolic links and refuses the activation outright if any of them lands
+outside — so the root is the whole of the blast radius, and pointing it at a
+scratch directory first is how you see what it would do.
+
+`SKILLONOMIA_ACTIVATION_TARGET` picks the layout written under the root:
+
+| Value | Written at |
+|---|---|
+| `claude_code_personal` | `<root>/.claude/skills/<name>/` — point the root at the user's home |
+| `claude_code_project` | `<root>/.claude/skills/<name>/` — point the root at the project |
+| `claude_code_plugin` | `<root>/skills/<name>/` — point the root at the plugin |
+| `codex` | `<root>/.agents/skills/<name>/` |
+
+The two Claude Code scopes have the same layout and differ only in which
+directory you make the root.
+
+**What activation does not do.** Recording `active` means the registry wrote the
+copy and read it back from the native location. It is Skillonomia's intent and is
+labelled as one; it is not a report that any agent ran anything. Every row shows
+the observed arrival in a separate column, and that column stays `unknown` until
+a runtime record carrying the version's arrival marker exists. Likewise
+`assignment.revoke` removes the file and no more: an agent that has already
+loaded the skill keeps those instructions until its session ends, and the answer
+says so.
 
 ## The network boundary
 
@@ -128,11 +168,11 @@ for the same reason: a CI runner is a host on a network like any other.
 
 ## The command line
 
-One executable, five subcommands — the same set on all three packaging paths
-(a locally built container image, a checkout run with Node ≥22.6, the compiled
-binary). None of them is a published artifact: V1 ships no npm package and no
-container image under this project's name, so every path below starts from this
-repository.
+One executable, five subcommands — the same set on all four packaging paths
+(a locally built container image, a checkout run with Node ≥22.6, an npm
+tarball packed here and installed from the file, the compiled binary). None of
+them is a published artifact: V1 ships no npm package and no container image
+under this project's name, so every path below starts from this repository.
 
 ```
 skillonomia serve [--port N] [--data DIR] [--host H]

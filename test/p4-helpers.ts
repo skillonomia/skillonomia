@@ -7,6 +7,8 @@ import { makeManifest, buildPackage, ctxFor, NOW } from "./p2-helpers.ts";
 import { Registry } from "../src/service.ts";
 import { mintApiKey, type AuthContext, type Role } from "../src/auth.ts";
 import type { SecretStore } from "../src/webhooks.ts";
+import type { ActivationRoots } from "../src/activation.ts";
+import type { RuntimeRecordSource } from "../src/assignments.ts";
 import { ulid } from "../src/ulid.ts";
 
 export { NOW };
@@ -47,9 +49,24 @@ function agentCtx(db: Db, seed: Seed, name: string, type: "human" | "agent" | "s
   return ctxFor(seed, id, seed.wsA, role);
 }
 
-export function p4Fixture(opts: { secrets?: SecretStore } = {}): P4Fixture {
+export function p4Fixture(
+  opts: {
+    secrets?: SecretStore;
+    /** §5.5: where deployments may be materialized. Absent = nowhere, which is
+     *  the shipped default and what every suite but the activation one wants. */
+    activation?: ActivationRoots;
+    /** §5.5: where runtime records come from. Absent = none, so every observed
+     *  arrival is `unknown` — again the shipped default. */
+    runtimeRecords?: RuntimeRecordSource;
+  } = {},
+): P4Fixture {
   const seed = seedGraph();
-  const registry = new Registry(seed.db, { now: () => NOW, secrets: opts.secrets });
+  const registry = new Registry(seed.db, {
+    now: () => NOW,
+    secrets: opts.secrets,
+    activation: opts.activation,
+    runtimeRecords: opts.runtimeRecords,
+  });
   const reviewer = agentCtx(seed.db, seed, "reviewer-a", "agent", "reviewer");
   const reviewer2 = agentCtx(seed.db, seed, "reviewer-a2", "agent", "reviewer");
   const admin = agentCtx(seed.db, seed, "admin-a", "human", "admin");

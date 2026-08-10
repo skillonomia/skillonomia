@@ -278,6 +278,12 @@ test("MCP: initialize + tools/list expose exactly the implemented surfaces", () 
       "skill.transfer",
       "transfer_grant.create",
       "transfer_grant.list",
+      // §5.5: the deployment a push opens — three writes that reach a runtime's
+      // own filesystem, and one read that shows intent and observation apart
+      "assignment.activate",
+      "assignment.pause",
+      "assignment.revoke",
+      "assignment.list",
       // provisioning auxiliaries (Appendix H): principals, their API keys and
       // the signing keys §4.4 step 3 resolves a package's kid against
       "principal.create",

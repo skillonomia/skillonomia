@@ -62,10 +62,47 @@ import {
 } from "./receipts.ts";
 import { parseRecipient, recordTransfer, type TransferResponse } from "./transfer.ts";
 import {
+  ActivationError,
+  NATIVE_ENTRY,
+  NO_ACTIVATION_ROOTS,
+  materialize,
+  readBack,
+  removeManaged,
+  skillFilesUnder,
+  type ActivationRoots,
+  type ManagedCopy,
+} from "./activation.ts";
+import {
+  ARRIVAL_OBSERVATION_SOURCE,
+  ASSIGNMENT_INTENT_SOURCE,
+  NATIVE_INVENTORY_SOURCE,
+  NO_RUNTIME_RECORDS,
+  appendAssignmentEvent,
+  assignmentView,
+  assignmentsForAgents,
+  eventsOf,
+  headFrom,
+  headOf,
+  loadAssignment,
+  observedArrival,
+  subjectOf,
+  type AppendAssignmentEventInput,
+  type AssignmentEventRow,
+  type AssignmentHead,
+  type AssignmentRow,
+  type AssignmentView,
+  type RuntimeRecordSource,
+} from "./assignments.ts";
+import {
   createGrant,
+  findGrant,
   listGrants,
+  loadPrincipal,
   type CreatedGrant,
   type CreateGrantInput,
+  type GrantAction,
+  type GrantPrincipal,
+  type GrantRow,
   type GrantView,
 } from "./grants.ts";
 import {
@@ -175,6 +212,79 @@ export interface RegistryOptions {
    * strand it without an owner key (src/server.ts).
    */
   bootstrap?: BootstrapStore;
+  /**
+   * §5.5: WHERE a deployment may be materialized, per agent.
+   *
+   * There is no default root and none is derived from the environment: the
+   * shipped value activates nothing, records `queued`, and says so in the
+   * answer. Pointing this at a real runtime directory is a separate decision,
+   * made in configuration by a person, and it needs no code change — which is
+   * the whole reason the root is a parameter.
+   */
+  activation?: ActivationRoots;
+  /**
+   * §5.5: where RUNTIME RECORDS come from, for the observation column.
+   *
+   * The shipped value yields none, so every observed arrival is `unknown` with
+   * a window that says no transcript was searched. This is the seam the
+   * inventory/scanner work plugs into; it hands over records rather than paths,
+   * because the next version's record is a line of text an agent outside this
+   * perimeter sent.
+   */
+  runtimeRecords?: RuntimeRecordSource;
+}
+
+// ------------------------------------------- §5.5 deployment answer shapes
+
+/** The write steps of §6.3, as they are named on every answer. */
+export type AssignmentAction = "activate" | "pause" | "revoke";
+
+/**
+ * The answer of one deployment write.
+ *
+ * `managed_copy` is what happened to the FILE at this step, and it is five-
+ * valued with no blank member. `requires_new_session` and `session_effect` are
+ * the honest limit of every withdrawal: taking a file away cannot reach into a
+ * session that has already read it, and this system does not say it can.
+ */
+export interface AssignmentActionResponse {
+  action: AssignmentAction;
+  assignment: AssignmentView;
+  managed_copy: ManagedCopy | "unknown";
+  activation_root_configured: boolean;
+  requires_new_session: boolean;
+  session_effect: string;
+  noop?: boolean;
+}
+
+/** Counts of the read surface — each with its state, its source and its window. */
+export interface AssignmentCounts {
+  assignments: number;
+  /** how many deployments Skillonomia INTENDS to be active */
+  intent_active: number;
+  /** how many have an OBSERVED arrival — a different column, counted apart */
+  observed_arrival_yes: number;
+  observed_arrival_unknown: number;
+  measurement_state: "counted";
+  intent_source: string;
+  observation_source: string;
+  window: string;
+}
+
+/** The filesystem number, three-valued, never a bare figure. */
+export interface NativeInventory {
+  /** null exactly when `measurement_state` is `unknown` — never a silent 0 */
+  skill_files: number | null;
+  measurement_state: "counted" | "unknown";
+  reason: string | null;
+  source: string;
+  window: string;
+}
+
+export interface AssignmentListResponse {
+  items: AssignmentView[];
+  counts: AssignmentCounts;
+  native_inventory: NativeInventory;
 }
 
 export interface CreateInput {
@@ -485,9 +595,15 @@ export class Registry {
   private readonly now: () => number;
   private readonly bootstrapStore: BootstrapStore;
   private bootstrapState: BootstrapState | null;
+  /** §5.5: where deployments may be materialized. Nowhere, by default. */
+  private readonly activation: ActivationRoots;
+  /** §5.5: where runtime records come from. Nowhere, by default. */
+  private readonly runtimeRecords: RuntimeRecordSource;
 
   constructor(db: Db, opts: RegistryOptions = {}) {
     this.db = db;
+    this.activation = opts.activation ?? NO_ACTIVATION_ROOTS;
+    this.runtimeRecords = opts.runtimeRecords ?? NO_RUNTIME_RECORDS;
     this.blobs = opts.blobs ?? new MemoryBlobStore();
     this.secrets = opts.secrets ?? new MemorySecretStore();
     this.limiter = new RateLimiter(opts.rateLimit ?? DEFAULT_RATE_LIMIT);
@@ -2893,6 +3009,352 @@ export class Registry {
   /** §6.2 — the grants this actor may read. */
   listGrants(auth: AuthContext): { items: GrantView[] } {
     return listGrants(this.db, auth);
+  }
+
+  // ---------------------------------- §5.5: deployment assignments (§6.3)
+
+  /**
+   * The assignment, the actor and the permission — resolved in that order, and
+   * the order is the ACL.
+   *
+   * An assignment addressed to an agent of another workspace is ABSENT, not
+   * forbidden, exactly as a principal of another workspace is: acknowledging it
+   * would disclose that a fleet elsewhere holds this skill. The permission is
+   * then the §6.2 grant for the step being taken, scoped to the assignment's own
+   * recipient kind — no second permission system, and no role invented for
+   * deployment.
+   */
+  private assignmentContext(
+    auth: AuthContext,
+    assignmentId: unknown,
+    action: GrantAction,
+  ): { row: AssignmentRow; head: AssignmentHead; grant: GrantRow; actor: GrantPrincipal } {
+    if (typeof assignmentId !== "string" || assignmentId.length === 0) {
+      throw new ApiError("INVALID_SCHEMA", "assignment_id (string) required");
+    }
+    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    const row = loadAssignment(this.db, assignmentId);
+    if (!row || row.workspace_id !== auth.workspace_id) throw new ApiError("NOT_FOUND", "assignment not found");
+    const actorRow = loadPrincipal(this.db, auth.agent_id);
+    if (!actorRow || actorRow.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    const grant = findGrant(this.db, actorRow.id, action, row.recipient_kind);
+    if (!grant) {
+      throw new ApiError(
+        "FORBIDDEN",
+        `this principal holds no \`${action}\` grant scoped to \`${row.recipient_kind}\` (§6.2)`,
+      );
+    }
+    return {
+      row,
+      head: headOf(this.db, row.id),
+      grant,
+      actor: { agent_id: actorRow.id, type: actorRow.type, role: actorRow.role },
+    };
+  }
+
+  /** One assignment as the surfaces publish it: intent and observation apart. */
+  private viewOf(row: AssignmentRow): AssignmentView {
+    return assignmentView(
+      row,
+      headOf(this.db, row.id),
+      // the observation is computed from RECORDS and a marker, by the one
+      // function allowed to compute it, and it is handed to the view already
+      // finished — the view never has both columns' inputs in one scope
+      observedArrival(this.runtimeRecords.recordsFor(row.agent_id), subjectOf(row)),
+    );
+  }
+
+  private assignmentOutcome(
+    row: AssignmentRow,
+    action: AssignmentAction,
+    opts: { managedCopy: ManagedCopy | "unknown"; rootConfigured: boolean; noop?: boolean },
+  ): AssignmentActionResponse {
+    const assignment = this.viewOf(row);
+    const res: AssignmentActionResponse = {
+      action,
+      assignment,
+      managed_copy: opts.managedCopy,
+      activation_root_configured: opts.rootConfigured,
+      requires_new_session: assignment.requires_new_session,
+      session_effect: assignment.session_effect,
+    };
+    if (opts.noop) res.noop = true;
+    return res;
+  }
+
+  /** The package files of one version, or a refusal naming the missing blob. */
+  private filesOf(versionId: string): PackageFiles {
+    const row = this.db.prepare("SELECT package_blob_ref AS r FROM skill_versions WHERE id=?").get(versionId) as
+      | { r: string }
+      | undefined;
+    const blob = row ? this.blobs.get(row.r) : undefined;
+    if (!blob) throw new ApiError("NOT_FOUND", "package blob unavailable for this version — nothing can be materialized");
+    return readArchiveBytes(blob);
+  }
+
+  /**
+   * `assignment.activate` — materialize the managed copy in the runtime's
+   * native location, and record what this registry now BELIEVES.
+   *
+   * Three things about this call are load-bearing:
+   *
+   * 1. With no activation root configured it writes NOTHING and records
+   *    `queued`. That is the shipped default, and it is why a deployment that
+   *    has never been configured cannot accidentally write into a real fleet.
+   * 2. `activating` is committed BEFORE the filesystem is touched, so a crash
+   *    leaves an unfinished activation rather than a claim.
+   * 3. `active` is recorded only after the entry file has been READ BACK from
+   *    the native location and found to be the version's own bytes. It still
+   *    means "Skillonomia believes it activated this", and the answer says so:
+   *    the observation column beside it stays `unknown` until a runtime record
+   *    carrying this version's marker exists.
+   */
+  activateAssignment(
+    auth: AuthContext,
+    assignmentId: unknown,
+    idempotencyKey?: string,
+  ): IdempotentOutcome<AssignmentActionResponse> {
+    return withIdempotency(this.db, auth.agent_id, "assignment.activate", idempotencyKey, this.now(), () =>
+      this.activateInner(auth, assignmentId),
+    );
+  }
+
+  private activateInner(auth: AuthContext, assignmentId: unknown): AssignmentActionResponse {
+    const { row, head, grant, actor } = this.assignmentContext(auth, assignmentId, "activate");
+    if (head.state === "revoked") {
+      throw new ApiError("PRECONDITION_FAILED", "a revoked assignment is not re-activated — assign the skill again", head.state);
+    }
+    const site = this.activation.rootFor(row.agent_id);
+    const append = (input: Omit<AppendAssignmentEventInput, "assignmentId" | "actor" | "nowMs">): void => {
+      appendAssignmentEvent(this.db, { ...input, assignmentId: row.id, actor, nowMs: this.now() });
+    };
+
+    if (site === null) {
+      // Nothing is configured, so nothing is written and nothing is claimed.
+      if (head.state === "queued") return this.assignmentOutcome(row, "activate", { managedCopy: head.managed_copy ?? "unknown", rootConfigured: false, noop: true });
+      append({
+        event: "queued",
+        reason: "no_activation_root_configured",
+        grantId: grant.id,
+        grantAction: grant.action,
+        managedCopy: head.managed_copy === "written" ? "retained" : "absent",
+        idempotencyKey: `queued:${this.now()}:${head.event_seq}`,
+      });
+      return this.assignmentOutcome(row, "activate", { managedCopy: head.managed_copy === "written" ? "retained" : "absent", rootConfigured: false });
+    }
+
+    const files = this.filesOf(row.skill_version_id);
+    const entry = files.get(NATIVE_ENTRY);
+    if (!entry) throw new ApiError("PRECONDITION_FAILED", `this package carries no ${NATIVE_ENTRY} — there is nothing a runtime would read`, head.state);
+
+    // DRIFT is checked before anything is written, and only against what the
+    // native location actually holds. An `active` deployment whose copy still
+    // matches is a convergent noop: re-recording `activating`/`active` on every
+    // call would fill the journal with steps nothing took.
+    if (head.state === "active") {
+      const onDisk = readBack(site, row.slug);
+      if (onDisk !== null && onDisk.equals(entry)) {
+        return this.assignmentOutcome(row, "activate", { managedCopy: "written", rootConfigured: true, noop: true });
+      }
+      append({
+        event: "drifted",
+        reason: onDisk === null ? "native_copy_missing" : "native_copy_differs",
+        grantId: grant.id,
+        grantAction: grant.action,
+        managedCopy: onDisk === null ? "absent" : "written",
+        idempotencyKey: `drifted:${this.now()}:${head.event_seq}`,
+      });
+    }
+
+    append({ event: "activating", grantId: grant.id, grantAction: grant.action, idempotencyKey: `activating:${this.now()}:${head.event_seq}` });
+    try {
+      const placed = materialize(site, row.slug, files);
+      const back = readBack(site, row.slug);
+      if (back === null || !back.equals(entry)) {
+        throw new ActivationError("read_back_failed", "the managed copy could not be read back from the native location");
+      }
+      append({
+        event: "active",
+        grantId: grant.id,
+        grantAction: grant.action,
+        activationTarget: site.target,
+        nativeRelpath: placed.relpath,
+        managedCopy: "written",
+        idempotencyKey: `active:${this.now()}:${head.event_seq}`,
+      });
+      return this.assignmentOutcome(row, "activate", { managedCopy: "written", rootConfigured: true });
+    } catch (e) {
+      // The REASON is a code, never a filesystem message: an errno string names
+      // absolute paths, and a fleet member's directory layout is not the
+      // registry's to publish into an INSERT-only table or an error body.
+      const reason = e instanceof ActivationError ? e.reason : "activation_failed";
+      append({ event: "failed", reason, grantId: grant.id, grantAction: grant.action, idempotencyKey: `failed:${this.now()}:${head.event_seq}` });
+      throw new ApiError(
+        "PRECONDITION_FAILED",
+        `activation did not complete (${reason}); the deployment is recorded as failed and nothing claims it is running`,
+        "failed",
+      );
+    }
+  }
+
+  /** `assignment.pause` — withdraw the managed copy, keep the assignment. */
+  pauseAssignment(
+    auth: AuthContext,
+    assignmentId: unknown,
+    idempotencyKey?: string,
+  ): IdempotentOutcome<AssignmentActionResponse> {
+    return withIdempotency(this.db, auth.agent_id, "assignment.pause", idempotencyKey, this.now(), () =>
+      this.withdraw(auth, assignmentId, "paused"),
+    );
+  }
+
+  /** `assignment.revoke` — withdraw the managed copy, and end the assignment. */
+  revokeAssignment(
+    auth: AuthContext,
+    assignmentId: unknown,
+    idempotencyKey?: string,
+  ): IdempotentOutcome<AssignmentActionResponse> {
+    return withIdempotency(this.db, auth.agent_id, "assignment.revoke", idempotencyKey, this.now(), () =>
+      this.withdraw(auth, assignmentId, "revoked"),
+    );
+  }
+
+  /**
+   * The one path both withdrawals take.
+   *
+   * They exercise the SAME capability on the runtime — removing the managed
+   * copy — and differ only in whether the assignment can be taken up again, so
+   * both require the §6.2 `revoke` grant and neither invents a permission of its
+   * own. What they may NOT do is claim more than a file removal is: the answer
+   * carries `requires_new_session` and the sentence that says an agent which has
+   * already read the instructions still has them.
+   */
+  private withdraw(auth: AuthContext, assignmentId: unknown, event: "paused" | "revoked"): AssignmentActionResponse {
+    const { row, head, grant, actor } = this.assignmentContext(auth, assignmentId, "revoke");
+    if (head.state === event) {
+      return this.assignmentOutcome(row, event === "paused" ? "pause" : "revoke", {
+        managedCopy: head.managed_copy ?? "unknown",
+        rootConfigured: this.activation.rootFor(row.agent_id) !== null,
+        noop: true,
+      });
+    }
+    if (head.state === "revoked") {
+      throw new ApiError("PRECONDITION_FAILED", "a revoked assignment is terminal", head.state);
+    }
+    const site = this.activation.rootFor(row.agent_id);
+    // With no root configured the registry cannot reach a copy it may have
+    // placed under a root that has since been unconfigured. `retained` is the
+    // honest answer there, and it is not `removed`.
+    const copy: ManagedCopy =
+      site === null ? (head.managed_copy === "written" ? "retained" : "absent") : removeManaged(site, row.slug);
+    appendAssignmentEvent(this.db, {
+      assignmentId: row.id,
+      event,
+      actor,
+      reason: site === null && copy === "retained" ? "no_activation_root_configured" : null,
+      grantId: grant.id,
+      grantAction: grant.action,
+      managedCopy: copy,
+      idempotencyKey: `${event}:${this.now()}:${head.event_seq}`,
+      nowMs: this.now(),
+    });
+    return this.assignmentOutcome(row, event === "paused" ? "pause" : "revoke", {
+      managedCopy: copy,
+      rootConfigured: site !== null,
+    });
+  }
+
+  /**
+   * `assignment.list` — the deployments this actor may read, with BOTH columns
+   * and with every number carrying its method.
+   *
+   * Strictly reading: it appends nothing, moves nothing and takes no
+   * idempotency key. An admin/owner reads the workspace's deployments; anyone
+   * else reads exactly the ones addressed to itself.
+   */
+  listAssignments(auth: AuthContext): AssignmentListResponse {
+    const wide = auth.role === "admin" || auth.role === "owner";
+    const agentIds = wide
+      ? (this.db.prepare("SELECT id FROM agents WHERE workspace_id=? ORDER BY id").all(auth.workspace_id) as Array<{
+          id: string;
+        }>).map((r) => r.id)
+      : [auth.agent_id];
+    const rows = assignmentsForAgents(this.db, agentIds);
+    const byAssignment = new Map<string, AssignmentEventRow[]>();
+    for (const e of eventsOf(this.db, rows.map((r) => r.id))) {
+      const list = byAssignment.get(e.assignment_id);
+      if (list === undefined) byAssignment.set(e.assignment_id, [e]);
+      else list.push(e);
+    }
+    const items = rows.map((row) =>
+      assignmentView(
+        row,
+        headFrom(byAssignment.get(row.id) ?? []),
+        observedArrival(this.runtimeRecords.recordsFor(row.agent_id), subjectOf(row)),
+      ),
+    );
+
+    // The two counts are taken from the two COLUMNS, separately. An
+    // `intent_active` that happened to equal `observed_arrival_yes` would be a
+    // coincidence of one deployment and never a rule, and neither number is
+    // computed from the other.
+    const counts: AssignmentCounts = {
+      assignments: items.length,
+      intent_active: items.filter((i) => i.intent_state === "active").length,
+      observed_arrival_yes: items.filter((i) => i.observed_arrival === "yes").length,
+      observed_arrival_unknown: items.filter((i) => i.observed_arrival === "unknown").length,
+      measurement_state: "counted",
+      intent_source: ASSIGNMENT_INTENT_SOURCE,
+      observation_source: ARRIVAL_OBSERVATION_SOURCE,
+      window: "all time; the assignments this actor may read",
+    };
+
+    // The native inventory is a FILESYSTEM number and says so. It counts what is
+    // under the configured roots — symbolic links followed, because a fleet's
+    // shared skill library is normally reached through one — and it counts what
+    // is THERE rather than what this registry put there.
+    const roots = new Set<string>();
+    for (const id of new Set(rows.map((r) => r.agent_id))) {
+      const site = this.activation.rootFor(id);
+      if (site) roots.add(site.root);
+    }
+    let inventory: NativeInventory;
+    if (roots.size === 0) {
+      inventory = {
+        skill_files: null,
+        measurement_state: "unknown",
+        reason: "no activation root is configured for any agent in this answer: nothing was walked",
+        source: NATIVE_INVENTORY_SOURCE,
+        window: "no activation root",
+      };
+    } else {
+      let total = 0;
+      let unreadable = 0;
+      for (const root of roots) {
+        try {
+          total += skillFilesUnder(root);
+        } catch {
+          unreadable += 1;
+        }
+      }
+      inventory =
+        unreadable === roots.size
+          ? {
+              skill_files: null,
+              measurement_state: "unknown",
+              reason: "every configured activation root was unreadable",
+              source: NATIVE_INVENTORY_SOURCE,
+              window: `${roots.size} configured activation root(s)`,
+            }
+          : {
+              skill_files: total,
+              measurement_state: "counted",
+              reason: unreadable === 0 ? null : `${unreadable} of ${roots.size} configured roots were unreadable`,
+              source: NATIVE_INVENTORY_SOURCE,
+              window: `${roots.size - unreadable} of ${roots.size} configured activation root(s), all depths`,
+            };
+    }
+    return { items, counts, native_inventory: inventory };
   }
 
   private adoptedCountOf(versionId: string): number {

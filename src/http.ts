@@ -282,6 +282,33 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       return json(200, JSON.stringify(registry.listGrants(auth)));
     }
 
+    // ---- §5.5: deployment assignments. The activation ROOT is never taken
+    //      from a request: it is deployment configuration, and a route that
+    //      accepted a path from a caller would be a route that let a caller
+    //      choose which runtime this registry writes into.
+
+    if (method === "GET" && path === "/v1/assignments") {
+      return json(200, JSON.stringify(registry.listAssignments(auth)));
+    }
+
+    m = /^\/v1\/assignments\/([^/]+)\/activate$/.exec(path);
+    if (method === "POST" && m) {
+      const body = parseBody(req);
+      return mutationResponse(registry.activateAssignment(auth, m[1], idemKey(body)), 200);
+    }
+
+    m = /^\/v1\/assignments\/([^/]+)\/pause$/.exec(path);
+    if (method === "POST" && m) {
+      const body = parseBody(req);
+      return mutationResponse(registry.pauseAssignment(auth, m[1], idemKey(body)), 200);
+    }
+
+    m = /^\/v1\/assignments\/([^/]+)\/revoke$/.exec(path);
+    if (method === "POST" && m) {
+      const body = parseBody(req);
+      return mutationResponse(registry.revokeAssignment(auth, m[1], idemKey(body)), 200);
+    }
+
     m = /^\/v1\/versions\/([^/]+)\/ratings$/.exec(path);
     if (method === "POST" && m) {
       const body = parseBody(req);

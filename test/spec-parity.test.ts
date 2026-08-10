@@ -97,6 +97,7 @@ const MIGRATION_BLOCKS: ReadonlyArray<{ heading: string; file: string }> = [
   { heading: "### D.1d NORMATIVE DELTA", file: "migrations/0004_declared_environment_on_the_event.sql" },
   { heading: "### D.1e NORMATIVE DELTA", file: "migrations/0005_server_side_packing.sql" },
   { heading: "### D.1f NORMATIVE DELTA", file: "migrations/0006_transfer_to_a_named_recipient.sql" },
+  { heading: "### D.1g NORMATIVE DELTA", file: "migrations/0007_assignment_and_native_activation.sql" },
 ];
 
 test("every migration file is embedded in Appendix D byte-identically", () => {
@@ -408,6 +409,15 @@ const RESPONSE_SHAPES: ReadonlyArray<{ row: string; file: string; iface: string 
   { row: "`transfer_grant.create`", file: "src/grants.ts", iface: "GrantPrincipal" },
   { row: "`transfer_grant.list`", file: "src/grants.ts", iface: "GrantView" },
   { row: "`transfer_grant.list`", file: "src/grants.ts", iface: "GrantPrincipal" },
+  { row: "`assignment.activate`", file: "src/service.ts", iface: "AssignmentActionResponse" },
+  { row: "`assignment.activate`", file: "src/assignments.ts", iface: "AssignmentView" },
+  { row: "`assignment.pause`", file: "src/service.ts", iface: "AssignmentActionResponse" },
+  { row: "`assignment.pause`", file: "src/assignments.ts", iface: "AssignmentView" },
+  { row: "`assignment.revoke`", file: "src/service.ts", iface: "AssignmentActionResponse" },
+  { row: "`assignment.revoke`", file: "src/assignments.ts", iface: "AssignmentView" },
+  { row: "`assignment.list`", file: "src/service.ts", iface: "AssignmentListResponse" },
+  { row: "`assignment.list`", file: "src/service.ts", iface: "AssignmentCounts" },
+  { row: "`assignment.list`", file: "src/service.ts", iface: "NativeInventory" },
   { row: "`skill.validate_outcome`", file: "src/receipts.ts", iface: "AppendResult" },
   { row: "`skill.supersede`", file: "src/service.ts", iface: "SupersedeResponse" },
   { row: "`skill.revoke`", file: "src/service.ts", iface: "RevokeResponse" },

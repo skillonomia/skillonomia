@@ -1226,6 +1226,111 @@ validated evidence, and the recipient that count names is read from the
 
 ---
 
+### 5.5 Deployment and native activation
+
+§5.4 records that a version is to go to a recipient. This section is what
+happens to it there, and its whole subject is one distinction:
+
+> **A deployment state is what SKILLONOMIA INTENDS. It is never a report about a
+> runtime.**
+
+**The deployment states are these, and `active` is one of them:**
+
+```
+assigned → queued → activating → active → drifted | failed
+                                       → paused  | revoked
+```
+
+`assigned` is the push, recorded. `queued` is a push with nowhere yet configured
+to put it. `activating` is written BEFORE anything is materialized. `active`
+means the registry wrote the managed copy into the runtime's native location and
+READ IT BACK from there. `drifted` means the copy that is there is not the copy
+that was placed. `failed` means the placement did not complete. `paused` and
+`revoked` are withdrawals, the second terminal.
+
+**Every one of those is an intent, `active` above all, and a registry MUST
+label it as one wherever it is shown.** A file being in a directory is not a
+run: nothing in a Codex-class runtime reports skill lifecycle, an agent may
+never open the file, and an agent that did may have been started before the file
+arrived.
+
+**So a deployment has TWO COLUMNS and they are never merged.** Every answer, and
+every rendering of an answer, carries both:
+
+| Column | What it is | Where it comes from |
+|---|---|---|
+| intent | the deployment state above | the INSERT-only assignment journal (Appendix D.1g) |
+| observation | did this version arrive at a runtime | §5's arrival marker on a PAIRED call/output record, and nothing else |
+
+The observation is three-valued in the sense §5 fixes: `yes`, or `unknown` with
+a machine-readable reason, and never `no`. A registry MUST NOT derive the
+observation column from the intent column, MUST NOT render them as one value,
+and MUST NOT report `active` as an observed fact. A version declaring
+`runtime.shell: ["none"]` ships no executable step, so its observation is
+structurally `unknown` with the reason `no_executable_step` — distinguishable
+from `no_paired_record`, which means the records were searched and none carried
+the marker. Activating such a version therefore never establishes that it runs,
+and the answer says so rather than implying otherwise by silence.
+
+**Every state change leaves an EVENT in an INSERT-only journal.** The assignment
+row carries no state column at all (Appendix D.1g). A registry MUST NOT compute a
+deployment state, or any count over deployments, from a mutable row.
+
+**Native activation writes into a CONFIGURED ROOT, and the root is a parameter.**
+A conforming registry materializes the managed copy at `<root>/<native
+location>` for the target it is configured with:
+
+| Target | Native location under the root |
+|---|---|
+| Claude Code, personal scope | `.claude/skills/<name>/SKILL.md` |
+| Claude Code, project scope | `.claude/skills/<name>/SKILL.md` |
+| Claude Code, plugin scope | `skills/<name>/SKILL.md` |
+| Codex | `.agents/skills/<name>/SKILL.md` |
+
+The personal and project scopes have the same layout and differ in WHICH
+DIRECTORY IS THE ROOT, which is the property that makes the root a parameter
+rather than a table of real paths. A registry MUST NOT carry a default root,
+MUST NOT derive one from the environment or from a home directory, and MUST NOT
+accept one as a request field — a caller that could name the directory could
+choose which runtime the registry writes into. With no root configured the
+activation writes nothing and records `queued`.
+
+**No write may leave the root.** Not by a traversing path, and not through a
+symbolic link: a link is the ordinary way a fleet shares one skill library, so a
+registry MUST resolve every component of a native location and refuse the
+activation if any of them resolves outside the root, and MUST replace an
+existing entry rather than write through it. Conversely a READ, and any COUNT
+over what is under a root, MUST follow symbolic links — a walk that stops at a
+link reports the walk it chose and not what is there, and undercounts a shared
+library systematically.
+
+**Skillonomia remains the source of truth; the native file is a projection.**
+`active` is recorded only after the entry file has been read back from the
+native location and found to be the version's own bytes, and a re-activation
+that finds different bytes records `drifted` before replacing them.
+
+**Withdrawal removes a FILE, and a registry MUST NOT claim it removes anything
+else.** Revoking or pausing takes the managed copy out of the native location
+and reports which of four things happened — `written`, `removed`, `absent`, or
+`retained` when a copy is still there because the registry could not reach it.
+A bare success is not an answer. And the limit is normative:
+
+> An agent that has already read these instructions still has them. Removing the
+> managed copy prevents a NEW session from loading it and does not reach into a
+> session that has already loaded it. **A registry MUST NOT state, in an answer,
+> in a rendering, or in a tool description, that withdrawing a skill makes an
+> agent forget, unread, or stop following instructions it has already read.**
+> Every withdrawal answer MUST say that a new session is required.
+
+**Adapters are a standing cost, not a one-off.** Each target above is a
+promise about somebody else's filesystem layout, and that layout changes without
+reference to this specification. A conforming registry keeps the native
+locations in one closed table, so that a runtime which moves its directory is one
+edit and not a search — and treats keeping that table current as maintenance for
+as long as the target is supported.
+
+---
+
 ## 6. API and MCP contracts
 
 MCP tools are the primary surface; REST mirrors them one-to-one
@@ -1553,6 +1658,42 @@ active principal of the issuer's workspace holding a membership. A grantee of
 another workspace is `NOT_FOUND`, never `FORBIDDEN`. Re-issuing an identical
 triple converges on the recorded grant.
 
+### 6.3 Deployment assignments (auxiliary, normative)
+
+**No permission model of its own.** The three write steps of §5.5 are authorized
+by the §6.2 grants and by nothing else: `assignment.activate` requires an
+`activate` grant, and `assignment.pause` and `assignment.revoke` require a
+`revoke` grant — both scoped to the assignment's own recipient kind. Pausing and
+revoking exercise the SAME capability on the runtime and differ only in whether
+the deployment can be taken up again, which is why they share one grant rather
+than adding a sixth action to the closed list of §6.2. A registry MUST NOT
+introduce a workspace role, a principal type, or a permission concept for
+deployment.
+
+**An assignment is opened by the push, not by a surface of its own.** Surface 15
+records the movement and opens the assignment in the same transaction; there is
+no second way to assign, because two surfaces performing one step of the loop
+would be two answers to "who may push".
+
+**One agent holds at most one standing assignment per skill.** A second push of
+the same skill to the same agent supersedes the first, and the supersession is
+written as a `revoked` event on the earlier assignment naming its successor —
+never as an edit of it. The earlier decision was real and stays readable. The
+managed copy of a superseded assignment is reported `retained`: the successor
+writes the same native location, so the copy is replaced when the successor is
+activated and not before, and a registry MUST NOT report a file operation it did
+not perform.
+
+**Reading is scoped as everything else is:** an admin/owner reads the
+workspace's deployments, anyone else exactly the ones addressed to itself, and
+an assignment addressed to an agent of another workspace is `NOT_FOUND` rather
+than `FORBIDDEN`.
+
+**Every number the read surface publishes carries its method** — its
+measurement state, its source and its selection window — and the two columns of
+§5.5 are counted SEPARATELY, so that an intent count and an observation count
+can never be the same number by construction.
+
 ---
 
 ## 7. Deterministic gates, sandbox declaration, and human approval
@@ -1783,10 +1924,10 @@ installs none is conforming.
 
 ## Appendix D. NORMATIVE SQLite DDL
 
-The normative schema is given in **six** migrations, applied in ascending file
+The normative schema is given in **seven** migrations, applied in ascending file
 order, and the live schema of a conforming registry is their sum. Each is
 embedded below verbatim and is byte-identical to the file this repository ships;
-a test asserts that for all six. Schema version is tracked in
+a test asserts that for all seven. Schema version is tracked in
 `PRAGMA user_version` and nowhere else — there is no bookkeeping table, because
 the live schema is compared object for object against D.1 plus the deltas below,
 and a table this specification does not name would fail that comparison. A
@@ -1835,15 +1976,25 @@ transaction, so a half-migrated database is not reachable.
   terminal index and both INSERT-only triggers over unchanged. No column is
   dropped, no constraint is relaxed and no row is lost.
   `PRAGMA user_version` = `6`.
+- **D.1g is the seventh migration**, shipped as
+  `migrations/0007_assignment_and_native_activation.sql`. It adds two tables and
+  changes nothing existing: `assignments` (§5.5) — one push, recorded once, with
+  NO state column — and `assignment_events`, the INSERT-only journal that IS the
+  deployment state. The absence of a state column is normative and not an
+  omission: a deployment state written on a mutable row is a reading of whoever
+  wrote last, and §5.5 requires the state to be the last event of the journal.
+  `PRAGMA user_version` = `7`.
 - **The live schema a fresh database reports is D.1 as edited by D.1b, D.1c,
-  D.1d, D.1e and D.1f**, and never D.1 alone. Object counts are 22 tables, 12
-  triggers and 10 indexes: D.1's 20 tables plus D.1f's two, D.1's 10 triggers
-  plus the two INSERT-only triggers of `transfers`, and D.1's 9 indexes plus
-  `idx_transfers_version`. After all six migrations `PRAGMA user_version` MUST
-  report `6`. A test in this repository asserts the live schema equals D.1 plus
-  exactly those ten edits and D.1f's new objects — the five of D.1b, the one of
-  D.1c, the one of D.1d, the two of D.1e and the one rebuilt table of D.1f — so
-  any further divergence fails.
+  D.1d, D.1e and D.1f, plus the tables of D.1f and D.1g**, and never D.1 alone.
+  Object counts are 24 tables, 16 triggers and 11 indexes: D.1's 20 tables plus
+  D.1f's two and D.1g's two, D.1's 10 triggers plus the two INSERT-only triggers
+  of `transfers` and D.1g's four, and D.1's 9 indexes plus
+  `idx_transfers_version` and `idx_assignments_agent`. After all seven
+  migrations `PRAGMA user_version` MUST report `7`. A test in this repository
+  asserts the live schema equals D.1 plus exactly those ten edits and the new
+  objects of D.1f and D.1g — the five of D.1b, the one of D.1c, the one of D.1d,
+  the two of D.1e and the one rebuilt table of D.1f — so any further divergence
+  fails.
 
 ### D.1 NORMATIVE DDL (verbatim)
 
@@ -2534,6 +2685,127 @@ CREATE TRIGGER tg_transfers_no_upd BEFORE UPDATE ON transfers BEGIN SELECT RAISE
 CREATE TRIGGER tg_transfers_no_del BEFORE DELETE ON transfers BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 ```
 
+### D.1g NORMATIVE DELTA — seventh migration (verbatim)
+
+§5.5 makes a push a first-class object with a lifetime. Neither half fits in a
+column of an existing table, so this delta adds two: `assignments`, one row per
+decision, and `assignment_events`, the INSERT-only journal that carries the
+deployment state.
+
+`assignments` has NO state column, and that absence is the design. A deployment
+state written on a mutable row is a reading of whoever wrote last; the state is
+the last event of the journal and is derived nowhere else. `native_relpath` is
+relative to the activation root and the CHECK enforces it — no leading `/`, no
+`..` — because the root is deployment configuration and a registry MUST NOT
+store the absolute locations it has written into. `managed_copy` is four-valued
+(`written`, `removed`, `absent`, `retained`) and a fifth answer — that removing
+a copy makes an agent forget instructions it has already read — is absent
+because it is not true (§5.5).
+
+```sql
+-- SKILLONOMIA — an assignment is what the owner DECIDED, and the journal is
+-- the only place that decision lives.
+--
+-- WHAT WAS MISSING. §5.4 gave a movement a sender and a typed recipient, and
+-- stopped there: the recipient held a request it could take up or ignore, and
+-- nothing in the model said what the owner had decided should HAPPEN to that
+-- version at that agent. Adoption was still a pull. An owner who hands a skill
+-- to an agent is doing something else — a push — and a push has a lifetime:
+-- it is made, it waits, it is put into place, it can drift, it can be
+-- suspended, it can be taken back.
+--
+-- ---------------------------------------------------------------------------
+-- `assignments` — one push, recorded once.
+--
+-- One row is one decision: this VERSION of this SKILL is to be deployed at this
+-- AGENT, under the §5.4 transfer that carried it and the §6.2 grant that
+-- authorized it. The row is INSERT-only, and it holds NO STATE COLUMN. That
+-- absence is the design. A deployment state written on a mutable row is a
+-- reading of whoever wrote last, and this repository has already paid for one
+-- of those: a count taken from `adoption_requests.requester_context_json` moved
+-- because an ordinary call rewrote a closed adoption's descriptor. So the state
+-- of an assignment is not stored anywhere. It is the last event of its journal.
+--
+-- `assigned_by_type` and `assigned_by_role` are SNAPSHOTS, for the reason D.1f
+-- gives about `granted_by_*`: memberships are mutable, this row is not, and
+-- "assigned by an agent holding an administrative role" and "assigned by the
+-- human owner in person" are different facts a reader must be able to tell
+-- apart from the record.
+--
+-- ---------------------------------------------------------------------------
+-- `assignment_events` — the INSERT-only journal, and the whole state machine.
+--
+-- The event names ARE the deployment states:
+--
+--     assigned → queued → activating → active → drifted | failed
+--                                            → paused | revoked
+--
+-- Every one of them is SKILLONOMIA'S INTENT. `active` means "this registry
+-- believes it activated this version"; it is NOT a report about the runtime,
+-- and nothing in this schema may be read as one. What is observed at a runtime
+-- is established only by the §5 arrival marker on a paired call/output record,
+-- which lives in transcripts this database does not hold and cannot invent. The
+-- two are separate columns everywhere they are shown, and neither is computed
+-- from the other.
+--
+-- `native_relpath` is RELATIVE TO THE ACTIVATION ROOT, and the CHECK enforces
+-- it: no leading `/`, no `..`, at most 400 characters. The root itself is
+-- CONFIGURATION and is never stored — a journal that recorded an operator's
+-- absolute paths would be a list of the places this registry has written, and a
+-- database is the wrong place for that. What a reader needs is which native
+-- LOCATION a version was projected into, and that is a relative path.
+--
+-- `managed_copy` is four-valued and none of the four is blank: `written` (a copy
+-- was placed), `removed` (a copy was taken away), `absent` (there was none to
+-- take away), `retained` (a copy exists and this step did NOT remove it, which
+-- is the honest answer when the runtime, or the configuration, does not let the
+-- registry reach it). A fifth answer — that removing a copy makes an agent
+-- forget instructions it has already read — is not in the vocabulary because it
+-- is not true.
+PRAGMA defer_foreign_keys=ON;
+
+CREATE TABLE assignments(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE RESTRICT,
+  skill_version_id TEXT NOT NULL REFERENCES skill_versions(id) ON DELETE RESTRICT,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  recipient_kind TEXT NOT NULL CHECK(recipient_kind IN ('local_agent','remote_fleet')),
+  transfer_id TEXT NOT NULL UNIQUE REFERENCES transfers(id) ON DELETE RESTRICT,
+  assigned_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  assigned_by_type TEXT NOT NULL CHECK(assigned_by_type IN ('human','agent','service')),
+  assigned_by_role TEXT NOT NULL CHECK(assigned_by_role IN ('owner','admin','reviewer','member')),
+  created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0)
+);
+CREATE INDEX idx_assignments_agent ON assignments(agent_id,skill_id);
+
+CREATE TABLE assignment_events(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE RESTRICT,
+  event TEXT NOT NULL CHECK(event IN ('assigned','queued','activating','active','drifted','failed','paused','revoked')),
+  event_seq INTEGER NOT NULL CHECK(event_seq>=1),
+  reason TEXT CHECK(reason IS NULL OR length(reason) BETWEEN 1 AND 200),
+  actor_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  actor_type TEXT NOT NULL CHECK(actor_type IN ('human','agent','service')),
+  actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin','reviewer','member')),
+  grant_id TEXT REFERENCES transfer_grants(id) ON DELETE RESTRICT,
+  grant_action TEXT CHECK(grant_action IS NULL OR grant_action IN ('receive','assign','activate','revoke','report_outcome')),
+  activation_target TEXT CHECK(activation_target IS NULL OR activation_target IN ('claude_code_personal','claude_code_project','claude_code_plugin','codex')),
+  native_relpath TEXT CHECK(native_relpath IS NULL OR (length(native_relpath) BETWEEN 1 AND 400 AND substr(native_relpath,1,1)<>'/' AND instr(native_relpath,'..')=0)),
+  managed_copy TEXT CHECK(managed_copy IS NULL OR managed_copy IN ('written','removed','absent','retained')),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0),
+  idempotency_key TEXT NOT NULL,
+  UNIQUE(assignment_id,event_seq),
+  UNIQUE(assignment_id,idempotency_key)
+);
+
+-- a decision, once recorded, is not edited or withdrawn — the rule `transfers`
+-- and `receipt_events` live under, for the reason this file gives above
+CREATE TRIGGER tg_assignments_no_upd BEFORE UPDATE ON assignments BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_assignments_no_del BEFORE DELETE ON assignments BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_aevents_no_upd BEFORE UPDATE ON assignment_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_aevents_no_del BEFORE DELETE ON assignment_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+```
+
 ### D.2 SQL negative probes
 
 Every probe below is executed as a test in this repository; each names the
@@ -3074,7 +3346,7 @@ Conventions binding for every surface: REST base `/v1`; MCP tool names as listed
 | 13 | `skill.deprecate` | `POST /v1/versions/{id}/deprecate` | author/skill owner/admin/owner | `{"idempotency_key"?}` | `200 {"skill_version_id","state":"deprecated","deprecation_date","tlog_seq"}`; already deprecated → the same body plus `"noop":true` and the ORIGINAL `deprecation_date`, no second tlog row; state ≠ `published` → `PRECONDITION_FAILED{current_state}` |
 | 14 | `skill.create_from_dir` | `POST /v1/skills/from-source` (new skill) · `POST /v1/skills/{skill_id}/versions/from-source` (new version) | member (author) | `{"slug"?,"source":"<base64 §4.1b archive of the SOURCE tree>","idempotency_key"?}`; the new-version form takes `skill_id` from the path (MCP: from the arguments object, and the upload field is `source_base64`). The source tree carries `manifest.json` and `SKILL.md` and MUST NOT carry `skill.json` or `SIGNATURE.jws` — those are produced here, and a source carrying them is `INVALID_SCHEMA` naming surface 1. The caller supplies NO cryptographic material: no seed, no `kid`, no `integrity`. `scripts/skln-arrive.sh` is a RESERVED path: generated here for a manifest that declares a shell, removed for one that declares `runtime.shell: ["none"]`, and in both cases replacing whatever the source shipped under that name | `201 {"skill_id","skill_version_id","state":"draft","arrival_marker","kid","manifest_hash","content_hash"}`. The registry mints `skill_version_id`, derives the §5 arrival marker from it and writes that marker into `SKILL.md`'s generated block — for EVERY version, `runtime.shell: ["none"]` included — and into `scripts/skln-arrive.sh` for a version that declares a shell. It then refuses to pack unless every place that carries a marker holds the SAME value as the one the id derives: three places for a version with a shell, two for one without, and a script present where the manifest declares none is itself a refusal. It computes §4.3 `integrity` over the resulting bytes and signs with a system-held key it generates for the caller on first use. The private half never crosses this boundary, in any direction: it is not an input, not an output, not a log line and not part of an error message [I-7]. Re-posting an unchanged SOURCE converges on the version already packed from it — the same fields, that version's CURRENT state, the marker THAT version derives, plus `"noop":true`. A different source under a `semantic_version` that already exists → `CONFLICT{current_state}` |
 
-| 15 | `skill.transfer` | `POST /v1/versions/{id}/transfers` | member (holder of an `assign` grant, §6.2) | `{"recipient":{"kind":"local_agent\|remote_fleet","ref":"<recipient identifier>"},"idempotency_key"?}`; `skill_version_id` comes from the path (MCP: from the arguments object). `recipient` is REQUIRED and has NO default — an absent `recipient`, an absent `kind` and an absent `ref` are each `INVALID_SCHEMA`, and no form of this call moves a version without naming who to (§5.4) | `201 {"transfer_id","skill_version_id","arrival_marker","sender":{"agent_id","type","role"},"recipient_kind","recipient_ref","permission":{"grant_id","action","recipient_scope","granted_by":{"agent_id","type","role"}},"adoption_request_id","receipt_id","receipt_event":"transferred","event_seq","request_state","intent","observed_state":"unknown","observed_state_source"}`, plus `"approval_required":[<§7.3 condition id>…]` exactly when the opened request is held in `approval_pending`. The whole §5.4 signature is recorded and returned: the version, the sender WITH its principal type and workspace role, the TYPED recipient, the permission the call ran under WITH the type and role of the principal that issued it, the §5 arrival marker, and the receipt and `event_seq` of the `transferred` event written in the same transaction. **`observed_state` is always `unknown` here and is a SEPARATE field from `intent`:** recording a transfer establishes nothing about the recipient — not arrival, not installation, and never `active` — and a registry MUST NOT report an observed state derived from the intent. No `assign` grant scoped to that `kind` → `FORBIDDEN`; a `remote_fleet` recipient → `NOT_IMPLEMENTED`, raised AFTER the grant is found satisfied and with nothing recorded; a `local_agent` `ref` that is not an active principal of the caller's workspace → `NOT_FOUND`, and a `ref` equal to the sender → `INVALID_SCHEMA`; the §5.1 adoptability answers of surface 6 apply unchanged to the version |
+| 15 | `skill.transfer` | `POST /v1/versions/{id}/transfers` | member (holder of an `assign` grant, §6.2) | `{"recipient":{"kind":"local_agent\|remote_fleet","ref":"<recipient identifier>"},"idempotency_key"?}`; `skill_version_id` comes from the path (MCP: from the arguments object). `recipient` is REQUIRED and has NO default — an absent `recipient`, an absent `kind` and an absent `ref` are each `INVALID_SCHEMA`, and no form of this call moves a version without naming who to (§5.4) | `201 {"transfer_id","skill_version_id","arrival_marker","sender":{"agent_id","type","role"},"recipient_kind","recipient_ref","permission":{"grant_id","action","recipient_scope","granted_by":{"agent_id","type","role"}},"adoption_request_id","receipt_id","receipt_event":"transferred","event_seq","request_state","assignment_id","deployment_intent_state":"assigned","superseded_assignment_ids","intent","observed_state":"unknown","observed_state_source"}`, plus `"approval_required":[<§7.3 condition id>…]` exactly when the opened request is held in `approval_pending`. The whole §5.4 signature is recorded and returned: the version, the sender WITH its principal type and workspace role, the TYPED recipient, the permission the call ran under WITH the type and role of the principal that issued it, the §5 arrival marker, and the receipt and `event_seq` of the `transferred` event written in the same transaction. The same transaction opens the §5.5 DEPLOYMENT — `assignment_id`, in state `assigned` — and supersedes whatever standing assignment of the same skill that agent held, returning those ids in `superseded_assignment_ids` (§6.3). **`observed_state` is always `unknown` here and is a SEPARATE field from `intent`:** recording a transfer establishes nothing about the recipient — not arrival, not installation, and never `active` — and a registry MUST NOT report an observed state derived from the intent. No `assign` grant scoped to that `kind` → `FORBIDDEN`; a `remote_fleet` recipient → `NOT_IMPLEMENTED`, raised AFTER the grant is found satisfied and with nothing recorded; a `local_agent` `ref` that is not an active principal of the caller's workspace → `NOT_FOUND`, and a `ref` equal to the sender → `INVALID_SCHEMA`; the §5.1 adoptability answers of surface 6 apply unchanged to the version |
 
 Provisioning auxiliaries (§6.1, normative there; request/response shapes fixed here):
 
@@ -3099,6 +3371,10 @@ Internal worker surface (NOT public, service-authenticated, single-binary in-pro
 | `skill.approve` | `POST /v1/versions/{id}/approvals` | admin/owner AND `agents.type='human'` | `{"scope":"publish\|adopt_high_risk","decision":"approved\|denied","adoption_request_id"?,"note"?,"idempotency_key"?}` | `201 {"approval_id","skill_version_id","adoption_request_id","scope","decision","conditions","tlog_seq"}` — `adoption_request_id` is `null` for a `publish` approval, `conditions` is the §7.3 condition-id list in force for this version, and `tlog_seq` is the `approval_recorded` entry. An `adopt_high_risk` approval MUST name its `adoption_request_id` and a `publish` approval MUST NOT; the same decision recorded twice converges with `"noop":true`. A non-human identity, or one without admin/owner, is `FORBIDDEN` before anything else is read |
 | `transfer_grant.create` | `POST /v1/transfer-grants` | admin/owner of the grantee's workspace | `{"agent_id","action":"receive\|assign\|activate\|revoke\|report_outcome","recipient_scope":"local_agent\|remote_fleet","idempotency_key"?}` — both lists are closed and a value outside either is `INVALID_SCHEMA` naming the whole list | `201 {"grant_id","agent_id","action","recipient_scope","granted_by":{"agent_id","type","role"},"created_at_ms"}`; re-issuing the identical triple converges on the recorded grant with `"noop":true`. `granted_by` carries the ISSUER's principal type and workspace role as recorded at issue, never as looked up later (§6.2) — a grant issued by an agent holding an administrative role and one issued by the human owner MUST NOT read the same. The grant introduces no workspace role. A grantee of another workspace → `NOT_FOUND`; a non-active grantee, or one with no membership → `PRECONDITION_FAILED{current_state}` |
 | `transfer_grant.list` | `GET /v1/transfer-grants` | member+ | — | `200 {"items":[{"grant_id","agent_id","action","recipient_scope","granted_by":{"agent_id","type","role"},"created_at_ms"}…]}` — own grants, or the workspace's for an admin/owner |
+| `assignment.activate` | `POST /v1/assignments/{id}/activate` | member (holder of an `activate` grant, §6.2) | `{"idempotency_key"?}`; `assignment_id` comes from the path (MCP: from the arguments object). There is NO root field, and there MUST NOT be one: the activation root is deployment configuration (§5.5) | `200 {"action","assignment":{"assignment_id","skill_id","slug","skill_version_id","semantic_version","agent_id","recipient_kind","transfer_id","assigned_by":{"agent_id","type","role"},"created_at_ms","intent_state","intent_state_is":"intent","intent_state_source","intent_event_seq","intent_at_ms","intent_reason","observed_arrival","observed_arrival_is":"observation","observed_arrival_reason","observed_arrival_source","observed_arrival_window","observed_records_read","arrival_marker","has_executable_step","activation_target","native_relpath","managed_copy","requires_new_session","session_effect"},"managed_copy","activation_root_configured","requires_new_session","session_effect"}`, plus `"noop":true` on a convergent repeat. With no activation root configured for the assignment's agent it writes NOTHING anywhere and records `queued`, with `activation_root_configured:false`. With one configured it materializes the package at `<root>/<native location>`, reads the entry file back FROM there, and only then records `active`. **`assignment.assignment.intent_state` is SKILLONOMIA'S INTENT and is labelled `intent` on the row; `observed_arrival` is the SEPARATE observation column and is `yes` only on a paired call/output record carrying this version's §5 marker, `unknown` otherwise, and never `no`** — a registry MUST NOT derive one from the other. Re-activating an unchanged copy is a convergent noop; one whose bytes differ records `drifted` first. An activation that does not complete records `failed` and answers `PRECONDITION_FAILED{current_state}` with a REASON CODE and no filesystem path in it; a revoked assignment → `PRECONDITION_FAILED{current_state}`; no `activate` grant for the recipient kind → `FORBIDDEN`; an assignment of another workspace → `NOT_FOUND` |
+| `assignment.pause` | `POST /v1/assignments/{id}/pause` | member (holder of a `revoke` grant, §6.2) | `{"idempotency_key"?}` | `200 {"action","assignment":{"assignment_id","skill_id","slug","skill_version_id","semantic_version","agent_id","recipient_kind","transfer_id","assigned_by":{"agent_id","type","role"},"created_at_ms","intent_state","intent_state_is":"intent","intent_state_source","intent_event_seq","intent_at_ms","intent_reason","observed_arrival","observed_arrival_is":"observation","observed_arrival_reason","observed_arrival_source","observed_arrival_window","observed_records_read","arrival_marker","has_executable_step","activation_target","native_relpath","managed_copy","requires_new_session","session_effect"},"managed_copy","activation_root_configured","requires_new_session","session_effect"}`, plus `"noop":true` on a convergent repeat. The managed copy is taken out of the native location and the assignment remains, so it can be activated again. `managed_copy` states which of `removed`, `absent` or `retained` happened — a bare success is not an answer — and `requires_new_session` is true with `session_effect` saying that an agent which has already read these instructions still has them (§5.5). Pausing an already-paused deployment is a convergent noop |
+| `assignment.revoke` | `POST /v1/assignments/{id}/revoke` | member (holder of a `revoke` grant, §6.2) | `{"idempotency_key"?}` | `200 {"action","assignment":{"assignment_id","skill_id","slug","skill_version_id","semantic_version","agent_id","recipient_kind","transfer_id","assigned_by":{"agent_id","type","role"},"created_at_ms","intent_state","intent_state_is":"intent","intent_state_source","intent_event_seq","intent_at_ms","intent_reason","observed_arrival","observed_arrival_is":"observation","observed_arrival_reason","observed_arrival_source","observed_arrival_window","observed_records_read","arrival_marker","has_executable_step","activation_target","native_relpath","managed_copy","requires_new_session","session_effect"},"managed_copy","activation_root_configured","requires_new_session","session_effect"}`, plus `"noop":true` on a convergent repeat. Terminal: a revoked assignment is not resumed and handing the skill over again is a fresh push (§6.3). Same `managed_copy` vocabulary and the same `requires_new_session`/`session_effect` obligation as `assignment.pause`. Revoking an already-revoked deployment is a convergent noop |
+| `assignment.list` | `GET /v1/assignments` | member+ | — | `200 {"items":[<the `assignment` object above>…],"counts":{"assignments","intent_active","observed_arrival_yes","observed_arrival_unknown","measurement_state","intent_source","observation_source","window"},"native_inventory":{"skill_files","measurement_state","reason","source","window"}}` — own deployments, or the workspace's for an admin/owner. The two columns of §5.5 are counted SEPARATELY and each count names its own source and window. `native_inventory.skill_files` counts entry files reachable under the configured activation roots WITH SYMBOLIC LINKS FOLLOWED, and is `null` exactly when `measurement_state` is `unknown` — never a silent `0`, because no root configured and no file found are different facts. Read-only: it activates nothing and takes no `idempotency_key` |
 | — | `GET /v1/receipts/{id}` | the adopter, the skill's owner, or an admin/owner of the version's workspace | — | `200 {"receipt_id","adoption_request_id","skill_version_id","adopter_agent_id","derived_state","stalled","events":[{"event","event_seq","server_at_ms","evidence","failure_report","rollback_report","environment_descriptor","recipient"}…]}` — events in ascending `event_seq`, the payload members `null` where the event carries none, `derived_state` per §5.3 (`none` on an empty chain) and `stalled` derived at read time. `environment_descriptor` is the environment declared at handover: non-null on `delivered` rows written by surface 7, `null` on every other row and on a synthesized `delivered`. `recipient` is the TYPED recipient `{"kind","id"}` of a `transferred` row (§5.4) and is `null` on every other row. It is served so an adopter can read back its OWN declaration in its OWN event — the read half of §5.3's rule that a write is confirmed by reading the state back. Anyone else → `NOT_FOUND` |
 | `tlog.read` | `GET /v1/tlog?cursor=&limit=` | any authenticated | `cursor` = the `seq` to read AFTER (decimal, ≥0); `limit` 1–100, default 20 | `200 {"items":[{"seq","event_kind","subject_id","payload_hash","prev_hash","this_hash","server_at_ms"}…],"next_cursor":null\|string}` — ascending `seq`, every column of `transparency_log`, so the §4.4 chain walk can be reproduced from the API alone. A malformed cursor → `INVALID_SCHEMA` |
 | — | `POST /v1/webhooks` | member+, own endpoint only | `{"url"}` — NO `idempotency_key`, for the reason §6.1 gives for the two secret-returning provisioning calls | `201 {"webhook_id","url","secret"}`; `secret` is shown ONCE and the URL is echoed exactly as written (§5.2). A URL the §5.2 registration rules refuse, or one longer than 2000 characters, or one Appendix D.1's `CHECK` cannot store → `INVALID_SCHEMA` with the reason |
