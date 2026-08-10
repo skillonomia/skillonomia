@@ -33,10 +33,13 @@ import {
   MARKER_PREFIX,
   arrivalMarker,
   arrivalVerdict,
+  assessArrival,
   checkArrivalIdentity,
   embedArrivalStep,
   markersIn,
   renderArrivalScript,
+  shipsArrivalScript,
+  type ArrivalRecord,
 } from "../src/marker.ts";
 import { SYSTEM_KID_PREFIX, systemKidFor } from "../src/system-key.ts";
 
@@ -74,6 +77,31 @@ function sourceTree(
   files.set("SKILL.md", Buffer.from(SKILL_MD, "utf8"));
   for (const [path, text] of Object.entries(extras)) files.set(path, Buffer.from(text, "utf8"));
   return { tar: writeTar(files), files, manifest };
+}
+
+/** D-6's two shapes, named so a call site says which one it means. */
+const WITH_SCRIPT = { executableStep: true } as const;
+const WITHOUT_SCRIPT = { executableStep: false } as const;
+
+/** A source tree whose manifest declares `runtime.shell: ["none"]` — the case
+ *  D-6 is about. `os` and the rest are left exactly as they were. */
+function noShellSource(
+  fx: P2Fixture,
+  overrides: Record<string, unknown> = {},
+  extras: Record<string, string> = {},
+): { tar: Buffer; files: PackageFiles; manifest: any } {
+  const base = makeManifest();
+  const runtime = { ...base.runtime, shell: ["none"] };
+  // a package with no shell has no shell COMMANDS either, or §7.1 gate 8 would
+  // refuse it on its own account — this is the author's own doing, not ours
+  const procedure = {
+    ...base.procedure,
+    steps: base.procedure.steps.map((s: any) => {
+      const { command: _dropped, ...rest } = s;
+      return rest;
+    }),
+  };
+  return sourceTree(fx, { runtime, procedure, ...overrides }, extras);
 }
 
 /** The bytes the registry actually stored for a version. */
@@ -161,32 +189,32 @@ test("the packing guard refuses when SKILL.md, the script and the version id dis
 
   const good = (): PackageFiles => {
     const f: PackageFiles = new Map();
-    f.set("SKILL.md", Buffer.from(embedArrivalStep(SKILL_MD, id), "utf8"));
+    f.set("SKILL.md", Buffer.from(embedArrivalStep(SKILL_MD, id, WITH_SCRIPT), "utf8"));
     f.set(ARRIVAL_SCRIPT_PATH, Buffer.from(renderArrivalScript(id), "utf8"));
     return f;
   };
-  assert.equal(checkArrivalIdentity(good(), id).ok, true, "the agreeing case holds");
+  assert.equal(checkArrivalIdentity(good(), id, WITH_SCRIPT).ok, true, "the agreeing case holds");
 
   // (a) SKILL.md carries another version's marker
   const a = good();
-  a.set("SKILL.md", Buffer.from(embedArrivalStep(SKILL_MD, other), "utf8"));
-  const ra = checkArrivalIdentity(a, id);
+  a.set("SKILL.md", Buffer.from(embedArrivalStep(SKILL_MD, other, WITH_SCRIPT), "utf8"));
+  const ra = checkArrivalIdentity(a, id, WITH_SCRIPT);
   assert.equal(ra.ok, false);
   assert.match(String(ra.reason), /SKILL\.md's marker .* is not the marker/);
 
   // (b) the script prints another version's marker
   const b = good();
   b.set(ARRIVAL_SCRIPT_PATH, Buffer.from(renderArrivalScript(other), "utf8"));
-  const rb = checkArrivalIdentity(b, id);
+  const rb = checkArrivalIdentity(b, id, WITH_SCRIPT);
   assert.equal(rb.ok, false);
   assert.match(String(rb.reason), /skln-arrive\.sh's marker .* is not the marker/);
 
   // (c) both agree with each other but neither with the version id — the case a
   // two-way comparison would call fine, which is why the guard is three-way
   const c: PackageFiles = new Map();
-  c.set("SKILL.md", Buffer.from(embedArrivalStep(SKILL_MD, other), "utf8"));
+  c.set("SKILL.md", Buffer.from(embedArrivalStep(SKILL_MD, other, WITH_SCRIPT), "utf8"));
   c.set(ARRIVAL_SCRIPT_PATH, Buffer.from(renderArrivalScript(other), "utf8"));
-  const rc = checkArrivalIdentity(c, id);
+  const rc = checkArrivalIdentity(c, id, WITH_SCRIPT);
   assert.equal(rc.ok, false, "SKILL.md == script is NOT sufficient; the id decides");
   assert.equal(rc.in_skill_md, rc.in_script, "the two agreed with each other");
   assert.notEqual(rc.in_skill_md, rc.expected);
@@ -194,10 +222,10 @@ test("the packing guard refuses when SKILL.md, the script and the version id dis
   // (d) and absence is a refusal, not a pass by default
   const d1 = good();
   d1.delete(ARRIVAL_SCRIPT_PATH);
-  assert.equal(checkArrivalIdentity(d1, id).ok, false, "a missing script refuses");
+  assert.equal(checkArrivalIdentity(d1, id, WITH_SCRIPT).ok, false, "a missing script refuses");
   const d2 = good();
   d2.set("SKILL.md", Buffer.from(SKILL_MD, "utf8")); // no generated block at all
-  assert.equal(checkArrivalIdentity(d2, id).ok, false, "a missing block refuses");
+  assert.equal(checkArrivalIdentity(d2, id, WITH_SCRIPT).ok, false, "a missing block refuses");
 });
 
 test("the packed version passes the guard, and the guard is what the packing path ran", () => {
@@ -205,7 +233,7 @@ test("the packed version passes the guard, and the guard is what the packing pat
   const out = fx.registry.createFromDir(fx.author, { slug: "guarded", source: sourceTree(fx).tar }).response;
   const files = packedFiles(fx, out.skill_version_id);
 
-  const identity = checkArrivalIdentity(files, out.skill_version_id);
+  const identity = checkArrivalIdentity(files, out.skill_version_id, WITH_SCRIPT);
   assert.equal(identity.ok, true, identity.reason ?? "");
   assert.equal(identity.in_skill_md, out.arrival_marker);
   assert.equal(identity.in_script, out.arrival_marker);
@@ -683,7 +711,224 @@ test("[M-5]: `invoked` needs a PAIR, and everything else is `unknown` — never 
 });
 
 // ===========================================================================
-// 9. Both adapters, one service.
+// 9. D-6: `runtime.shell: ["none"]`.
+//
+// A package whose author declared that no shell runs it was still being handed
+// a generated shell script. No §7.1 gate refused it — gate 8 reads
+// `steps[].command`, not `scripts/` — but the package and its own signed
+// manifest disagreed, which is the defect §3 puts first.
+//
+// The fix is NOT to amend the declaration to `["sh"]`. That would make the
+// manifest assert an interpreter the author never asked for, which is the same
+// defect pointing the other way. The script is simply not shipped; the SKILL.md
+// block still is; and the two facts that follow from that — a two-place
+// identity check, and an arrival that is structurally undemonstrable — are said
+// out loud rather than left to be inferred.
+// ===========================================================================
+
+test("D-6: a `[\"none\"]` version ships NO arrival script, and its SKILL.md block still carries the right marker", () => {
+  const fx = p2Fixture();
+  const built = noShellSource(fx);
+  assert.deepEqual(built.manifest.runtime.shell, ["none"], "the source really declares no shell");
+
+  const out = fx.registry.createFromDir(fx.author, { slug: "no-shell", source: built.tar }).response;
+  const files = packedFiles(fx, out.skill_version_id);
+
+  assert.equal(files.has(ARRIVAL_SCRIPT_PATH), false, "no shell declared, no shell script shipped");
+  const md = text(files, "SKILL.md");
+  assert.ok(md.includes(ARRIVAL_BLOCK_BEGIN) && md.includes(ARRIVAL_BLOCK_END), "the block is generated anyway");
+  assert.deepEqual(markersIn(md), [out.arrival_marker], "and carries exactly this version's marker");
+  assert.equal(out.arrival_marker, arrivalMarker(out.skill_version_id), "[M-1] is not relaxed for this case");
+
+  // the block does not tell a reader to run a file that is not there…
+  assert.ok(!md.includes(`./${ARRIVAL_SCRIPT_PATH}`), "no instruction to run a script the package lacks");
+  // …and says why, so nobody goes looking for evidence that cannot exist
+  assert.ok(/Arrival step: none/.test(md));
+
+  // the manifest is the author's: it still says exactly what the author wrote
+  const packedManifest = JSON.parse(text(files, "skill.json"));
+  assert.deepEqual(packedManifest.runtime.shell, ["none"], "the declaration was NOT amended to ['sh']");
+
+  // and the whole thing still passes §7.1 unaided
+  const lint = fx.registry.lintVersion(fx.author, out.skill_version_id).response;
+  assert.deepEqual(lint.reports.filter((r) => r.result === "fail"), [], JSON.stringify(lint.reports));
+  assert.equal(lint.state, "linted");
+  fx.db.close();
+});
+
+test("D-6: a version that declares a shell is unchanged — script shipped, THREE values compared", () => {
+  const fx = p2Fixture();
+  const built = sourceTree(fx);
+  assert.deepEqual(built.manifest.runtime.shell, ["bash", "sh"], "the ordinary case really declares a shell");
+
+  const out = fx.registry.createFromDir(fx.author, { slug: "has-shell", source: built.tar }).response;
+  const files = packedFiles(fx, out.skill_version_id);
+  assert.equal(files.has(ARRIVAL_SCRIPT_PATH), true, "a shell is declared, so the script ships");
+
+  const identity = checkArrivalIdentity(files, out.skill_version_id, WITH_SCRIPT);
+  assert.equal(identity.ok, true, identity.reason ?? "");
+  assert.equal(identity.places, 3, "three places, because there are three places for a marker to live");
+  assert.equal(identity.in_skill_md, out.arrival_marker);
+  assert.equal(identity.in_script, out.arrival_marker);
+  fx.db.close();
+});
+
+test("D-6: the TWO-place guard still refuses a wrong marker in SKILL.md", () => {
+  const id = "01K1M83S80EZJBJVYBH8XEK5ZR";
+  const other = "01K1M83S80EZJBJVYBH8XEK5ZS";
+
+  const good: PackageFiles = new Map();
+  good.set("SKILL.md", Buffer.from(embedArrivalStep(SKILL_MD, id, WITHOUT_SCRIPT), "utf8"));
+  const ok = checkArrivalIdentity(good, id, WITHOUT_SCRIPT);
+  assert.equal(ok.ok, true, ok.reason ?? "");
+  assert.equal(ok.places, 2, "two places, because there is no third one");
+  assert.equal(ok.in_script, null);
+
+  // the one comparison there is, is actually made
+  const wrong: PackageFiles = new Map();
+  wrong.set("SKILL.md", Buffer.from(embedArrivalStep(SKILL_MD, other, WITHOUT_SCRIPT), "utf8"));
+  const bad = checkArrivalIdentity(wrong, id, WITHOUT_SCRIPT);
+  assert.equal(bad.ok, false, "fewer places is not a lower bar");
+  assert.equal(bad.places, 2);
+  assert.match(String(bad.reason), /SKILL\.md's marker .* is not the marker/);
+
+  // and a missing block is still a refusal, not a pass by default
+  const empty: PackageFiles = new Map();
+  empty.set("SKILL.md", Buffer.from(SKILL_MD, "utf8"));
+  assert.equal(checkArrivalIdentity(empty, id, WITHOUT_SCRIPT).ok, false, "no block, no pack");
+});
+
+test("D-6 degenerate case: a package WITH a script never gets the two-place check", () => {
+  // The failure this test exists for is a guard that "adapts" by noticing the
+  // script is there and comparing two values anyway — a weakening wearing the
+  // word "adaptive". Two independent facts make it visible: the reported number
+  // of places, and a package whose script disagrees.
+  const id = "01K1M83S80EZJBJVYBH8XEK5ZR";
+  const other = "01K1M83S80EZJBJVYBH8XEK5ZS";
+
+  const withBadScript: PackageFiles = new Map();
+  withBadScript.set("SKILL.md", Buffer.from(embedArrivalStep(SKILL_MD, id, WITH_SCRIPT), "utf8"));
+  withBadScript.set(ARRIVAL_SCRIPT_PATH, Buffer.from(renderArrivalScript(other), "utf8"));
+
+  const judged = checkArrivalIdentity(withBadScript, id, WITH_SCRIPT);
+  assert.equal(judged.places, 3, "a version that ships a script is judged on three places, always");
+  assert.equal(judged.ok, false, "the script's marker was compared, and it disagreed");
+  assert.match(String(judged.reason), /skln-arrive\.sh's marker .* is not the marker/);
+
+  // The shape is an INPUT, not an observation: a script present where the
+  // manifest declares none is itself a refusal, so a packer bug that shipped one
+  // cannot pass by making the guard agree with what it found.
+  const stray: PackageFiles = new Map();
+  stray.set("SKILL.md", Buffer.from(embedArrivalStep(SKILL_MD, id, WITHOUT_SCRIPT), "utf8"));
+  stray.set(ARRIVAL_SCRIPT_PATH, Buffer.from(renderArrivalScript(id), "utf8"));
+  const strayJudged = checkArrivalIdentity(stray, id, WITHOUT_SCRIPT);
+  assert.equal(strayJudged.ok, false, "a script the manifest did not ask for is a refusal");
+  assert.match(String(strayJudged.reason), /is present although the manifest declares/);
+
+  // and the real packing path really does take the shape from the manifest
+  const fx = p2Fixture();
+  const shellVersion = fx.registry.createFromDir(fx.author, { slug: "shape-shell", source: sourceTree(fx).tar })
+    .response;
+  const noneVersion = fx.registry.createFromDir(fx.author, {
+    slug: "shape-none",
+    source: noShellSource(fx).tar,
+  }).response;
+  assert.equal(
+    checkArrivalIdentity(packedFiles(fx, shellVersion.skill_version_id), shellVersion.skill_version_id, WITH_SCRIPT)
+      .places,
+    3,
+  );
+  assert.equal(
+    checkArrivalIdentity(packedFiles(fx, noneVersion.skill_version_id), noneVersion.skill_version_id, WITHOUT_SCRIPT)
+      .places,
+    2,
+  );
+  // a `["none"]` version judged as though it shipped a script is a refusal, not
+  // a quiet pass — the two shapes are not interchangeable in either direction
+  assert.equal(
+    checkArrivalIdentity(packedFiles(fx, noneVersion.skill_version_id), noneVersion.skill_version_id, WITH_SCRIPT).ok,
+    false,
+  );
+  fx.db.close();
+});
+
+test("D-6: the two reasons for `unknown` are distinguishable as values, not as prose", () => {
+  const marker = arrivalMarker("01K1M83S80EZJBJVYBH8XEK5ZR");
+  const pair: ArrivalRecord[] = [
+    { role: "call", text: `sh ./${ARRIVAL_SCRIPT_PATH}` },
+    { role: "output", text: `skln-arrival-marker: ${marker}` },
+  ];
+  const markedPair: ArrivalRecord[] = [
+    { role: "call", text: `sh ./${ARRIVAL_SCRIPT_PATH} # ${marker}` },
+    { role: "output", text: `skln-arrival-marker: ${marker}` },
+  ];
+
+  // (a) a version that CAN be demonstrated, with nothing found yet
+  const searched = assessArrival(pair, { marker, has_executable_step: true });
+  assert.equal(searched.verdict, "unknown");
+  assert.equal(searched.reason, "no_paired_record", "records were searched and came up short");
+
+  // (b) a version that can NEVER be demonstrated
+  const structural = assessArrival(markedPair, { marker, has_executable_step: false });
+  assert.equal(structural.verdict, "unknown");
+  assert.equal(structural.reason, "no_executable_step", "there is nothing to run, so nothing can be recorded");
+
+  // the two are different VALUES — a scanner and a dashboard can branch on them
+  assert.notEqual(searched.reason, structural.reason);
+  assert.equal(new Set([searched.reason, structural.reason]).size, 2);
+
+  // neither is `no`, and neither is empty [I-1], [A-0]
+  for (const r of [searched, structural]) {
+    assert.notEqual(r.verdict, "no");
+    assert.notEqual(r.reason, null);
+    assert.notEqual(r.reason, "");
+  }
+
+  // `yes` carries no reason at all — the field is null exactly when it holds
+  const proven = assessArrival(markedPair, { marker, has_executable_step: true });
+  assert.equal(proven.verdict, "yes");
+  assert.equal(proven.reason, null);
+
+  // and a `["none"]` version does not become `yes` because some record happened
+  // to quote its marker: it ships nothing that could have printed one
+  assert.equal(assessArrival(markedPair, { marker, has_executable_step: false }).verdict, "unknown");
+
+  // the predicate a caller uses to fill `has_executable_step` reads the manifest
+  assert.equal(shipsArrivalScript({ runtime: { shell: ["none"] } }), false);
+  assert.equal(shipsArrivalScript({ runtime: { shell: ["bash", "sh"] } }), true);
+  assert.equal(shipsArrivalScript({ runtime: { shell: ["none", "bash"] } }), true, "['none','bash'] HAS bash");
+  assert.equal(shipsArrivalScript({}), true, "an unreadable declaration means MORE checking, never less");
+});
+
+test("D-6: integrity still covers the SKILL.md marker when there is no script", () => {
+  const fx = p2Fixture();
+  const out = fx.registry.createFromDir(fx.author, { slug: "none-integrity", source: noShellSource(fx).tar })
+    .response;
+  const files = packedFiles(fx, out.skill_version_id);
+  assert.equal(files.has(ARRIVAL_SCRIPT_PATH), false);
+
+  const declared = JSON.parse(text(files, "skill.json")).integrity as Array<{ path: string; sha256: string }>;
+  assert.deepEqual(declared.map((e) => e.path), ["SKILL.md"], "the one shipped file, and the marker is in it");
+  assert.deepEqual(computeIntegrity(files), declared);
+
+  const clean = fx.registry.verifyStateless(fx.author, writeTar(files));
+  assert.notEqual(clean.verdict, "TAMPERED_CONTENT", "the untouched package is intact");
+
+  const tampered = new Map(files);
+  const before = text(files, "SKILL.md");
+  const after = before.replace(out.arrival_marker, arrivalMarker("01K1M83S80EZJBJVYBH8XEK5ZZ"));
+  assert.notEqual(after, before, "the tamper actually changed SKILL.md");
+  tampered.set("SKILL.md", Buffer.from(after, "utf8"));
+  assert.equal(
+    fx.registry.verifyStateless(fx.author, writeTar(tampered)).verdict,
+    "TAMPERED_CONTENT",
+    "a swapped marker is caught with two places exactly as with three",
+  );
+  fx.db.close();
+});
+
+// ===========================================================================
+// 10. Both adapters, one service.
 // ===========================================================================
 
 function restFx(): { fx: P2Fixture; key: string } {

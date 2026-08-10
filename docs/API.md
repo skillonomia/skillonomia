@@ -198,11 +198,11 @@ hand-written `integrity` list and no packing step. The registry:
 1. mints the `skill_version_id`;
 2. derives this version's §5 arrival marker from that id;
 3. writes the marker into a generated block at the head of `SKILL.md`'s
-   procedure AND into a generated `scripts/skln-arrive.sh` (a RESERVED path —
-   yours is overwritten if you ship one);
-4. refuses to pack unless the marker in `SKILL.md`, the marker in the script and
-   the marker the id derives are the SAME value — a disagreement is a refusal,
-   never a warning;
+   procedure — for EVERY version — and, when your manifest declares a shell,
+   into a generated `scripts/skln-arrive.sh` (a RESERVED path: whatever you ship
+   under that name is replaced, or removed);
+4. refuses to pack unless EVERY place that carries a marker holds the same value
+   as the one the id derives — a disagreement is a refusal, never a warning;
 5. computes `integrity` over the resulting bytes, so the signature covers the
    marker;
 6. signs with a system-held Ed25519 key it generates for you on first use.
@@ -210,6 +210,19 @@ hand-written `integrity` list and no packing step. The registry:
 That key's private half lives in the deployment's secret store, never in SQLite,
 and never crosses the API in either direction — it is not an input, not an
 output, not a log line and not part of an error message.
+
+**If your manifest declares `runtime.shell: ["none"]`** you get the `SKILL.md`
+block and no script. Your declaration is NOT amended to say `["sh"]`: a manifest
+that demanded an interpreter you never asked for would assert something other
+than what is there, and that is the defect this registry exists to catch. Step 4
+then compares two places instead of three — fewer places, the same bar, and a
+script found where you declared none is itself a refusal.
+
+The consequence is stated rather than hidden: such a version ships nothing that
+can print its marker, so a run of it can leave no record, so §5 reports it as
+`unknown` **for want of an executable step** — a different answer from `unknown`
+because nothing was found yet, and never `no`. Declare a shell if you want runs
+to be recorded.
 
 Returns `201 {"skill_id","skill_version_id","state":"draft","arrival_marker",`
 `"kid","manifest_hash","content_hash"}`. Re-posting an UNCHANGED source

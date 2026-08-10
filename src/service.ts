@@ -36,6 +36,7 @@ import {
   checkArrivalIdentity,
   embedArrivalStep,
   renderArrivalScript,
+  shipsArrivalScript,
 } from "./marker.ts";
 import { assertNoPrivateMaterial, systemSigningKey } from "./system-key.ts";
 import { transitionVersion, type VersionState } from "./transitions.ts";
@@ -825,15 +826,28 @@ export class Registry {
       // ---- the order [M-1] forces, from here to the INSERT
       const versionId = ulid(now);
       const marker = arrivalMarker(versionId);
+      // D-6: the SKILL.md block is written for EVERY version; the script only
+      // for a version whose own manifest declares a shell to run it. The
+      // manifest decides — a package that says `runtime.shell: ["none"]` is not
+      // handed a shell script, and its declaration is not amended to pretend
+      // otherwise. `scripts/skln-arrive.sh` is a reserved path either way, so a
+      // source that ships one under that name loses it here rather than having
+      // it signed as though the registry had generated it.
+      const executableStep = shipsArrivalScript(manifest);
       files.set(
         "SKILL.md",
-        Buffer.from(embedArrivalStep(files.get("SKILL.md")!.toString("utf8"), versionId), "utf8"),
+        Buffer.from(
+          embedArrivalStep(files.get("SKILL.md")!.toString("utf8"), versionId, { executableStep }),
+          "utf8",
+        ),
       );
-      files.set(ARRIVAL_SCRIPT_PATH, Buffer.from(renderArrivalScript(versionId), "utf8"));
+      if (executableStep) files.set(ARRIVAL_SCRIPT_PATH, Buffer.from(renderArrivalScript(versionId), "utf8"));
+      else files.delete(ARRIVAL_SCRIPT_PATH);
 
-      // D-1's guard: SKILL.md, the script and the version id must name ONE
-      // marker. A disagreement refuses the pack; it is never a report.
-      const identity = checkArrivalIdentity(files, versionId);
+      // D-1's guard as D-6 amends it: three values where there are three places
+      // for a marker to live, two where there are two. A disagreement refuses
+      // the pack in either shape; it is never a report.
+      const identity = checkArrivalIdentity(files, versionId, { executableStep });
       if (!identity.ok) {
         throw new ApiError("TAMPERED_CONTENT", `arrival marker identity check failed: ${identity.reason}`);
       }
