@@ -50,7 +50,23 @@ import {
   type ApprovalScope,
 } from "./approvals.ts";
 import { verifyVersionTransition, type VerifyTransitionOutcome } from "./verified-gate.ts";
-import { appendReceiptEvent, derivedState, isStalled, type AppendResult, type DerivedState, type ReceiptEvent } from "./receipts.ts";
+import {
+  appendReceiptEvent,
+  derivedState,
+  isStalled,
+  ADOPTER_EVENTS,
+  type AppendResult,
+  type DerivedState,
+  type ReceiptEvent,
+} from "./receipts.ts";
+import { parseRecipient, recordTransfer, type TransferResponse } from "./transfer.ts";
+import {
+  createGrant,
+  listGrants,
+  type CreatedGrant,
+  type CreateGrantInput,
+  type GrantView,
+} from "./grants.ts";
 import {
   loadRequest,
   selectWebhook,
@@ -345,6 +361,13 @@ export interface ReceiptView {
      * could read was a descriptor nobody could notice being wrong.
      */
     environment_descriptor: unknown;
+    /**
+     * §5.4: the typed recipient `{kind,id}` of a `transferred` row, and null on
+     * every other row. It is served for the same reason as the descriptor
+     * above: the recipient is what the migration counter reads off this event,
+     * so it has to be readable by the people the count is about.
+     */
+    recipient: unknown;
   }>;
 }
 
@@ -2066,7 +2089,7 @@ export class Registry {
     const events = this.db
       .prepare(
         `SELECT event, event_seq, server_at_ms, evidence_json, failure_report_json, rollback_report_json,
-                environment_json
+                environment_json, recipient_json
            FROM receipt_events WHERE adoption_receipt_id=? ORDER BY event_seq`,
       )
       .all(receiptId) as Array<{
@@ -2077,6 +2100,7 @@ export class Registry {
       failure_report_json: string | null;
       rollback_report_json: string | null;
       environment_json: string | null;
+      recipient_json: string | null;
     }>;
     return {
       receipt_id: receipt.id,
@@ -2094,6 +2118,10 @@ export class Registry {
         rollback_report: e.rollback_report_json === null ? null : JSON.parse(e.rollback_report_json),
         environment_descriptor:
           e.environment_json === null ? null : (JSON.parse(e.environment_json).environment_descriptor ?? null),
+        // §5.4: the typed recipient of a `transferred` row, served back for the
+        // same reason the declared environment is — a fact nobody can read is a
+        // fact nobody can notice being wrong. `null` on every other row.
+        recipient: e.recipient_json === null ? null : JSON.parse(e.recipient_json),
       })),
     };
   }
@@ -2713,8 +2741,18 @@ export class Registry {
     );
   }
 
-  private requestAdoptionInner(auth: AuthContext, input: { skill_version_id?: unknown }): RequestAdoptionResponse {
-    const versionId = (input ?? {}).skill_version_id;
+  /**
+   * The §5.1 rules that decide whether a version may enter an adoption chain at
+   * all, plus the §7.3 hold that decides which state the chain's request starts
+   * in. Shared by surface 6 (the recipient asks) and §5.4's transfer (a sender
+   * sends), because those two differ in WHO acts and not at all in what may be
+   * adopted — and a second copy of these rules would be a second answer to
+   * "is this version adoptable", only one of which would be tested.
+   */
+  private adoptability(
+    auth: AuthContext,
+    versionId: unknown,
+  ): { row: VersionRow; conditions: string[]; requestState: RequestState } {
     if (typeof versionId !== "string" || versionId.length === 0) {
       throw new ApiError("INVALID_SCHEMA", "skill_version_id (string) required");
     }
@@ -2753,7 +2791,7 @@ export class Registry {
     } catch {
       manifest = null;
     }
-    const adoptedCount = this.adoptedCountOf(versionId);
+    const adoptedCount = this.adoptedCountOf(row.id);
     // §7.3 adoption column. A §7.3 condition does NOT refuse this call
     // (Appendix H surface 6): the request is created in `approval_pending`, no
     // worker may claim it (§5.2), and `skill.adopt` — surface 7 — is what
@@ -2761,7 +2799,12 @@ export class Registry {
     // what breaks the approval↔request circular dependency: an approval must
     // name an `adoption_request_id`, so the request has to exist first.
     const conditions = approvalConditions(manifest, { adoptedCount });
-    const state = conditions.length > 0 ? "approval_pending" : "pending";
+    return { row, conditions, requestState: conditions.length > 0 ? "approval_pending" : "pending" };
+  }
+
+  private requestAdoptionInner(auth: AuthContext, input: { skill_version_id?: unknown }): RequestAdoptionResponse {
+    const { row, conditions, requestState: state } = this.adoptability(auth, (input ?? {}).skill_version_id);
+    const versionId = row.id;
 
     const now = this.now();
     const db = this.db;
@@ -2791,6 +2834,51 @@ export class Registry {
       rollbackIfOpen(db);
       throw e;
     }
+  }
+
+  // ------------------------------------------- §5.4: skill.transfer + grants
+
+  /**
+   * Surface 15 — a transfer with a NAMED, TYPED recipient. The service layer
+   * contributes exactly what it owns: the §5.1 access rules and the §7.3 hold,
+   * both shared verbatim with surface 6. Everything about the recipient, the
+   * permission and the record is §5.4's own module.
+   */
+  transfer(
+    auth: AuthContext,
+    input: { skill_version_id?: unknown; recipient?: unknown },
+    idempotencyKey?: string,
+  ): IdempotentOutcome<TransferResponse> {
+    return withIdempotency(this.db, auth.agent_id, "skill.transfer", idempotencyKey, this.now(), () => {
+      // The recipient is parsed BEFORE the version is resolved, so a call that
+      // names no recipient is refused as the malformed transfer it is rather
+      // than reporting whatever the version's state happens to be. A transfer
+      // without a recipient is not a transfer with a default one.
+      parseRecipient((input ?? {}).recipient);
+      const { row, conditions, requestState } = this.adoptability(auth, (input ?? {}).skill_version_id);
+      return recordTransfer(this.db, auth, input ?? {}, {
+        versionId: row.id,
+        requestState,
+        conditions,
+        nowMs: this.now(),
+      });
+    });
+  }
+
+  /** §6.2 — issue one (agent, action, recipient scope) grant. */
+  createGrant(
+    auth: AuthContext,
+    input: CreateGrantInput,
+    idempotencyKey?: string,
+  ): IdempotentOutcome<CreatedGrant> {
+    return withIdempotency(this.db, auth.agent_id, "transfer_grant.create", idempotencyKey, this.now(), () =>
+      createGrant(this.db, auth, input ?? {}, this.now()),
+    );
+  }
+
+  /** §6.2 — the grants this actor may read. */
+  listGrants(auth: AuthContext): { items: GrantView[] } {
+    return listGrants(this.db, auth);
   }
 
   private adoptedCountOf(versionId: string): number {
@@ -2916,8 +3004,13 @@ export class Registry {
     // arrive here at all: `withIdempotency` serves it from the stored response
     // of the ORIGINAL call, and a replay is a match of (principal, caller's
     // key) — never a match of state.
+    // `transferred` is the one non-empty state a handover is still legal from,
+    // and it is legal precisely BECAUSE a transfer handed nothing over (§5.4):
+    // a sender recorded an intent, and this call is the recipient fetching the
+    // package that intent is about. Every other non-empty state means the
+    // handover already happened.
     const already = derivedState(this.db, receipt.id);
-    if (already !== "none") {
+    if (already !== "none" && already !== "transferred") {
       throw new ApiError(
         "PRECONDITION_FAILED",
         `this adoption request has already been handed over (its receipt is \`${already}\`); a repeat is served only to the same principal replaying the same idempotency_key (§5.3)`,
@@ -2982,6 +3075,15 @@ export class Registry {
     // required here and is passed straight through to the receipt machine
     // rather than being replayed twice at two layers.
     const key = idempotencyKey ?? `outcome:${receiptId}:${String((input ?? {}).event)}`;
+    // §5.4: `transferred` is a receipt event and is NOT one of this surface's.
+    // It records a sender's decision and is written by the registry on that
+    // sender's authority; an adopter appending it here would be naming its own
+    // recipient on the row the migration counter reads. Refused by name, so the
+    // caller is told which vocabulary this step speaks rather than being given a
+    // transition error about a state machine it was never in.
+    if (!(ADOPTER_EVENTS as readonly unknown[]).includes((input ?? {}).event)) {
+      throw new ApiError("INVALID_SCHEMA", `event must be one of ${ADOPTER_EVENTS.join("|")}`);
+    }
     return withIdempotency(this.db, auth.agent_id, "skill.validate_outcome", undefined, this.now(), () =>
       appendReceiptEvent(this.db, {
         receiptId,

@@ -250,6 +250,77 @@ export const MCP_TOOLS = [
     },
   },
   {
+    name: "skill.transfer",
+    description:
+      "Surface 15: transfer a version to a NAMED, TYPED recipient — `recipient` is `{kind,ref}` and has no default. `kind` is `local_agent` (carried out) or `remote_fleet` (declared by §5.4 and NOT implemented in V-1: refused with NOT_IMPLEMENTED after the permission is checked, never silently treated as local). The sender must hold an `assign` grant scoped to that recipient kind (§6.2). It records the transfer, opens the recipient's adoption request and receipt, and writes ONE `transferred` receipt event carrying the recipient. It is an INTENT and reports one: the answer carries `observed_state:\"unknown\"` beside it, because nothing has been observed at the recipient — a transfer never says a skill was installed, is running, or is active.",
+    // [I-8]: one step of the loop, and this one WRITES. It opens a receipt
+    // chain and appends to the INSERT-only journal, so `readOnlyHint` is false
+    // and `destructiveHint` true — a client must be given the chance to ask.
+    // `idempotentHint` is true only in the sense the API means it: an
+    // `idempotency_key` replays the original response byte for byte. Repeating
+    // the call WITHOUT one records a second transfer, because sending the same
+    // version to the same recipient twice is a thing a sender may genuinely
+    // mean. `openWorldHint` is false — V-1 reaches nothing outside this
+    // registry, which is precisely why `remote_fleet` refuses.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_version_id: { type: "string" },
+        recipient: {
+          type: "object",
+          properties: {
+            kind: { type: "string", enum: ["local_agent", "remote_fleet"] },
+            ref: { type: "string" },
+          },
+          required: ["kind", "ref"],
+        },
+        idempotency_key: { type: "string" },
+      },
+      required: ["skill_version_id", "recipient"],
+    },
+  },
+  {
+    name: "transfer_grant.create",
+    description:
+      "§6.2: grant one principal one step of the transfer loop towards one KIND of recipient — the triple (agent, action, recipient scope). `action` ∈ receive|assign|activate|revoke|report_outcome, a closed list; `recipient_scope` ∈ local_agent|remote_fleet, the same closed list `skill.transfer` uses. It introduces NO workspace role: the roles and principal types of the schema are untouched and approvals still stand on them. Requires admin/owner of the grantee's workspace. Re-issuing the same triple converges on the recorded grant.",
+    // A write: it creates a capability. The read half is `transfer_grant.list`
+    // and the two are separate steps, never one tool with a mode argument.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string" },
+        action: { type: "string", enum: ["receive", "assign", "activate", "revoke", "report_outcome"] },
+        recipient_scope: { type: "string", enum: ["local_agent", "remote_fleet"] },
+        idempotency_key: { type: "string" },
+      },
+      required: ["agent_id", "action", "recipient_scope"],
+    },
+  },
+  {
+    name: "transfer_grant.list",
+    description:
+      "§6.2: the transfer grants this actor may read — its own, or the workspace's for an admin/owner. Every row names the principal that issued it WITH its type and role as recorded, so `granted by the owner in person` and `granted by an agent holding an administrative role` are never the same answer. Read-only: it grants nothing.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "principal.create",
     description:
       "Provisioning: create a principal (agent, human or service) in the caller's workspace with a workspace role, and issue its API key. Requires role admin/owner (§6 manage-memberships row); the new role may not outrank the caller's. The api_key is returned EXACTLY ONCE and is never retrievable — this call takes no idempotency_key, because a replay would have to persist that secret.",
@@ -511,6 +582,24 @@ function callTool(registry: Registry, auth: AuthContext, name: string, args: any
       const out = registry.rate(auth, versionIdOf(args), args ?? {}, idemKey(args));
       return { json: out.responseJson, replayed: out.replayed };
     }
+    case "skill.transfer": {
+      // `recipient` passes through untouched — §5.4's parser validates its
+      // shape and refuses an absent one; the adapter never invents a default,
+      // because a defaulted recipient is exactly the untyped internal move
+      // this surface replaces.
+      const out = registry.transfer(
+        auth,
+        { skill_version_id: args?.skill_version_id, recipient: args?.recipient },
+        idemKey(args),
+      );
+      return { json: out.responseJson, replayed: out.replayed };
+    }
+    case "transfer_grant.create": {
+      const out = registry.createGrant(auth, args ?? {}, idemKey(args));
+      return { json: out.responseJson, replayed: out.replayed };
+    }
+    case "transfer_grant.list":
+      return { json: JSON.stringify(registry.listGrants(auth)), replayed: false };
     case "principal.create":
       return { json: JSON.stringify(registry.createPrincipal(auth, args ?? {})), replayed: false };
     case "principal.list":

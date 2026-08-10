@@ -261,6 +261,27 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       return mutationResponse(out, 200);
     }
 
+    // ---- §5.4: the transfer, and the grants it runs under
+
+    m = /^\/v1\/versions\/([^/]+)\/transfers$/.exec(path);
+    if (method === "POST" && m) {
+      const body = parseBody(req);
+      // `recipient` is taken from the body verbatim: the service decides what a
+      // recipient is and refuses one that is absent. The route never supplies a
+      // default, and there is no form of this call that omits it.
+      const out = registry.transfer(auth, { skill_version_id: m[1], recipient: body.recipient }, idemKey(body));
+      return mutationResponse(out, 201);
+    }
+
+    if (method === "POST" && path === "/v1/transfer-grants") {
+      const body = parseBody(req);
+      return mutationResponse(registry.createGrant(auth, body, idemKey(body)), 201);
+    }
+
+    if (method === "GET" && path === "/v1/transfer-grants") {
+      return json(200, JSON.stringify(registry.listGrants(auth)));
+    }
+
     m = /^\/v1\/versions\/([^/]+)\/ratings$/.exec(path);
     if (method === "POST" && m) {
       const body = parseBody(req);

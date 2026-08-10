@@ -21,7 +21,7 @@ import { validatePayload } from "./manifest.ts";
 import { validateEvidenceForVersion } from "./verified-gate.ts";
 import { ulid } from "./ulid.ts";
 
-export type ReceiptEvent = "delivered" | "attempted" | "adopted" | "failed" | "rolled_back";
+export type ReceiptEvent = "delivered" | "attempted" | "adopted" | "failed" | "rolled_back" | "transferred";
 export type DerivedState = ReceiptEvent | "none";
 
 export const RECEIPT_EVENTS: readonly ReceiptEvent[] = [
@@ -30,7 +30,17 @@ export const RECEIPT_EVENTS: readonly ReceiptEvent[] = [
   "adopted",
   "failed",
   "rolled_back",
+  "transferred",
 ];
+
+/**
+ * The events an ADOPTER may append through surface 8. `transferred` is not one
+ * of them and never becomes one: it records a SENDER's decision, is written by
+ * the registry on that sender's authority (§5.4), and would otherwise be a way
+ * for the receipt's own adopter to name any recipient it liked on a row the
+ * migration counter reads.
+ */
+export const ADOPTER_EVENTS: readonly ReceiptEvent[] = ["delivered", "attempted", "adopted", "failed", "rolled_back"];
 
 /** §5.3: the terminal set is {adopted, failed}; `rolled_back` is POST-terminal. */
 export const TERMINAL_EVENTS: readonly ReceiptEvent[] = ["adopted", "failed"];
@@ -76,6 +86,14 @@ export interface AppendInput {
    * request.
    */
   environment?: unknown;
+  /**
+   * §5.4: the TYPED recipient of a transfer — `{kind, id}` — recorded on the
+   * `transferred` row in the same transaction as the transfer itself. It rides
+   * on that event and on no other, for the reason the declared environment
+   * rides on `delivered`: the migration counter reads the recipient, and a fact
+   * a second writer can move is a fact no count may rest on.
+   */
+  recipient?: unknown;
   idempotencyKey: string;
   nowMs: number;
   /** the registry acting for itself (synthesis); skips the adopter check */
@@ -108,7 +126,14 @@ export function derivedState(db: Db, receiptId: string): DerivedState {
 export type TransitionAction = "append" | "synthesize_delivered";
 
 export const RECEIPT_TRANSITIONS: Readonly<Record<DerivedState, Partial<Record<ReceiptEvent, TransitionAction>>>> = {
-  none: { delivered: "append", attempted: "synthesize_delivered" },
+  none: { delivered: "append", attempted: "synthesize_delivered", transferred: "append" },
+  // §5.4: a transfer OPENS a chain and claims nothing beyond itself. What
+  // follows it is exactly what follows an empty chain — the recipient's own
+  // `delivered`, or an `attempted` that auto-acks one — because the recipient
+  // still has to fetch the package and still has to say what happened. A
+  // transfer that is never taken up stays `transferred` and goes stale; it does
+  // not decay into a claim that anything ran.
+  transferred: { delivered: "append", attempted: "synthesize_delivered" },
   delivered: { attempted: "append", failed: "append" },
   attempted: { adopted: "append", failed: "append" },
   adopted: { rolled_back: "append" },
@@ -175,14 +200,14 @@ function insertEvent(
   receiptId: string,
   event: ReceiptEvent,
   seq: number,
-  input: { evidence?: unknown; failure_report?: unknown; rollback_report?: unknown; environment?: unknown },
+  input: { evidence?: unknown; failure_report?: unknown; rollback_report?: unknown; environment?: unknown; recipient?: unknown },
   idempotencyKey: string,
   nowMs: number,
 ): void {
   db.prepare(
     `INSERT INTO receipt_events(id, adoption_receipt_id, event, event_seq, evidence_json,
-       failure_report_json, rollback_report_json, environment_json, server_at_ms, idempotency_key)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+       failure_report_json, rollback_report_json, environment_json, recipient_json, server_at_ms, idempotency_key)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     ulid(nowMs),
     receiptId,
@@ -192,6 +217,7 @@ function insertEvent(
     input.failure_report === undefined ? null : JSON.stringify(input.failure_report),
     input.rollback_report === undefined ? null : JSON.stringify(input.rollback_report),
     input.environment === undefined ? null : JSON.stringify(input.environment),
+    input.recipient === undefined ? null : JSON.stringify(input.recipient),
     nowMs, // server_at_ms: the registry clock is the ONLY timing authority
     idempotencyKey,
   );
@@ -203,100 +229,11 @@ function insertEvent(
  * writes them and it derives the actor from AuthContext (§8 threat 6).
  */
 export function appendReceiptEvent(db: Db, input: AppendInput): AppendResult {
-  if (!RECEIPT_EVENTS.includes(input.event)) {
-    throw new ApiError("INVALID_SCHEMA", `event must be one of ${RECEIPT_EVENTS.join("|")}`);
-  }
-  if (typeof input.idempotencyKey !== "string" || input.idempotencyKey.length === 0 || input.idempotencyKey.length > 128) {
-    throw new ApiError("INVALID_SCHEMA", "idempotency_key must be a string of 1..128 characters");
-  }
-  // §5.3: the declared environment is a property of the handover, so it rides
-  // on `delivered` and on nothing else. Guarded here rather than trusted,
-  // because a descriptor attached to a later event would be a second, mutable
-  // place for the same fact — which is the defect this column exists to close.
-  if (input.environment !== undefined && input.event !== "delivered") {
-    throw new ApiError("INVALID_SCHEMA", "the declared environment is recorded on `delivered` only (§5.3)");
-  }
-
   db.exec("BEGIN IMMEDIATE");
   try {
-    const receipt = loadReceipt(db, input.receiptId);
-    if (!receipt) {
-      db.exec("ROLLBACK");
-      throw new ApiError("NOT_FOUND", "receipt not found");
-    }
-    // (2) §6: "only the adopter (AuthContext) may append to their receipt" —
-    // defect #3 class. Checked before anything is read or written.
-    if (!input.asRegistry && receipt.adopter_agent_id !== input.actorAgentId) {
-      db.exec("ROLLBACK");
-      throw new ApiError("FORBIDDEN", "only the receipt's own adopter may append to it (§6 surface 8)");
-    }
-
-    // (1) idempotency replay, scoped to this receipt by D.1's
-    // UNIQUE(adoption_receipt_id, idempotency_key)
-    const replay = db
-      .prepare("SELECT event, event_seq FROM receipt_events WHERE adoption_receipt_id=? AND idempotency_key=?")
-      .get(input.receiptId, input.idempotencyKey) as { event: ReceiptEvent; event_seq: number } | undefined;
-    if (replay) {
-      db.exec("COMMIT");
-      return { receipt_event: replay.event, event_seq: replay.event_seq, noop: true };
-    }
-
-    // (3) derived state → the §5.3 table
-    const from = derivedState(db, input.receiptId);
-    const action = RECEIPT_TRANSITIONS[from][input.event];
-    if (action === undefined) {
-      db.exec("ROLLBACK");
-      throw new ApiError(
-        "PRECONDITION_FAILED",
-        `a \`${input.event}\` event is not legal from derived state \`${from}\` (§5.3)`,
-        from,
-      );
-    }
-
-    // (5) payload validation happens BEFORE any row is written, so a rejected
-    // payload cannot consume an event_seq or an idempotency key
-    validateEventPayload(input, receipt, from);
-
-    // (4) event_seq = max+1, the ONLY normative order
-    const max = db
-      .prepare("SELECT COALESCE(MAX(event_seq), 0) AS m FROM receipt_events WHERE adoption_receipt_id=?")
-      .get(input.receiptId) as { m: number };
-    let seq = max.m + 1;
-
-    let synthesized: AppendResult["synthesized"];
-    if (action === "synthesize_delivered") {
-      // §5.3: `attempted` from `none` synthesizes `delivered` (seq 1) in the
-      // SAME transaction, with the fixed idempotency key and the fixed
-      // `evidence_json={"synthesized":true}` marker, and is activity-logged.
-      insertEvent(
-        db,
-        input.receiptId,
-        "delivered",
-        seq,
-        { evidence: SYNTHESIZED_DELIVERED_EVIDENCE },
-        `synth-delivered:${input.receiptId}`,
-        input.nowMs,
-      );
-      db.prepare(
-        "INSERT INTO activity_log(id, workspace_id, actor_agent_id, action, subject_id, details_json, created_at_ms) VALUES (?,?,?,?,?,?,?)",
-      ).run(
-        ulid(input.nowMs),
-        receipt.workspace_id,
-        null, // the registry synthesized it, not an agent
-        "receipt.delivered.synthesized",
-        input.receiptId,
-        JSON.stringify({ reason: "attempted implies delivered (§5.3)", event_seq: seq }),
-        input.nowMs,
-      );
-      synthesized = { receipt_event: "delivered", event_seq: seq };
-      seq += 1;
-    }
-
-    insertEvent(db, input.receiptId, input.event, seq, input, input.idempotencyKey, input.nowMs);
+    const result = appendReceiptEventInTx(db, input);
     db.exec("COMMIT");
-    return synthesized
-      ? { receipt_event: input.event, event_seq: seq, synthesized }
-      : { receipt_event: input.event, event_seq: seq };
+    return result;
   } catch (e) {
     try {
       db.exec("ROLLBACK");
@@ -313,6 +250,127 @@ export function appendReceiptEvent(db: Db, input: AppendInput): AppendResult {
     }
     throw e;
   }
+}
+
+/**
+ * The same append, inside a transaction the CALLER opened and owns.
+ *
+ * It exists because §5.4's transfer writes three things — the request, the
+ * receipt shell and the event that records the transfer — and they are one fact
+ * or they are nothing: a receipt with no event would be a movement with no
+ * record, and an event with no transfer row would be a record of a movement
+ * that was never authorized. SQLite has no nested transaction to nest the
+ * standalone form in, so the body is separated from its transaction rather than
+ * duplicated. There is still exactly ONE writer of `receipt_events`; this is it,
+ * and the wrapper above is a caller of it like any other.
+ *
+ * It never begins, commits or rolls back. On failure it throws and the caller's
+ * transaction is what unwinds.
+ */
+export function appendReceiptEventInTx(db: Db, input: AppendInput): AppendResult {
+  if (!RECEIPT_EVENTS.includes(input.event)) {
+    throw new ApiError("INVALID_SCHEMA", `event must be one of ${RECEIPT_EVENTS.join("|")}`);
+  }
+  if (typeof input.idempotencyKey !== "string" || input.idempotencyKey.length === 0 || input.idempotencyKey.length > 128) {
+    throw new ApiError("INVALID_SCHEMA", "idempotency_key must be a string of 1..128 characters");
+  }
+  // §5.3: the declared environment is a property of the handover, so it rides
+  // on `delivered` and on nothing else. Guarded here rather than trusted,
+  // because a descriptor attached to a later event would be a second, mutable
+  // place for the same fact — which is the defect this column exists to close.
+  if (input.environment !== undefined && input.event !== "delivered") {
+    throw new ApiError("INVALID_SCHEMA", "the declared environment is recorded on `delivered` only (§5.3)");
+  }
+  // §5.4: the recipient rides on `transferred`, for the same reason.
+  if (input.recipient !== undefined && input.event !== "transferred") {
+    throw new ApiError("INVALID_SCHEMA", "the transfer recipient is recorded on `transferred` only (§5.4)");
+  }
+  // …and `transferred` is the registry's own row. It says who a SENDER sent a
+  // version to; an adopter appending it would be naming its own recipient on a
+  // row the migration counter reads. Surface 8 never reaches this line — it
+  // refuses the event kind first — and this is the backstop under it, because
+  // "the surface filters it" is a property of one call site and this is a
+  // property of the journal.
+  if (input.event === "transferred" && !input.asRegistry) {
+    throw new ApiError(
+      "FORBIDDEN",
+      "a `transferred` event is written by the registry on the sender's authority, never by the receipt's adopter (§5.4)",
+    );
+  }
+
+  const receipt = loadReceipt(db, input.receiptId);
+  if (!receipt) {
+    throw new ApiError("NOT_FOUND", "receipt not found");
+  }
+  // (2) §6: "only the adopter (AuthContext) may append to their receipt" —
+  // defect #3 class. Checked before anything is read or written.
+  if (!input.asRegistry && receipt.adopter_agent_id !== input.actorAgentId) {
+    throw new ApiError("FORBIDDEN", "only the receipt's own adopter may append to it (§6 surface 8)");
+  }
+
+  // (1) idempotency replay, scoped to this receipt by D.1's
+  // UNIQUE(adoption_receipt_id, idempotency_key)
+  const replay = db
+    .prepare("SELECT event, event_seq FROM receipt_events WHERE adoption_receipt_id=? AND idempotency_key=?")
+    .get(input.receiptId, input.idempotencyKey) as { event: ReceiptEvent; event_seq: number } | undefined;
+  if (replay) {
+    return { receipt_event: replay.event, event_seq: replay.event_seq, noop: true };
+  }
+
+  // (3) derived state → the §5.3 table
+  const from = derivedState(db, input.receiptId);
+  const action = RECEIPT_TRANSITIONS[from][input.event];
+  if (action === undefined) {
+    throw new ApiError(
+      "PRECONDITION_FAILED",
+      `a \`${input.event}\` event is not legal from derived state \`${from}\` (§5.3)`,
+      from,
+    );
+  }
+
+  // (5) payload validation happens BEFORE any row is written, so a rejected
+  // payload cannot consume an event_seq or an idempotency key
+  validateEventPayload(input, receipt, from);
+
+  // (4) event_seq = max+1, the ONLY normative order
+  const max = db
+    .prepare("SELECT COALESCE(MAX(event_seq), 0) AS m FROM receipt_events WHERE adoption_receipt_id=?")
+    .get(input.receiptId) as { m: number };
+  let seq = max.m + 1;
+
+  let synthesized: AppendResult["synthesized"];
+  if (action === "synthesize_delivered") {
+    // §5.3: `attempted` from `none` synthesizes `delivered` (seq 1) in the
+    // SAME transaction, with the fixed idempotency key and the fixed
+    // `evidence_json={"synthesized":true}` marker, and is activity-logged.
+    insertEvent(
+      db,
+      input.receiptId,
+      "delivered",
+      seq,
+      { evidence: SYNTHESIZED_DELIVERED_EVIDENCE },
+      `synth-delivered:${input.receiptId}`,
+      input.nowMs,
+    );
+    db.prepare(
+      "INSERT INTO activity_log(id, workspace_id, actor_agent_id, action, subject_id, details_json, created_at_ms) VALUES (?,?,?,?,?,?,?)",
+    ).run(
+      ulid(input.nowMs),
+      receipt.workspace_id,
+      null, // the registry synthesized it, not an agent
+      "receipt.delivered.synthesized",
+      input.receiptId,
+      JSON.stringify({ reason: "attempted implies delivered (§5.3)", event_seq: seq }),
+      input.nowMs,
+    );
+    synthesized = { receipt_event: "delivered", event_seq: seq };
+    seq += 1;
+  }
+
+  insertEvent(db, input.receiptId, input.event, seq, input, input.idempotencyKey, input.nowMs);
+  return synthesized
+    ? { receipt_event: input.event, event_seq: seq, synthesized }
+    : { receipt_event: input.event, event_seq: seq };
 }
 
 /** §5.3 staleness: derived, never stored (INSERT-only is preserved). */

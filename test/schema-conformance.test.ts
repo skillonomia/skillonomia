@@ -91,7 +91,13 @@ test("migrations/0001_init.sql is byte-identical to the spec's Appendix D.1 bloc
  *     SQLite exactly as `webhooks.secret_ref` already does, and the identity of
  *     the SOURCE a version was packed from, which is what
  *     `skill.create_from_dir` converges on now that the §5 arrival marker makes
- *     every packing of one source byte-different.
+ *     every packing of one source byte-different;
+ *   * the D.1f rebuild of `receipt_events` (applied by
+ *     `migrations/0006_transfer_to_a_named_recipient.sql`), which adds the
+ *     event kind `transferred` — SQLite cannot alter a CHECK in place, so the
+ *     table is rebuilt rather than altered — and the column `recipient_json`,
+ *     where §5.4 records the TYPED recipient of a transfer on the INSERT-only
+ *     row the migration counter reads.
  *
  * Each entry rewrites a D.1 statement into what the live schema must then be,
  * EXACTLY — so any other change to those five tables, and any change at all to
@@ -147,6 +153,35 @@ const AUTHORIZED_P5_EDITS: ReadonlyArray<{ readonly from: string; readonly to: s
     from: "deprecation_at_ms INTEGER, created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0), UNIQUE(skill_id,semantic_version)",
     to: "deprecation_at_ms INTEGER, created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0), source_hash TEXT, UNIQUE(skill_id,semantic_version)",
   },
+  // D.1f: the rebuild quotes the table name (ALTER TABLE … RENAME TO), exactly
+  // as the D.1b rebuild of `adoption_requests` does
+  { from: "CREATE TABLE receipt_events(", to: 'CREATE TABLE "receipt_events"(' },
+  // D.1f: `transferred` — a sender's decision, which is not `delivered` because
+  // nothing has reached anybody at the moment it is recorded (§5.4)
+  {
+    from: "CHECK(event IN ('delivered','attempted','adopted','failed','rolled_back'))",
+    to: "CHECK(event IN ('delivered','attempted','adopted','failed','rolled_back','transferred'))",
+  },
+  // D.1f: the typed recipient, on the INSERT-only row the counter reads
+  {
+    from: "idempotency_key TEXT NOT NULL, environment_json TEXT, UNIQUE(adoption_receipt_id,idempotency_key)",
+    to: "idempotency_key TEXT NOT NULL, environment_json TEXT, recipient_json TEXT, UNIQUE(adoption_receipt_id,idempotency_key)",
+  },
+];
+
+/**
+ * The objects D.1f ADDS. Every earlier delta was a column on a table D.1
+ * already had; this one is the first to bring tables of its own, so they are
+ * listed by name and their DDL is compared against the migration file that
+ * creates them — not merely counted. A table this list does not name still
+ * fails the comparison below, and so does a change to one it does name.
+ */
+const D1F_NEW_OBJECTS: readonly string[] = [
+  "transfer_grants",
+  "transfers",
+  "idx_transfers_version",
+  "tg_transfers_no_upd",
+  "tg_transfers_no_del",
 ];
 
 function applyAuthorizedEdits(normalized: string): string {
@@ -189,23 +224,54 @@ test("live schema is Appendix D.1 plus exactly the Appendix D.1b delta", () => {
     5,
     "exactly five tables carry the authorized delta: adoption_requests, webhooks, receipt_events, signing_keys and skill_versions",
   );
-  assert.equal(liveSet.size, fileStatements.length, "live schema has no extra objects");
+
+  // Everything live that is NOT a D.1 statement must be one of D.1f's new
+  // objects, and must be the statement the migration file creates — byte for
+  // byte after the same normalization. This is the "no extra objects" assertion
+  // the equality of counts used to make, restated now that the schema has
+  // objects D.1 never had.
+  const d1Live = new Set(fileStatements.map((st) => applyAuthorizedEdits(normalize(st))));
+  const extra = live.map((r) => normalize(r.sql)).filter((sql) => !d1Live.has(sql));
+  const fromMigration = new Map(
+    statements(readFileSync(join(root, "migrations", "0006_transfer_to_a_named_recipient.sql"), "utf8"))
+      .filter((st) => /^CREATE (TABLE|INDEX|UNIQUE INDEX|TRIGGER)/i.test(st))
+      .map((st) => {
+        const name = /^CREATE (?:TABLE|INDEX|UNIQUE INDEX|TRIGGER)\s+"?([A-Za-z0-9_]+)"?/i.exec(st);
+        assert.ok(name, `unparsed statement in 0006: ${st.slice(0, 60)}`);
+        return [name[1], normalize(st)] as const;
+      }),
+  );
+  assert.deepEqual(
+    extra.sort(),
+    D1F_NEW_OBJECTS.map((n) => {
+      const sql = fromMigration.get(n);
+      assert.ok(sql, `0006 does not create ${n}`);
+      return sql;
+    }).sort(),
+    "the live schema's non-D.1 objects are exactly the ones migration 0006 creates",
+  );
+  assert.equal(liveSet.size, fileStatements.length + D1F_NEW_OBJECTS.length, "live schema has no extra objects");
 });
 
-test("object counts: 20 tables, 10 triggers, 9 indexes; no bookkeeping table", () => {
+test("object counts: 22 tables, 12 triggers, 10 indexes; no bookkeeping table", () => {
   const db = openMigrated();
   const count = (type: string) =>
     (db
       .prepare("SELECT count(*) c FROM sqlite_master WHERE type=? AND name NOT LIKE 'sqlite_%'")
       .get(type) as { c: number }).c;
-  assert.equal(count("table"), 20);
-  assert.equal(count("trigger"), 10);
-  assert.equal(count("index"), 9);
+  // D.1's 20 + D.1f's `transfer_grants` and `transfers`; D.1's 10 triggers +
+  // the two that keep `transfers` INSERT-only; D.1's 9 indexes +
+  // `idx_transfers_version`. The two `receipt_events` triggers and the partial
+  // terminal index are the ORIGINALS re-created verbatim by the D.1f rebuild,
+  // not additions — which is why those counts move by exactly the new objects.
+  assert.equal(count("table"), 22);
+  assert.equal(count("trigger"), 12);
+  assert.equal(count("index"), 10);
   const uv = db.prepare("PRAGMA user_version").get() as { user_version: number };
   assert.equal(
     uv.user_version,
-    5,
-    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash; tracked in user_version",
+    6,
+    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event; tracked in user_version",
   );
 });
 

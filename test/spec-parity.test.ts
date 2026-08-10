@@ -96,6 +96,7 @@ const MIGRATION_BLOCKS: ReadonlyArray<{ heading: string; file: string }> = [
   { heading: "### D.1c NORMATIVE DELTA", file: "migrations/0003_revocation_notice.sql" },
   { heading: "### D.1d NORMATIVE DELTA", file: "migrations/0004_declared_environment_on_the_event.sql" },
   { heading: "### D.1e NORMATIVE DELTA", file: "migrations/0005_server_side_packing.sql" },
+  { heading: "### D.1f NORMATIVE DELTA", file: "migrations/0006_transfer_to_a_named_recipient.sql" },
 ];
 
 test("every migration file is embedded in Appendix D byte-identically", () => {
@@ -201,7 +202,7 @@ test("§6, Appendix H and docs/API.md carry exactly the code's ErrorCode set", (
 
   // Appendix H's inline list
   const h = section("## Appendix H.", "| # | MCP tool |");
-  const inline = /with the twelve codes §6 closes over — ([^—]+) —/.exec(h);
+  const inline = new RegExp(`with the ${word} codes §6 closes over — ([^—]+) —`).exec(h);
   assert.ok(inline, "Appendix H's conventions must list the codes");
   assert.deepEqual(
     inline[1].split("|").map((s) => s.replace(/`/g, "").trim()).sort(),
@@ -362,10 +363,12 @@ test("Appendix H documents every REST route the router serves", () => {
 // the actual bodies (lifecycle-surfaces, p5-*, provisioning).
 // ===========================================================================
 
-/** Field names declared anywhere inside `export interface <name>`, any depth. */
+/** Field names declared anywhere inside `export interface <name>`, any depth.
+ *  An `extends` clause is skipped rather than refused: the fields it inherits
+ *  are declared in the parent, which is listed in its own right. */
 function interfaceFields(file: string, name: string): string[] {
   const src = read(file);
-  const at = src.indexOf(`export interface ${name} {`);
+  const at = src.search(new RegExp(`export interface ${name}(?: extends [A-Za-z0-9_,<> ]+)? \\{`));
   assert.ok(at >= 0, `${file} has no interface ${name}`);
   let depth = 0;
   let i = src.indexOf("{", at);
@@ -398,6 +401,13 @@ const RESPONSE_SHAPES: ReadonlyArray<{ row: string; file: string; iface: string 
   { row: "`skill.search`", file: "src/service.ts", iface: "SearchItem" },
   { row: "`skill.request_adoption`", file: "src/service.ts", iface: "RequestAdoptionResponse" },
   { row: "`skill.adopt`", file: "src/service.ts", iface: "AdoptResponse" },
+  { row: "`skill.transfer`", file: "src/transfer.ts", iface: "TransferResponse" },
+  { row: "`skill.transfer`", file: "src/transfer.ts", iface: "TransferPermission" },
+  { row: "`transfer_grant.create`", file: "src/grants.ts", iface: "GrantView" },
+  { row: "`transfer_grant.create`", file: "src/grants.ts", iface: "CreatedGrant" },
+  { row: "`transfer_grant.create`", file: "src/grants.ts", iface: "GrantPrincipal" },
+  { row: "`transfer_grant.list`", file: "src/grants.ts", iface: "GrantView" },
+  { row: "`transfer_grant.list`", file: "src/grants.ts", iface: "GrantPrincipal" },
   { row: "`skill.validate_outcome`", file: "src/receipts.ts", iface: "AppendResult" },
   { row: "`skill.supersede`", file: "src/service.ts", iface: "SupersedeResponse" },
   { row: "`skill.revoke`", file: "src/service.ts", iface: "RevokeResponse" },

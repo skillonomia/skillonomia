@@ -9,6 +9,17 @@
 // which happens before any surface contract applies — the H list enumerates
 // surface errors of authenticated calls.
 //
+// NOT_IMPLEMENTED is the second, and it exists because §5.4 declares a
+// recipient type this version does not carry out. The refusal it names is not
+// any of the others and must not be dressed as one: `FORBIDDEN` would say the
+// caller lacks permission when the caller's grant is satisfied and the
+// TRANSPORT is what is missing — which is exactly the distinction the transfer
+// model exists to keep, and the one a V-2 ambassador's operator has to be able
+// to read. `INVALID_SCHEMA` would say the request was malformed when it was
+// well-formed and accepted by every validator. So the honest answer is its own
+// code, mapped to 501: the registry understood the request and does not
+// implement it yet.
+//
 // The list is a RUNTIME constant and the type is derived from it, so a guard
 // test can compare the code space against the one §6 and Appendix H publish.
 // A type alone cannot be enumerated at run time, and an error space that only
@@ -26,6 +37,7 @@ export const ERROR_CODES = [
   "TAMPERED_CONTENT",
   "MALFORMED_ARCHIVE",
   "LIMIT_EXCEEDED",
+  "NOT_IMPLEMENTED",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -43,6 +55,7 @@ export const HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   TAMPERED_CONTENT: 400,
   MALFORMED_ARCHIVE: 400,
   LIMIT_EXCEEDED: 413,
+  NOT_IMPLEMENTED: 501,
 };
 
 export interface ErrorEnvelope {

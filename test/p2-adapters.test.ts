@@ -272,6 +272,12 @@ test("MCP: initialize + tools/list expose exactly the implemented surfaces", () 
       "skill.adopt",
       "skill.validate_outcome",
       "skill.rate",
+      // surface 15: the transfer, whose recipient is a TYPED value and never a
+      // bare local id — and the two grant tools it is authorized by, a write
+      // and a read under separate names
+      "skill.transfer",
+      "transfer_grant.create",
+      "transfer_grant.list",
       // provisioning auxiliaries (Appendix H): principals, their API keys and
       // the signing keys §4.4 step 3 resolves a package's kid against
       "principal.create",

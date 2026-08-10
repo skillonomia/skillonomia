@@ -14,7 +14,7 @@ proven on one holds on the other — the test suite asserts the parity.
 - **Errors**: `{"error":{"code","message","current_state"?}}` with codes
   `INVALID_SCHEMA | FORBIDDEN | NOT_FOUND | CONFLICT | PRECONDITION_FAILED |
   RATE_LIMITED | UNAUTHORIZED | UNKNOWN_KEY | BAD_SIGNATURE | TAMPERED_CONTENT |
-  MALFORMED_ARCHIVE | LIMIT_EXCEEDED`. A conflicting or precondition-failed
+  MALFORMED_ARCHIVE | LIMIT_EXCEEDED | NOT_IMPLEMENTED`. A conflicting or precondition-failed
   transition always returns the **current state**, so a caller can converge
   instead of looping.
 - **Idempotency**: every mutating call accepts `idempotency_key` (≤128 chars).
@@ -58,7 +58,7 @@ curl -s -XPOST $B/v1/signing-keys -H "authorization: Bearer $PUBLISHER" \
 package signed by a key the author never registered verifies as `UNKNOWN_KEY`,
 not as a bad signature. See "Auxiliary endpoints" for the full provisioning set.
 
-## The fourteen surfaces
+## The fifteen surfaces
 
 ### 1. `skill.create` — `POST /v1/skills`, `POST /v1/skills/{skill_id}/versions`
 
@@ -218,6 +218,35 @@ version's marker; a different source under an existing `semantic_version` is a
 `CONFLICT`. Convergence is judged on the source rather than on the packed bytes,
 because the marker makes every packing of one source byte-different.
 
+### 15. `skill.transfer` — `POST /v1/versions/{id}/transfers`
+
+Send a version to a recipient you NAME. The body is
+`{"recipient":{"kind":"local_agent|remote_fleet","ref":"<recipient id>"},`
+`"idempotency_key"?}`, and `recipient` has no default: a transfer that does not
+name one is `INVALID_SCHEMA`. There is deliberately no form of this call that
+moves a version to whoever happens to be asking.
+
+The sender must hold an `assign` grant scoped to that recipient kind
+(`POST /v1/transfer-grants`, below). `local_agent` names an active principal of
+your own workspace; `remote_fleet` is declared by the specification and **is not
+implemented in V1** — it is refused with `NOT_IMPLEMENTED` (501) after the grant
+is checked and found satisfied, and nothing is recorded. That order is the
+point: a missing permission and a missing implementation are different answers.
+
+Returns `201` with the whole signature of the operation — the version, the
+sender with its principal type and role, the typed recipient, the permission it
+ran under with the type and role of the principal that issued it, the arrival
+marker, and the receipt plus the `transferred` event it wrote. It also opens the
+recipient's adoption request, held in `approval_pending` when the human-approval
+matrix applies, so a transfer cannot route around an approval.
+
+**A transfer is an intent, and the answer says so twice.** Beside `intent` the
+body carries `observed_state:"unknown"`: nothing has been observed at the
+recipient. A transfer never reports that a package arrived, that it was
+installed, or that anything is running. The recipient still fetches the package
+through surface 7 and still reports its own outcome through surface 8, and only
+that terminal `adopted` makes the movement a counted migration.
+
 ## Auxiliary endpoints
 
 | Route | Notes |
@@ -235,6 +264,8 @@ because the marker makes every packing of one source byte-different.
 | `POST /v1/signing-keys/{kid}/revoke` | your own key, or any in the workspace as admin/owner. Changes FUTURE `skill.verify` verdicts only — a version already `verified`/`published` keeps its state; use `skill.revoke` if you also want the package withdrawn |
 | `GET /v1/webhooks` | your endpoints with `status` and `failure_count` |
 | `DELETE /v1/webhooks/{id}` | your endpoints only |
+| `POST /v1/transfer-grants` | `{"agent_id","action":"receive\|assign\|activate\|revoke\|report_outcome","recipient_scope":"local_agent\|remote_fleet"}` — one step of the transfer loop, towards one KIND of recipient (`transfer_grant.create`). Admin/owner of the grantee's workspace. It adds no workspace role: the roles and principal types are unchanged and approvals still stand on them. Re-issuing the same triple converges on the recorded grant. |
+| `GET /v1/transfer-grants` | your grants, or the workspace's as admin/owner (`transfer_grant.list`). Each row names the issuing principal WITH its type and role as recorded, so "granted by the owner in person" and "granted by an agent holding an administrative role" never read the same. |
 | `GET /v1/dashboard` | the list of views |
 | `GET /v1/dashboard/{view}` | one of `library`, `evidence`, `receipts`, `approvals`, `dead_letters`, `migrations`; `?format=json` (default) or `?format=html`. Any other value is `INVALID_SCHEMA` on both adapters. Each section declares the API fields it renders; rows are scoped by the same rules as the underlying read. `demo_mode` is on the payload. |
 | `GET /v1/migrations` | the migration counter (`migration.count`): one row per skill you can see, with `migrations`, `distinct_recipients`, `distinct_runtimes`, the runtime list and `runtimes_unknown`. Counted from the append-only receipt journal — a terminal `adopted` event with server-validated evidence — and never from `adoption_requests.requester_context_json`. Optional `since_ms`/`until_ms` bound the window; a non-integer bound, or a pair in the wrong order, is `INVALID_SCHEMA`. Every row restates its `source`, its `window` and its `measurement_state`, and a skill that never migrated is a row of zeroes rather than a missing row. Strictly reading. |
@@ -242,10 +273,11 @@ because the marker makes every packing of one source byte-different.
 ## MCP
 
 `POST /mcp` speaks JSON-RPC 2.0: `initialize`, `tools/list`, `tools/call`. The
-advertised tools are the thirteen surface names above, plus `skill.approve`,
-`principal.create`, `principal.list`, `principal.issue_api_key`,
-`principal.revoke_api_key`, `signing_key.register`, `signing_key.list`,
-`signing_key.revoke`, `tlog.read`, `migration.count` and `dashboard.view`.
+advertised tools are the fifteen surface names above, plus `skill.approve`,
+`transfer_grant.create`, `transfer_grant.list`, `principal.create`,
+`principal.list`, `principal.issue_api_key`, `principal.revoke_api_key`,
+`signing_key.register`, `signing_key.list`, `signing_key.revoke`, `tlog.read`,
+`migration.count` and `dashboard.view`.
 The reading tools and the writing ones are separate names — `migration.count`
 carries `readOnlyHint`, and there is no general-purpose tool that could stand in
 for either kind. Arguments are the REST

@@ -37,6 +37,15 @@
 // descriptor of two earlier adoptions and pushed the runtime count up by one —
 // no event, no error, no trace. Nothing in this file may read that column.
 //
+// WHO THE RECIPIENT IS, AND WHERE THAT COMES FROM. Since §5.4 a movement can
+// be initiated by a SENDER, and the sender names a typed recipient. That
+// recipient is recorded on the `transferred` event, in the transaction that
+// records the transfer, and this counter reads it from there — see
+// `recipientOf` below. A chain that no transfer opened has no such event and
+// falls back to the receipt shell, which is INSERT-only by trigger and written
+// once. Neither source is `adoption_requests`, and neither can be edited after
+// the fact.
+//
 // FAIL-CLOSED, AND THE DIFFERENCE BETWEEN "none" AND "unknown". An adoption
 // whose declared runtime cannot be read — no `delivered` event carried one, or
 // the JSON does not parse — contributes NO runtime id. Not an "unknown" bucket
@@ -159,8 +168,11 @@ export interface MigrationCountResponse {
 interface PairRow {
   skill_id: string;
   version: string;
+  /** the receipt shell's adopter — the fallback, see `recipientOf` */
   recipient: string;
   ctx: string | null;
+  /** the `recipient_json` of this chain's `transferred` event, when it has one */
+  transferred_to: string | null;
 }
 
 interface Accumulator {
@@ -213,15 +225,48 @@ function selectPairs(db: Db, window: MigrationWindow, skillIds?: readonly string
   return db
     .prepare(
       `SELECT DISTINCT v.skill_id AS skill_id, r.skill_version_id AS version, r.adopter_agent_id AS recipient,
-              d.environment_json AS ctx
+              d.environment_json AS ctx, t.recipient_json AS transferred_to
          FROM adoption_receipts r
          JOIN skill_versions v ON v.id = r.skill_version_id
          JOIN receipt_events e ON e.adoption_receipt_id = r.id
          LEFT JOIN receipt_events d
                 ON d.adoption_receipt_id = r.id AND d.event = 'delivered' AND d.environment_json IS NOT NULL
+         LEFT JOIN receipt_events t
+                ON t.adoption_receipt_id = r.id AND t.event = 'transferred' AND t.recipient_json IS NOT NULL
         WHERE ${where.join(" AND ")}`,
     )
     .all(...params) as PairRow[];
+}
+
+/**
+ * WHO RECEIVED IT — read from the transfer EVENT wherever there is one.
+ *
+ * §5.4 records the recipient on the `transferred` row, typed, in the same
+ * transaction as the transfer. That row is the registry's statement of where a
+ * version was sent, and it is the statement this counter reads: `recipient_json`
+ * first, the receipt shell second.
+ *
+ * The fallback is not a weakening and is not a mutable source. A chain opened
+ * by surface 6 has no transfer to read — the recipient asked for the version
+ * itself — and `adoption_receipts` is INSERT-only by trigger
+ * (`tg_receipts_no_upd`/`tg_receipts_no_del`), written once when the chain
+ * begins and never afterwards. What the counter must never read is
+ * `adoption_requests`, the one mutable table in this path, and it does not.
+ *
+ * Fail-closed the same way the runtime is: a `recipient_json` that does not
+ * parse, or names no string id, contributes nothing of its own rather than a
+ * placeholder recipient.
+ */
+function recipientOf(row: PairRow): string {
+  if (row.transferred_to !== null) {
+    try {
+      const id = JSON.parse(row.transferred_to)?.id;
+      if (typeof id === "string" && id.length > 0) return id;
+    } catch {
+      // an unreadable declaration is not a recipient — fall through
+    }
+  }
+  return row.recipient;
 }
 
 /** The declared runtime id of one `delivered` payload, or null if unreadable. */
@@ -239,13 +284,14 @@ function runtimeIdOf(ctx: string | null): string | null {
 function accumulate(rows: PairRow[], into: (skillId: string) => Accumulator): void {
   for (const row of rows) {
     const acc = into(row.skill_id);
-    const key = `${row.version}\u0000${row.recipient}`;
+    const recipient = recipientOf(row);
+    const key = `${row.version}\u0000${recipient}`;
     let runtimes = acc.pairs.get(key);
     if (runtimes === undefined) {
       runtimes = new Set<string>();
       acc.pairs.set(key, runtimes);
     }
-    acc.recipients.add(row.recipient);
+    acc.recipients.add(recipient);
     const id = runtimeIdOf(row.ctx);
     if (id !== null) {
       runtimes.add(id);
