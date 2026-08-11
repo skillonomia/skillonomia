@@ -67,6 +67,7 @@ import type { InventoryRoots, InventorySite } from "../src/fleet-scan.ts";
 import { writeTar } from "../src/archive.ts";
 import { TRANSFER_ACTION } from "../src/transfer.ts";
 import { arrivalMarker } from "../src/marker.ts";
+import * as docs from "./docs-guard.ts";
 
 // ===========================================================================
 // The harness
@@ -2911,448 +2912,52 @@ test("[I-7] THE REVIEWER'S MUTATION: private material in the tlog preimage now R
 });
 
 // ===========================================================================
-// 7. EVERY SHIPPED DOCUMENT IS CHECKED AGAINST THE SHIPPED CODE
+// 7. EVERY FILE THIS PACKAGE SHIPS IS CHECKED AGAINST THE CODE IT SHIPS
 // ===========================================================================
 //
-// `README.md` said the dashboard had SIX views. It has eleven. `src/mcp.ts`'s
-// own `dashboard.view` description said six as well — a tool telling a client,
-// in the payload of `tools/list`, a number that was wrong by five.
-//
-// Round 2 caught that, over THREE DOCUMENTS NAMED IN THE TEST: `README.md`,
-// `docs/API.md`, `src/mcp.ts`. The normative `SPEC.md` was not among them, and
-// a reviewer then wrote "six views" into it three times and the suite passed.
-// A guard whose subject is a literal list is a guard that goes stale silently:
-// the list is written once, the repository grows, and nothing ever says so.
-//
-// Round 3 replaced the list with a DISCOVERY — `package.json`'s `files`, plus a
-// walk of two directories written as `["", "docs/"]` — and declared it
-// universal. It reached 61 of the 76 Markdown files this repository tracks, and
-// a lie planted in `skills/README.md` was read by nobody. That is the same
-// defect one layer up: the enumeration was replaced, and the replacement was
-// still bounded by what its author could think of to enumerate. `package.json`
-// answers "what does npm pack put in the tarball"; it was asked "what does this
-// repository say about itself", which is a different question.
-//
-// So the subject is taken from THE ONE THING THAT KNOWS THE ANSWER — the
-// version control system that tracks the files. `git ls-files -- '*.md'` is not
-// a better list; it is not a list at all. It is the repository's own index, and
-// it cannot be behind the repository.
-//
-// AND IT REFUSES WHEN IT CANNOT ANSWER. A tree that is not a repository — an
-// unpacked tarball, a vendored copy — cannot be enumerated, and a guard that
-// quietly sweeps nothing there would report a clean run over a subject of size
-// zero. That is the mechanism of silent staleness this file exists to remove,
-// so the enumeration THROWS, and the refusal names the reason.
-//
-// The CLAIMS are derived too: the number of views from `DASHBOARD_VIEWS`, the
-// number of tools from `MCP_TOOLS`, and the journals a counted recipient may be
-// read from — the third family, [I-6]'s own — from the source constants the
-// counter exports. A document that states any of them wrongly is a defect of
-// the same class as a guard that proves something other than what it claims: a
-// reader acts on it, and nothing contradicts it.
-//
-// ONE DISTINCTION THE 76 FORCED, and it is a distinction about time. Thirty-
-// three of the tracked documents are the REVIEW RECORD — `reviews/*.md`, the
-// verdicts and the prompts of the phases already accepted, kept verbatim. A
-// P6 verdict says "the dashboard's five views" because the dashboard had five
-// views at the commit it reviewed, and that sentence is a true record. Checking
-// it against today's eleven would demand that history be rewritten to agree
-// with the present, which is the opposite of what a record is for.
-//
-// The distinction is not a path list. A record DECLARES ITSELF ONE in its own
-// first heading ("Independent review — …", "Phase P6 — independent review
-// verdicts"), and it is checked HARDER than an exemption would be: its count
-// claims are verified against the code AT THE COMMITS THE RECORD NAMES, read
-// out of git. Only where the record names no commit at which the constant
-// existed is the claim reported as unverifiable — printed, with the reason, and
-// never silently. Every other family, the provenance one included, applies to
-// all seventy-six without exception.
+// The guard itself is `test/docs-guard.ts` — ONE implementation, imported by
+// this sweep, by the planting proof and by `test/p14-r5-probes.test.ts`, so
+// there is no second copy for a test to agree with itself about. Read that file
+// for the argument; what is here is the sweep, the mutation and the refusal.
 
-/** One number a document states about a set the code defines, and where. */
-interface CountClaim {
-  /** the number, as digits, whether the document wrote it in words or figures */
-  value: string;
-  at: number;
-  length: number;
-}
-
-const NUMBER_WORDS: Record<string, string> = {
-  five: "5", six: "6", seven: "7", eight: "8", nine: "9", ten: "10", eleven: "11", twelve: "12",
-  thirteen: "13", twenty: "20", thirty: "30", "thirty-six": "36", "thirty-five": "35",
-  "thirty-four": "34", "thirty-seven": "37", forty: "40",
-};
-
-/** Every number a document writes for `subject`, in the order it writes them. */
-function countClaims(text: string, subject: RegExp): CountClaim[] {
-  const out: CountClaim[] = [];
-  for (const m of text.matchAll(subject)) {
-    const raw = String(m[1] ?? "").toLowerCase();
-    out.push({ value: NUMBER_WORDS[raw] ?? raw, at: m.index, length: m[0].length });
-  }
-  return out;
-}
-
-/** The number a document writes in words or in digits, wherever it says it. */
-function documentSays(text: string, subject: RegExp): Set<string> {
-  return new Set(countClaims(text, subject).map((c) => c.value));
-}
-
-/** The repository root as a path `git` and `readFileSync` both accept. */
-const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
-
-/**
- * THE DOCUMENT SET, TAKEN FROM THE INDEX THAT HOLDS IT.
- *
- * Not a list, not a manifest, not a walk of the directories somebody
- * remembered: `git ls-files -- '*.md'` is the repository's own record of every
- * Markdown file it tracks, and it is updated by the act of adding one.
- *
- * IT REFUSES RATHER THAN PASSES. If git is absent, or the tree is not a
- * repository, or the index lists nothing, there is no set to sweep — and a
- * sweep over no set reports no violations, which reads exactly like a clean
- * run. Every one of those becomes a THROW that names its cause, because the
- * failure this whole file is written against is a guard whose silence is taken
- * for a pass.
- */
-export class DocumentSetUnavailable extends Error {}
-
-function trackedMarkdown(root: string = REPO_ROOT): string[] {
-  let listing: string;
-  try {
-    listing = execFileSync("git", ["-C", root, "ls-files", "-z", "--", "*.md"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
-    });
-  } catch (e) {
-    throw new DocumentSetUnavailable(
-      `REFUSED: the document set could not be ENUMERATED at ${root} — \`git ls-files\` failed (${String((e as Error).message).split("\n")[0]}). ` +
-        "A guard that cannot list its subject refuses; it does not sweep an empty set and call the result clean.",
-    );
-  }
-  const files = listing.split("\0").filter((s) => s.length > 0);
-  if (files.length === 0) {
-    throw new DocumentSetUnavailable(
-      `REFUSED: \`git ls-files -- '*.md'\` listed no document at ${root}. ` +
-        "An empty subject is not a passing subject: nothing would be checked and nothing would be reported.",
-    );
-  }
-  return files.sort();
-}
-
-/**
- * EVERY DOCUMENT THIS REPOSITORY PUBLISHES ABOUT ITSELF, discovered.
- *
- *   * every Markdown file GIT TRACKS — the whole set, from the index, refusing
- *     when it cannot be read [D-13];
- *   * plus the shipped TypeScript inside the directories `package.json`'s
- *     `files` ships, because a `tools/list` description is documentation served
- *     to a client and a comment in a shipped source file is read by whoever
- *     opens it. That half is about what NPM PUTS IN THE TARBALL, which is the
- *     question `package.json` actually answers.
- */
-function shippedDocuments(): Array<[string, string]> {
-  const root = new URL("../", import.meta.url);
-  const manifest = JSON.parse(readFileSync(new URL("package.json", root), "utf8")) as { files: string[] };
-  const paths: string[] = [];
-  const add = (rel: string): void => {
-    if (!paths.includes(rel)) paths.push(rel);
-  };
-  for (const rel of trackedMarkdown()) add(rel);
-  const walk = (rel: string): void => {
-    for (const entry of readdirSync(new URL(rel, root), { withFileTypes: true })) {
-      const child = `${rel}${entry.name}${entry.isDirectory() ? "/" : ""}`;
-      if (entry.isDirectory()) walk(child);
-      else if (entry.name.endsWith(".ts")) add(child);
-    }
-  };
-  for (const entry of manifest.files) {
-    if (entry.endsWith("/") && existsSync(new URL(entry, root))) walk(entry);
-  }
-  return paths.sort().map((rel) => [rel, readFileSync(new URL(rel, root), "utf8")] as [string, string]);
-}
-
-/** "N views", in words or digits — but never the digits of a section reference
- *  such as the internal phase plan's own numbering, where `10.3 views` would
- *  otherwise read as a claim of three. */
-const VIEW_CLAIM = /(?<![.\d§])\b(five|six|seven|eight|nine|ten|eleven|twelve|thirteen|\d+)\s+(?:read-only\s+)?(?:dashboard\s+)?views?\b/gi;
-const TOOL_CLAIM = /(?<![.\d§])\b(twenty|thirty|thirty-four|thirty-five|thirty-six|thirty-seven|forty|\d+)\s+(?:MCP\s+)?tools?\b/gi;
-
-/**
- * The one shape that matches `TOOL_CLAIM` and is not a claim about the MCP
- * adapter at all: a CENSUS OF THE SOURCE TREE, where `tools` is the name of a
- * directory beside `src` and `test`. "all 13 src, 13 test and 2 tools
- * TypeScript files" counts files in `tools/`; it says nothing about how many
- * tools `tools/list` advertises. The exclusion demands the census — another
- * directory of the same tree, counted in the same clause — and not merely a
- * word next to a digit.
- */
-const TOOLS_DIRECTORY_CENSUS = /\b\d+\s+(?:src|test)\b[^.]{0,80}?\b\d+\s+tools?\b/i;
-
-/** True when this particular `N tools` is the `tools/` directory being counted. */
-function isDirectoryCensus(text: string, index: number, length: number): boolean {
-  return TOOLS_DIRECTORY_CENSUS.test(sentenceAround(text, index, length));
-}
-
-// ------------------------------------------------------- records, and time
-
-/**
- * A DOCUMENT THAT DECLARES ITSELF THE RECORD OF A REVIEW.
- *
- * It is read off the document's own first heading, not off its path: a record
- * says what it is in its title, and this repository's do — "Independent review
- * — Skillonomia phase P6", "Phase P6 — independent review verdicts". A record
- * describes a commit that was reviewed and accepted; a sentence in it is a
- * statement about THAT build.
- */
-function isReviewRecord(text: string): boolean {
-  const heading = /^#\s+(.+)$/m.exec(text);
-  return heading !== null && /\b(independent review|review verdicts?|verdict)\b/i.test(heading[1]!);
-}
-
-/** Every full commit id a document names that this repository can resolve. */
-function commitsNamedBy(text: string): string[] {
-  const out: string[] = [];
-  for (const m of new Set(text.match(/\b[0-9a-f]{40}\b/g) ?? [])) {
-    try {
-      execFileSync("git", ["-C", REPO_ROOT, "rev-parse", "-q", "--verify", `${m}^{commit}`], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      out.push(m);
-    } catch {
-      // a 40-hex string that is not a commit of this repository — a SHA-256 of
-      // a specification, a manifest hash — names no tree and is not one
-    }
-  }
-  return out;
-}
-
-/**
- * How many views `DASHBOARD_VIEWS` had at a commit, read out of that commit's
- * own source. `null` when the constant did not exist there — which is an answer
- * ("this record predates the dashboard"), not a failure.
- */
-function viewsAtCommit(sha: string): number | null {
-  let source: string;
-  try {
-    source = execFileSync("git", ["-C", REPO_ROOT, "show", `${sha}:src/dashboard.ts`], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 1 << 24,
-    });
-  } catch {
-    return null;
-  }
-  const literal = /DASHBOARD_VIEWS[^=]*=\s*\[([\s\S]*?)\]/.exec(source);
-  if (literal === null) return null;
-  const entries = literal[1]!.match(/"[a-z_]+"/g);
-  return entries === null ? null : entries.length;
-}
-
-/** The view counts a record's own reviewed commits carry — its frame of time. */
-function viewCountsReviewedBy(text: string): number[] {
-  const counts = new Set<number>();
-  for (const sha of commitsNamedBy(text)) {
-    const n = viewsAtCommit(sha);
-    if (n !== null) counts.add(n);
-  }
-  return [...counts].sort((a, b) => a - b);
-}
-
-// ------------------------------------------------- the check, over one document
-
-interface DocumentRules {
-  views: number;
-  tools: number;
-  permitted: ReadonlySet<string>;
-  tables: readonly string[];
-}
-
-interface DocumentReading {
-  /** claims that CONTRADICT the code — the defect this guard exists for */
-  wrong: string[];
-  /** claims a record makes about a build whose code cannot be read back */
-  unverifiable: string[];
-  view_claims: number;
-  tool_claims: number;
-  record: boolean;
-}
-
-/**
- * ONE DOCUMENT, AGAINST THE CODE.
- *
- * The same function the sweep runs and the planting proof runs — there is no
- * second implementation for the test to agree with itself about.
- */
-function readDocument(name: string, text: string, rules: DocumentRules): DocumentReading {
-  const wrong: string[] = [];
-  const unverifiable: string[] = [];
-  const record = isReviewRecord(text);
-  const reviewed = record ? viewCountsReviewedBy(text) : [];
-
-  const views = countClaims(text, VIEW_CLAIM);
-  for (const claim of views) {
-    if (!record) {
-      if (claim.value !== String(rules.views)) wrong.push(`${name}: claims ${claim.value} dashboard views; the code ships ${rules.views}`);
-      continue;
-    }
-    // A RECORD IS CHECKED AGAINST THE BUILD IT REVIEWS, not against today's.
-    if (reviewed.length === 0) {
-      unverifiable.push(
-        `${name}: a review record claiming ${claim.value} views, naming no commit at which \`DASHBOARD_VIEWS\` exists — the build it describes cannot be read back`,
-      );
-      continue;
-    }
-    if (!reviewed.includes(Number(claim.value))) {
-      wrong.push(
-        `${name}: a review record claims ${claim.value} dashboard views; the commits it reviews ship ${reviewed.join(" or ")}`,
-      );
-    }
-  }
-
-  const tools = countClaims(text, TOOL_CLAIM).filter((c) => !isDirectoryCensus(text, c.at, c.length));
-  for (const claim of tools) {
-    if (record) {
-      unverifiable.push(`${name}: a review record claiming ${claim.value} MCP tools — the adapter it describes is not read back here`);
-      continue;
-    }
-    if (claim.value !== String(rules.tools)) wrong.push(`${name}: claims ${claim.value} MCP tools; the code ships ${rules.tools}`);
-  }
-
-  // THE PROVENANCE FAMILY APPLIES TO ALL SEVENTY-SIX WITHOUT EXCEPTION: where a
-  // count is read from is not a fact about a build, it is a fact about this
-  // schema, and a record that states it wrongly is as wrong as a README.
-  for (const lie of provenanceLies(text, rules.permitted, rules.tables)) wrong.push(`${name}: ${lie}`);
-
-  // A DOCUMENT THAT ENUMERATES THE VIEWS MUST ENUMERATE THEM ALL — a partial
-  // list reads as a whole one. "Enumerates" is five or more of the names,
-  // because the names are ordinary words: a source file writing `agent` or
-  // `approvals` in backticks is naming a thing, not listing a dashboard, and a
-  // rule that treated it as a list would fire on most of the repository and
-  // then have to be turned off.
-  const enumerated = DASHBOARD_VIEWS.filter((v) => text.includes(`\`${v}\``) || text.includes(`**${v}**`));
-  if (!record && enumerated.length >= 5 && !DASHBOARD_VIEWS.every((v) => text.includes(v))) {
-    wrong.push(`${name}: names ${enumerated.length} dashboard views and not all ${rules.views}`);
-  }
-  return { wrong, unverifiable, view_claims: views.length, tool_claims: tools.length, record };
-}
-
-function documentRules(): DocumentRules {
-  return {
-    views: DASHBOARD_VIEWS.length,
-    tools: MCP_TOOLS.length,
-    permitted: new Set([RECIPIENT_SOURCE_TRANSFER, RECIPIENT_SOURCE_REQUEST].map((s) => s.split(".")[0]!)),
-    tables: tableNames(),
-  };
-}
-
-/**
- * [I-6]'s claim family: WHERE A COUNTED RECIPIENT COMES FROM.
- *
- * The forbidden shape is a POSITIVE, PRESENT-TENSE assertion that a count or a
- * recipient is obtained from a table the counter does not read it from. The
- * tables are derived — every `CREATE TABLE` of the shipped migrations — and the
- * permitted journal is derived from the source constants the counter exports,
- * so neither list is written here.
- *
- * The markers below are what separate an assertion from a HISTORY: this
- * repository's documents describe the defect they closed, and "it used to be
- * read from the receipt shell" is the opposite of a lie about it. The list is
- * short, closed, and each entry is a way English marks a claim as not-current.
- */
-const NOT_A_CURRENT_CLAIM = /\b(never|not|no longer|used to|would|cannot|must not|before|was|were|had been|already)\b/i;
-
-/**
- * The SENTENCE a match sits in — bounded, not a character window.
- *
- * A window of N characters is a guess, and it is the wrong guess in both
- * directions: too short and a marker one clause away is missed, too long and a
- * marker belonging to the previous paragraph exempts a lie. The sentence is the
- * unit English marks tense in, so it is the unit read here. Comment prefixes
- * (`--`, `//`, `*`) are stripped, because a sentence wrapped across the lines of
- * a SQL or TypeScript comment is still one sentence.
- */
-function sentenceAround(text: string, index: number, length: number): string {
-  const starts = [text.lastIndexOf(". ", index), text.lastIndexOf(".\n", index), text.lastIndexOf("\n\n", index)];
-  const from = Math.max(0, ...starts.map((i) => (i < 0 ? 0 : i + 1)));
-  const dot = text.indexOf(".", index + length);
-  const to = dot < 0 ? text.length : dot + 1;
-  return text.slice(from, to).replace(/^[\s>]*(--|\/\/|\*)\s?/gm, " ");
-}
-
-function provenanceLies(text: string, permitted: ReadonlySet<string>, tables: readonly string[]): string[] {
-  const out: string[] = [];
-  const named = tables.filter((t) => !permitted.has(t)).join("|");
-  if (named.length === 0) return out;
-  const claim = new RegExp(
-    String.raw`(?:recipient|migration|count|counted)[\s\S]{0,120}?\b(?:read|computed|obtained|answered|taken|comes?|counted)\s+from\s+(?:the\s+)?(?:INSERT-only\s+)?` +
-      "`?(" + named + ")\\b",
-    "gi",
-  );
-  for (const m of text.matchAll(claim)) {
-    const sentence = sentenceAround(text, m.index, m[0].length);
-    if (NOT_A_CURRENT_CLAIM.test(sentence)) continue;
-    out.push(`claims a counted recipient is read from \`${m[1]}\`: ${JSON.stringify(sentence.slice(0, 160))}`);
-  }
-  return out;
-}
-
-/** Every table this schema has, from the migrations — never a list kept here. */
-function tableNames(): string[] {
-  const dir = new URL("../migrations/", import.meta.url);
-  const names = new Set<string>();
-  for (const file of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
-    for (const m of readFileSync(new URL(file, dir), "utf8").matchAll(/CREATE TABLE\s+"?([a-z_]+)"?\s*\(/gi)) {
-      names.add(m[1]!);
-    }
-  }
-  return [...names].sort();
-}
-
-test("every document this repository TRACKS states the real number of views, of tools, and the real provenance", () => {
-  const documents = shippedDocuments();
-  const rules = documentRules();
-  const tracked = trackedMarkdown();
-  const markdown = documents.filter(([n]) => n.endsWith(".md"));
-  console.log(`[docs] shipped views: ${rules.views}; shipped MCP tools: ${rules.tools}`);
+test("every file the package SHIPS, and every document git tracks, states the real counts and the real provenance", () => {
+  const documents = docs.documentSet();
+  const packed = docs.packedFiles();
+  const tracked = docs.trackedMarkdown();
+  const rules = docs.documentRules();
+  const read = new Set(documents.map(([n]) => n));
+  console.log(`[docs] shipped views: ${rules.views}; §9 screens: ${rules.screens}; MCP tools: ${rules.tools}`);
+  console.log(`[docs] files \`npm pack --json\` reports: ${packed.length}`);
   console.log(`[docs] Markdown files \`git ls-files\` reports: ${tracked.length}`);
-  console.log(`[docs] documents READ: ${documents.length} (${markdown.length} Markdown + ${documents.length - markdown.length} shipped TypeScript)`);
-  console.log(`[docs] tables derived from migrations/: ${rules.tables.length}; journals a recipient may be read from: ${[...rules.permitted].join(", ")}`);
-  // EVERY tracked document, not most of them: the round-3 discovery reached 61
-  // of these and reported a clean sweep over the other 15.
-  const unread = tracked.filter((f) => !documents.some(([n]) => n === f));
-  assert.deepEqual(unread, [], "Markdown files git tracks that the guard does not read");
-  assert.equal(markdown.length, tracked.length, "the guard reads exactly the tracked Markdown set");
-  // the documents round 2's literal list and round 3's directory walk each left
-  // out, named here only as the FLOOR the discovery must clear
-  for (const required of ["SPEC.md", "README.md", "docs/API.md", "src/mcp.ts", "skills/README.md"]) {
-    assert.ok(documents.some(([n]) => n === required), `the discovery did not reach ${required}`);
+  console.log(`[docs] documents READ (the union, in full): ${documents.length}`);
+
+  // EVERY FILE OF BOTH SETS, not most of them. Round 3 reached 61 of 76 and
+  // reported a clean sweep over the other 15; round 4 read 127 documents and
+  // none of `package.json`, `bin/skillonomia.js`, `LICENSE`, the migrations or
+  // the schemas, because none of them is a Markdown file.
+  assert.deepEqual(packed.filter((f) => !read.has(f)), [], "files the package ships that the guard does not read");
+  assert.deepEqual(tracked.filter((f) => !read.has(f)), [], "Markdown files git tracks that the guard does not read");
+  for (const required of [
+    "package.json", "bin/skillonomia.js", "LICENSE", "migrations/0001_init.sql",
+    "schema/skill-package-v1.schema.json", "SPEC.md", "README.md", "docs/API.md",
+    "src/mcp.ts", "skills/README.md",
+  ]) {
+    assert.ok(read.has(required), `the discovery did not reach ${required}`);
   }
 
   const wrong: string[] = [];
-  const unverifiable: string[] = [];
-  let viewClaims = 0;
-  let toolClaims = 0;
+  let claims = 0;
   let records = 0;
   for (const [name, text] of documents) {
-    const reading = readDocument(name, text, rules);
+    const reading = docs.readDocument(name, text, rules);
     wrong.push(...reading.wrong);
-    unverifiable.push(...reading.unverifiable);
-    viewClaims += reading.view_claims;
-    toolClaims += reading.tool_claims;
+    claims += reading.count_claims;
     if (reading.record) records += 1;
   }
-  console.log(`[docs] review records (checked against the commits they name): ${records}; documents about this build: ${documents.length - records}`);
-  console.log(`[docs] explicit view-count claims: ${viewClaims}; tool-count claims: ${toolClaims}`);
-  // NEVER SILENT. A claim a record makes about a build whose code cannot be read
-  // back is PRINTED, with the document and the reason, rather than dropped.
-  console.log(`[docs] claims of a record whose reviewed build cannot be read back: ${unverifiable.length}`);
-  for (const u of unverifiable) console.log(`    ${u}`);
-  // A CHECK THAT PASSES ON SILENCE IS NOT A CHECK. Each family must have been
-  // exercised by at least one real document.
-  assert.ok(viewClaims > 0, "no document states the number of views");
-  assert.ok(toolClaims > 0, "no document states the number of MCP tools");
+  console.log(`[docs] review records BOUND to a commit this repository resolves: ${records}`);
+  console.log(`[docs] count claims read across the set: ${claims}`);
+  // A CHECK THAT PASSES ON SILENCE IS NOT A CHECK.
+  assert.ok(claims > 0, "no document states any of the guarded counts");
   assert.deepEqual(wrong, [], "documentation that does not describe the code");
 
   // …and every tool the adapter dispatches is named in the README's tool table,
@@ -3363,92 +2968,53 @@ test("every document this repository TRACKS states the real number of views, of 
   assert.deepEqual(undocumented, [], "MCP tools the README does not name");
 });
 
-test("the documentation guard is proved by planting the lie in EVERY discovered document in turn", () => {
-  // Round 2's mutation was ONE substitution in ONE document — `README.md` saying
-  // `six`. That proves the guard bites on `README.md`. It is the same shape of
-  // proof as testing one MCP tool and claiming the table: the document the lie
-  // was actually written into next was `SPEC.md`, which the guard never read.
-  //
-  // So the lie is planted in each discovered document IN TURN, one document at a
-  // time, and each family of claim is planted separately. A document the guard
-  // does not read leaves its own row of the table unkilled.
-  const documents = shippedDocuments();
-  const tracked = trackedMarkdown();
-  const rules = documentRules();
-
-  // The three families, each a sentence a document could actually contain. The
-  // provenance lie is the one that applies to EVERY document without exception:
-  // where a count is read from is a fact about this schema and not about any
-  // particular build, so a record is as answerable for it as a README.
-  const LIES: ReadonlyArray<{ family: string; text: string }> = [
-    { family: "view count", text: "\n\nThe dashboard has six read-only views.\n" },
-    { family: "tool count", text: "\n\nThe MCP adapter advertises twenty tools.\n" },
-    { family: "provenance", text: "\n\nThe recipient of a counted migration is read from `adoption_receipts`.\n" },
-  ];
-
-  const uncovered: string[] = [];
+test("the guard is proved by planting EVERY family of lie in EVERY discovered file in turn, and refusing all of them", () => {
+  // Round 2's mutation was ONE substitution in ONE document. Round 4's planted
+  // three families in 127 documents and let sixty of the 378 land in a bucket
+  // called `unverifiable`, which the test printed and then passed. THERE IS NO
+  // SUCH BUCKET HERE: a planting is caught or the test fails.
+  const documents = docs.documentSet();
+  const rules = docs.documentRules();
+  const survived: string[] = [];
   const rows: string[] = [];
   let planted = 0;
   let caught = 0;
-  let unverifiable = 0;
   for (const [name, text] of documents) {
-    const before = sha256(text);
-    // THE PRISTINE DOCUMENT IS CLEAN, or every catch below is a catch of
-    // something that was already there.
-    assert.deepEqual(readDocument(name, text, rules).wrong, [], `${name} fails the guard before any lie is planted`);
+    assert.deepEqual(docs.readDocument(name, text, rules).wrong, [], `${name} fails the guard before any lie is planted`);
     const bit: string[] = [];
-    for (const lie of LIES) {
+    for (const lie of docs.LIES) {
       planted += 1;
-      const mutated = text + lie.text;
-      // THE HARNESS PROVES ITS OWN SUBSTITUTION: the sentence must not already
-      // be there, it must appear exactly once after planting, and the bytes must
-      // move. A planting that changed nothing would "survive" for the wrong
-      // reason and look like a guard's failure.
-      assert.equal(text.includes(lie.text.trim()), false, `${name} already contains the ${lie.family} lie`);
-      assert.equal(mutated.split(lie.text.trim()).length - 1, 1, `the ${lie.family} lie is not in ${name} exactly once`);
-      assert.equal(mutated.length, text.length + lie.text.length, `planting the ${lie.family} lie in ${name} moved other bytes`);
-      assert.notEqual(sha256(mutated), before, `planting the ${lie.family} lie in ${name} changed no bytes`);
-      const reading = readDocument(name, mutated, rules);
-      const bitten = reading.wrong.length > 0;
-      if (bitten) {
+      const mutated = docs.plant(name, text, lie.text);
+      assert.notEqual(sha256(mutated), sha256(text), `planting the ${lie.family} lie in ${name} changed no bytes`);
+      if (docs.readDocument(name, mutated, rules).wrong.length > 0) {
         caught += 1;
         bit.push(lie.family);
-      } else if (reading.unverifiable.length > 0) {
-        unverifiable += 1;
+      } else {
+        survived.push(`${name}: the ${lie.family} lie survived`);
       }
     }
-    // EVERY DOCUMENT MUST BE BITTEN. Which family bites depends on what the
-    // document is — a review record's count claims are answered against the
-    // build it reviews — but a document the guard does not READ cannot be bitten
-    // by any of them, and that is the defect this proof exists for.
-    if (bit.length === 0) uncovered.push(name);
-    rows.push(`${name.padEnd(48)} ${sha256(text).slice(0, 10)} → ${sha256(text + LIES[0]!.text).slice(0, 10)}  bitten by: ${bit.join(", ") || "NOTHING"}`);
+    rows.push(`${name.padEnd(52)} ${sha256(text).slice(0, 10)}  bitten by ${bit.length}/${docs.LIES.length} families`);
   }
   for (const r of rows) console.log(`  ${r}`);
-  console.log(`[docs] documents planted in: ${documents.length} (${tracked.length} of them tracked Markdown), one at a time`);
-  console.log(`[docs] lies planted: ${planted} (${documents.length} documents × ${LIES.length} claim families)`);
-  console.log(`[docs] plantings the guard caught: ${caught}; refused as unverifiable against the reviewed build: ${unverifiable}`);
-  console.log(`[docs] documents no planted lie reached: ${uncovered.length}`);
-  assert.equal(planted, documents.length * LIES.length, "every document must be broken, not a sample");
-  assert.equal(rows.length, documents.length, "the table must have a row per document");
-  assert.ok(tracked.length >= 76, `the tracked Markdown set is ${tracked.length}, below the 76 this repository holds`);
-  assert.deepEqual(uncovered, [], "documents the guard does not read");
+  console.log(`[docs] files planted in: ${documents.length}, one at a time`);
+  console.log(`[docs] lies planted: ${planted} (${documents.length} files × ${docs.LIES.length} claim families)`);
+  console.log(`[docs] plantings REFUSED: ${caught}; plantings that survived: ${planted - caught}`);
+  assert.equal(planted, documents.length * docs.LIES.length, "every file must be broken, not a sample");
+  assert.deepEqual(survived.slice(0, 25), [], "planted lies the guard did not refuse");
+  assert.equal(caught, planted, "violations must equal plantings: there is no third bucket");
 });
 
-test("both earlier document sets are killed by the documents they could not reach", () => {
-  // TWO MUTANTS, one per round, each restored as it shipped.
+test("all three earlier document sets are killed by the files they could not reach", () => {
+  // THREE MUTANTS, one per round, each restored as it shipped.
   //
-  //   round 2: THREE DOCUMENTS, NAMED. The reviewer then wrote the lie into
-  //            `SPEC.md`, which is not one of the three.
-  //   round 3: `package.json`'s `files` plus the two directories `["", "docs/"]`.
-  //            It reached 61 of 76, and the reviewer wrote the lie into
-  //            `skills/README.md`, which is in neither.
-  //
-  // Both are run over the SAME planting the shipped guard is run over, and the
-  // documents each cannot see are listed by name.
+  //   round 2: THREE DOCUMENTS, NAMED. The lie went into `SPEC.md`.
+  //   round 3: `package.json`'s `files` plus the directories `["", "docs/"]`.
+  //            The lie went into `skills/README.md`.
+  //   round 4: `git ls-files -- '*.md'` plus the shipped `.ts`. The lie went
+  //            into `package.json`, which is neither.
   const root = new URL("../", import.meta.url);
-  const rules = documentRules();
-  const shipped = shippedDocuments();
+  const rules = docs.documentRules();
+  const shipped = docs.documentSet();
 
   const roundTwoSet = ["README.md", "docs/API.md", "src/mcp.ts"];
   const roundThreeSet: string[] = (() => {
@@ -3475,64 +3041,66 @@ test("both earlier document sets are killed by the documents they could not reac
     }
     return paths.sort();
   })();
+  const roundFourSet: string[] = (() => {
+    const manifest = JSON.parse(readFileSync(new URL("package.json", root), "utf8")) as { files: string[] };
+    const paths = [...docs.trackedMarkdown()];
+    const walk = (rel: string): void => {
+      for (const entry of readdirSync(new URL(rel, root), { withFileTypes: true })) {
+        const child = `${rel}${entry.name}${entry.isDirectory() ? "/" : ""}`;
+        if (entry.isDirectory()) walk(child);
+        else if (entry.name.endsWith(".ts") && !paths.includes(child)) paths.push(child);
+      }
+    };
+    for (const entry of manifest.files) {
+      if (entry.endsWith("/") && existsSync(new URL(entry, root))) walk(entry);
+    }
+    return paths.sort();
+  })();
 
   const LIE = "\n\nThe dashboard has six read-only views.\n";
-  const unreachable = (set: readonly string[]): string[] =>
-    shipped.filter(([n]) => n.endsWith(".md") && !set.includes(n)).map(([n]) => n);
+  const unreachable = (set: readonly string[]): string[] => shipped.filter(([n]) => !set.includes(n)).map(([n]) => n);
+  console.log(`[mutation] round-2 named list:    reads ${roundTwoSet.length}; files of this set it cannot see: ${unreachable(roundTwoSet).length}`);
+  console.log(`[mutation] round-3 files+walk:    reads ${roundThreeSet.length}; files of this set it cannot see: ${unreachable(roundThreeSet).length}`);
+  console.log(`[mutation] round-4 ls-files+ts:   reads ${roundFourSet.length}; files of this set it cannot see: ${unreachable(roundFourSet).length}`);
+  for (const n of unreachable(roundFourSet)) console.log(`    unreachable by round 4: ${n}`);
+  console.log(`[mutation] shipped npm-pack ∪ git: reads ${shipped.length}; files of this set it cannot see: ${unreachable(shipped.map(([n]) => n)).length}`);
 
-  const blindTwo = unreachable(roundTwoSet);
-  const blindThree = unreachable(roundThreeSet);
-  console.log(`[mutation] round-2 named list:    documents read ${roundTwoSet.length}; tracked Markdown it cannot see: ${blindTwo.length}`);
-  console.log(`[mutation] round-3 files+walk:    documents read ${roundThreeSet.length}; tracked Markdown it cannot see: ${blindThree.length}`);
-  for (const n of blindThree) console.log(`    unreachable by round 3: ${n}`);
-  console.log(`[mutation] shipped git discovery: documents read ${shipped.length}; tracked Markdown it cannot see: ${unreachable(shipped.map(([n]) => n)).length}`);
-
-  // THE PLANTING, in a document each mutant cannot reach, proved byte by byte.
   for (const [victim, mutantSet, label] of [
     ["SPEC.md", roundTwoSet, "round-2 named list"],
     ["skills/README.md", roundThreeSet, "round-3 files+walk"],
+    ["package.json", roundFourSet, "round-4 ls-files + shipped .ts"],
   ] as Array<[string, readonly string[], string]>) {
     const text = shipped.find(([n]) => n === victim)![1];
-    const mutated = text + LIE;
-    assert.equal(text.includes(LIE.trim()), false, `${victim} already carries the lie`);
-    assert.equal(mutated.split(LIE.trim()).length - 1, 1, `the lie is not in ${victim} exactly once`);
+    const mutated = docs.plant(victim, text, LIE);
     console.log(`[mutation] ${victim}  sha256 ${sha256(text).slice(0, 12)} → ${sha256(mutated).slice(0, 12)} (in memory only)`);
-    assert.notEqual(sha256(mutated), sha256(text));
-    // the SHIPPED guard bites…
     assert.ok(
-      readDocument(victim, mutated, rules).wrong.length > 0,
+      docs.readDocument(victim, mutated, rules).wrong.length > 0,
       `the shipped guard must see the lie in ${victim}, or the mutation proves nothing`,
     );
-    // …and the mutant never gets to look, because the document is not in its set
     killed(`the ${label} reached ${victim} after all`, () => {
       assert.ok(mutantSet.includes(victim), `${victim} is outside the ${label}, so that set never reads it`);
     });
   }
-  assert.ok(blindThree.length >= 15, `round 3 was blind to only ${blindThree.length} tracked documents`);
 });
 
-test("the document set REFUSES rather than passes where it cannot be enumerated", () => {
+test("both enumerations REFUSE rather than pass where they cannot answer", () => {
   // A guard that cannot list its subject and sweeps on regardless reports a
-  // clean run over nothing — the exact mechanism of silent staleness this file
-  // exists to remove. An unpacked tarball is not a repository, and the guard
-  // must say so rather than find zero violations in zero documents.
+  // clean run over nothing — the mechanism of silent staleness this file exists
+  // to remove. An unpacked tarball is not a repository, and the guard must say
+  // so rather than find zero violations in zero documents.
   const outside = mkdtempSync(join(tmpdir(), "skln-not-a-repo-"));
   temps.push(outside);
   writeFileSync(join(outside, "README.md"), "# a copy with no history\n\nThe dashboard has six read-only views.\n");
   console.log(`[refusal] a tree that is not a repository: ${outside} (1 Markdown file present)`);
   let refusal = "";
   try {
-    const found = trackedMarkdown(outside);
-    refusal = `NO REFUSAL: enumerated ${found.length} documents`;
+    refusal = `NO REFUSAL: enumerated ${docs.trackedMarkdown(outside).length} documents`;
   } catch (e) {
     refusal = String((e as Error).message);
   }
   console.log(`[refusal] ${refusal.slice(0, 150)}`);
   assert.ok(refusal.startsWith("REFUSED:"), `the guard did not refuse: ${refusal}`);
-  assert.match(refusal, /could not be ENUMERATED|listed no document/, "the refusal must name its cause");
-  // …and the refusal is a THROW, not a value a caller can mistake for an empty
-  // set: the sweep cannot continue past it.
-  assert.throws(() => trackedMarkdown(outside), DocumentSetUnavailable);
+  assert.throws(() => docs.trackedMarkdown(outside), docs.DocumentSetUnavailable);
   // The line above proves the enumeration REFUSES outside a repository. This
   // one proves ONLY that inside one it answers — that the refusal is about the
   // tree and not about the guard being broken everywhere. It is deliberately
@@ -3540,5 +3108,6 @@ test("the document set REFUSES rather than passes where it cannot be enumerated"
   // in `required` above, and a floor tied to the exact count would bring the
   // build down on an ordinary edit to the documentation while catching nothing
   // that list does not already catch.
-  assert.ok(trackedMarkdown().length >= 10, "the enumeration must work where there IS a repository");
+  assert.ok(docs.trackedMarkdown().length >= 10, "the enumeration must work where there IS a repository");
+  assert.ok(docs.packedFiles().length >= 70, "the shipped file set must be enumerable where there IS a package");
 });

@@ -73,6 +73,29 @@ export const DASHBOARD_VIEWS: readonly DashboardView[] = [
   "outcomes",
 ] as const;
 
+/**
+ * THE TWO NAMED SUBSETS, so a sentence about one of them has a value to be
+ * checked against instead of a number a reader has to trust.
+ *
+ * A document that speaks of five views [skln:count=phase_plan_views] is not
+ * necessarily wrong about a dashboard that has eleven: it may be naming the
+ * ones the internal phase plan lists, which are the first five of the array
+ * above, or §9's screens, which are the last five. Both sets are real, both are
+ * code, and neither had a name a document could point at — so a claim about
+ * either was checked against the wrong number or exempted for being old. The
+ * anchor in the sentence above is the mechanism [B-4] reads: it names the code
+ * constant the count belongs to, so the true value still has one source.
+ *
+ * They are SLICES of `DASHBOARD_VIEWS`, not second lists: a view added to the
+ * dashboard cannot silently fail to be in one of them, and a set that drifted
+ * from the array would be exactly the second source of truth this project keeps
+ * removing.
+ */
+export const PHASE_PLAN_VIEWS: readonly DashboardView[] = DASHBOARD_VIEWS.slice(0, 5);
+
+/** §9's five screens ([D-1]..[D-5]) — the last five, appended in that order. */
+export const FLEET_SCREENS: readonly DashboardView[] = DASHBOARD_VIEWS.slice(6);
+
 export function isDashboardView(v: unknown): v is DashboardView {
   return typeof v === "string" && (DASHBOARD_VIEWS as readonly string[]).includes(v);
 }
