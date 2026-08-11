@@ -4,6 +4,7 @@ import { join } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { assetRoot } from "./assets.ts";
+import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, type OutcomeContract } from "./outcome.ts";
 
 // Appendix E's schema files ship with the code; `assetRoot()` is what knows
 // where that is in each packaging layout (checkout, npm, compiled binary).
@@ -38,9 +39,11 @@ export function validateManifest(manifest: unknown): ValidationResult {
   };
 }
 
+export { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, type OutcomeCheck, type OutcomeContract } from "./outcome.ts";
+
 /**
  * D-2: the §4 `outcome` column's contract, and whether this manifest carries a
- * WHOLE one.
+ * WHOLE one — returned AS THE CONTRACT, never as a boolean.
  *
  * The schema declares the section optional, because `skill.create` accepts
  * packages an author signed elsewhere — including packages signed before this
@@ -49,28 +52,47 @@ export function validateManifest(manifest: unknown): ValidationResult {
  * is the one place that says what "carries one" means, so the packing gate and
  * the fleet dashboard cannot come to different answers about the same manifest.
  *
+ * A BOOLEAN IS WHAT THE EVALUATOR USED TO BE GIVEN, and it is the whole shape
+ * of the defect: `outcome_contract: true` said a definition of success existed
+ * somewhere and left the surface to decide what success WAS. The surface then
+ * read the reporter's own `result`. So this function hands back the document
+ * and `evaluateOutcome` executes its `check` [M-6].
+ *
  * The check is on the SHAPE, not on presence. A truncated contract — a `check`
- * with no `kind`, an empty `evidence`, a missing `unknown` — is not a definition
- * of success, and treating it as one would make `outcome` answer `no` on the
- * strength of a document that never said what success was. That is the [M-6]
- * failure with a manifest attached: completion read as success.
+ * with no `kind`, a `stdout_match` with no pattern, an empty `evidence`, a
+ * missing `unknown` — is not a definition of success, and treating it as one
+ * would make `outcome` answer on the strength of a document that never said
+ * what success was.
  */
-export const OUTCOME_CHECK_KINDS: readonly string[] = ["exit_code", "stdout_match", "artifact_exists", "command"];
-
-export function outcomeContractOf(manifest: unknown): { valid: boolean; reason: string } {
+export function outcomeContractOf(manifest: unknown): { valid: boolean; reason: string; contract: OutcomeContract | null } {
+  const no = (reason: string) => ({ valid: false, reason, contract: null });
   const c = (manifest as any)?.outcome_contract;
-  if (c === undefined || c === null) return { valid: false, reason: "no_outcome_contract" };
-  if (typeof c !== "object" || Array.isArray(c)) return { valid: false, reason: "outcome_contract_is_not_a_section" };
+  if (c === undefined || c === null) return no("no_outcome_contract");
+  if (typeof c !== "object" || Array.isArray(c)) return no("outcome_contract_is_not_a_section");
   if (typeof c.check !== "object" || c.check === null || !OUTCOME_CHECK_KINDS.includes(c.check.kind)) {
-    return { valid: false, reason: "outcome_contract_names_no_deterministic_check" };
+    return no("outcome_contract_names_no_deterministic_check");
   }
+  // THE PARAMETER OF ITS OWN KIND. A check that names a kind and none of its
+  // parameters cannot be executed, and a contract that cannot be executed
+  // defines nothing.
+  const shape = OUTCOME_CHECK_SHAPE[c.check.kind as string]!;
+  const parameter = c.check[shape.parameter];
+  const present =
+    shape.parameter === "exit_code"
+      ? Number.isInteger(parameter)
+      : typeof parameter === "string" && parameter.length > 0;
+  if (!present) return no(`outcome_contract_check_has_no_${shape.parameter}`);
   if (!Array.isArray(c.evidence) || c.evidence.length === 0 || !c.evidence.every((e: unknown) => typeof e === "string" && e.length > 0)) {
-    return { valid: false, reason: "outcome_contract_names_no_evidence" };
+    return no("outcome_contract_names_no_evidence");
   }
   if (typeof c.unknown !== "string" || c.unknown.length === 0) {
-    return { valid: false, reason: "outcome_contract_does_not_say_what_absent_evidence_means" };
+    return no("outcome_contract_does_not_say_what_absent_evidence_means");
   }
-  return { valid: true, reason: "outcome_contract" };
+  return {
+    valid: true,
+    reason: "outcome_contract",
+    contract: { check: { ...c.check }, evidence: [...c.evidence], unknown: c.unknown },
+  };
 }
 
 export function validatePayload(kind: keyof typeof validators, payload: unknown): ValidationResult {

@@ -1936,10 +1936,10 @@ installs none is conforming.
 
 ## Appendix D. NORMATIVE SQLite DDL
 
-The normative schema is given in **nine** migrations, applied in ascending file
+The normative schema is given in **ten** migrations, applied in ascending file
 order, and the live schema of a conforming registry is their sum. Each is
 embedded below verbatim and is byte-identical to the file this repository ships;
-a test asserts that for all nine. Schema version is tracked in
+a test asserts that for all ten. Schema version is tracked in
 `PRAGMA user_version` and nowhere else — there is no bookkeeping table, because
 the live schema is compared object for object against D.1 plus the deltas below,
 and a table this specification does not name would fail that comparison. A
@@ -2021,19 +2021,21 @@ transaction, so a half-migrated database is not reachable.
   before this migration names no recipient on the journal, contributes nothing
   to the count and is reported as unattributed. `PRAGMA user_version` = `9`.
 - **The live schema a fresh database reports is D.1 as edited by D.1b, D.1c,
-  D.1d, D.1e, D.1f and D.1i, plus the tables of D.1f, D.1g and D.1h**, and never
+  D.1d, D.1e, D.1f, D.1i and D.1j, plus the tables of D.1f, D.1g and D.1h**, and never
   D.1 alone. Object counts are 26 tables, 20 triggers and 13 indexes: D.1's 20
   tables plus D.1f's two, D.1g's two and D.1h's two, D.1's 10 triggers plus the
   two INSERT-only triggers of `transfers`, D.1g's four and D.1h's four, and
   D.1's 9 indexes plus `idx_transfers_version`, `idx_assignments_agent`,
   `idx_runtime_observations_agent` and `idx_observed_records_agent`. D.1i moves
   none of those counts: it rebuilds one table and re-creates its two triggers and
-  its partial index verbatim. After all nine migrations `PRAGMA user_version`
-  MUST report `9`. A test in this repository asserts the live schema equals D.1
-  plus exactly those eleven edits and the new objects of D.1f, D.1g and D.1h —
+  its partial index verbatim, and D.1j moves none of them either: it adds one
+  column to an existing table. After all ten migrations `PRAGMA user_version`
+  MUST report `10`. A test in this repository asserts the live schema equals D.1
+  plus exactly those twelve edits and the new objects of D.1f, D.1g and D.1h —
   the five of D.1b, the one of D.1c, the one of D.1d, the two of D.1e, the one
-  rebuilt table of D.1f and the one further edit of D.1i to that same rebuilt
-  table — so any further divergence fails.
+  rebuilt table of D.1f, the one further edit of D.1i to that same rebuilt table
+  and the one column D.1j adds to `observed_records` — so any further divergence
+  fails.
 
 ### D.1 NORMATIVE DDL (verbatim)
 
@@ -3084,6 +3086,58 @@ CREATE TRIGGER tg_revents_no_upd BEFORE UPDATE ON receipt_events BEGIN SELECT RA
 CREATE TRIGGER tg_revents_no_del BEFORE DELETE ON receipt_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 ```
 
+### D.1j NORMATIVE DELTA — tenth migration (verbatim)
+
+§4's `outcome` column is decided by a CONTRACT — the signed `outcome_contract`
+of the version's manifest. What the ninth migration left was a column,
+`observed_records.result`, that the REPORTING agent fills in, and a surface that
+read the verdict out of it. A principal holding the §6.2 `report_outcome` grant
+therefore declared its own success, which is the thing [M-6] exists to forbid:
+the end of a task is the end of its execution and not success on the merits.
+
+A contract is executed AGAINST something, and that something is the named values
+a run produced — the `evidence` the contract itself demands. Those values had
+nowhere to live. This migration gives them one. `result` stays and records what
+the reporter CLAIMED, so a reader can see a claim and its evaluation disagree;
+nothing computes `outcome` from it. Nothing is back-filled: a record written
+before this migration presents no evidence, so its `outcome` is `unknown` with a
+reason and never `no` [I-1], [A-0]. `PRAGMA user_version` = `10`.
+
+```sql
+-- 0010 — THE EVIDENCE A RUN PRESENTED, ON THE RECORD THAT REPORTS IT.
+--
+-- D-2 said `outcome` is decided by a CONTRACT. What shipped decided it by
+-- reading `observed_records.result` — a column the REPORTING agent fills in.
+-- A principal holding the §6.2 `report_outcome` grant therefore declared its own
+-- success and §4's `outcome` column printed it, which is the exact thing [M-6]
+-- forbids: a task that finished is not a task that succeeded, and a task nobody
+-- evaluated is not a task that failed.
+--
+-- The evaluator now executes the manifest's own `check`. A check has to be
+-- executed AGAINST something, and that something is the named values a run
+-- produced — the `evidence` the signed `outcome_contract` demands. Those values
+-- had nowhere to live: `result` was a verdict with no working, so the working
+-- is what this migration adds.
+--
+-- WHY A COLUMN AND NOT A TABLE. Evidence is a property of ONE output record, it
+-- is written once with that record and never joined to anything, and a table
+-- would add a second INSERT-only journal with its own triggers for a value that
+-- has exactly one owner. `result` stays: it is what the reporter CLAIMED, and
+-- keeping it is what lets a reader see a claim and its evaluation disagree.
+-- Nothing computes `outcome` from it any more.
+--
+-- NOTHING IS BACK-FILLED. A record written before this migration presents no
+-- evidence, so its skill's `outcome` is `unknown` with a reason — never `no`
+-- [I-1], [A-0]. That is the same rule `0004` and `0009` were written under.
+--
+-- The column is NULLable and bounded. It carries a JSON object of named values;
+-- it is never a transcript, and [I-7] is unchanged — the TEXT of a record is
+-- still reduced to markers at the boundary and never stored.
+
+ALTER TABLE observed_records ADD COLUMN evidence TEXT
+  CHECK(evidence IS NULL OR (length(evidence) BETWEEN 2 AND 4000));
+```
+
 ### D.2 SQL negative probes
 
 Every probe below is executed as a test in this repository; each names the
@@ -3097,7 +3151,7 @@ T-1 invalid enum event → CHECK reject · T-2 second terminal event (`failed` a
 
 Ships in the public schema repo as `skill-package-v1.schema.json`. `additionalProperties: false` at every object level; the ONLY extension point is `x_ext`, a free-form object. Two of its members carry normative meaning and are read by the §7.3 human-approval matrix: `x_ext.destructive`, a boolean, where the value `true` and no other declares destructive operations; and `x_ext.blast_radius`, a string, where the values `large`, `fleet` and `org` declare a large blast radius and any other value or absence does not. Neither is required, and neither is constrained by the schema beyond `x_ext` being an object; the schema does not enforce their types, so a `destructive` that is not exactly `true` and a `blast_radius` outside those three strings simply fail to hold their §7.3 condition. All other content of `x_ext` is ignored by verifier and linter except the secret scan of gate 2, which covers the whole manifest. Sub-schemas for adopter-side payloads (`environment_descriptor`, `failure_report`, `rollback_report`, `evidence`) are separate documents in the same repo with the same strictness.
 
-`outcome_contract` is OPTIONAL in the schema and REQUIRED by surface 14: a package produced by `skill.create_from_dir` MUST carry one, and `skill.create` — which accepts a package an author signed elsewhere, including packages signed before this section existed — MUST NOT demand one. It states what SUCCESS is for this skill, in one machine-readable form and skill-specific content: `check` names the deterministic test (`exit_code`, `stdout_match`, `artifact_exists` or `command`, the last being a check command that itself returns 0 or 1), `evidence` names the values that MUST be presented, and `unknown` says what the ABSENCE of evidence means — always rendered as `unknown` and never as a failure [I-1], [A-0]. It sits inside the SIGNED manifest, so the definition of success is covered by `manifest_hash` and by the signature over it: changing what counts as success requires issuing a NEW VERSION, and a registry MUST NOT accept a changed contract under a version already published. A package that carries no contract is reported with `outcome` = `unknown` and the reason `no_outcome_contract` — never `no`, because a task that finished is not a task that succeeded and a task nobody evaluated is not a task that failed.
+`outcome_contract` is OPTIONAL in the schema and REQUIRED by surface 14: a package produced by `skill.create_from_dir` MUST carry one, and `skill.create` — which accepts a package an author signed elsewhere, including packages signed before this section existed — MUST NOT demand one. It states what SUCCESS is for this skill, in one machine-readable form and skill-specific content: `check` names the deterministic test (`exit_code`, `stdout_match`, `artifact_exists` or `command`, the last being a check command that itself returns 0 or 1) TOGETHER WITH THE PARAMETER ITS KIND REQUIRES — a `stdout_match` with no pattern, an `artifact_exists` with no `artifact_path`, a `command` with no `command` and an `exit_code` with no `exit_code` name a method and withhold its subject, cannot be executed, and are `INVALID_SCHEMA`; `evidence` names the values that MUST be presented, and `unknown` says what the ABSENCE of evidence means — always rendered as `unknown` and never as a failure [I-1], [A-0]. It sits inside the SIGNED manifest, so the definition of success is covered by `manifest_hash` and by the signature over it: changing what counts as success requires issuing a NEW VERSION, and a registry MUST NOT accept a changed contract under a version already published. A package that carries no contract is reported with `outcome` = `unknown` and the reason `no_outcome_contract` — never `no`, because a task that finished is not a task that succeeded and a task nobody evaluated is not a task that failed. THE CONTRACT IS EXECUTED, and only an executed `check` moves the column. The evaluator receives the signed contract itself and runs its `check` against the `evidence` a run PRESENTED; `observation.report` accepts a stated `result` only together with that evidence. A principal holding the §6.2 `report_outcome` grant therefore states what it OBSERVED and never what the outcome WAS: without an executed check `outcome` is `unknown` with a machine-readable reason, never `yes` and never `no` on the strength of a reporter's word [M-6].
 
 ```json
 {
@@ -3196,7 +3250,13 @@ Ships in the public schema repo as `skill-package-v1.schema.json`. `additionalPr
           "exit_code": {"type": "integer", "minimum": 0, "maximum": 255},
           "stdout_match": {"type": "string", "minLength": 1, "maxLength": 400},
           "artifact_path": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)[^\\\\]+$", "maxLength": 400},
-          "command": {"type": "string", "minLength": 1, "maxLength": 400}}},
+          "command": {"type": "string", "minLength": 1, "maxLength": 400}},
+          "allOf": [
+            {"if": {"properties": {"kind": {"const": "exit_code"}}, "required": ["kind"]}, "then": {"required": ["exit_code"]}},
+            {"if": {"properties": {"kind": {"const": "stdout_match"}}, "required": ["kind"]}, "then": {"required": ["stdout_match"]}},
+            {"if": {"properties": {"kind": {"const": "artifact_exists"}}, "required": ["kind"]}, "then": {"required": ["artifact_path"]}},
+            {"if": {"properties": {"kind": {"const": "command"}}, "required": ["kind"]}, "then": {"required": ["command"]}}
+          ]},
         "evidence": {"type": "array", "minItems": 1, "maxItems": 20,
           "items": {"type": "string", "minLength": 1, "maxLength": 80}},
         "unknown": {"type": "string", "minLength": 10, "maxLength": 400}}},

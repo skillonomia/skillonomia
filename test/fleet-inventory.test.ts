@@ -38,6 +38,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { p4Fixture, reviewedVersion, rest, mcp, type P4Fixture } from "./p6-helpers.ts";
+import { OUTCOME_CHECK_KINDS } from "../src/outcome.ts";
 import { MCP_TOOLS } from "../src/mcp.ts";
 import { serve } from "../src/server.ts";
 import { TRANSFER_ACTION } from "../src/transfer.ts";
@@ -189,9 +190,18 @@ function record(over: Partial<ObservedRecord> = {}): ObservedRecord {
     at_ms: 1_754_000_000_000,
     marker: M1,
     result: "unknown",
+    evidence: null,
     ...over,
   };
 }
+
+/** A whole contract, so a test that means "this version defines success" says
+ *  WHAT success is instead of passing a boolean. */
+const CONTRACT = {
+  check: { kind: "stdout_match", stdout_match: "ALL GREEN" },
+  evidence: ["stdout"],
+  unknown: "no evaluated run of this skill was reported, which is not a failure of it",
+};
 
 function snapshot(records: ObservedRecord[], over: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
   return {
@@ -215,7 +225,7 @@ function evidence(over: Partial<CapabilityEvidence> = {}): CapabilityEvidence {
     registered: { value: "yes", reason: null, window_detail: "a temporary tree built by the test harness" },
     intent: null,
     snapshot: null,
-    outcome_contract: false,
+    outcome_contract: null,
     ...over,
   };
 }
@@ -678,28 +688,47 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
     record({ role: "output", call_id: "c-2", result: "unknown" }),
   ];
   // with a contract, and a completed run nothing evaluated
-  const completed = capabilityColumns(evidence({ snapshot: snapshot(pair), outcome_contract: true }));
+  const completed = capabilityColumns(evidence({ snapshot: snapshot(pair), outcome_contract: CONTRACT }));
   assert.equal(cellOf(completed, "invoked").value, "yes");
   assert.equal(cellOf(completed, "outcome").value, "unknown", "completion was reported as success [M-6]");
-  assert.equal(cellOf(completed, "outcome").reason, "run_completed_without_evaluation");
+  assert.match(String(cellOf(completed, "outcome").reason), /never_executed/);
 
   // with no contract at all, `outcome` says which of the two unknowns it is
-  const noContract = capabilityColumns(evidence({ snapshot: snapshot(pair), outcome_contract: false }));
+  const noContract = capabilityColumns(evidence({ snapshot: snapshot(pair), outcome_contract: null }));
   assert.equal(cellOf(noContract, "outcome").value, "unknown");
   assert.equal(cellOf(noContract, "outcome").reason, "no_outcome_contract");
 
-  // and an evaluated run moves it in both directions, so the column is live
+  // A REPORTER'S OWN WORD MOVES NOTHING, in either direction. This is the half
+  // that used to be the defect: `result` is filled in by the agent doing the
+  // reporting, and §4's column printed it as the verdict.
+  for (const declared of ["success", "failure"] as const) {
+    const word = capabilityColumns(
+      evidence({
+        snapshot: snapshot([record({ role: "call", call_id: `w-${declared}` }), record({ role: "output", call_id: `w-${declared}`, result: declared })]),
+        outcome_contract: CONTRACT,
+      }),
+    );
+    assert.equal(cellOf(word, "outcome").value, "unknown", `a principal's own \`${declared}\` was published as a verdict`);
+  }
+
+  // and an EXECUTED check moves it in both directions, so the column is live
   const good = capabilityColumns(
     evidence({
-      snapshot: snapshot([record({ role: "call", call_id: "c-3" }), record({ role: "output", call_id: "c-3", result: "success" })]),
-      outcome_contract: true,
+      snapshot: snapshot([
+        record({ role: "call", call_id: "c-3" }),
+        record({ role: "output", call_id: "c-3", result: "unknown", evidence: { stdout: "the suite says ALL GREEN" } }),
+      ]),
+      outcome_contract: CONTRACT,
     }),
   );
   assert.equal(cellOf(good, "outcome").value, "yes");
   const bad = capabilityColumns(
     evidence({
-      snapshot: snapshot([record({ role: "call", call_id: "c-4" }), record({ role: "output", call_id: "c-4", result: "failure" })]),
-      outcome_contract: true,
+      snapshot: snapshot([
+        record({ role: "call", call_id: "c-4" }),
+        record({ role: "output", call_id: "c-4", result: "unknown", evidence: { stdout: "3 failures" } }),
+      ]),
+      outcome_contract: CONTRACT,
     }),
   );
   assert.equal(cellOf(bad, "outcome").value, "no", "a contract that ran and failed is a `no`, not an `unknown`");
@@ -1067,15 +1096,15 @@ test("[M-7] the assessment logic imports no filesystem, and the whole pipeline r
   // over records that came from nowhere at all, with no root configured.
   const records = [
     record({ role: "call", call_id: "wire-1" }),
-    record({ role: "output", call_id: "wire-1", result: "success" }),
+    record({ role: "output", call_id: "wire-1", result: "success", evidence: { stdout: "ALL GREEN" } }),
   ];
-  const columns = capabilityColumns(evidence({ snapshot: snapshot(records), outcome_contract: true }));
+  const columns = capabilityColumns(evidence({ snapshot: snapshot(records), outcome_contract: CONTRACT }));
   assert.equal(cellOf(columns, "invoked").value, "yes");
   assert.equal(cellOf(columns, "outcome").value, "yes");
   const rows = scanArrivals(records, [subject(V1)]);
   assert.equal(rows.length, 1, "[A-6]'s tuple came out of a message, not a file");
   assert.deepEqual(Object.keys(rows[0]!).sort(), [
-    "agent_id", "at_ms", "call_id", "marker", "result", "runtime", "skill_version_id",
+    "agent_id", "at_ms", "call_id", "evidence", "marker", "result", "runtime", "skill_version_id",
   ]);
   assert.equal(NO_FLEET_OBSERVATIONS.snapshotFor("any-agent"), null, "the shipped default observes nothing");
   assert.equal(NO_INVENTORY_ROOTS.rootFor("any-agent"), null, "the shipped default walks nowhere");
@@ -1115,7 +1144,7 @@ test("[M-7] the two V-1 sources answer the SAME interfaces, and neither is visib
     join(root, "session.jsonl"),
     [
       JSON.stringify({ type: "custom_tool_call", call_id: "t-1", at_ms: 1_754_000_000_000, text: `running ${M1}` }),
-      JSON.stringify({ type: "custom_tool_call_output", call_id: "t-1", at_ms: 1_754_000_000_500, text: `done ${M1}`, result: "success" }),
+      JSON.stringify({ type: "custom_tool_call_output", call_id: "t-1", at_ms: 1_754_000_000_500, text: `done ${M1}`, result: "success", evidence: { exit_code: 0 } }),
     ].join("\n") + "\n",
   );
   // roots that know ONE agent, so that `null` — "nothing was searched" — is a
@@ -1306,7 +1335,7 @@ test("a reported PAIR moves the observation column, and a lone record does not",
     window_detail: "one session file of the last hour",
     records: [
       { role: "call", call_id: "x-2", at_ms: 1_754_000_001_000, text: `starting ${d.marker}` },
-      { role: "output", call_id: "x-2", at_ms: 1_754_000_002_000, text: `done ${d.marker}`, result: "success" },
+      { role: "output", call_id: "x-2", at_ms: 1_754_000_002_000, text: `done ${d.marker}`, result: "success", evidence: { exit_code: 0 } },
     ],
   });
   assert.equal(paired.status, 201, paired.raw);
@@ -1355,7 +1384,7 @@ test("[I-7] a record's TEXT does not reach the database, the answer or a log lin
     window_detail: "one session file",
     records: [
       { role: "call", call_id: "s-1", text: `${SECRET} running ${d.marker} from ${PATH}` },
-      { role: "output", call_id: "s-1", text: `${SECRET} done ${d.marker}`, result: "success" },
+      { role: "output", call_id: "s-1", text: `${SECRET} done ${d.marker}`, result: "success", evidence: { exit_code: 0 } },
     ],
   });
   assert.equal(res.status, 201, res.raw);
@@ -1512,7 +1541,7 @@ test("MCP and REST answer identically, and the write replays byte for byte", () 
     window_detail: "one session file",
     records: [
       { role: "call", call_id: "m-1", text: `run ${d.marker}` },
-      { role: "output", call_id: "m-1", text: `ok ${d.marker}`, result: "success" },
+      { role: "output", call_id: "m-1", text: `ok ${d.marker}`, result: "success", evidence: { exit_code: 0 } },
     ],
     idempotency_key: "obs-1",
   };
@@ -1675,4 +1704,162 @@ test("every capability kind is answered for an agent with no configured root —
   assert.equal(caps.body.dead_weight.registered.value, 0, "nothing was found because nothing was walked");
   assert.equal(caps.body.inventory_reason, "no_inventory_root_configured");
   fx.db.close();
+});
+
+// ===========================================================================
+// 9. [D-2]/[M-6] — THE CONTRACT IS EXECUTED, AND THE REPORTER'S WORD IS NOT
+// ===========================================================================
+//
+// The probes in `test/p14-r5-probes.test.ts` were written before the fix and
+// failed on the tree that carried the defect; that is their discrimination
+// proof. What is here is the OTHER half the rules of this round demand: NEW
+// probes, not the ones that found it, and a sweep over the WHOLE cross product
+// rather than over the three cases somebody thought of.
+
+/** Every kind of check the code declares, each with the parameter its own kind
+ *  requires and the evidence that satisfies or refutes it. Derived from
+ *  `OUTCOME_CHECK_SHAPE`, so a kind added tomorrow fails this test until its
+ *  row is written. */
+const CHECK_CASES: ReadonlyArray<{
+  kind: string;
+  contract: any;
+  satisfying: Record<string, unknown>;
+  refuting: Record<string, unknown>;
+}> = [
+  {
+    kind: "exit_code",
+    contract: { check: { kind: "exit_code", exit_code: 0 }, evidence: ["exit_code"], unknown: "nothing was evaluated, which is not a failure" },
+    satisfying: { exit_code: 0 },
+    refuting: { exit_code: 3 },
+  },
+  {
+    kind: "stdout_match",
+    contract: { check: { kind: "stdout_match", stdout_match: "ALL GREEN" }, evidence: ["stdout"], unknown: "nothing was evaluated, which is not a failure" },
+    satisfying: { stdout: "the suite says ALL GREEN" },
+    refuting: { stdout: "3 failures" },
+  },
+  {
+    kind: "artifact_exists",
+    contract: { check: { kind: "artifact_exists", artifact_path: "out/report.json" }, evidence: ["artifacts"], unknown: "nothing was evaluated, which is not a failure" },
+    satisfying: { artifacts: ["out/report.json", "out/log.txt"] },
+    refuting: { artifacts: ["out/log.txt"] },
+  },
+  {
+    kind: "command",
+    contract: { check: { kind: "command", command: "./verify.sh" }, evidence: ["command", "exit_code"], unknown: "nothing was evaluated, which is not a failure" },
+    satisfying: { command: "./verify.sh", exit_code: 0 },
+    refuting: { command: "./verify.sh", exit_code: 1 },
+  },
+];
+
+test("[D-2] over the WHOLE cross product, `outcome` moves only where a check was EXECUTED", () => {
+  // THE SET IS THE CROSS PRODUCT, not a sample: every declared check kind ×
+  // every word a reporter can write × every state its evidence can be in.
+  // A kind added to `OUTCOME_CHECK_SHAPE` and not to `CHECK_CASES` fails here.
+  assert.deepEqual(
+    CHECK_CASES.map((c) => c.kind).sort(),
+    [...OUTCOME_CHECK_KINDS].sort(),
+    "a check kind the code declares that this sweep does not exercise",
+  );
+  const WORDS = ["success", "failure", "unknown"] as const;
+  const EVIDENCE: Array<[string, (c: (typeof CHECK_CASES)[number]) => Record<string, unknown> | null]> = [
+    ["none at all", () => null],
+    ["empty", () => ({})],
+    ["for another check", () => ({ some_other_value: 1 })],
+    ["satisfying", (c) => c.satisfying],
+    ["refuting", (c) => c.refuting],
+  ];
+  let swept = 0;
+  let moved = 0;
+  const wrong: string[] = [];
+  for (const c of CHECK_CASES) {
+    for (const word of WORDS) {
+      for (const [label, build] of EVIDENCE) {
+        swept += 1;
+        const presented = build(c);
+        const columns = capabilityColumns(
+          evidence({
+            snapshot: snapshot([
+              record({ role: "call", call_id: `x-${swept}` }),
+              record({ role: "output", call_id: `x-${swept}`, result: word, evidence: presented }),
+            ]),
+            outcome_contract: c.contract,
+          }),
+        );
+        const cell = cellOf(columns, "outcome");
+        // THE ONLY TWO WAYS OUT OF `unknown`, and they are both the check.
+        const expected = label === "satisfying" ? "yes" : label === "refuting" ? "no" : "unknown";
+        if (cell.value !== expected) {
+          wrong.push(`${c.kind} · reporter said \`${word}\` · evidence ${label} → ${cell.value} (${cell.reason}), expected ${expected}`);
+        }
+        if (cell.value !== "unknown") moved += 1;
+        // an answer that is not `yes` always carries a reason a machine can read
+        if (cell.value !== "yes") assert.ok((cell.reason ?? "").length > 0, "an answer with no reason");
+      }
+    }
+  }
+  console.log(`[D-2] combinations swept: ${swept} (${CHECK_CASES.length} check kinds × ${WORDS.length} reported words × ${EVIDENCE.length} evidence states)`);
+  console.log(`[D-2] combinations where \`outcome\` left \`unknown\`: ${moved} — every one of them an EXECUTED check`);
+  assert.deepEqual(wrong, [], "the reporter's word, or the absence of evidence, moved the outcome column");
+  assert.equal(moved, CHECK_CASES.length * WORDS.length * 2, "the column must move for the two evidence states that run the check, and only those");
+});
+
+test("[D-2] the evaluator that trusts the reporter is killed on the same records", async () => {
+  // THE MUTATION IS THE CODE THAT SHIPPED, restored exactly: `outcome` read
+  // `paired[last].result`, the field the reporting agent fills in.
+  const m = await mutant(
+    "fleet.ts",
+    [
+      `    const verdict = evaluateOutcome(ev.outcome_contract, paired[paired.length - 1]!.evidence);
+    outcomeValue = verdict.value;
+    outcomeReason = verdict.value === "yes" ? null : verdict.reason;`,
+      `    const last = paired[paired.length - 1]!;
+    if (last.result === "success") {
+      outcomeValue = "yes";
+      outcomeReason = null;
+    } else if (last.result === "failure") {
+      outcomeValue = "no";
+      outcomeReason = "contract_not_satisfied";
+    } else {
+      outcomeReason = "run_completed_without_evaluation";
+    }`,
+    ],
+  );
+  const declared = [
+    record({ role: "call", call_id: "trust-1" }),
+    record({ role: "output", call_id: "trust-1", result: "success" }),
+  ];
+  const shipped = cellOf(capabilityColumns(evidence({ snapshot: snapshot(declared), outcome_contract: CONTRACT })), "outcome");
+  const mutated = m.capabilityColumns(evidence({ snapshot: snapshot(declared), outcome_contract: CONTRACT })).find(
+    (c: any) => c.column === "outcome",
+  );
+  console.log(`  [shipped] a reporter's own \`success\`, no evidence → ${shipped.value} (${shipped.reason})`);
+  console.log(`  [mutant ] the same records                        → ${mutated.value} (${mutated.reason ?? "—"})`);
+  assert.equal(shipped.value, "unknown", "the shipped build must refuse, or the mutation proves nothing");
+  killed("the evaluator that reads `result` answered `unknown` anyway", () => {
+    assert.equal(mutated.value, "unknown");
+  });
+});
+
+test("[D-2] the outcome path does not READ the field a reporter fills in", () => {
+  // THE STRUCTURAL HALF, over the source rather than over an answer: whatever
+  // the column computes, it must not be computing it from `result`. A future
+  // edit that reintroduces the read fails here before any test of behaviour.
+  const logic = readFileSync(new URL("../src/fleet.ts", import.meta.url), "utf8");
+  const start = logic.indexOf("// ---- outcome:");
+  assert.ok(start > 0, "the outcome section of `capabilityColumns` was renamed");
+  const section = logic
+    .slice(start, logic.indexOf("out.push(column(\"outcome\"", start))
+    .replace(/^\s*\/\/.*$/gm, " ");
+  console.log(`[D-2] the outcome section of src/fleet.ts, comments removed: ${section.split("\n").filter((l) => l.trim().length > 0).length} lines of code`);
+  assert.ok(!/\.result\b/.test(section), "the outcome column reads `result` — the field the REPORTING agent fills in [M-6]");
+  assert.match(section, /evaluateOutcome\(/, "…and it must reach the answer by executing the contract");
+  // …and the evaluator itself never READS it either. The comparison is over
+  // the CODE, with the comments removed: `src/outcome.ts` describes the defect
+  // it was written against and naming a thing is not reading it.
+  const code = readFileSync(new URL("../src/outcome.ts", import.meta.url), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/^\s*\/\/.*$/gm, " ");
+  console.log(`[D-2] src/outcome.ts, comments removed: ${code.split("\n").filter((l) => l.trim().length > 0).length} lines of code`);
+  assert.ok(!/\bresult\b/.test(code), "src/outcome.ts reads `result`, which is not one of its inputs");
 });

@@ -464,6 +464,11 @@ export function recordsUnder(site: TranscriptSite, agentId: string): ObservedRec
             at_ms: Number.isInteger(line.at_ms) ? (line.at_ms as number) : null,
             marker,
             result,
+            // A TRANSCRIPT ON DISK PRESENTS NO EVIDENCE. It carries the lines a
+            // runtime wrote, not the named values a contract asks for, so the
+            // adapter answers `null` rather than inventing one — and `outcome`
+            // stays `unknown` with a reason, never `no` [I-1], [A-0].
+            evidence: null,
           });
         }
       }

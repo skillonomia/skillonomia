@@ -28,7 +28,7 @@ import { withIdempotency, type IdempotentOutcome } from "./idempotency.ts";
 import { RateLimiter, DEFAULT_RATE_LIMIT, type RateLimitOptions } from "./ratelimit.ts";
 import { ArchiveError, readPackage, computeIntegrity, writeTar, type PackageFiles } from "./archive.ts";
 import { parseJsonStrict, utf8Decode, jcsBytes } from "./jcs.ts";
-import { outcomeContractOf, validateManifest } from "./manifest.ts";
+import { outcomeContractOf, validateManifest, type OutcomeContract } from "./manifest.ts";
 import { decodeCursor, encodeCursor as encodeCursorToken, type Cursor } from "./cursor.ts";
 import { manifestHash, contentHash, signManifest } from "./signing.ts";
 import {
@@ -4444,11 +4444,19 @@ export class Registry {
    *  contract the `outcome` column is `unknown` — a finished task is not a
    *  success [M-6] — and the shape rule lives in one place (src/manifest.ts) so
    *  the packing gate and this dashboard cannot answer differently. */
-  private hasOutcomeContract(manifestJson: string): boolean {
+  /**
+   * THE CONTRACT ITSELF, not a boolean saying one exists.
+   *
+   * A boolean was the defect: it told §4's `outcome` column that a definition
+   * of success existed somewhere, and the column then read the verdict off
+   * `records[].result` — the field the REPORTING agent fills in. The evaluator
+   * receives the signed document and executes its `check` [D-2], [M-6].
+   */
+  private outcomeContract(manifestJson: string): OutcomeContract | null {
     try {
-      return outcomeContractOf(JSON.parse(manifestJson)).valid;
+      return outcomeContractOf(JSON.parse(manifestJson)).contract;
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -4730,7 +4738,7 @@ export class Registry {
           registered: input.registered,
           intent: input.view ? { state: input.view.intent_state, source: input.view.intent_state_source } : null,
           snapshot: ctx.snapshot,
-          outcome_contract: manifestJson ? this.hasOutcomeContract(manifestJson) : false,
+          outcome_contract: manifestJson ? this.outcomeContract(manifestJson) : null,
         })
       : [];
     return {
@@ -4888,8 +4896,29 @@ export class Registry {
       const callId =
         typeof r.call_id === "string" && r.call_id.length > 0 && r.call_id.length <= 200 ? r.call_id : null;
       const atMs = Number.isInteger(r.at_ms) && (r.at_ms as number) > 0 ? (r.at_ms as number) : null;
-      const result = r.result === "success" || r.result === "failure" ? r.result : "unknown";
-      for (const marker of all) reduced.push({ role, call_id: callId, at_ms: atMs, marker, result });
+
+      // A VERDICT IS NOT A THING A PRINCIPAL MAY STATE ON ITS OWN [M-6], [D-2].
+      //
+      // `result` used to be taken as written and §4's `outcome` column printed
+      // it, so the holder of a `report_outcome` grant declared its own success.
+      // A report may still SAY what it observed — that is what a self-report is
+      // — but a stated `success` or `failure` must arrive WITH THE EVIDENCE
+      // that establishes it, and the evidence, not the word, is what the
+      // contract's `check` is executed against. A word with no working is
+      // refused here rather than stored and quietly ignored downstream: a
+      // reporter that believes its verdict was recorded would otherwise never
+      // learn that nothing read it.
+      const evidence = evidenceOf(r.evidence);
+      const stated = r.result === "success" || r.result === "failure";
+      if (stated && evidence === null) {
+        throw new ApiError(
+          "INVALID_SCHEMA",
+          "records[].result states an outcome, so records[].evidence (an object of named values) is required: " +
+            "the registry executes the version's signed `outcome_contract` against the evidence and never takes a verdict on a principal's word (D-2, [M-6])",
+        );
+      }
+      const result = stated ? (r.result as "success" | "failure") : "unknown";
+      for (const marker of all) reduced.push({ role, call_id: callId, at_ms: atMs, marker, result, evidence });
     }
 
     const actorRow = loadPrincipal(this.db, auth.agent_id);
@@ -5299,6 +5328,43 @@ function parseMinAdopted(v: SearchParams["min_adopted"]): number | undefined {
 
 
 /** §6's rating half of the trust threshold: a score on the 1–5 `ratings` scale. */
+/**
+ * The named values a report presents, or `null`.
+ *
+ * Bounded and shallow on purpose: evidence is `exit_code`, `stdout`,
+ * `artifacts`, `command` — the values a `check` reads — and never a transcript.
+ * A value that is not a scalar or a list of scalars is REFUSED rather than
+ * truncated, and an oversized object is refused rather than trimmed: evidence
+ * this registry edited would not be the evidence the run produced.
+ *
+ * [I-7] is unchanged. The TEXT of a record is still reduced to §5 markers at
+ * the boundary and never stored; what is stored here is what the contract
+ * NAMED, which the author wrote into a signed manifest.
+ */
+const EVIDENCE_LIMIT = 4000;
+
+function evidenceOf(raw: unknown): Record<string, unknown> | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ApiError("INVALID_SCHEMA", "records[].evidence must be an object of named values");
+  }
+  const out: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (name.length === 0 || name.length > 80) throw new ApiError("INVALID_SCHEMA", "records[].evidence names are 1..80 characters");
+    const scalar = (v: unknown): boolean => typeof v === "string" || typeof v === "number" || typeof v === "boolean";
+    if (!scalar(value) && !(Array.isArray(value) && value.every(scalar))) {
+      throw new ApiError("INVALID_SCHEMA", `records[].evidence.${name} must be a scalar or a list of scalars`);
+    }
+    out[name] = value;
+  }
+  if (Object.keys(out).length === 0) return null;
+  const encoded = JSON.stringify(out);
+  if (encoded.length > EVIDENCE_LIMIT) {
+    throw new ApiError("LIMIT_EXCEEDED", `records[].evidence is at most ${EVIDENCE_LIMIT} bytes encoded`);
+  }
+  return out;
+}
+
 function parseMinRating(v: SearchParams["min_rating"]): number | undefined {
   if (v === undefined) return undefined;
   const n = typeof v === "number" ? v : Number(v);

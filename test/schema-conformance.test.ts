@@ -221,6 +221,23 @@ const NEW_OBJECTS: ReadonlyArray<{ file: string; names: readonly string[] }> = [
 
 const ADDED_OBJECT_COUNT = NEW_OBJECTS.reduce((n, m) => n + m.names.length, 0);
 
+/**
+ * Edits a later migration makes to an object a later migration CREATED — as
+ * opposed to `AUTHORIZED_P5_EDITS`, which are edits to D.1's own statements.
+ *
+ * D.1j (`0010`) adds one column to `observed_records`, which `0008` created. The
+ * expected statement is therefore `0008`'s text with SQLite's own ALTER TABLE
+ * result appended, and it is written here rather than derived so that a SECOND
+ * column added tomorrow fails this test until somebody writes down why.
+ */
+const AUTHORIZED_LATER_EDITS: ReadonlyArray<{ readonly object: string; readonly from: string; readonly to: string }> = [
+  {
+    object: "observed_records",
+    from: "server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0) )",
+    to: "server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0) , evidence TEXT CHECK(evidence IS NULL OR (length(evidence) BETWEEN 2 AND 4000)))",
+  },
+];
+
 function applyAuthorizedEdits(normalized: string): string {
   let out = normalized;
   for (const { from, to } of AUTHORIZED_P5_EDITS) {
@@ -283,7 +300,8 @@ test("live schema is Appendix D.1 plus exactly the Appendix D.1b delta", () => {
     for (const n of names) {
       const sql = fromMigration.get(n);
       assert.ok(sql, `${file} does not create ${n}`);
-      expectedExtra.push(sql);
+      const later = AUTHORIZED_LATER_EDITS.find((e) => e.object === n);
+      expectedExtra.push(later === undefined ? sql : sql.replace(later.from, later.to));
     }
   }
   assert.deepEqual(
@@ -310,14 +328,15 @@ test("object counts: 26 tables, 20 triggers, 13 indexes; no bookkeeping table", 
   // re-created verbatim by the D.1f and D.1i rebuilds, not additions — which is
   // why those counts move by exactly the new objects, and why a SECOND rebuild
   // moves them by nothing at all.
+  // D.1j adds a COLUMN and no object, so none of these three move.
   assert.equal(count("table"), 26);
   assert.equal(count("trigger"), 20);
   assert.equal(count("index"), 13);
   const uv = db.prepare("PRAGMA user_version").get() as { user_version: number };
   assert.equal(
     uv.user_version,
-    9,
-    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull; tracked in user_version",
+    10,
+    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against; tracked in user_version",
   );
 });
 

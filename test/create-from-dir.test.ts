@@ -44,7 +44,7 @@ import {
 import { SYSTEM_KID_PREFIX, systemKidFor } from "../src/system-key.ts";
 import { readFileSync } from "node:fs";
 import { manifestHash, verifyJws } from "../src/signing.ts";
-import { OUTCOME_CHECK_KINDS, outcomeContractOf, validateManifest } from "../src/manifest.ts";
+import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, outcomeContractOf, validateManifest } from "../src/manifest.ts";
 import { capabilityColumns } from "../src/fleet.ts";
 
 // --------------------------------------------------------------- source trees
@@ -1100,7 +1100,20 @@ test("skill.create still takes a locally packed, locally signed archive", async 
 /** One agent's evidence for the §4 `outcome` column, with the two dials this
  *  test turns: whether the version declares a contract, and what the last
  *  PAIRED call/output record reported. */
-function outcomeEvidence(input: { contract: boolean; result: "success" | "failure" | "unknown" }): any {
+/** The contract these tests mean when they say "a package with a contract". */
+const OUTCOME_CONTRACT_FOR_EVIDENCE = {
+  check: { kind: "stdout_match", stdout_match: "ALL GREEN" },
+  evidence: ["stdout"],
+  unknown: "no evaluated run of this skill was reported, which is not a failure of it",
+};
+
+function outcomeEvidence(input: {
+  contract: boolean;
+  result: "success" | "failure" | "unknown";
+  /** the named values the run PRESENTED. Absent = the reporter presented none,
+   *  which is the case that used to be read as a verdict. */
+  evidence?: Record<string, unknown> | null;
+}): any {
   const marker = "SKLN1-AAAAAAAAAAAAAAAA";
   const at = NOW;
   return {
@@ -1115,11 +1128,11 @@ function outcomeEvidence(input: { contract: boolean; result: "success" | "failur
       proposal_inventory_complete: false,
       records_read: 2,
       records: [
-        { role: "call", call_id: "c-1", at_ms: at, marker, result: "unknown" },
-        { role: "output", call_id: "c-1", at_ms: at, marker, result: input.result },
+        { role: "call", call_id: "c-1", at_ms: at, marker, result: "unknown", evidence: null },
+        { role: "output", call_id: "c-1", at_ms: at, marker, result: input.result, evidence: input.evidence ?? null },
       ],
     },
-    outcome_contract: input.contract,
+    outcome_contract: input.contract ? OUTCOME_CONTRACT_FOR_EVIDENCE : null,
   };
 }
 
@@ -1262,27 +1275,36 @@ test("D-2: the contract is inside the signature, so success cannot be redefined 
   fx.db.close();
 });
 
-test("D-2: a package WITH a contract answers the §4 `outcome` column; one without answers `unknown` with its reason", () => {
-  // The evaluator is the shipped one. What this proves is the WIRING: the
-  // contract reaches it THROUGH THE MANIFEST, which is the half D-2 asked for,
-  // and the answer for a package without one is `unknown` with a machine-
-  // readable reason and never `no` [I-1], [A-0].
-  const withContract = capabilityColumns(
-    outcomeEvidence({ contract: true, result: "success" }),
-  ).find((c) => c.column === "outcome")!;
-  const failed = capabilityColumns(outcomeEvidence({ contract: true, result: "failure" })).find((c) => c.column === "outcome")!;
-  const finished = capabilityColumns(outcomeEvidence({ contract: true, result: "unknown" })).find((c) => c.column === "outcome")!;
-  const noContract = capabilityColumns(outcomeEvidence({ contract: false, result: "success" })).find((c) => c.column === "outcome")!;
-  console.log(`[D-2] contract + success  → outcome=${withContract.value} (${withContract.reason ?? "—"})`);
-  console.log(`[D-2] contract + failure  → outcome=${failed.value} (${failed.reason ?? "—"})`);
-  console.log(`[D-2] contract + finished → outcome=${finished.value} (${finished.reason ?? "—"})`);
-  console.log(`[D-2] no contract         → outcome=${noContract.value} (${noContract.reason ?? "—"})`);
-  assert.equal(withContract.value, "yes", "a contract and an evaluated success must answer `yes`");
-  assert.equal(failed.value, "no", "a contract and an evaluated failure must answer `no`");
-  // [M-6]: the run FINISHED and nothing evaluated it. That is not a success and
-  // it is not a failure either.
+test("D-2: the contract is EXECUTED, and a principal's own word is not a verdict", () => {
+  // WHAT THIS TEST USED TO ASSERT, and why the change is the point. It read
+  // `contract + result: "success"` → `yes`, where `result` is the field the
+  // REPORTING agent fills in. That is a principal with the §6.2
+  // `report_outcome` grant declaring its own success, which is what [M-6]
+  // exists to forbid. The evaluator now executes the contract's `check`
+  // against the EVIDENCE a run presented, and `result` is not one of its
+  // inputs in either direction.
+  const outcome = (e: any) => capabilityColumns(e).find((c) => c.column === "outcome")!;
+  const satisfied = outcome(outcomeEvidence({ contract: true, result: "unknown", evidence: { stdout: "the suite says ALL GREEN" } }));
+  const unsatisfied = outcome(outcomeEvidence({ contract: true, result: "unknown", evidence: { stdout: "3 failures" } }));
+  const declaredSuccess = outcome(outcomeEvidence({ contract: true, result: "success" }));
+  const declaredFailure = outcome(outcomeEvidence({ contract: true, result: "failure" }));
+  const finished = outcome(outcomeEvidence({ contract: true, result: "unknown" }));
+  const noContract = outcome(outcomeEvidence({ contract: false, result: "success", evidence: { stdout: "ALL GREEN" } }));
+  console.log(`[D-2] contract + evidence that satisfies the check → outcome=${satisfied.value} (${satisfied.reason ?? "—"})`);
+  console.log(`[D-2] contract + evidence that does not           → outcome=${unsatisfied.value} (${unsatisfied.reason ?? "—"})`);
+  console.log(`[D-2] contract + the reporter's own \`success\`     → outcome=${declaredSuccess.value} (${declaredSuccess.reason ?? "—"})`);
+  console.log(`[D-2] contract + the reporter's own \`failure\`     → outcome=${declaredFailure.value} (${declaredFailure.reason ?? "—"})`);
+  console.log(`[D-2] contract + a run nothing evaluated          → outcome=${finished.value} (${finished.reason ?? "—"})`);
+  console.log(`[D-2] no contract at all                          → outcome=${noContract.value} (${noContract.reason ?? "—"})`);
+  assert.equal(satisfied.value, "yes", "an executed check that was satisfied must answer `yes`");
+  assert.equal(unsatisfied.value, "no", "an executed check that was not satisfied must answer `no`");
+  // THE TWO THAT USED TO BE A VERDICT. Neither the word `success` nor the word
+  // `failure` moves this column: without evidence the check was never run.
+  assert.equal(declaredSuccess.value, "unknown", "a principal declared its own success and the registry printed it");
+  assert.equal(declaredFailure.value, "unknown", "a principal declared its own failure and the registry printed it");
+  assert.match(String(declaredSuccess.reason), /never_executed/);
   assert.equal(finished.value, "unknown");
-  assert.equal(finished.reason, "run_completed_without_evaluation");
+  assert.match(String(finished.reason), /never_executed/);
   assert.equal(noContract.value, "unknown", "a package with no contract must never answer `no` [A-0]");
   assert.equal(noContract.reason, "no_outcome_contract");
 });
@@ -1317,8 +1339,20 @@ test("D-2: the shape rule has ONE home, and the packing gate and the dashboard r
   }
   // every check kind the schema admits is a kind this rule admits, and the list
   // is the CODE's, not a copy kept here
+  // EVERY DECLARED KIND, with the parameter ITS OWN KIND REQUIRES — and the
+  // parameter's name comes from the code's table, not from a copy kept here.
   for (const kind of OUTCOME_CHECK_KINDS) {
-    assert.equal(outcomeContractOf({ outcome_contract: { ...whole, check: { kind } } }).valid, true, `${kind} is a declared check kind`);
+    const shape = OUTCOME_CHECK_SHAPE[kind]!;
+    const parameter = shape.parameter === "exit_code" ? 0 : shape.parameter === "artifact_path" ? "out/report.json" : "a value";
+    assert.equal(
+      outcomeContractOf({ outcome_contract: { ...whole, check: { kind, [shape.parameter]: parameter } } }).valid,
+      true,
+      `${kind} is a declared check kind`,
+    );
+    // …and the SAME kind WITHOUT its parameter defines nothing.
+    const truncated = outcomeContractOf({ outcome_contract: { ...whole, check: { kind } } });
+    console.log(`  ${kind.padEnd(18)} without \`${shape.parameter}\` → valid=${truncated.valid} reason=${truncated.reason}`);
+    assert.equal(truncated.valid, false, `a \`${kind}\` check with no \`${shape.parameter}\` was accepted as a definition of success`);
   }
   console.log(`[D-2] declared check kinds: ${OUTCOME_CHECK_KINDS.length} — ${OUTCOME_CHECK_KINDS.join(", ")}`);
 });

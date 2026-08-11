@@ -45,6 +45,8 @@
 // The assessment logic receives RECORDS. Reading a filesystem lives in the
 // ADAPTER (src/fleet-scan.ts) and nowhere else, and a test greps this file to
 // keep it that way — the same discipline `src/marker.ts` already holds to.
+import { evaluateOutcome, type OutcomeContract, type OutcomeVerdict } from "./outcome.ts";
+export { evaluateOutcome, type OutcomeContract, type OutcomeVerdict };
 import {
   MARKER_RE,
   assessArrival,
@@ -384,13 +386,22 @@ export interface ObservedRecord {
   /** one §5 arrival marker. A record carrying several yields several records. */
   marker: string;
   /**
-   * What the runtime said about the result, on an `output` record.
+   * What the reporter SAID about the result, on an `output` record.
    *
-   * `unknown` is the default and the honest one: a task that ended is a task
-   * that ended [M-6]. `success` is written only where an evaluation contract
-   * says what success was.
+   * IT IS NOT THE VERDICT AND NOTHING READS IT AS ONE. It is kept because a
+   * self-report is a record of what an agent claimed, and throwing that away
+   * would lose the only thing that lets a reader see a claim and its evaluation
+   * disagree. §4's `outcome` column is computed by `evaluateOutcome` from the
+   * signed contract and the EVIDENCE below, and this field is not one of its
+   * inputs — grep for it: the outcome path does not mention it.
    */
   result: "success" | "failure" | "unknown";
+  /**
+   * THE NAMED VALUES THE RUN PRODUCED — what the contract's `check` is executed
+   * against. `null` where the reporter presented none, which is the ordinary
+   * case and yields `unknown`, never `no`.
+   */
+  evidence: Record<string, unknown> | null;
 }
 
 /**
@@ -484,7 +495,11 @@ export interface ArrivalScanRow {
   /** the id that BOUND the pair. Never null on a row: without one there is no
    *  pair, and without a pair there is no row [M-5]. */
   call_id: string;
+  /** what the reporter CLAIMED. Never an input to `outcome` — see below. */
   result: "success" | "failure" | "unknown";
+  /** the named values the run produced, which is what a contract is executed
+   *  against. `null` where none was presented. */
+  evidence: Record<string, unknown> | null;
 }
 
 /**
@@ -544,6 +559,7 @@ export function scanArrivals(
       at_ms: out.at_ms ?? null,
       call_id: pair.call_id,
       result: out.result === "success" || out.result === "failure" ? out.result : "unknown",
+      evidence: out.evidence ?? null,
     });
   }
   rows.sort(
@@ -601,9 +617,18 @@ export interface CapabilityEvidence {
   intent: { state: string; source: string } | null;
   /** the agent's observation, or null when nothing has ever been reported */
   snapshot: RuntimeSnapshot | null;
-  /** whether the version declares an evaluation contract (D-2). Without one,
-   *  `outcome` is `unknown` — a finished task is not a success [M-6]. */
-  outcome_contract: boolean;
+  /**
+   * THE CONTRACT ITSELF (D-2), or `null` where the version declares none.
+   *
+   * It used to be a BOOLEAN — "a definition of success exists somewhere" — and
+   * that is how a principal's own word became a verdict: with the boolean true,
+   * `outcome` was read off `records[].result`, a field the REPORTING agent
+   * fills in. A principal holding the §6.2 `report_outcome` grant therefore
+   * declared its own success, which is the exact thing [M-6] exists to forbid.
+   *
+   * The evaluator now receives the contract and EXECUTES its `check`.
+   */
+  outcome_contract: OutcomeContract | null;
 }
 
 function windowOf(snapshot: RuntimeSnapshot | null): { window: SelectionWindow; window_detail: string } {
@@ -790,21 +815,20 @@ export function capabilityColumns(ev: CapabilityEvidence): StateColumn[] {
     throw new Error("the §5 assessment found a pair the §6 scanner does not: one of the two is reporting something other than what it says");
   }
 
-  // ---- outcome: a contract, or `unknown`. Completion is not success [M-6].
+  // ---- outcome: THE CONTRACT IS EXECUTED, or the answer is `unknown` [M-6].
+  //
+  // WHAT THIS USED TO BE, because the shape of the defect matters more than the
+  // fix. `outcome` was read off `paired[last].result` — a field the REPORTING
+  // agent fills in — whenever a boolean said a contract existed. A principal
+  // with the §6.2 `report_outcome` grant declared its own success and this
+  // column printed it. `result` is not read here any more, in either direction:
+  // a reporter's `success` is not a `yes`, and its `failure` is not a `no`.
   let outcomeValue: Trivalent = "unknown";
   let outcomeReason: string | null = ev.outcome_contract ? "no_evaluated_run" : "no_outcome_contract";
   if (ev.outcome_contract && paired.length > 0) {
-    const last = paired[paired.length - 1]!;
-    if (last.result === "success") {
-      outcomeValue = "yes";
-      outcomeReason = null;
-    } else if (last.result === "failure") {
-      outcomeValue = "no";
-      outcomeReason = "contract_not_satisfied";
-    } else {
-      // the run FINISHED and nothing evaluated it. That is not a success.
-      outcomeReason = "run_completed_without_evaluation";
-    }
+    const verdict = evaluateOutcome(ev.outcome_contract, paired[paired.length - 1]!.evidence);
+    outcomeValue = verdict.value;
+    outcomeReason = verdict.value === "yes" ? null : verdict.reason;
   }
   out.push(column("outcome", "outcome", runtime, outcomeValue, outcomeReason, "transcript", win));
 

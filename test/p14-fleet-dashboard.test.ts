@@ -282,7 +282,7 @@ function screens(): Screens {
     records: [
       { role: "proposal", call_id: "p-1", at_ms: NOW, text: `offered ${alpha.marker}` },
       { role: "call", call_id: "k-1", at_ms: NOW, text: `starting ${alpha.marker}` },
-      { role: "output", call_id: "k-1", at_ms: NOW + 10, text: `done ${alpha.marker}`, result: "success" },
+      { role: "output", call_id: "k-1", at_ms: NOW + 10, text: `done ${alpha.marker}`, result: "success", evidence: { exit_code: 0 } },
     ],
   });
   assert.equal(live.status, 201, live.raw);

@@ -94,7 +94,13 @@
           "exit_code": {"type": "integer", "minimum": 0, "maximum": 255},
           "stdout_match": {"type": "string", "minLength": 1, "maxLength": 400},
           "artifact_path": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)[^\\\\]+$", "maxLength": 400},
-          "command": {"type": "string", "minLength": 1, "maxLength": 400}}},
+          "command": {"type": "string", "minLength": 1, "maxLength": 400}},
+          "allOf": [
+            {"if": {"properties": {"kind": {"const": "exit_code"}}, "required": ["kind"]}, "then": {"required": ["exit_code"]}},
+            {"if": {"properties": {"kind": {"const": "stdout_match"}}, "required": ["kind"]}, "then": {"required": ["stdout_match"]}},
+            {"if": {"properties": {"kind": {"const": "artifact_exists"}}, "required": ["kind"]}, "then": {"required": ["artifact_path"]}},
+            {"if": {"properties": {"kind": {"const": "command"}}, "required": ["kind"]}, "then": {"required": ["command"]}}
+          ]},
         "evidence": {"type": "array", "minItems": 1, "maxItems": 20,
           "items": {"type": "string", "minLength": 1, "maxLength": 80}},
         "unknown": {"type": "string", "minLength": 10, "maxLength": 400}}},

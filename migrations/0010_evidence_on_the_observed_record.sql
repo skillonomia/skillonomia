@@ -1,0 +1,32 @@
+-- 0010 — THE EVIDENCE A RUN PRESENTED, ON THE RECORD THAT REPORTS IT.
+--
+-- D-2 said `outcome` is decided by a CONTRACT. What shipped decided it by
+-- reading `observed_records.result` — a column the REPORTING agent fills in.
+-- A principal holding the §6.2 `report_outcome` grant therefore declared its own
+-- success and §4's `outcome` column printed it, which is the exact thing [M-6]
+-- forbids: a task that finished is not a task that succeeded, and a task nobody
+-- evaluated is not a task that failed.
+--
+-- The evaluator now executes the manifest's own `check`. A check has to be
+-- executed AGAINST something, and that something is the named values a run
+-- produced — the `evidence` the signed `outcome_contract` demands. Those values
+-- had nowhere to live: `result` was a verdict with no working, so the working
+-- is what this migration adds.
+--
+-- WHY A COLUMN AND NOT A TABLE. Evidence is a property of ONE output record, it
+-- is written once with that record and never joined to anything, and a table
+-- would add a second INSERT-only journal with its own triggers for a value that
+-- has exactly one owner. `result` stays: it is what the reporter CLAIMED, and
+-- keeping it is what lets a reader see a claim and its evaluation disagree.
+-- Nothing computes `outcome` from it any more.
+--
+-- NOTHING IS BACK-FILLED. A record written before this migration presents no
+-- evidence, so its skill's `outcome` is `unknown` with a reason — never `no`
+-- [I-1], [A-0]. That is the same rule `0004` and `0009` were written under.
+--
+-- The column is NULLable and bounded. It carries a JSON object of named values;
+-- it is never a transcript, and [I-7] is unchanged — the TEXT of a record is
+-- still reduced to markers at the boundary and never stored.
+
+ALTER TABLE observed_records ADD COLUMN evidence TEXT
+  CHECK(evidence IS NULL OR (length(evidence) BETWEEN 2 AND 4000));

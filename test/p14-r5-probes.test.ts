@@ -371,7 +371,7 @@ const CONTRACT = {
 };
 
 function record(over: Partial<ObservedRecord> = {}): ObservedRecord {
-  return { agent_id: AGENT, runtime: "codex", role: "output", call_id: "c-1", at_ms: 1, marker: MARKER, result: "unknown", ...over };
+  return { agent_id: AGENT, runtime: "codex", role: "output", call_id: "c-1", at_ms: 1, marker: MARKER, result: "unknown", evidence: null, ...over };
 }
 
 function snapshot(records: ObservedRecord[]): RuntimeSnapshot {

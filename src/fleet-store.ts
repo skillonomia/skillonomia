@@ -59,6 +59,8 @@ export interface ObservedRecordRow {
   at_ms: number | null;
   marker: string;
   result: ObservedRecord["result"];
+  /** the named values the run presented, as stored JSON. `0010`. */
+  evidence: string | null;
   server_at_ms: number;
 }
 
@@ -115,7 +117,7 @@ export function recordObservationInTx(db: Db, input: RecordObservationInput): { 
   );
   const insert = db.prepare(
     `INSERT INTO observed_records(id, observation_id, agent_id, runtime, role, call_id, at_ms, marker, result,
-       server_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+       evidence, server_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
   );
   // ONE CLOCK, NOT A CLOCK PLUS AN OFFSET. `ulid` is already monotonic within a
   // millisecond, so repeating `input.nowMs` orders the records of one report by
@@ -136,6 +138,7 @@ export function recordObservationInTx(db: Db, input: RecordObservationInput): { 
       r.at_ms,
       r.marker,
       r.result,
+      r.evidence === null ? null : JSON.stringify(r.evidence),
       input.nowMs,
     );
   }
@@ -158,10 +161,23 @@ export function latestObservation(db: Db, agentId: string): RuntimeObservationRo
 export function recordsOfObservation(db: Db, observationId: string): ObservedRecordRow[] {
   return db
     .prepare(
-      `SELECT id, observation_id, agent_id, runtime, role, call_id, at_ms, marker, result, server_at_ms
+      `SELECT id, observation_id, agent_id, runtime, role, call_id, at_ms, marker, result, evidence, server_at_ms
          FROM observed_records WHERE observation_id=? ORDER BY id`,
     )
     .all(observationId) as ObservedRecordRow[];
+}
+
+/** Stored evidence, back into named values. Unreadable stored bytes are `null`
+ *  — an evidence nobody can read is an evidence nobody presented, and that is
+ *  `unknown` downstream, never `no`. */
+function parseEvidence(stored: string | null): Record<string, unknown> | null {
+  if (stored === null) return null;
+  try {
+    const parsed = JSON.parse(stored);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
 }
 
 function trivalent(v: number | null): Trivalent {
@@ -204,6 +220,7 @@ export class StoredObservations implements FleetObservationSource, RuntimeRecord
         at_ms: r.at_ms,
         marker: r.marker,
         result: r.result,
+        evidence: parseEvidence(r.evidence),
       })),
     };
   }

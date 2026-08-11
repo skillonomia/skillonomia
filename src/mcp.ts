@@ -617,7 +617,7 @@ export const MCP_TOOLS = [
   {
     name: "observation.report",
     description:
-      "§6 part A: file what was OBSERVED at one agent's runtime — the model, whether a session is live, when it was last active, and the runtime records themselves. THIS TOOL WRITES. The V-1 requirements list it among the READING surfaces and that classification is contradicted here deliberately: a self-report is an agent telling this registry something, telling is storing, and this call appends to two INSERT-only tables and moves the observation column of every deployment of that agent. [I-8] requires a tool's hints to be TRUE, and `readOnlyHint: true` on a call that writes is a false hint a client acts on by not asking. Requires a `report_outcome` grant scoped to `local_agent` (§6.2). `window` and `window_detail` are REQUIRED: a report that does not say what it looked at is a number with no method [I-3], and it is refused rather than given a default. The records' TEXT is reduced to §5 arrival markers at this boundary and is NOT stored, logged or returned [I-7]. A report can establish that a version RAN; it can never establish that one did not.",
+      "§6 part A: file what was OBSERVED at one agent's runtime — the model, whether a session is live, when it was last active, and the runtime records themselves. THIS TOOL WRITES. The V-1 requirements list it among the READING surfaces and that classification is contradicted here deliberately: a self-report is an agent telling this registry something, telling is storing, and this call appends to two INSERT-only tables and moves the observation column of every deployment of that agent. [I-8] requires a tool's hints to be TRUE, and `readOnlyHint: true` on a call that writes is a false hint a client acts on by not asking. Requires a `report_outcome` grant scoped to `local_agent` (§6.2). `window` and `window_detail` are REQUIRED: a report that does not say what it looked at is a number with no method [I-3], and it is refused rather than given a default. The records' TEXT is reduced to §5 arrival markers at this boundary and is NOT stored, logged or returned [I-7]. A report can establish that a version RAN; it can never establish that one did not. A record MAY state a `result`, and a stated `success` or `failure` REQUIRES `evidence` — an object of the named values the version's signed `outcome_contract` demands. The verdict is not taken from the word: the registry executes the contract's own `check` against the evidence, so a principal holding this grant states what it OBSERVED and never what the outcome WAS [M-6], [D-2]. Without an executed check the §4 `outcome` column reads `unknown` with a reason, never `no`.",
     // [I-8]: one step of the loop — `report_outcome` — and it WRITES. The hints
     // say so. `destructiveHint` is FALSE: the tables are INSERT-only, so a filed
     // report cannot be withdrawn AND cannot disturb one already filed, which is
@@ -653,6 +653,7 @@ export const MCP_TOOLS = [
               marker: { type: "string" },
               text: { type: "string" },
               result: { type: "string", enum: ["success", "failure", "unknown"] },
+              evidence: { type: "object" },
             },
             required: ["role"],
           },

@@ -235,14 +235,14 @@ function recordSets(marker: string): Array<{ name: string; records: Array<Record
     { name: "(a) a lone call", records: [{ role: "call", call_id: "A", at_ms: NOW, text: `starting ${marker}` }], expect: "unknown" },
     {
       name: "(b) a lone output",
-      records: [{ role: "output", call_id: "A", at_ms: NOW, text: `done ${marker}`, result: "success" }],
+      records: [{ role: "output", call_id: "A", at_ms: NOW, text: `done ${marker}`, result: "success", evidence: { exit_code: 0 } }],
       expect: "unknown",
     },
     {
       name: "(c) a call and an output under DIFFERENT call_ids",
       records: [
         { role: "call", call_id: "A", at_ms: NOW, text: `starting ${marker}` },
-        { role: "output", call_id: "B", at_ms: NOW + 10, text: `done ${marker}`, result: "success" },
+        { role: "output", call_id: "B", at_ms: NOW + 10, text: `done ${marker}`, result: "success", evidence: { exit_code: 0 } },
       ],
       expect: "unknown",
     },
@@ -250,7 +250,7 @@ function recordSets(marker: string): Array<{ name: string; records: Array<Record
       name: "(d) a call and an output under ONE call_id",
       records: [
         { role: "call", call_id: "A", at_ms: NOW, text: `starting ${marker}` },
-        { role: "output", call_id: "A", at_ms: NOW + 10, text: `done ${marker}`, result: "success" },
+        { role: "output", call_id: "A", at_ms: NOW + 10, text: `done ${marker}`, result: "success", evidence: { exit_code: 0 } },
       ],
       expect: "yes",
     },
