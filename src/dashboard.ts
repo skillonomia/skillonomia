@@ -118,12 +118,48 @@ export interface DashboardNotice {
   detail: string;
 }
 
+/**
+ * A CELL — AND THE REASON THIS TYPE EXISTS AT ALL.
+ *
+ * `Cell` is a string the type system will not let you WRITE. It is a branded
+ * string: the brand is a `unique symbol` no module can name, so the only
+ * expressions of this type are the ones the cell constructors in
+ * `src/fleet-dashboard.ts` return. A section's `rows` hold `Cell`s and nothing
+ * else, which makes
+ *
+ *     rows.push({ avg_rating: `${score}` })      // ← a bare value
+ *
+ * A COMPILE ERROR rather than a finding. That is the whole point, and it is
+ * what the two rounds before this one could not achieve: they widened a pattern
+ * that recognised a figure — integers, then decimals — and a reviewer answered
+ * each widening with a notation it had not been shown (`.75`, `⅔`, `٤٫٥`, `1:2`,
+ * `1×10³`, `5‰`, `0x10`, `12·5`). The set of notations a person can write a
+ * number in is not enumerable, so a guard that enumerates it is behind by
+ * whatever the next reviewer thinks of. THE SET OF WAYS A VALUE CAN REACH THE
+ * PAGE is enumerable — there are the constructors, and there is nothing else —
+ * so that is the set this build closes.
+ *
+ * A deliberate `as unknown as Cell` still compiles, as every brand in every
+ * language does. It is not a way past the guard: a cell forged that way carries
+ * no `kind:` and `auditCells` refuses it over the finished bytes. The two
+ * layers are independent — one at compile time over the source, one at run time
+ * over the rendered page — and a value has to defeat BOTH to reach a reader
+ * without its method.
+ */
+declare const CELL_BRAND: unique symbol;
+export type Cell = string & { readonly [CELL_BRAND]: "skillonomia.dashboard.cell" };
+
 export interface DashboardSection {
   key: string;
   title: string;
   /** the API field names this section renders, in column order */
   fields: string[];
-  rows: Array<Record<string, unknown>>;
+  /**
+   * The rows, as CELLS. Not `unknown`, and not `string`: the render layer
+   * accepts only values a cell constructor produced, so a template cannot put a
+   * bare number, a bare id or a raw `null` on the page.
+   */
+  rows: Array<Record<string, Cell>>;
   /** shown when `rows` is empty, so an empty view is still legible */
   empty: string;
   /**

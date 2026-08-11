@@ -168,6 +168,7 @@ import { demoMode } from "./seed.ts";
 import {
   DASHBOARD_VIEWS,
   isDashboardView,
+  type Cell,
   type DashboardNotice,
   type DashboardPayload,
   type DashboardSection,
@@ -181,6 +182,8 @@ import {
   capabilitySections,
   fleetSections,
   instant,
+  labelCell,
+  VERSIONS_BOUNDARY,
   list,
   numberCell,
   observationCell,
@@ -2627,18 +2630,33 @@ export class Registry {
   // ---------------------------------------------------------------------
 
   /** A count over one of this registry's own journals [I-3]. */
-  private countCell(value: number, state: CapabilityState, boundary: string, reason: string | null = null): string {
+  private countCell(value: number, state: CapabilityState, boundary: string, reason: string | null = null): Cell {
     return numberCell(registryCount(value, state, boundary, reason));
   }
 
   /** A count that could not be taken, and the reason it could not [I-3]. */
-  private unknownCell(state: CapabilityState, boundary: string, reason: string): string {
+  private unknownCell(state: CapabilityState, boundary: string, reason: string): Cell {
     return numberCell(registryUnknown(state, boundary, reason));
   }
 
   /** One observed value of this registry's own records, with its method. */
-  private registryCell(observation: string, answer: string | null, why: string, boundary: string): string {
+  private registryCell(observation: string, answer: string | null, why: string, boundary: string): Cell {
     return observationCell({ observation, answer, why, source: "registry", window: "all_time", boundary });
+  }
+
+  /**
+   * AN IDENTIFIER OR A NAME, published as a cell like everything else.
+   *
+   * These used to be `plain(...)` — a raw string dropped straight into a row.
+   * That was the last path by which a value reached a page carrying no method
+   * at all, and it is the path a reviewer walked eight numeric notations
+   * through: a raw cell says nothing about itself, so the sweep had nothing to
+   * check and no way to tell a slug from a figure. `rows` now hold `Cell`s and
+   * `plain` returns a `string`, so this conversion is not a convention anybody
+   * has to remember — the compiler refuses the old shape.
+   */
+  private labelCell(observation: string, answer: string | null, why: string, boundary: string): Cell {
+    return labelCell(observation, answer, why, boundary);
   }
 
   private payload(
@@ -2658,11 +2676,11 @@ export class Registry {
     const rows = items.map((i) => {
       const r = i.registry.reputation;
       return {
-        skill_id: plain(i.skill_id, "unknown"),
-        slug: plain(i.slug, "unnamed"),
-        skill_version_id: plain(i.skill_version_id, "unknown"),
-        semantic_version: plain(i.semantic_version, "unknown"),
-        state: plain(i.state, "unknown"),
+        skill_id: this.labelCell("skill_id", i.skill_id, "recorded_by_the_registry", VERSIONS_BOUNDARY),
+        slug: this.labelCell("slug", i.slug, "recorded_by_the_registry", VERSIONS_BOUNDARY),
+        skill_version_id: this.labelCell("skill_version_id", i.skill_version_id, "minted_by_the_registry", VERSIONS_BOUNDARY),
+        semantic_version: this.labelCell("semantic_version", i.semantic_version, "declared_by_the_author", MANIFEST_BOUNDARY),
+        state: this.labelCell("state", i.state, "recorded_by_the_registry", VERSIONS_BOUNDARY),
         // [I-1]: a version that declares no risk level is `unknown`, in the
         // word, and never a dash — a dash reads as "there is no risk".
         risk_level: this.registryCell(
@@ -2671,7 +2689,7 @@ export class Registry {
           i.risk_level ? "declared_by_the_manifest" : "this version's manifest declares no risk level",
           MANIFEST_BOUNDARY,
         ),
-        access_policy: plain(i.access_policy, "unknown"),
+        access_policy: this.labelCell("access_policy", i.access_policy, "recorded_by_the_registry", VERSIONS_BOUNDARY),
         warning: this.registryCell(
           "warning",
           i.warning ?? null,
@@ -2738,7 +2756,7 @@ export class Registry {
         WHERE r.skill_version_id = ? AND e.event = 'adopted' AND e.evidence_json IS NOT NULL
         ORDER BY e.server_at_ms, r.id`,
     );
-    const rows: Array<Record<string, unknown>> = [];
+    const rows: Array<Record<string, Cell>> = [];
     for (const item of items) {
       const evs = stmt.all(item.skill_version_id) as Array<{
         receipt_id: string;
@@ -2758,12 +2776,12 @@ export class Registry {
           gates = ["unreadable evidence payload"];
         }
         rows.push({
-          slug: plain(item.slug, "unnamed"),
-          skill_version_id: plain(item.skill_version_id, "unknown"),
-          semantic_version: plain(item.semantic_version, "unknown"),
-          state: plain(item.state, "unknown"),
-          receipt_id: plain(e.receipt_id, "unknown"),
-          adopter_agent_id: plain(e.adopter_agent_id, "unknown"),
+          slug: this.labelCell("slug", item.slug, "recorded_by_the_registry", VERSIONS_BOUNDARY),
+          skill_version_id: this.labelCell("skill_version_id", item.skill_version_id, "minted_by_the_registry", VERSIONS_BOUNDARY),
+          semantic_version: this.labelCell("semantic_version", item.semantic_version, "declared_by_the_author", MANIFEST_BOUNDARY),
+          state: this.labelCell("state", item.state, "recorded_by_the_registry", VERSIONS_BOUNDARY),
+          receipt_id: this.labelCell("receipt_id", e.receipt_id, "recorded_by_the_receipt_journal", RECEIPT_JOURNAL),
+          adopter_agent_id: this.labelCell("adopter_agent_id", e.adopter_agent_id, "recorded_by_the_receipt_journal", RECEIPT_JOURNAL),
           event_seq: this.countCell(e.event_seq, "outcome", RECEIPT_JOURNAL, "the position of this event in its chain"),
           recorded_at: this.registryCell(
             "recorded_at",
@@ -2840,7 +2858,7 @@ export class Registry {
     const events = this.db.prepare(
       "SELECT event, event_seq, server_at_ms FROM receipt_events WHERE adoption_receipt_id=? ORDER BY event_seq",
     );
-    const rows: Array<Record<string, unknown>> = [];
+    const rows: Array<Record<string, Cell>> = [];
     for (const r of all) {
       if (rows.length === limit) break;
       // exactly the `GET /v1/receipts/{id}` rule: adopter, skill owner, or an
@@ -2849,12 +2867,12 @@ export class Registry {
       const evs = events.all(r.receipt_id) as Array<{ event: string; event_seq: number; server_at_ms: number }>;
       const stalled = isStalled(this.db, r.receipt_id, this.now());
       rows.push({
-        receipt_id: plain(r.receipt_id, "unknown"),
-        adoption_request_id: plain(r.adoption_request_id, "unknown"),
-        skill_version_id: plain(r.skill_version_id, "unknown"),
-        slug: plain(r.slug, "unnamed"),
-        adopter_agent_id: plain(r.adopter_agent_id, "unknown"),
-        derived_state: plain(derivedState(this.db, r.receipt_id), "unknown"),
+        receipt_id: this.labelCell("receipt_id", r.receipt_id, "recorded_by_the_receipt_journal", RECEIPT_JOURNAL),
+        adoption_request_id: this.labelCell("adoption_request_id", r.adoption_request_id, "recorded_by_the_request_queue", REQUEST_BOUNDARY),
+        skill_version_id: this.labelCell("skill_version_id", r.skill_version_id, "minted_by_the_registry", VERSIONS_BOUNDARY),
+        slug: this.labelCell("slug", r.slug, "recorded_by_the_registry", VERSIONS_BOUNDARY),
+        adopter_agent_id: this.labelCell("adopter_agent_id", r.adopter_agent_id, "recorded_by_the_receipt_journal", RECEIPT_JOURNAL),
+        derived_state: this.labelCell("derived_state", derivedState(this.db, r.receipt_id), "derived_from_the_receipt_journal", RECEIPT_JOURNAL),
         stalled: this.registryCell(
           "stalled",
           stalled
@@ -2955,7 +2973,7 @@ export class Registry {
       author_agent_id: string;
       manifest_json: string;
     }>;
-    const holds: Array<Record<string, unknown>> = [];
+    const holds: Array<Record<string, Cell>> = [];
     for (const h of holdRows) {
       if (holds.length === limit) break;
       const party =
@@ -2972,11 +2990,11 @@ export class Registry {
       }
       const conditions = approvalConditions(manifest, { adoptedCount: this.adoptedCountOf(h.skill_version_id) });
       holds.push({
-        adoption_request_id: plain(h.adoption_request_id, "unknown"),
-        skill_version_id: plain(h.skill_version_id, "unknown"),
-        slug: plain(h.slug, "unnamed"),
-        adopter_agent_id: plain(h.adopter_agent_id, "unknown"),
-        state: plain(h.state, "unknown"),
+        adoption_request_id: this.labelCell("adoption_request_id", h.adoption_request_id, "recorded_by_the_request_queue", REQUEST_BOUNDARY),
+        skill_version_id: this.labelCell("skill_version_id", h.skill_version_id, "minted_by_the_registry", VERSIONS_BOUNDARY),
+        slug: this.labelCell("slug", h.slug, "recorded_by_the_registry", VERSIONS_BOUNDARY),
+        adopter_agent_id: this.labelCell("adopter_agent_id", h.adopter_agent_id, "recorded_by_the_request_queue", REQUEST_BOUNDARY),
+        state: this.labelCell("state", h.state, "recorded_by_the_request_queue", REQUEST_BOUNDARY),
         conditions: this.registryCell(
           "matrix_conditions",
           list(conditions as readonly string[], ""),
@@ -3029,7 +3047,7 @@ export class Registry {
       approver_type: string | null;
       approver_role: string | null;
     }>;
-    const decisions: Array<Record<string, unknown>> = [];
+    const decisions: Array<Record<string, Cell>> = [];
     for (const d of decisionRows) {
       if (decisions.length === limit) break;
       const party =
@@ -3040,17 +3058,17 @@ export class Registry {
         isWsAdmin(d.workspace_id);
       if (!party) continue;
       decisions.push({
-        approval_id: plain(d.approval_id, "unknown"),
-        skill_version_id: plain(d.skill_version_id, "unknown"),
-        slug: plain(d.slug, "unnamed"),
+        approval_id: this.labelCell("approval_id", d.approval_id, "recorded_by_the_approval_journal", APPROVAL_BOUNDARY),
+        skill_version_id: this.labelCell("skill_version_id", d.skill_version_id, "minted_by_the_registry", VERSIONS_BOUNDARY),
+        slug: this.labelCell("slug", d.slug, "recorded_by_the_registry", VERSIONS_BOUNDARY),
         adoption_request_id: this.registryCell(
           "adoption_request_id",
           d.adoption_request_id,
           d.adoption_request_id === null ? "this decision was recorded against the version, not against one request" : "recorded_by_the_approval_journal",
           APPROVAL_BOUNDARY,
         ),
-        scope: plain(d.scope, "unknown"),
-        decision: plain(d.decision, "unknown"),
+        scope: this.labelCell("scope", d.scope, "recorded_by_the_approval_journal", APPROVAL_BOUNDARY),
+        decision: this.labelCell("decision", d.decision, "recorded_by_the_approval_journal", APPROVAL_BOUNDARY),
         // [I-5]: WHO, and WHAT KIND OF PRINCIPAL — the same cell the §9 screen
         // uses, so the two surfaces cannot answer this differently.
         approved_by: principalCell({
@@ -3128,7 +3146,7 @@ export class Registry {
          JOIN skills s ON s.id = v.skill_id
         WHERE q.id = ?`,
     );
-    const rows: Array<Record<string, unknown>> = [];
+    const rows: Array<Record<string, Cell>> = [];
     for (const dl of deadLetters(this.db)) {
       if (rows.length === limit) break;
       const d = detail.get(dl.id) as
@@ -3137,20 +3155,20 @@ export class Registry {
       if (!d) continue;
       if (!this.mayReadReceipt(auth, { adopter_agent_id: dl.adopter_agent_id, ...d })) continue;
       rows.push({
-        adoption_request_id: plain(dl.id, "unknown"),
+        adoption_request_id: this.labelCell("adoption_request_id", dl.id, "recorded_by_the_request_queue", REQUEST_BOUNDARY),
         // which message failed to arrive: an adoption notification, or a
         // surface-11 revocation notice. Undeliverable is loud either way, but
         // an operator needs to know WHICH adopter was not told what.
-        notification_kind: plain(dl.notification_kind, "unknown"),
+        notification_kind: this.labelCell("notification_kind", dl.notification_kind, "recorded_by_the_delivery_queue", REQUEST_BOUNDARY),
         reason: this.registryCell(
           "dead_letter_reason",
           dl.reason,
           dl.reason === null ? "the delivery queue recorded no reason" : "recorded_by_the_delivery_queue",
           REQUEST_BOUNDARY,
         ),
-        adopter_agent_id: plain(dl.adopter_agent_id, "unknown"),
-        skill_version_id: plain(dl.skill_version_id, "unknown"),
-        slug: plain(d.slug, "unnamed"),
+        adopter_agent_id: this.labelCell("adopter_agent_id", dl.adopter_agent_id, "recorded_by_the_request_queue", REQUEST_BOUNDARY),
+        skill_version_id: this.labelCell("skill_version_id", dl.skill_version_id, "minted_by_the_registry", VERSIONS_BOUNDARY),
+        slug: this.labelCell("slug", d.slug, "recorded_by_the_registry", VERSIONS_BOUNDARY),
         attempt_count: this.countCell(d.attempt_count, "outcome", REQUEST_BOUNDARY, "delivery attempts recorded for this request"),
         queued_since: this.registryCell("queued_since", instant(d.created_at_ms), "recorded_by_the_request_queue", REQUEST_BOUNDARY),
       });
@@ -3191,11 +3209,11 @@ export class Registry {
         title: "Webhook endpoint health (§5.2: active | failing | dead)",
         fields: ["webhook_id", "agent_id", "url", "status", "failure_count", "last_error", "updated_at"],
         rows: webhookHealth(this.db, agentIds).map((w) => ({
-          webhook_id: plain(w.webhook_id, "unknown"),
-          agent_id: plain(w.agent_id, "unknown"),
+          webhook_id: this.labelCell("webhook_id", w.webhook_id, "recorded_by_the_registry", WEBHOOK_BOUNDARY),
+          agent_id: this.labelCell("agent_id", w.agent_id, "recorded_by_the_registry", WEBHOOK_BOUNDARY),
           // never the secret and never its reference (Appendix H)
-          url: plain(w.url, "unknown"),
-          status: plain(w.status, "unknown"),
+          url: this.labelCell("url", w.url, "recorded_by_the_registry", WEBHOOK_BOUNDARY),
+          status: this.labelCell("status", w.status, "recorded_by_the_delivery_queue", WEBHOOK_BOUNDARY),
           failure_count: this.countCell(w.failure_count, "outcome", WEBHOOK_BOUNDARY, "consecutive delivery failures"),
           last_error: this.registryCell(
             "last_error",
@@ -3294,8 +3312,8 @@ export class Registry {
     // cannot disagree, because there is one string and the API produced it.
     const boundary = `${counted.source} — ${counted.window}`;
     const rows = counted.items.map((m) => ({
-      skill_id: plain(m.skill_id, "unknown"),
-      slug: plain(m.slug, "unnamed"),
+      skill_id: this.labelCell("skill_id", m.skill_id, "recorded_by_the_registry", VERSIONS_BOUNDARY),
+      slug: this.labelCell("slug", m.slug, "recorded_by_the_registry", VERSIONS_BOUNDARY),
       migrations: this.countCell(m.migrations, "outcome", boundary, m.measurement_state),
       distinct_recipients: this.countCell(m.distinct_recipients, "outcome", boundary, m.measurement_state),
       distinct_runtimes: this.countCell(m.distinct_runtimes, "outcome", boundary, m.measurement_state),
@@ -3323,9 +3341,9 @@ export class Registry {
         m.recipient_sources.length === 0 ? "no recipient was read for this skill, so no journal is named" : "the journals these recipients were read from",
         boundary,
       ),
-      measurement_state: plain(m.measurement_state, "unknown"),
-      source: plain(m.source, "unknown"),
-      window: plain(m.window, "unknown"),
+      measurement_state: this.labelCell("measurement_state", m.measurement_state, "the state every number in this row was measured in", boundary),
+      source: this.labelCell("source", m.source, "the journal every number in this row was read from", boundary),
+      window: this.labelCell("window", m.window, "the selection window every number in this row was taken over", boundary),
     }));
     return this.payload("migrations", "Migrations", [
       {

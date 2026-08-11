@@ -479,7 +479,7 @@ test("an adopter with no endpoint is a LOUD dead letter, and the view says which
   // [I-3] hold on every one of the eleven views, not only on the newest five
   assert.ok(
     section.rows.some(
-      (r: any) => r.notification_kind === "revocation" && String(r.reason).startsWith("endpoint_missing ·"),
+      (r: any) => String(r.notification_kind).startsWith("revocation ·") && String(r.reason).startsWith("endpoint_missing ·"),
     ),
     "an operator can see WHICH adopter was not told WHAT",
   );

@@ -65,6 +65,15 @@ import {
 // The harness
 // ===========================================================================
 
+/** The ANSWER half of a cell — everything before the first method key. Every
+ *  row value is a cell now, so a comparison against a bare value reads the
+ *  answer rather than the whole method. */
+function ans(cell: unknown): string {
+  const text = String(cell ?? "");
+  const i = text.indexOf(" · ");
+  return (i < 0 ? text : text.slice(0, i)).trim();
+}
+
 const temps: string[] = [];
 
 function tempBase(prefix = "skln-dash-"): string {
@@ -394,11 +403,9 @@ test("[I-1] DEGENERATE 1: not one cell of the five screens is blank, a dash or a
 
   // MUTATION 1a — `unknown` printed as nothing at all.
   const blanked = await mutantTree([
-    `  return [
-    plain(input.answer, "unknown"),`,
-    `  if (input.answer === null) return "";
-  return [
-    plain(input.answer, "unknown"),`,
+    `  const answer = plain(input.answer, "unknown");`,
+    `  if (input.answer === null) return "" as unknown as Cell;
+  const answer = plain(input.answer, "unknown");`,
   ]);
   const registryA = new blanked.service.Registry(s.fx.db, { now: () => NOW, inventory: s.roots });
   const pageA = blanked.dashboard.renderDashboard(registryA.dashboard(s.fx.owner, "fleet"));
@@ -406,7 +413,7 @@ test("[I-1] DEGENERATE 1: not one cell of the five screens is blank, a dash or a
   assert.ok(pageA.includes("<td></td>"), "the mutation must actually have produced an empty cell");
 
   // MUTATION 1b — `unknown` printed as the dash a spreadsheet would use.
-  const dashed = await mutantTree([`    plain(input.answer, "unknown"),`, `    plain(input.answer, "—"),`]);
+  const dashed = await mutantTree([`  const answer = plain(input.answer, "unknown");`, `  const answer = plain(input.answer, "—");`]);
   const registryB = new dashed.service.Registry(s.fx.db, { now: () => NOW, inventory: s.roots });
   const pageB = dashed.dashboard.renderDashboard(registryB.dashboard(s.fx.owner, "agent"));
   assert.ok(pageB.includes("<td>—"), "the mutation must actually have produced a dash");
@@ -441,13 +448,13 @@ test("[A-0] DEGENERATE 2: Codex `proposed` and `loaded` read `unknown` on the pa
   // THE MUTATION: the renderer decides that an unobserved cell is a negative
   // one — the single most damaging thing a screen over this data can do.
   const m = await mutantTree([
-    `export function stateCell(c: StateColumn): string {
+    `export function stateCell(c: StateColumn): Cell {
   const why = plain(c.reason, c.value === "yes" ? "observed" : "no_reason_recorded");
-  return [
+  return mint([
     c.value,`,
-    `export function stateCell(c: StateColumn): string {
+    `export function stateCell(c: StateColumn): Cell {
   const why = plain(c.reason, c.value === "yes" ? "observed" : "no_reason_recorded");
-  return [
+  return mint([
     c.value === "unknown" ? "no" : c.value,`,
   ]);
   const registry = new m.service.Registry(s.fx.db, { now: () => NOW, inventory: s.roots });
@@ -630,8 +637,8 @@ test("[D-1] DEGENERATE 5: the colour of a fleet row is the reconciliation state,
 
   // THE MUTATION: the colour becomes a mood — green unless something failed.
   const m = await mutantTree([
-    `      reconciliation_state: agent.sync_status,`,
-    `      reconciliation_state: agent.sync_status === "failed" ? "failed" : "in_sync",`,
+    `      reconciliation_state: reconciliationCell(agent.sync_status),`,
+    `      reconciliation_state: reconciliationCell(agent.sync_status === "failed" ? "failed" : "in_sync"),`,
   ]);
   const registry = new m.service.Registry(s.fx.db, { now: () => NOW, inventory: s.roots });
   const payload = registry.dashboard(s.fx.owner, "fleet");
@@ -800,7 +807,7 @@ test("[D-2] the agent screen publishes the six states per runtime, the origin, a
   );
   assert.ok(!codex.headers.includes(fieldOfColumn("proposed_now")), "Codex has no live/historical distinction to publish");
 
-  const alphaRow = claude.rows.find((r) => r.cells[claude.headers.indexOf("name")] === s.alpha.slug)!;
+  const alphaRow = claude.rows.find((r) => ans(r.cells[claude.headers.indexOf("name")]) === s.alpha.slug)!;
   assert.ok(alphaRow, "the assigned and registered capability must be on the Claude Code table");
   const at = (name: string): string => alphaRow.cells[claude.headers.indexOf(name)]!;
   console.log(`[D-2] origin      → ${at("origin").slice(0, 90)}`);
@@ -817,8 +824,8 @@ test("[D-2] the agent screen publishes the six states per runtime, the origin, a
 
   // [A-5]: registered and never demonstrated — the stray copy nobody tracks
   const dead = payload.sections.find((x) => x.key === "never_used")!;
-  console.log(`[A-5] never used: ${dead.rows.map((r) => `${r.name}/${r.reason}`).join(", ")}`);
-  assert.ok(dead.rows.some((r) => r.name === "stray-copy" && r.reason === "no_version_identified"));
+  console.log(`[A-5] never used: ${dead.rows.map((r) => `${ans(r.name)}/${ans(r.reason)}`).join(", ")}`);
+  assert.ok(dead.rows.some((r) => ans(r.name) === "stray-copy" && ans(r.reason) === "no_version_identified"));
   const counts = payload.sections.find((x) => x.key === "never_used_counts")!;
   assert.ok(counts.rows.length > 0, "the [A-5] numbers must be published beside the list");
   s.fx.db.close();
@@ -853,7 +860,7 @@ test("[D-3]/[I-5] the approval screen shows MEANING, and names the TYPE of the p
 
   const html = htmlOf(s.fx, "skill_approval", s.fx.keys.owner);
   const meaning = parseTables(html).find((t) => t.headers.includes("deliberately_excluded"))!;
-  const row = meaning.rows.find((r) => r.cells[0] === "dash-risky")!;
+  const row = meaning.rows.find((r) => ans(r.cells[0]) === "dash-risky")!;
   const at = (n: string): string => row.cells[meaning.headers.indexOf(n)]!;
   console.log(`[B-6] what_it_does          → ${at("what_it_does").slice(0, 90)}`);
   console.log(`[B-6] when_it_applies       → ${at("when_it_applies").slice(0, 90)}`);
@@ -878,7 +885,7 @@ test("[D-3]/[I-5] the approval screen shows MEANING, and names the TYPE of the p
   // [B-7]/[I-5]: the decision names the principal TYPE, and distinguishes the
   // workspace owner from a principal merely holding a role
   const decisions = parseTables(html).find((t) => t.headers.includes("approved_by"))!;
-  const decision = decisions.rows.find((r) => r.cells[decisions.headers.indexOf("slug")] === "dash-risky")!;
+  const decision = decisions.rows.find((r) => ans(r.cells[decisions.headers.indexOf("slug")]) === "dash-risky")!;
   const approver = decision.cells[decisions.headers.indexOf("approved_by")]!;
   console.log(`[I-5] approved_by → ${approver.slice(0, 110)}`);
   assert.match(approver, /type: human/);
@@ -892,7 +899,7 @@ test("[D-4] the capability screen carries the origin, the diff, the holders, the
   const s = screens();
   const html = htmlOf(s.fx, "capability", s.fx.keys.owner);
   const table = parseTables(html).find((t) => t.headers.includes("migrations"))!;
-  const row = table.rows.find((r) => r.cells[0] === s.alpha.slug)!;
+  const row = table.rows.find((r) => ans(r.cells[0]) === s.alpha.slug)!;
   const at = (n: string): string => row.cells[table.headers.indexOf(n)]!;
   console.log(`[D-4] origin     → ${at("origin").slice(0, 100)}`);
   console.log(`[D-4] diff       → ${at("diff").slice(0, 100)}`);
@@ -914,10 +921,10 @@ test("[D-5] the results screen separates `nothing was reported` from `it worked`
   const s = screens();
   const html = htmlOf(s.fx, "outcomes", s.fx.keys.owner);
   const table = parseTables(html).find((t) => t.headers.includes("verdict"))!;
-  const row = table.rows.find((r) => r.cells[0] === s.alpha.slug)!;
+  const row = table.rows.find((r) => ans(r.cells[0]) === s.alpha.slug)!;
   const at = (n: string): string => row.cells[table.headers.indexOf(n)]!;
   console.log(`[D-5] verdict → ${at("verdict")} — ${at("why").slice(0, 110)}`);
-  assert.equal(at("verdict"), "nothing_reported", "no receipt over this version has closed");
+  assert.equal(ans(at("verdict")), "nothing_reported", "no receipt over this version has closed");
   assert.match(at("why"), /which is not the same as working/);
   assert.equal(at("worked").split(" ")[0], "0");
   assert.match(at("avg_rating"), /^unknown/);
@@ -929,10 +936,10 @@ test("[D-5] the results screen separates `nothing was reported` from `it worked`
 
   const page = htmlOf(s.fx, "outcomes", s.fx.keys.owner);
   const after = parseTables(page).find((t) => t.headers.includes("verdict"))!;
-  const broken = after.rows.find((r) => r.cells[0] === "dash-broken")!;
+  const broken = after.rows.find((r) => ans(r.cells[0]) === "dash-broken")!;
   const atB = (n: string): string => broken.cells[after.headers.indexOf(n)]!;
   console.log(`[D-5] verdict → ${atB("verdict")} — ${atB("why").slice(0, 110)}`);
-  assert.equal(atB("verdict"), "needs_new_version");
+  assert.equal(ans(atB("verdict")), "needs_new_version");
   assert.match(atB("why"), /ended `failed`/);
   assert.equal(atB("broke").split(" ")[0], "1");
   const chains = parseTables(page).find((t) => t.headers.includes("failure_summary"))!;
@@ -982,7 +989,7 @@ test("every value on a §9 page is a value of the API answer the same registry s
   const caps = rest(s.fx, "GET", `/v1/fleet/${s.claudeAgent}/capabilities`, s.fx.keys.owner).body;
   const html = htmlOf(s.fx, "agent", s.fx.keys.owner);
   const claude = parseTables(html).find((t) => t.headers.includes(fieldOfColumn("proposed_now")))!;
-  const row = claude.rows.find((r) => r.cells[claude.headers.indexOf("name")] === s.alpha.slug)!;
+  const row = claude.rows.find((r) => ans(r.cells[claude.headers.indexOf("name")]) === s.alpha.slug)!;
   const apiCapability = caps.capabilities.find((c: any) => c.name === s.alpha.slug);
   assert.ok(apiCapability, "the API answer must carry the same capability");
   let compared = 0;

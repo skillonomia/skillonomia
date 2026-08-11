@@ -60,9 +60,10 @@ import {
   type FleetRuntime,
   type MeasuredNumber,
   type StateColumn,
+  type SyncStatus,
   type Trivalent,
 } from "./fleet.ts";
-import type { DashboardNotice, DashboardSection } from "./dashboard.ts";
+import type { Cell, DashboardNotice, DashboardSection } from "./dashboard.ts";
 
 // =========================================================================
 // The grammar of a cell
@@ -70,6 +71,26 @@ import type { DashboardNotice, DashboardSection } from "./dashboard.ts";
 
 /** The separator between a cell's answer and the parts of its method. */
 export const SEP = " · ";
+
+/**
+ * THE ONLY PLACE A `Cell` IS MADE.
+ *
+ * Every constructor below ends here, and nothing else in the codebase can: the
+ * brand on `Cell` is a `unique symbol` declared in `src/dashboard.ts` and never
+ * exported, so `mint` is the sole expression in the program whose type the
+ * compiler will accept where a row value is required. A renderer, a template or
+ * a service method holding a string — a slug, a count, a hex figure, a fraction
+ * — has NO WAY TO SPELL a row value out of it, in any notation, because the
+ * refusal is about the TYPE and not about the text.
+ *
+ * `parts[0]` is the answer; everything after it is the method, and `kind:` is
+ * among the parts every caller supplies. That token is the mark this function's
+ * output carries into the rendered bytes, where `auditCells` requires it of
+ * every cell it finds.
+ */
+function mint(parts: readonly string[]): Cell {
+  return parts.join(SEP) as Cell;
+}
 
 /**
  * Texts a cell may NEVER be [I-1].
@@ -103,9 +124,41 @@ export const RECONCILIATION_FIELD = "reconciliation_state";
 /** The boundary a receipt-backed rating was taken over. */
 export const RATING_BOUNDARY = "ratings bound to a closed adoption receipt, all time; the scale is 1 to 5";
 
+/** The boundaries the label cells of this file are read over. Written once,
+ *  because a boundary repeated by hand is a boundary that drifts. */
+export const ROSTER_BOUNDARY = "the workspace roster and its memberships, all time";
+export const INVENTORY_BOUNDARY = "the inventory of this agent, as scanned under its configured root";
+export const VERSIONS_BOUNDARY = "skill_versions (registry), all time";
+
+export const APPROVALS_BOUNDARY = "approvals (registry journal), all time";
+export const RECEIPT_BOUNDARY = "receipt_events (registry journal, INSERT-only), all time";
+
+/** The NAME of a number standing beside it in a two-column table. */
+export function metricCell(name: string): Cell {
+  return labelCell("metric", name, "the name of the number in this row", "the row's own number cell states its method");
+}
+
+/** WHICH VERSION a row is about: the author's semantic version and the id this
+ *  registry minted, together, because either alone answers half the question. */
+export function versionCell(semantic: string | null, versionId: string | null): Cell {
+  const parts = [`semantic: ${plain(semantic, "unknown")}`];
+  if (versionId !== null) parts.push(`id: ${plain(versionId, "unknown")}`);
+  return labelCell("version", parts.join(" | "), "recorded_by_the_registry", VERSIONS_BOUNDARY);
+}
+
 export function plain(v: unknown, fallback: string): string {
   const s = v === null || v === undefined ? "" : String(v);
-  const cleaned = s.replace(/·/g, "|").replace(/\s+/g, " ").trim();
+  const cleaned = s
+    .replace(/·/g, "|")
+    // …AND THE MARK ITSELF. `·` alone was enough while `kind:` was only read as
+    // documentation; it is not enough now that the sweep TREATS the mark as
+    // proof a constructor made the cell. A rating note or a failure summary is
+    // text a stranger wrote, and a stranger who could write `kind:` into one
+    // would be writing the guard's own evidence. Neutralised rather than
+    // refused, because a note is not a reason to fail a page.
+    .replace(/kind:/gi, "kind|")
+    .replace(/\s+/g, " ")
+    .trim();
   return cleaned.length === 0 ? fallback : cleaned;
 }
 
@@ -138,9 +191,9 @@ function methodOf(a: Attribution): string {
  * That is what makes `loaded` unclaimable by construction: the screen has no
  * table of its own to disagree with §4's.
  */
-export function stateCell(c: StateColumn): string {
+export function stateCell(c: StateColumn): Cell {
   const why = plain(c.reason, c.value === "yes" ? "observed" : "no_reason_recorded");
-  return [
+  return mint([
     c.value,
     `why: ${why}`,
     "kind: state_column",
@@ -154,14 +207,14 @@ export function stateCell(c: StateColumn): string {
     // `no`? — is a property of the (state, runtime) PAIR.
     `runtime: ${c.runtime}`,
     methodOf(c),
-  ].join(SEP);
+  ]);
 }
 
 /** ONE NUMBER, with the three attributes [I-3] and never as a bare figure. */
-export function numberCell(n: MeasuredNumber): string {
+export function numberCell(n: MeasuredNumber): Cell {
   const answer = n.measurement_state === "counted" && n.value !== null ? String(n.value) : "unknown";
   const why = plain(n.reason, n.measurement_state === "counted" ? "counted" : "no_reason_recorded");
-  return [answer, `why: ${why}`, "kind: measured_number", methodOf(n)].join(SEP);
+  return mint([answer, `why: ${why}`, "kind: measured_number", methodOf(n)]);
 }
 
 /**
@@ -178,16 +231,68 @@ export function observationCell(input: {
   source: string;
   window: string;
   boundary: string;
-}): string {
-  return [
-    plain(input.answer, "unknown"),
+}): Cell {
+  // THE ONE PATH THAT TAKES FREE TEXT, AND WHAT IT GUARANTEES.
+  //
+  // Everything else a caller can reach takes a typed value: a `MeasuredNumber`,
+  // a `StateColumn`, a member of §6's closed vocabulary. This constructor takes
+  // a sentence, because a model name, a session flag and a failure summary are
+  // sentences.
+  //
+  // WHAT IT DOES NOT DO IS JUDGE WHETHER THE SENTENCE IS A QUANTITY, and the
+  // omission is deliberate. Three rounds died on that question: `.75`, `⅔`,
+  // `٤٫٥`, `1:2`, `1×10³`, `5‰`, `0x10`, `12·5` — and, on the other side,
+  // `1.0.0`, which is a version and not a count, and
+  // `2026-08-10T00:00:00.000Z`, which is an instant. No test on the TEXT
+  // separates those two lists, and a fourth attempt would be the same mistake
+  // with a longer pattern.
+  //
+  // It does not need to. Two things are true of whatever this path is handed,
+  // and neither depends on reading it:
+  //
+  //   * IT COMES OUT WITH ITS METHOD — the observation it answers, its source,
+  //     its selection window, its boundary. A figure handed to this path is
+  //     published as an attributed observation, never as a bare value, because
+  //     there is no expression in this program that produces a bare one.
+  //   * IT CANNOT FORGE A METHOD. `plain` has already turned `·` into `|` and
+  //     `kind:` into `kind|`, so an answer cannot write the separator the
+  //     method is parsed by or the mark the sweep reads as proof of a builder.
+  //     Both halves are defined in this file, so that set is closed by
+  //     construction rather than by enumeration.
+  const answer = plain(input.answer, "unknown");
+  return mint([
+    answer,
     `why: ${plain(input.why, "no_reason_recorded")}`,
     "kind: observation",
     `observation: ${input.observation}`,
     `source: ${plain(input.source, "none")}`,
     `window: ${plain(input.window, "all_time")}`,
     `boundary: ${plain(input.boundary, "no boundary was recorded")}`,
-  ].join(SEP);
+  ]);
+}
+
+/**
+ * Text that would write a cell's own method — the separator it is parsed by, or
+ * the mark the sweep reads as proof a builder made the cell.
+ *
+ * Nothing that has been through `plain` can satisfy this, which is the point:
+ * it is the property `plain` is there to remove, stated so a test can assert it
+ * of every answer this file publishes rather than trusting the replacement.
+ */
+export function forgesMethod(answer: string): boolean {
+  return /(?:^|·\s)kind:/.test(answer) || answer.includes(SEP.trim());
+}
+
+/**
+ * A LABEL — a name, an identifier, a token this registry holds — published as a
+ * cell, because everything on a page is a cell.
+ *
+ * There is no "plain" row value any more: a slug, a version and a decision each
+ * arrive with the same method a state or a number does, and they arrive through
+ * the SAME free-text constructor, so this convenience adds no path of its own.
+ */
+export function labelCell(observation: string, answer: string | null, why: string, boundary: string): Cell {
+  return observationCell({ observation, answer, why, source: "registry", window: "all_time", boundary });
 }
 
 /** The [I-5] cell: WHO, and WHAT KIND OF PRINCIPAL they are. */
@@ -197,7 +302,7 @@ export function principalCell(input: {
   role: string | null;
   observation?: string;
   source: string;
-}): string {
+}): Cell {
   const role = plain(input.role, "unknown");
   const kind =
     role === "owner"
@@ -215,6 +320,29 @@ export function principalCell(input: {
   });
 }
 
+/**
+ * THE ONE CELL THAT IS A TOKEN AND NOT AN ANSWER: §6's reconciliation state,
+ * which is also the row's CSS class and therefore its colour.
+ *
+ * It carries no method because it is not an answer about a capability — it is a
+ * word out of a CLOSED VOCABULARY the code defines, and the vocabulary is what
+ * takes the method's place. That makes it the narrowest path in this file:
+ * `SYNC_STATUSES` has five members, the type refuses everything else at compile
+ * time, and this function refuses it again at run time, so no quantity in any
+ * notation can be spelled through it. `auditCells` checks the value on the page
+ * against the same vocabulary rather than against the cell grammar — a stricter
+ * test than the one every other cell gets, not a looser one.
+ */
+export function reconciliationCell(status: SyncStatus): Cell {
+  if (!(SYNC_STATUSES as readonly string[]).includes(status)) {
+    throw new Error(
+      `[D-1] refused: \`${String(status)}\` is not one of §6's reconciliation states (${SYNC_STATUSES.join("|")}) — ` +
+        "the colour of a row is the state of the reconciliation, and a word outside the vocabulary encodes something else",
+    );
+  }
+  return status as string as Cell;
+}
+
 // =========================================================================
 // THE AUDIT — over finished bytes, never over the structure that made them
 // =========================================================================
@@ -230,6 +358,10 @@ export interface RenderAudit {
   rows: number;
   state_cells: number;
   number_cells: number;
+  /** cells carrying the mark only a constructor sets */
+  constructed: number;
+  /** cells carrying NO constructor mark. The invariant is that this is 0. */
+  unconstructed: number;
   violations: RenderViolation[];
 }
 
@@ -269,30 +401,40 @@ function answerOf(text: string): string {
 }
 
 /**
- * A FIGURE A READER READS AS A COUNT — in ANY notation, anywhere in the text.
+ * A FIGURE, IN THE NOTATIONS LISTED BELOW — AND NOT A UNIVERSAL CLAIM.
  *
- * WHY THIS EXISTS, TWICE OVER. The first sweep recognised a number only when the
- * ENTIRE cell was digits, so `steps: 4 | files: 7` and `declared steps: 3`
- * walked past it: `auditRenderedHtml` reported ZERO violations and
- * `number_cells: 0` for pages carrying them. The second recognised a standalone
- * run of digits and STOPPED THERE — `<td>4.5</td>` still returned nothing, and a
- * rating average is exactly the figure this project argues about. A guard that
- * cannot see the thing it exists to check is worse than no guard, because its
- * silence is read as a pass; a guard fixed to the shape of the last example is
- * the same guard with one more example in it.
+ * READ THIS BEFORE TRUSTING IT. Two rounds tried to make this pattern the guard
+ * that [I-3] needs, and both failed the same way. The first recognised a number
+ * only when the ENTIRE cell was digits, so `steps: 4 | files: 7` walked past it.
+ * The second recognised a standalone run of digits and stopped there, so
+ * `<td>4.5</td>` walked past it. The third inverted the rule — every token that
+ * is a figure in "any notation", minus a short exclusion list — and a reviewer
+ * answered it with `.75`, `⅔`, `٤٫٥`, `1:2`, `1×10³`, `5‰`, `0x10` and `12·5`
+ * inside a week. Each round widened the pattern to the last example it was
+ * shown, and each time the claim in this comment stayed universal while the code
+ * under it stayed finite. THE SET OF NOTATIONS A PERSON CAN WRITE A NUMBER IN IS
+ * NOT ENUMERABLE, so no pattern here will ever be the thing that closes [I-3].
  *
- * So the rule is inverted. It no longer enumerates the shapes that ARE numbers
- * and hopes the list is complete. It takes every whitespace- or pipe-separated
- * TOKEN of the text, asks whether that token is a figure in ANY of the notations
- * a figure is written in — integer, decimal, negative, grouped by separators,
- * exponential, percentage, fraction — and then removes the few tokens that are
- * numerals without being COUNTS. The list that has to be complete is now the
- * list of EXCLUSIONS, which is short, closed, and stated below with a reason for
- * each, rather than the list of ways a person can write a number, which is not.
+ * WHAT CLOSES IT IS ONE LAYER UP, AND IT IS STRUCTURAL. A value reaches a reader
+ * only inside a `Cell`, a `Cell` exists only where a constructor above returned
+ * one, and every constructor attaches the method its kind requires. So a figure
+ * on a page — in `.75`, in `٤٫٥`, in a notation invented tomorrow — arrives
+ * carrying its source, its selection window and its boundary, because there is
+ * no expression in this program that puts a bare value in a row. `auditCells`
+ * enforces that over the finished bytes by demanding the constructor's mark of
+ * EVERY cell it finds, whatever the cell says.
+ *
+ * WHAT THIS PATTERN IS FOR, THEN. One narrower question, and it is a question of
+ * JUDGEMENT rather than of escape: did an author put a count inside a cell of
+ * the wrong KIND — a figure in an observation, where a `measured_number` with a
+ * measurement state belonged? A pattern is the right tool for a heuristic and
+ * the wrong tool for an invariant. It catches the notations named in
+ * `test/p14-r2-invariants.test.ts`'s corpus and it does not claim to catch the
+ * ones it has not been shown; the invariant does not rest on it.
  */
 
-/** The numeric notations. Written as one grammar so a shape cannot be forgotten
- *  by being implemented somewhere else. */
+/** The numeric notations this heuristic knows. Written as one grammar so a
+ *  shape cannot be forgotten by being implemented somewhere else. */
 const GROUPED_DIGITS = String.raw`\d{1,3}(?:[  ,'_]\d{3})+`;
 const NUMBER_TOKEN = new RegExp(
   // sign · (grouped | plain) · fraction part · exponent · percent
@@ -397,14 +539,23 @@ function stateColumnFromText(text: string): StateColumn | null {
  * The order of the checks is the order of the failures they exist for:
  *
  *   1. A BLANK CELL, or a dash, or an "n/a" [I-1]. The cheapest lie on a page.
- *   2. A BARE NUMBER [I-3] — a figure with no state, no source and no boundary.
- *      The two disagreements this project is built around were both this.
- *   3. AN ANSWER WITH NO METHOD. A cell that says `yes`/`no`/`unknown` and
- *      carries no `kind:` was assembled outside the builders above, and it is
- *      REFUSED rather than skipped. This is the check that makes the sweep a
- *      sweep of the page and not a sweep of the structure.
+ *   2. A BARE NUMBER [I-3] — a figure with no state, no source and no boundary,
+ *      in the notations the pattern below knows. The two disagreements this
+ *      project is built around were both this.
+ *   3. A CELL WITH NO CONSTRUCTOR MARK, whatever it says. This is the one that
+ *      does not depend on recognising anything: every builder stamps `kind:`,
+ *      the type system admits no other way to make a row value, so a cell
+ *      without the mark was assembled outside them and is REFUSED — not
+ *      skipped, which is what round 3 did with everything that was not one of
+ *      the three words. `constructed` and `unconstructed` are the numbers this
+ *      check is reported by, and the invariant is that the second is zero.
  *   4. `explicitLoadedClaim`, `forbiddenNoClaim`, `missingAttribute` — work 2's
  *      own guards, applied to the cells reconstructed from the bytes.
+ *
+ * ONE CELL IS EXEMPT FROM 3 AND CHECKED HARDER: the `reconciliation_state`
+ * token, which is a member of §6's closed vocabulary and is verified against
+ * that vocabulary instead. Five permitted words is a narrower gate than any
+ * method, not a wider one.
  */
 /** The method keys whose value may legitimately contain digits: the two that
  *  STATE THE SELECTION. Everything else in a cell's method is prose, and a
@@ -426,12 +577,31 @@ export function methodFigures(text: string): Array<{ key: string; figure: string
   return out;
 }
 
+/** The kinds a constructor stamps. A `kind:` outside this set was written by
+ *  something that is not one of them. */
+export const CELL_KINDS: readonly CellKind[] = ["state_column", "measured_number", "observation"];
+
 export function auditCells(cells: readonly ParsedCell[]): RenderAudit {
   const violations: RenderViolation[] = [];
   const columns: StateColumn[] = [];
   let numbers = 0;
+  let constructed = 0;
+  let unconstructed = 0;
   for (const cell of cells) {
     const text = cell.text;
+    // THE COUNT FIRST, BEFORE ANY OTHER QUESTION. `constructed` and
+    // `unconstructed` are the numbers the structural claim is made of, so they
+    // are taken of EVERY cell — including the ones a later check refuses and
+    // stops looking at. A cell that leaves this loop early still leaves it
+    // counted, or the totals would describe a subset and read as if they
+    // described the page.
+    const mark = cellAttr(text, "kind") as CellKind | undefined;
+    const isConstructed =
+      cell.header === RECONCILIATION_FIELD
+        ? (SYNC_STATUSES as readonly string[]).includes(text)
+        : mark !== undefined && CELL_KINDS.includes(mark);
+    if (isConstructed) constructed += 1;
+    else unconstructed += 1;
     if (FORBIDDEN_CELL_TEXTS.includes(text)) {
       violations.push({
         where: cell.where,
@@ -477,6 +647,32 @@ export function auditCells(cells: readonly ParsedCell[]): RenderAudit {
       }
       continue;
     }
+    // ===================================================================
+    // THE STRUCTURAL RULE: NOTHING REACHED THIS PAGE PAST A CONSTRUCTOR.
+    // ===================================================================
+    //
+    // Every cell carries `kind:`, because every constructor stamps it and
+    // there is no other way to obtain a row value — the type refuses one. So a
+    // cell WITHOUT the mark was not built by a constructor, and it is refused
+    // HERE, before anything is asked about what it says.
+    //
+    // That order is the fix. The sweep used to reach this question last and
+    // ask it only of cells that said `yes`/`no`/`unknown`; everything else with
+    // no `kind:` fell through to a `continue` and was never seen. A reviewer
+    // walked `.75`, `⅔`, `٤٫٥`, `1:2`, `1×10³`, `5‰`, `0x10` and `12·5` through
+    // that gap, one notation at a time, and every one of them is refused now —
+    // not because the figure pattern learned eight more shapes, but because
+    // none of the eight carries a method, and a cell with no method is not a
+    // cell this program can produce. The notation stopped mattering.
+    if (kind === undefined || !CELL_KINDS.includes(kind)) {
+      violations.push({
+        where: cell.where,
+        problem:
+          `a cell with no \`kind:\` of the cell builders (${JSON.stringify(text.slice(0, 60))}): it was assembled outside them, ` +
+          "so it carries no source, no selection window and no boundary, and no guard ever saw it [I-3]",
+      });
+      continue;
+    }
     // A NUMBER INSIDE A CELL IS STILL A NUMBER [I-3]. Whatever else this cell
     // is, a figure in its ANSWER is a count, and a count that is not in a
     // `measured_number` cell is a figure with no measurement state. The two
@@ -509,15 +705,6 @@ export function auditCells(cells: readonly ParsedCell[]): RenderAudit {
         where: cell.where,
         problem: `a bare number \`${methodNumbers[0]!.figure}\` inside the cell's \`${methodNumbers[0]!.key}:\` method text: a count moved out of the answer is still a count, and still has no state, source or boundary of its own [I-3]`,
       });
-      continue;
-    }
-    if (kind === undefined) {
-      if (TRIVALENT_WORDS.includes(answer)) {
-        violations.push({
-          where: cell.where,
-          problem: `a three-valued answer \`${answer}\` with no \`kind:\` — assembled outside the cell builders, so no guard ever saw it`,
-        });
-      }
       continue;
     }
     if (kind === "state_column") {
@@ -570,7 +757,15 @@ export function auditCells(cells: readonly ParsedCell[]): RenderAudit {
   if (loaded !== null) violations.push({ where: "the rendered answer", problem: `[§4] ${loaded}` });
   const forbidden = forbiddenNoClaim(columns);
   if (forbidden !== null) violations.push({ where: "the rendered answer", problem: `[A-0] ${forbidden}` });
-  return { cells: cells.length, rows: 0, state_cells: columns.length, number_cells: numbers, violations };
+  return {
+    cells: cells.length,
+    rows: 0,
+    state_cells: columns.length,
+    number_cells: numbers,
+    constructed,
+    unconstructed,
+    violations,
+  };
 }
 
 interface ParsedTable {
@@ -749,7 +944,7 @@ export function auditRenderedJson(text: string): RenderAudit {
   try {
     payload = JSON.parse(text);
   } catch {
-    return { cells: 0, rows: 0, state_cells: 0, number_cells: 0, violations: [{ where: "body", problem: "the response body is not JSON" }] };
+    return { cells: 0, rows: 0, state_cells: 0, number_cells: 0, constructed: 0, unconstructed: 0, violations: [{ where: "body", problem: "the response body is not JSON" }] };
   }
   for (const section of (payload?.sections ?? []) as any[]) {
     for (const [r, row] of ((section?.rows ?? []) as any[]).entries()) {
@@ -892,7 +1087,12 @@ export function fleetSections(input: FleetViewInput): DashboardSection[] {
   const rows = input.agents.map((a) => {
     const agent = a.agent;
     return {
-      agent: `${plain(agent.name, "unnamed")} | id: ${plain(agent.agent_id, "unknown")}`,
+      agent: labelCell(
+        "agent",
+        `${plain(agent.name, "unnamed")} | id: ${plain(agent.agent_id, "unknown")}`,
+        "recorded_by_the_registry",
+        ROSTER_BOUNDARY,
+      ),
       principal: principalCell({
         agent_id: agent.agent_id,
         type: agent.type,
@@ -935,7 +1135,7 @@ export function fleetSections(input: FleetViewInput): DashboardSection[] {
       intent_assigned: numberCell(agent.intent_active),
       fact_available: numberCell(a.dead_weight.registered),
       fact_invoked: numberCell(agent.observed_arrival_yes),
-      reconciliation_state: agent.sync_status,
+      reconciliation_state: reconciliationCell(agent.sync_status),
       reconciliation: observationCell({
         observation: "reconciliation",
         answer: agent.sync_status_reason,
@@ -1012,8 +1212,8 @@ export function fleetSections(input: FleetViewInput): DashboardSection[] {
       title: "How many principals, and how many of them anything has ever reported about",
       fields: ["metric", "number"],
       rows: [
-        { metric: "principals readable by this actor", number: numberCell(input.counts.agents) },
-        { metric: "principals with at least one runtime observation", number: numberCell(input.counts.observed_agents) },
+        { metric: metricCell("principals readable by this actor"), number: numberCell(input.counts.agents) },
+        { metric: metricCell("principals with at least one runtime observation"), number: numberCell(input.counts.observed_agents) },
       ],
       empty: "nothing was counted",
     },
@@ -1059,11 +1259,16 @@ export interface AgentViewInput {
 
 const IDENTITY_FIELDS = ["agent", "kind", "name", "origin", "version", "assigned_by", "assigned_at", "last_invoked"];
 
-function capabilityIdentity(agent: AgentInventoryRow, c: AgentCapabilityInput): Record<string, string> {
+function capabilityIdentity(agent: AgentInventoryRow, c: AgentCapabilityInput): Record<string, Cell> {
   return {
-    agent: `${plain(agent.name, "unnamed")} | id: ${plain(agent.agent_id, "unknown")}`,
-    kind: plain(c.kind, "unknown"),
-    name: plain(c.name, "unnamed"),
+    agent: labelCell(
+      "agent",
+      `${plain(agent.name, "unnamed")} | id: ${plain(agent.agent_id, "unknown")}`,
+      "recorded_by_the_registry",
+      ROSTER_BOUNDARY,
+    ),
+    kind: labelCell("kind", c.kind, "the kind of capability this row is", INVENTORY_BOUNDARY),
+    name: labelCell("name", c.name, "the name this capability carries on the disk", INVENTORY_BOUNDARY),
     origin: observationCell({
       observation: "origin",
       answer: c.origin,
@@ -1127,11 +1332,11 @@ export function agentSections(input: AgentViewInput): DashboardSection[] {
   // forbids — and would quietly assert the two are the same table.
   for (const runtime of ["claude_code", "codex"] as const) {
     const columns = columnsOf(runtime);
-    const rows: Array<Record<string, unknown>> = [];
+    const rows: Array<Record<string, Cell>> = [];
     for (const entry of input.agents) {
       for (const c of entry.capabilities) {
         if (c.runtime !== runtime) continue;
-        const row: Record<string, unknown> = capabilityIdentity(entry.agent, c);
+        const row: Record<string, Cell> = capabilityIdentity(entry.agent, c);
         for (const column of columns) {
           const cell = c.columns.find((x) => x.column === column);
           row[fieldOfColumn(column)] = cell
@@ -1158,7 +1363,7 @@ export function agentSections(input: AgentViewInput): DashboardSection[] {
     });
   }
 
-  const unknownRows: Array<Record<string, unknown>> = [];
+  const unknownRows: Array<Record<string, Cell>> = [];
   for (const entry of input.agents) {
     for (const c of entry.capabilities) {
       if (c.runtime !== null) continue;
@@ -1184,23 +1389,33 @@ export function agentSections(input: AgentViewInput): DashboardSection[] {
     empty: "every readable capability belongs to an agent whose runtime is established",
   });
 
-  const deadRows: Array<Record<string, unknown>> = [];
-  const countRows: Array<Record<string, unknown>> = [];
+  const deadRows: Array<Record<string, Cell>> = [];
+  const countRows: Array<Record<string, Cell>> = [];
   for (const entry of input.agents) {
-    const who = `${plain(entry.agent.name, "unnamed")} | id: ${plain(entry.agent.agent_id, "unknown")}`;
+    const who = labelCell(
+      "agent",
+      `${plain(entry.agent.name, "unnamed")} | id: ${plain(entry.agent.agent_id, "unknown")}`,
+      "recorded_by_the_registry",
+      ROSTER_BOUNDARY,
+    );
     for (const item of entry.dead_items) {
       deadRows.push({
         agent: who,
-        kind: plain(item.kind, "unknown"),
-        name: plain(item.name, "unnamed"),
-        version: plain(item.skill_version_id, "unknown: this copy could not be resolved to a version of this workspace"),
-        reason: plain(item.reason, "unknown"),
+        kind: labelCell("kind", item.kind, "the kind of capability this row is", INVENTORY_BOUNDARY),
+        name: labelCell("name", item.name, "the name this capability carries on the disk", INVENTORY_BOUNDARY),
+        version: labelCell(
+          "version",
+          item.skill_version_id === null ? null : `id: ${item.skill_version_id}`,
+          "resolved_from_the_arrival_marker",
+          VERSIONS_BOUNDARY,
+        ),
+        reason: labelCell("reason", item.reason, "why this copy counts as dead weight", INVENTORY_BOUNDARY),
       });
     }
-    countRows.push({ agent: who, metric: "registered under the inventory root", number: numberCell(entry.dead_weight.registered) });
-    countRows.push({ agent: who, metric: "registered AND demonstrated to have run", number: numberCell(entry.dead_weight.invoked) });
-    countRows.push({ agent: who, metric: "registered with no paired call/output record", number: numberCell(entry.dead_weight.dead) });
-    countRows.push({ agent: who, metric: "intended active by this registry (published for comparison, never merged)", number: numberCell(entry.dead_weight.intent_active) });
+    countRows.push({ agent: who, metric: metricCell("registered under the inventory root"), number: numberCell(entry.dead_weight.registered) });
+    countRows.push({ agent: who, metric: metricCell("registered AND demonstrated to have run"), number: numberCell(entry.dead_weight.invoked) });
+    countRows.push({ agent: who, metric: metricCell("registered with no paired call/output record"), number: numberCell(entry.dead_weight.dead) });
+    countRows.push({ agent: who, metric: metricCell("intended active by this registry (published for comparison, never merged)"), number: numberCell(entry.dead_weight.intent_active) });
   }
   sections.push({
     key: "never_used",
@@ -1293,21 +1508,21 @@ const MANIFEST_BOUNDARY = "the version's manifest, as signed";
 
 export function approvalSections(input: ApprovalViewInput): DashboardSection[] {
   const rows = input.subjects.map((s) => ({
-    slug: plain(s.slug, "unnamed"),
-    version: `${plain(s.semantic_version, "unknown")} | id: ${plain(s.skill_version_id, "unknown")}`,
-    state: plain(s.state, "unknown"),
+    slug: labelCell("slug", s.slug, "recorded_by_the_registry", VERSIONS_BOUNDARY),
+    version: versionCell(s.semantic_version, s.skill_version_id),
+    state: labelCell("state", s.state, "recorded_by_the_registry", VERSIONS_BOUNDARY),
     // [B-6] — WHAT IT DOES, in the author's own sentence. Not the manifest.
-    what_it_does: plain(
+    what_it_does: labelCell("what_it_does", plain(
       s.title === null && s.capability_statement === null ? null : `${plain(s.title, "untitled")}: ${plain(s.capability_statement, "no capability statement")}`,
       s.manifest_readable ? "unknown: the manifest declares neither a title nor a capability statement" : "unknown: this version's manifest could not be read",
-    ),
-    when_it_applies: plain(
+    ), "declared_by_the_manifest", MANIFEST_BOUNDARY),
+    when_it_applies: labelCell("when_it_applies", plain(
       s.problem_class === null && s.prerequisites.length === 0
         ? null
         : `${plain(s.problem_class, "no problem class is declared")} | prerequisites: ${list(s.prerequisites, "none declared")}`,
       "unknown: this version declares neither a problem class nor a prerequisite",
-    ),
-    rights_required: [
+    ), "declared_by_the_manifest", MANIFEST_BOUNDARY),
+    rights_required: labelCell("rights_required", [
       `risk: ${plain(s.risk_level, "unknown")}`,
       `sandbox: ${plain(s.sandbox_requirement, "unknown")}`,
       `forbidden: ${list(s.forbidden_actions, "none declared")}`,
@@ -1315,7 +1530,7 @@ export function approvalSections(input: ApprovalViewInput): DashboardSection[] {
       `network: ${list(s.url_allowlist, "no URL is allowlisted")}`,
       `cloud/iam: ${list(s.cloud_iam_assumptions, "none assumed")}`,
       `mcp: ${list(s.mcp_dependencies, "none declared")}`,
-    ].join(" | "),
+    ].join(" | "), "declared_by_the_manifest", MANIFEST_BOUNDARY),
     // [I-3]: WHAT WENT IN, as two NUMBERS rather than two figures inside a
     // sentence. They used to be rendered as `steps: N | files: N` in a plain
     // cell, which the sweep could not see as numbers at all — it recognised a
@@ -1334,20 +1549,30 @@ export function approvalSections(input: ApprovalViewInput): DashboardSection[] {
     // [B-6] — AND WHAT WAS DELIBERATELY LEFT OUT. The author's own non-goals,
     // shown beside what went in, because a reader approving a capability is
     // approving its boundary as much as its content.
-    deliberately_excluded: list(
-      s.non_goals,
-      s.manifest_readable ? "unknown: this version declares no non-goal, so its boundary is not stated" : "unknown: this version's manifest could not be read",
+    deliberately_excluded: labelCell(
+      "deliberately_excluded",
+      list(
+        s.non_goals,
+        s.manifest_readable ? "unknown: this version declares no non-goal, so its boundary is not stated" : "unknown: this version's manifest could not be read",
+      ),
+      "declared_by_the_manifest",
+      MANIFEST_BOUNDARY,
     ),
-    approval_required: list(s.required_approvals, "none: this version declares no required approval"),
-    approval_state: plain(s.approval_state, "unknown"),
+    approval_required: labelCell(
+      "approval_required",
+      list(s.required_approvals, "none: this version declares no required approval"),
+      "declared_by_the_manifest",
+      MANIFEST_BOUNDARY,
+    ),
+    approval_state: labelCell("approval_state", s.approval_state, "recorded_by_the_approval_journal", APPROVALS_BOUNDARY),
   }));
 
   const decisions = input.decisions.map((d) => ({
-    approval_id: plain(d.approval_id, "unknown"),
-    slug: plain(d.slug, "unnamed"),
-    version: plain(d.semantic_version, "unknown"),
-    scope: plain(d.scope, "unknown"),
-    decision: plain(d.decision, "unknown"),
+    approval_id: labelCell("approval_id", d.approval_id, "recorded_by_the_approval_journal", APPROVALS_BOUNDARY),
+    slug: labelCell("slug", d.slug, "recorded_by_the_registry", VERSIONS_BOUNDARY),
+    version: versionCell(d.semantic_version, null),
+    scope: labelCell("scope", d.scope, "recorded_by_the_approval_journal", APPROVALS_BOUNDARY),
+    decision: labelCell("decision", d.decision, "recorded_by_the_approval_journal", APPROVALS_BOUNDARY),
     // [B-7] and [I-5]: WHO, and what KIND of principal they are. "approved by
     // the workspace owner" and "approved by a principal holding a role" are
     // different facts and are never printed as one.
@@ -1366,7 +1591,7 @@ export function approvalSections(input: ApprovalViewInput): DashboardSection[] {
       window: "all_time",
       boundary: "approvals (registry journal), all time",
     }),
-    note: plain(d.note, "the decision carried no note"),
+    note: labelCell("note", d.note, "recorded_by_the_approval_journal", APPROVALS_BOUNDARY),
   }));
 
   return [
@@ -1437,9 +1662,9 @@ export interface CapabilityViewInput {
 
 export function capabilitySections(input: CapabilityViewInput): DashboardSection[] {
   const rows = input.versions.map((v) => ({
-    slug: plain(v.slug, "unnamed"),
-    version: `${plain(v.semantic_version, "unknown")} | id: ${plain(v.skill_version_id, "unknown")}`,
-    state: plain(v.state, "unknown"),
+    slug: labelCell("slug", v.slug, "recorded_by_the_registry", VERSIONS_BOUNDARY),
+    version: versionCell(v.semantic_version, v.skill_version_id),
+    state: labelCell("state", v.state, "recorded_by_the_registry", VERSIONS_BOUNDARY),
     origin: observationCell({
       observation: "origin",
       answer: `author: ${plain(v.author_agent_id, "unknown")} | created: ${instantOr(v.created_at_ms, "no time was recorded")} | supersedes: ${plain(v.supersedes, "nothing — this is the first version of this lineage")}`,
@@ -1552,9 +1777,9 @@ export interface OutcomeViewInput {
 
 export function outcomeSections(input: OutcomeViewInput): DashboardSection[] {
   const rows = input.versions.map((v) => ({
-    slug: plain(v.slug, "unnamed"),
-    version: `${plain(v.semantic_version, "unknown")} | id: ${plain(v.skill_version_id, "unknown")}`,
-    state: plain(v.state, "unknown"),
+    slug: labelCell("slug", v.slug, "recorded_by_the_registry", VERSIONS_BOUNDARY),
+    version: versionCell(v.semantic_version, v.skill_version_id),
+    state: labelCell("state", v.state, "recorded_by_the_registry", VERSIONS_BOUNDARY),
     worked: numberCell(v.worked),
     broke: numberCell(v.broke),
     rolled_back: numberCell(v.rolled_back),
@@ -1565,8 +1790,13 @@ export function outcomeSections(input: OutcomeViewInput): DashboardSection[] {
         ? registryUnknown("outcome", RATING_BOUNDARY, "no receipt-backed rating has been recorded for this version")
         : { ...registryCount(0, "outcome", RATING_BOUNDARY, "receipt_backed_average"), value: v.avg_rating },
     ),
-    failure_modes: list(v.failure_modes, "no failure mode has been reported"),
-    verdict: plain(v.verdict, "unknown"),
+    failure_modes: labelCell(
+      "failure_modes",
+      list(v.failure_modes, "no failure mode has been reported"),
+      "reported_by_adopters",
+      RECEIPT_BOUNDARY,
+    ),
+    verdict: labelCell("verdict", v.verdict, "comparison_of_the_counted_outcomes", RECEIPT_BOUNDARY),
     why: observationCell({
       observation: "verdict",
       answer: v.verdict_reason,
@@ -1577,10 +1807,10 @@ export function outcomeSections(input: OutcomeViewInput): DashboardSection[] {
     }),
   }));
   const receipts = input.receipts.map((r) => ({
-    receipt_id: plain(r.receipt_id, "unknown"),
-    slug: plain(r.slug, "unnamed"),
-    derived_state: plain(r.derived_state, "unknown"),
-    adopter: plain(r.adopter_agent_id, "unknown"),
+    receipt_id: labelCell("receipt_id", r.receipt_id, "recorded_by_the_receipt_journal", RECEIPT_BOUNDARY),
+    slug: labelCell("slug", r.slug, "recorded_by_the_registry", VERSIONS_BOUNDARY),
+    derived_state: labelCell("derived_state", r.derived_state, "derived_from_the_receipt_journal", RECEIPT_BOUNDARY),
+    adopter: labelCell("adopter", r.adopter_agent_id, "recorded_by_the_receipt_journal", RECEIPT_BOUNDARY),
     at: observationCell({
       observation: "last_event_at",
       answer: instant(r.at_ms),
@@ -1589,8 +1819,13 @@ export function outcomeSections(input: OutcomeViewInput): DashboardSection[] {
       window: "all_time",
       boundary: "receipt_events (registry journal, INSERT-only), all time",
     }),
-    stalled: r.stalled ? "yes — no terminal event within the staleness window" : "no — the chain is closed or still inside the window",
-    failure_summary: plain(r.failure_summary, "no failure report is attached to this chain"),
+    stalled: labelCell(
+      "stalled",
+      r.stalled ? "yes — no terminal event within the staleness window" : "no — the chain is closed or still inside the window",
+      "compared_against_the_staleness_window",
+      RECEIPT_BOUNDARY,
+    ),
+    failure_summary: labelCell("failure_summary", r.failure_summary, "reported_by_the_adopter", RECEIPT_BOUNDARY),
   }));
   return [
     {

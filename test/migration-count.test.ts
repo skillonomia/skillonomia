@@ -358,9 +358,9 @@ test("`migration.count` is advertised as reading, and counting writes no row", (
       assert.equal(answerOf(row[field]), String(api[field]), `${field} on the page is the API's own number`);
       assert.match(String(row[field]), /kind: measured_number/, `${field} is published with its method [I-3]`);
     }
-    assert.equal(row.slug, api.slug);
-    assert.equal(row.measurement_state, api.measurement_state);
-    assert.equal(row.source, api.source);
+    assert.equal(answerOf(row.slug), api.slug);
+    assert.equal(answerOf(row.measurement_state), api.measurement_state);
+    assert.equal(answerOf(row.source), api.source);
   });
   for (const field of ["migrations", "distinct_recipients", "distinct_runtimes", "runtimes_unknown", "measurement_state", "source", "window"]) {
     assert.ok(section.fields.includes(field), `the view declares ${field}`);

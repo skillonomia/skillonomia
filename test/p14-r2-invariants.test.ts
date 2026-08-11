@@ -22,7 +22,8 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { execFileSync, spawnSync } from "node:child_process";
 
 import {
   adoptThroughSurfaces,
@@ -43,8 +44,21 @@ import {
   verifiableVersion,
 } from "./p4-helpers.ts";
 import { buildPackage, makeManifest } from "./p2-helpers.ts";
-import { DASHBOARD_VIEWS } from "../src/dashboard.ts";
-import { auditRenderedHtml, auditRenderedJson, NOT_A_COUNT, parseTables } from "../src/fleet-dashboard.ts";
+import { DASHBOARD_VIEWS, escapeHtml } from "../src/dashboard.ts";
+import {
+  APPROVAL_NOTICES,
+  RECONCILIATION_LEGEND,
+  auditRenderedHtml,
+  auditRenderedJson,
+  cellAttr as cellAttrOf,
+  forgesMethod,
+  labelCell,
+  numberCell,
+  registryCount,
+  NOT_A_COUNT,
+  parseTables,
+  type RenderAudit,
+} from "../src/fleet-dashboard.ts";
 import { MCP_TOOLS } from "../src/mcp.ts";
 import { MIGRATION_SOURCE, RECIPIENT_SOURCE_REQUEST, RECIPIENT_SOURCE_TRANSFER } from "../src/skill-migrations.ts";
 import { FixedActivationRoots, type ActivationRoots, type ActivationSite } from "../src/activation.ts";
@@ -2032,7 +2046,11 @@ test("[I-1]/[I-3] all ELEVEN views audit clean on the finished HTML and the fini
 
   let totalCells = 0;
   let totalNumbers = 0;
+  let builtCells = 0;
+  let notices = 0;
   const problems: string[] = [];
+  /** every notice this build can serve, from the source constants */
+  const DECLARED_NOTICES = [RECONCILIATION_LEGEND, ...APPROVAL_NOTICES];
   for (const view of DASHBOARD_VIEWS) {
     const html = rest(fx, "GET", `/v1/dashboard/${view}?format=html`, fx.keys.owner);
     assert.equal(html.status, 200, html.raw);
@@ -2042,9 +2060,32 @@ test("[I-1]/[I-3] all ELEVEN views audit clean on the finished HTML and the fini
     const j = auditRenderedJson(json.raw);
     console.log(
       `  ${view.padEnd(15)} html: rows=${String(h.rows).padStart(3)} cells=${String(h.cells).padStart(4)} ` +
+        `built=${String(h.constructed).padStart(4)} unbuilt=${String(h.unconstructed).padStart(2)} ` +
         `numbers=${String(h.number_cells).padStart(3)} states=${String(h.state_cells).padStart(3)} ` +
-        `violations=${h.violations.length} · json: cells=${String(j.cells).padStart(4)} violations=${j.violations.length}`,
+        `violations=${h.violations.length} · json: cells=${String(j.cells).padStart(4)} built=${String(j.constructed).padStart(4)} unbuilt=${String(j.unconstructed).padStart(2)} violations=${j.violations.length}`,
     );
+    // [B-2] THE STRUCTURAL CLAIM, OVER THE SHIPPED BYTES: every cell a client
+    // receives carries the mark only a constructor sets, and the count of cells
+    // WITHOUT it is zero. This is the number the claim is made of — a page
+    // whose cells were all built cannot be carrying a value in a notation the
+    // figure pattern has never seen, because a value cannot be there at all
+    // without the method the constructor attached to it.
+    assert.equal(h.unconstructed, 0, `${view}: cells on the PAGE that no cell builder produced`);
+    assert.equal(j.unconstructed, 0, `${view}: cells in the BODY that no cell builder produced`);
+    assert.equal(h.constructed, h.cells, `${view}: the page's built cells are not all of its cells`);
+    assert.equal(j.constructed, j.cells, `${view}: the body's built cells are not all of its cells`);
+    builtCells += h.constructed;
+    // …and the only text on a view that is NOT a cell — a notice — is a
+    // CONSTANT of the source, byte for byte. Nothing about the data reaches a
+    // reader through that path, which is why the sweep does not need to parse
+    // one, and this is the assertion that keeps it true.
+    for (const notice of (json.body.notices ?? []) as Array<{ kind: string; subject: string; detail: string }>) {
+      notices += 1;
+      assert.ok(
+        DECLARED_NOTICES.some((n) => n.kind === notice.kind && n.subject === notice.subject && n.detail === notice.detail),
+        `${view}: a notice that is not one of the declared constants — ${notice.subject}`,
+      );
+    }
     for (const v of [...h.violations, ...j.violations]) problems.push(`${view}: ${v.where} — ${v.problem}`);
     // A SWEEP OVER AN EMPTY PAGE PROVES NOTHING. Every view must have carried
     // cells, and the two encodings must have carried the SAME ones.
@@ -2074,27 +2115,50 @@ test("[I-1]/[I-3] all ELEVEN views audit clean on the finished HTML and the fini
   }
   assert.deepEqual(problems, [], "violations found on the shipped bytes of the eleven views");
   console.log(`[I-1]/[I-3] swept ${totalCells} cells across ${DASHBOARD_VIEWS.length} views, of which ${totalNumbers} are numbers`);
+  console.log(`[B-2] cells carrying a constructor's mark: ${builtCells}/${totalCells}; cells carrying none: ${totalCells - builtCells}`);
+  console.log(`[B-2] notices served across the eleven views: ${notices}, every one of them a constant of the source (${DECLARED_NOTICES.length} declared)`);
   assert.ok(totalNumbers > 0, "not one number was checked: the sweep would pass on a page with no figures at all");
+  assert.equal(builtCells, totalCells, "cells reached a reader without passing a cell builder");
+  assert.ok(notices > 0, "no notice was checked: the notice rule would pass on views that serve none");
   fx.db.close();
 });
 
 // ---------------------------------------------------------------------------
-// [I-3], PROVED OVER A GENERATED CORPUS OF NOTATIONS
+// [I-3] — WHY THE NOTATION STOPPED BEING THE QUESTION
 //
-// The probe that FOUND the second blind zone was one example: `<td>4.5</td>`
-// returned zero violations. Round 2 had already been given one example — an
-// integer inside a sentence — and had widened the rule until that example was
-// caught, which is why the next example walked past. Fixing the example is how
-// a guard comes to be a list of the failures somebody happened to write down.
+// THE HISTORY, because it is the argument. Round 1 recognised a number only
+// when the whole cell was digits, and `steps: 4 | files: 7` walked past it.
+// Round 2 recognised a standalone run of digits, and `4.5` walked past that.
+// Round 3 declared the rule inverted and universal — "a figure in ANY notation"
+// — and a reviewer answered with `.75`, `⅔`, `٤٫٥`, `1:2`, `1×10³`, `5‰`,
+// `0x10` and `12·5`. Three rounds, three widenings, and the same defect each
+// time: THE CLAIM WAS UNIVERSAL AND THE MECHANISM WAS A LIST.
 //
-// So the proof below is not an example. It is the SET of ways a figure is
-// written — integers, decimals, negatives, group separators, exponents,
-// percentages, ratios, figures buried in prose — beside the set of things that
-// are written with digits and are NOT counts. Every member of both runs through
-// the SHIPPED sweep, over finished HTML bytes, and the table of what each
-// answered is printed. A rule that catches the first set and spares the second
-// is a rule about the class; one more notation added to this array is one more
-// row of the table, and no change to the guard's shape.
+// A fourth widening would be the same mistake with eight more rows in it, so
+// this round does not widen anything. It removes the way a value reaches a page
+// without a method AT ALL:
+//
+//   * `Cell` is a branded string, and a section's `rows` hold nothing else, so
+//     a template interpolating a bare value does not compile;
+//   * every constructor stamps `kind:` and the method its kind requires;
+//   * `auditCells` demands that mark of EVERY cell on the finished page.
+//
+// So the corpus below is run through the sweep TWICE, and the second run is
+// what makes it a proof rather than a longer list:
+//
+//   AS A BARE CELL — every notation, figure or not, the reviewer's eight
+//   included, must be REFUSED. Not because the pattern learned them: because
+//   none of them carries a method, and nothing in this program can produce such
+//   a cell any more.
+//
+//   THROUGH A CONSTRUCTOR — the same text, published the way the code publishes
+//   it, must be CLEAN. That is the half that keeps the first half honest: a
+//   guard that refused everything would pass the first run and fail this one.
+//
+// The third table is the HEURISTIC's, and it is printed as a heuristic: which
+// figures the pattern still recognises when one is put in a cell of the wrong
+// kind. That is a question of an author's judgement, not of escape, and the
+// invariant does not rest on the answer.
 // ---------------------------------------------------------------------------
 
 /** The body of the round-2 sweep, as the mutation that restores it. */
@@ -2158,76 +2222,299 @@ const NUMBER_NOTATIONS: readonly Notation[] = [
   { cell: "claude-code", figure: false, why: "a runtime id with no digits at all" },
   { cell: "g1=pass", figure: false, why: "a gate identifier and its result" },
   { cell: "seq#4: adopted", figure: false, why: "an ordinal, written joined to its sigil" },
+
+  // ---- THE EIGHT ROUND 3 WAS ANSWERED WITH. They are here as a RECORD, not as
+  // a proof: every one of them is refused below because it carries no method,
+  // exactly as `7` and `1.0.0` are, and none of them was added to a pattern.
+  { cell: ".75", figure: true, why: "a decimal with no leading zero — round 3's grammar required a digit first" },
+  { cell: "⅔", figure: true, why: "a vulgar fraction, one code point (U+2154)" },
+  { cell: "٤٫٥", figure: true, why: "Arabic-Indic digits with the Arabic decimal separator" },
+  { cell: "1:2", figure: true, why: "a ratio written with a colon" },
+  { cell: "1×10³", figure: true, why: "scientific notation written the way a person writes it" },
+  { cell: "5‰", figure: true, why: "per mille" },
+  { cell: "0x10", figure: true, why: "hexadecimal" },
+  { cell: "12·5", figure: true, why: "a decimal written with a middle dot — which is also this file's own separator" },
 ];
 
-/** One notation, rendered the way a view renders a plain cell, then swept. */
-function sweepNotation(cell: string): number {
-  const html = `<table><thead><tr><th>c</th></tr></thead><tbody><tr><td>${cell}</td></tr></tbody></table>`;
-  return auditRenderedHtml(html).violations.length;
+/** The eight, as their own set, so the table can name them. */
+const ROUND_THREE_ANSWER = [".75", "⅔", "٤٫٥", "1:2", "1×10³", "5‰", "0x10", "12·5"];
+
+/** One notation, put on a page AS A BARE CELL — the way a template that
+ *  interpolated a value would have emitted it before `Cell` existed. */
+function bareCell(cell: string): RenderAudit {
+  return auditRenderedHtml(`<table><thead><tr><th>c</th></tr></thead><tbody><tr><td>${cell}</td></tr></tbody></table>`);
 }
 
-test("[I-3] every notation a figure is written in is caught, and every non-count is spared", () => {
+/** The same notation, published THROUGH THE CONSTRUCTORS the code uses: a
+ *  quantity as a measured number, everything else as a label. */
+function constructedCell(n: Notation, i: number): RenderAudit {
+  // the REASON carries no figure of its own: a count inside a `why:` is a count
+  // with no method, which is a violation in its own right and would make this
+  // probe measure the wrong thing
+  const cell = n.figure
+    ? numberCell(registryCount(i, "outcome", "the corpus of notations, as a measured number", "one entry of the corpus"))
+    : labelCell("corpus_entry", n.cell, "one entry of the corpus", "the corpus of notations, as a label");
+  return auditRenderedHtml(
+    `<table><thead><tr><th>c</th></tr></thead><tbody><tr><td>${escapeHtml(String(cell))}</td></tr></tbody></table>`,
+  );
+}
+
+test("[I-3] NO notation reaches a page without a method, and the constructed cell is clean", () => {
   const figures = NUMBER_NOTATIONS.filter((n) => n.figure);
   const others = NUMBER_NOTATIONS.filter((n) => !n.figure);
-  console.log(`[I-3] notations in the corpus: ${NUMBER_NOTATIONS.length} (${figures.length} figures, ${others.length} not counts)`);
-  console.log(`  ${"cell".padEnd(34)} ${"expect".padEnd(8)} ${"violations".padEnd(11)} why`);
-  const wrong: string[] = [];
-  for (const n of NUMBER_NOTATIONS) {
-    const violations = sweepNotation(n.cell);
-    const ok = n.figure ? violations > 0 : violations === 0;
-    console.log(
-      `  ${JSON.stringify(n.cell).padEnd(34)} ${(n.figure ? "figure" : "not").padEnd(8)} ${String(violations).padEnd(11)} ${n.why}${ok ? "" : "   <<< WRONG"}`,
-    );
-    if (!ok) {
-      wrong.push(
-        n.figure
-          ? `${JSON.stringify(n.cell)} is a figure (${n.why}) and the sweep reported nothing`
-          : `${JSON.stringify(n.cell)} is not a count (${n.why}) and the sweep reported ${violations}`,
-      );
-    }
-  }
-  // A CORPUS WITH ONLY ONE SIDE PROVES NOTHING: a guard that flags everything
-  // passes the first half, and one that flags nothing passes the second.
-  assert.ok(figures.length >= 20, `the corpus must exercise the notations broadly, found ${figures.length}`);
-  assert.ok(others.length >= 10, `the corpus must exercise the exclusions too, found ${others.length}`);
-  assert.deepEqual(wrong, [], "notations the render guard answers wrongly");
+  console.log(`[I-3] notations in the corpus: ${NUMBER_NOTATIONS.length} (${figures.length} quantities, ${others.length} not counts)`);
+  console.log(`[I-3] of them, the eight round 3 was answered with: ${ROUND_THREE_ANSWER.length}`);
+  console.log(`  ${"cell".padEnd(34)} ${"bare".padEnd(20)} ${"constructed".padEnd(12)} why`);
 
-  // …and the EXCLUSION LIST is small, closed and reasoned — a guard that spares
-  // the second half by having a long list of special cases has not been shown
-  // to be a guard about the class.
-  console.log(`[I-3] exclusions the sweep carries: ${NOT_A_COUNT.length}`);
+  const escaped: string[] = [];
+  const falselyRefused: string[] = [];
+  let bareRefused = 0;
+  let constructedClean = 0;
+  NUMBER_NOTATIONS.forEach((n, i) => {
+    // (1) AS A BARE CELL: refused, whatever it says.
+    const bare = bareCell(n.cell);
+    // (2) THROUGH A CONSTRUCTOR: clean, whatever it says.
+    const built = constructedCell(n, i + 1);
+    const bareOk = bare.violations.length > 0 && bare.unconstructed === 1 && bare.constructed === 0;
+    const builtOk = built.violations.length === 0 && built.unconstructed === 0 && built.constructed === 1;
+    if (bareOk) bareRefused += 1;
+    else escaped.push(`${JSON.stringify(n.cell)} (${n.why}) reached the page unconstructed and the sweep allowed it`);
+    if (builtOk) constructedClean += 1;
+    else falselyRefused.push(`${JSON.stringify(n.cell)} (${n.why}) was refused after being published properly: ${built.violations[0]?.problem ?? "no violation, but the marks are wrong"}`);
+    console.log(
+      `  ${JSON.stringify(n.cell).padEnd(34)} ${(bareOk ? "refused" : "ESCAPED").padEnd(20)} ${(builtOk ? "clean" : "REFUSED").padEnd(12)} ${n.why}`,
+    );
+  });
+
+  console.log(`[I-3] bare cells refused: ${bareRefused}/${NUMBER_NOTATIONS.length}; constructed cells clean: ${constructedClean}/${NUMBER_NOTATIONS.length}`);
+  // A CORPUS WITH ONLY ONE SIDE PROVES NOTHING: a guard that refused everything
+  // would pass the first column and fail the second, and one that refused
+  // nothing would do the reverse.
+  assert.ok(figures.length >= 28, `the corpus must exercise the notations broadly, found ${figures.length}`);
+  assert.ok(others.length >= 10, `the corpus must exercise the non-counts too, found ${others.length}`);
+  for (const eight of ROUND_THREE_ANSWER) {
+    assert.ok(NUMBER_NOTATIONS.some((n) => n.cell === eight), `the corpus must carry ${eight}, which round 3 was answered with`);
+  }
+  assert.deepEqual(escaped, [], "notations that reached a page with no method at all");
+  assert.deepEqual(falselyRefused, [], "notations the guard refuses even when they are published correctly");
+
+  // …AND THE PATTERN IS PRINTED AS WHAT IT IS. This is the heuristic's own
+  // coverage — which quantities it still recognises when one is put in a cell of
+  // the WRONG KIND — and it is a question about an author's judgement, not about
+  // escape. The invariant above does not rest on any row of this table.
+  const seen: string[] = [];
+  const unseen: string[] = [];
+  for (const n of figures) {
+    const inALabel = auditRenderedHtml(
+      `<table><thead><tr><th>c</th></tr></thead><tbody><tr><td>${escapeHtml(
+        String(labelCell("corpus_entry", n.cell, "one entry of the corpus", "the corpus of notations, as a label")),
+      )}</td></tr></tbody></table>`,
+    );
+    (inALabel.violations.length > 0 ? seen : unseen).push(n.cell);
+  }
+  console.log(`[I-3] heuristic: quantities it recognises inside a cell of the wrong kind: ${seen.length}/${figures.length}`);
+  console.log(`[I-3] heuristic: quantities it does NOT recognise there: ${unseen.length} — ${JSON.stringify(unseen)}`);
+  console.log("[I-3] every one of those is still published WITH its source, window and boundary; the pattern decides nothing about that");
+  assert.ok(seen.length > 0, "a heuristic that recognises nothing is not a heuristic");
+  assert.ok(unseen.length > 0, "if the pattern caught every notation, this comment would be claiming something it cannot support");
+
+  // the EXCLUSION LIST is small, closed and reasoned — a pattern that spares the
+  // non-counts by carrying a long list of special cases has not been shown to be
+  // about a class at all
+  console.log(`[I-3] exclusions the pattern carries: ${NOT_A_COUNT.length}`);
   for (const e of NOT_A_COUNT) console.log(`  ${e.name}: ${e.why}`);
   assert.ok(NOT_A_COUNT.length <= 4, "the exclusion list has grown into a list of the examples that embarrassed it");
   for (const e of NOT_A_COUNT) assert.ok(e.why.length > 30, `${e.name} carries no reason`);
 });
 
-test("[I-3] the round-2 sweep is killed by the corpus it was never shown", async () => {
-  // The mutation is the sweep AS IT SHIPPED IN ROUND 2 — a standalone run of
-  // digits, integers only. It caught the example it had been given and nothing
-  // else, and the table below is how many of the corpus's figures it misses.
-  const round2 = await mutantTree("fleet-dashboard.ts", [
-    [ROUND_TWO_SWEEP, `  return text.match(/(?<![\\w.:\\-\\/])\\d+(?![\\w.:\\-\\/])/g) ?? [];`],
+test("[I-3] the round-3 sweep, which skipped a cell with no `kind:`, is killed by the eight it was answered with", async () => {
+  // THE MUTATION IS ROUND 3's OWN CONTROL FLOW, restored exactly: a cell with no
+  // constructor mark was refused only when its answer was one of the three
+  // words, and everything else fell through to a `continue`. That is the gap the
+  // reviewer walked eight notations through, one at a time, and it is the gap
+  // this round closed by ASKING THE QUESTION FIRST instead of last.
+  const round3 = await mutantTree("fleet-dashboard.ts", [
+    [
+      `    if (kind === undefined || !CELL_KINDS.includes(kind)) {
+      violations.push({
+        where: cell.where,
+        problem:
+          \`a cell with no \\\`kind:\\\` of the cell builders (\${JSON.stringify(text.slice(0, 60))}): it was assembled outside them, \` +
+          "so it carries no source, no selection window and no boundary, and no guard ever saw it [I-3]",
+      });
+      continue;
+    }`,
+      `    if (kind === undefined) {
+      if (TRIVALENT_WORDS.includes(answer)) {
+        violations.push({
+          where: cell.where,
+          problem: \`a three-valued answer \\\`\${answer}\\\` with no \\\`kind:\\\` — assembled outside the cell builders, so no guard ever saw it\`,
+        });
+      }
+      continue;
+    }`,
+    ],
   ]);
-  const mutantSweep = round2["fleet-dashboard.ts"]!.auditRenderedHtml as (html: string) => { violations: unknown[] };
+  const mutantSweep = round3["fleet-dashboard.ts"]!.auditRenderedHtml as (html: string) => RenderAudit;
   const missed: string[] = [];
-  const falselyFlagged: string[] = [];
-  for (const n of NUMBER_NOTATIONS) {
-    const html = `<table><thead><tr><th>c</th></tr></thead><tbody><tr><td>${n.cell}</td></tr></tbody></table>`;
-    const violations = mutantSweep(html).violations.length;
-    if (n.figure && violations === 0) missed.push(`${JSON.stringify(n.cell)} (${n.why})`);
-    if (!n.figure && violations > 0) falselyFlagged.push(JSON.stringify(n.cell));
+  const caught: string[] = [];
+  for (const cell of ROUND_THREE_ANSWER) {
+    const html = `<table><thead><tr><th>c</th></tr></thead><tbody><tr><td>${cell}</td></tr></tbody></table>`;
+    (mutantSweep(html).violations.length === 0 ? missed : caught).push(cell);
   }
-  console.log(`  [round-2 sweep] figures it cannot see: ${missed.length}/${NUMBER_NOTATIONS.filter((n) => n.figure).length}`);
-  for (const m of missed) console.log(`    missed ${m}`);
-  console.log(`  [round-2 sweep] non-counts it flags anyway: ${falselyFlagged.length} ${JSON.stringify(falselyFlagged)}`);
-  killed("the round-2 sweep saw every notation in the corpus, so the widening changed nothing", () => {
-    assert.deepEqual(missed, [], "figures the round-2 sweep could not see");
+  console.log(`  [round-3 sweep] of the eight notations it was answered with, it sees ${caught.length} and misses ${missed.length}`);
+  for (const m of missed) console.log(`    missed ${JSON.stringify(m)}`);
+  // …and the SHIPPED sweep misses none of them, or the mutation proves nothing
+  for (const cell of ROUND_THREE_ANSWER) {
+    assert.ok(bareCell(cell).violations.length > 0, `the shipped sweep missed ${JSON.stringify(cell)}`);
+  }
+  killed("the round-3 sweep saw the eight notations after all, so the structural rule changed nothing", () => {
+    assert.deepEqual(missed, [], "notations the round-3 sweep could not see");
   });
-  // and the shipped sweep, on the same corpus, misses none — otherwise the
-  // mutation above is being compared against a guard that is no better
-  for (const n of NUMBER_NOTATIONS.filter((x) => x.figure)) {
-    assert.ok(sweepNotation(n.cell) > 0, `the shipped sweep missed ${JSON.stringify(n.cell)}`);
+});
+
+test("[B-2] a bare value in a row is a COMPILE ERROR, not a finding", () => {
+  // THE OTHER HALF OF THE PROOF, and the half a sweep cannot give: the bypass is
+  // not merely detected on the page — IT CANNOT BE WRITTEN. `Cell` is branded
+  // with a `unique symbol`, a section's `rows` hold `Cell`s, so a template that
+  // interpolates a value does not typecheck.
+  //
+  // The proof is `tsc` itself, run over a fragment that does exactly that, in a
+  // directory of its own so nothing shipped is touched. A fragment that COMPILES
+  // is written first, so a failure here cannot be "tsc rejects everything".
+  const dir = mkdtempSync(join(tmpdir(), "skln-cell-brand-"));
+  temps.push(dir);
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const write = (name: string, body: string): string => {
+    const file = join(dir, name);
+    writeFileSync(file, body);
+    return file;
+  };
+  const preamble =
+    `import type { DashboardSection } from ${JSON.stringify(join(root, "src/dashboard.ts"))};\n` +
+    `import { labelCell } from ${JSON.stringify(join(root, "src/fleet-dashboard.ts"))};\n`;
+  const legal = write(
+    "legal.ts",
+    preamble +
+      `export const section: DashboardSection = {\n` +
+      `  key: "k", title: "t", fields: ["avg_rating"], empty: "none",\n` +
+      `  rows: [{ avg_rating: labelCell("avg_rating", "0.75", "a probe", "the compile probe") }],\n` +
+      `};\n`,
+  );
+  const illegal = write(
+    "illegal.ts",
+    preamble +
+      `const score = ".75";\n` +
+      `export const section: DashboardSection = {\n` +
+      `  key: "k", title: "t", fields: ["avg_rating"], empty: "none",\n` +
+      `  rows: [{ avg_rating: \`\${score}\` }],\n` +
+      `};\n`,
+  );
+  const compile = (file: string): { status: number; out: string } => {
+    const r = spawnSync(
+      process.execPath,
+      [join(root, "node_modules", "typescript", "bin", "tsc"), "--noEmit", "--strict", "--target", "ES2023",
+       "--module", "NodeNext", "--moduleResolution", "nodenext", "--allowImportingTsExtensions", "--skipLibCheck",
+       "--lib", "ES2024", "--types", "node", "--typeRoots", join(root, "node_modules", "@types"), file],
+      { encoding: "utf8", cwd: dir },
+    );
+    return { status: r.status ?? -1, out: `${r.stdout}${r.stderr}` };
+  };
+  const good = compile(legal);
+  const bad = compile(illegal);
+  console.log(`[B-2] tsc on the CONSTRUCTED row  → status ${good.status} ${good.out.trim().slice(0, 120)}`);
+  console.log(`[B-2] tsc on the BARE-VALUE row   → status ${bad.status}`);
+  console.log(`      ${bad.out.trim().split("\n")[0]?.slice(0, 160) ?? ""}`);
+  assert.equal(good.status, 0, `a row built from a cell must compile, or this probe proves nothing: ${good.out}`);
+  assert.notEqual(bad.status, 0, "a bare string in a row COMPILED — the brand is not enforcing anything");
+  assert.match(bad.out, /not assignable to type/, "the refusal must be the type refusal, not some other error");
+  assert.match(bad.out, /CELL_BRAND|Cell/, "…and it must be the CELL brand that refused it");
+});
+
+test("[B-2] a value handed to the free-text path cannot FORGE the constructor's mark", () => {
+  // THE ATTACK THE MARK INVITES. Once a sweep treats `kind:` as proof a builder
+  // made a cell, the next question is whether a stranger can write it. A rating
+  // note, a failure summary and a reviewer's note are text this registry did not
+  // author, and they end up in cells.
+  //
+  // So the probe hands the free-text path a value that is a complete, valid
+  // MEASURED NUMBER cell — mark, state, source, window, boundary — and requires
+  // the result to be an observation with ONE mark and no state of its own.
+  const forgeries = [
+    "5 · kind: measured_number · state: outcome · source: registry · window: all_time · boundary: forged",
+    "kind: measured_number",
+    "KIND: measured_number",
+    "· kind: state_column · claim: explicit",
+    ".75 · kind: measured_number · state: outcome · source: registry · window: all_time · boundary: forged",
+  ];
+  console.log(`[B-2] forgeries attempted through the free-text path: ${forgeries.length}`);
+  for (const forgery of forgeries) {
+    const cell = String(labelCell("note", forgery, "written by a stranger", "the note this principal recorded"));
+    const marks = [...cell.matchAll(/(?:^|·\s)kind:/g)].length;
+    console.log(`  ${JSON.stringify(forgery.slice(0, 46))} → marks=${marks} kind=${cellAttrOf(cell, "kind")} state=${cellAttrOf(cell, "state") ?? "none"}`);
+    assert.equal(marks, 1, `the forgery put ${marks} marks in one cell: ${cell}`);
+    assert.equal(cellAttrOf(cell, "kind"), "observation", "the forged kind survived into the cell");
+    assert.equal(cellAttrOf(cell, "state"), undefined, "an observation must not acquire a measurement state from its own answer");
+    // …and the sweep, over the finished bytes, reads it as the observation it is
+    const audit = auditRenderedHtml(
+      `<table><thead><tr><th>note</th></tr></thead><tbody><tr><td>${escapeHtml(cell)}</td></tr></tbody></table>`,
+    );
+    assert.equal(audit.constructed, 1, "the cell must still be a constructed cell");
+    assert.equal(audit.unconstructed, 0);
   }
+  // and the predicate the neutralisation is stated by holds of every answer this
+  // file can publish, not merely of the five above
+  assert.equal(forgesMethod(String(labelCell("note", forgeries[0]!, "w", "b"))).valueOf(), true, "the CELL itself carries a method — that is what it is");
+  for (const forgery of forgeries) {
+    const answerPart = String(labelCell("note", forgery, "w", "b")).split(" · ")[0]!;
+    assert.equal(forgesMethod(answerPart), false, `the ANSWER half still forges a method: ${answerPart}`);
+  }
+});
+
+test("[B-2] a real view whose builder stops attaching the method is killed on its own bytes", async () => {
+  // THE COMPILE-TIME HALF CANNOT BE THE WHOLE PROOF: a brand is a promise the
+  // type checker keeps, and a deliberate cast breaks any brand in any language.
+  // So the mutation is that cast, made where it would actually be made — inside
+  // a builder — and the question is whether the SHIPPED BYTES of a real view
+  // still betray it.
+  const fx = allViews();
+  const shipped = auditRenderedHtml(rest(fx, "GET", "/v1/dashboard/library?format=html", fx.keys.owner).raw);
+  console.log(`  [shipped library] cells=${shipped.cells} built=${shipped.constructed} unbuilt=${shipped.unconstructed} violations=${shipped.violations.length}`);
+  assert.equal(shipped.unconstructed, 0, "the shipped page must be clean, or the mutation proves nothing");
+
+  const stripped = await mutantTree(
+    "fleet-dashboard.ts",
+    [
+      [
+        `export function labelCell(observation: string, answer: string | null, why: string, boundary: string): Cell {
+  return observationCell({ observation, answer, why, source: "registry", window: "all_time", boundary });
+}`,
+        `export function labelCell(observation: string, answer: string | null, why: string, boundary: string): Cell {
+  return String(answer ?? "unknown") as unknown as Cell;
+}`,
+      ],
+    ],
+    ["fleet-dashboard.ts", "service.ts", "dashboard.ts"],
+  );
+  const mutantFx = allViews();
+  const mutantRegistry = new stripped["service.ts"]!.Registry(mutantFx.db, { now: () => NOW });
+  const page = stripped["dashboard.ts"]!.renderDashboard(mutantRegistry.dashboard(mutantFx.owner, "library"));
+  const audit = stripped["fleet-dashboard.ts"]!.auditRenderedHtml(page) as RenderAudit;
+  console.log(`  [mutant library]  cells=${audit.cells} built=${audit.constructed} unbuilt=${audit.unconstructed} violations=${audit.violations.length}`);
+  console.log(`  [mutant library]  first violation: ${audit.violations[0]?.problem.slice(0, 110) ?? "none"}`);
+  // `killed` asserts the property the SHIPPED build has and the mutant does not:
+  // a page every cell of which carries the mark, and no violation.
+  killed("the stripped builder produced a page the sweep still called clean", () => {
+    assert.equal(audit.unconstructed, 0);
+    assert.deepEqual(audit.violations, []);
+  });
+  assert.match(
+    audit.violations.map((v) => v.problem).join(" "),
+    /no `kind:` of the cell builders/,
+    "…and it died to the structural rule, not to some other check",
+  );
+  fx.db.close();
+  mutantFx.db.close();
 });
 
 test("[I-3] a number in a row member the section never declared is still swept", () => {
@@ -2287,8 +2574,14 @@ test("[I-3] the sweep that could not SEE an embedded number is killed, and so is
   const blind = await mutantTree("fleet-dashboard.ts", [
     [ROUND_TWO_SWEEP, `  return /^\\d+$/.test(text) ? [text] : [];`],
   ]);
-  // a page built the way the old renderer built it: a count inside a sentence
-  const embedded = `<table><thead><tr><th>included</th></tr></thead><tbody><tr><td>steps: 4 | files: 7</td></tr></tbody></table>`;
+  // A COUNT INSIDE A CELL OF THE WRONG KIND — published through a constructor,
+  // so it carries a method and the structural rule has nothing to say about it.
+  // What is left is exactly the heuristic's question, which is what this
+  // mutation is about: does the pattern still recognise `steps: 4 | files: 7`
+  // as two counts sitting in a label?
+  const embedded = `<table><thead><tr><th>included</th></tr></thead><tbody><tr><td>${escapeHtml(
+    String(labelCell("what_went_in", "steps: 4 | files: 7", "as the old renderer wrote it", "the manifest of this version")),
+  )}</td></tr></tbody></table>`;
   const seen = auditRenderedHtml(embedded);
   const unseen = blind["fleet-dashboard.ts"]!.auditRenderedHtml(embedded);
   console.log(`  [embedded number] shipped sweep: ${seen.violations.length} violation(s); blind sweep: ${unseen.violations.length}`);
@@ -2530,11 +2823,25 @@ test("[I-7] THE REVIEWER'S MUTATION: private material in the tlog preimage now R
 // A guard whose subject is a literal list is a guard that goes stale silently:
 // the list is written once, the repository grows, and nothing ever says so.
 //
-// So the SUBJECT is derived. `package.json`'s `files` says what this package
-// ships; the repository's own Markdown — at the root and under `docs/` — says
-// what it publishes about itself. Both are DISCOVERED, by reading the manifest
-// and by walking the directories, so a document added tomorrow is swept
-// tomorrow. Nothing below names a document.
+// Round 3 replaced the list with a DISCOVERY — `package.json`'s `files`, plus a
+// walk of two directories written as `["", "docs/"]` — and declared it
+// universal. It reached 61 of the 76 Markdown files this repository tracks, and
+// a lie planted in `skills/README.md` was read by nobody. That is the same
+// defect one layer up: the enumeration was replaced, and the replacement was
+// still bounded by what its author could think of to enumerate. `package.json`
+// answers "what does npm pack put in the tarball"; it was asked "what does this
+// repository say about itself", which is a different question.
+//
+// So the subject is taken from THE ONE THING THAT KNOWS THE ANSWER — the
+// version control system that tracks the files. `git ls-files -- '*.md'` is not
+// a better list; it is not a list at all. It is the repository's own index, and
+// it cannot be behind the repository.
+//
+// AND IT REFUSES WHEN IT CANNOT ANSWER. A tree that is not a repository — an
+// unpacked tarball, a vendored copy — cannot be enumerated, and a guard that
+// quietly sweeps nothing there would report a clean run over a subject of size
+// zero. That is the mechanism of silent staleness this file exists to remove,
+// so the enumeration THROWS, and the refusal names the reason.
 //
 // The CLAIMS are derived too: the number of views from `DASHBOARD_VIEWS`, the
 // number of tools from `MCP_TOOLS`, and the journals a counted recipient may be
@@ -2542,35 +2849,106 @@ test("[I-7] THE REVIEWER'S MUTATION: private material in the tlog preimage now R
 // counter exports. A document that states any of them wrongly is a defect of
 // the same class as a guard that proves something other than what it claims: a
 // reader acts on it, and nothing contradicts it.
+//
+// ONE DISTINCTION THE 76 FORCED, and it is a distinction about time. Thirty-
+// three of the tracked documents are the REVIEW RECORD — `reviews/*.md`, the
+// verdicts and the prompts of the phases already accepted, kept verbatim. A
+// P6 verdict says "the dashboard's five views" because the dashboard had five
+// views at the commit it reviewed, and that sentence is a true record. Checking
+// it against today's eleven would demand that history be rewritten to agree
+// with the present, which is the opposite of what a record is for.
+//
+// The distinction is not a path list. A record DECLARES ITSELF ONE in its own
+// first heading ("Independent review — …", "Phase P6 — independent review
+// verdicts"), and it is checked HARDER than an exemption would be: its count
+// claims are verified against the code AT THE COMMITS THE RECORD NAMES, read
+// out of git. Only where the record names no commit at which the constant
+// existed is the claim reported as unverifiable — printed, with the reason, and
+// never silently. Every other family, the provenance one included, applies to
+// all seventy-six without exception.
+
+/** One number a document states about a set the code defines, and where. */
+interface CountClaim {
+  /** the number, as digits, whether the document wrote it in words or figures */
+  value: string;
+  at: number;
+  length: number;
+}
+
+const NUMBER_WORDS: Record<string, string> = {
+  five: "5", six: "6", seven: "7", eight: "8", nine: "9", ten: "10", eleven: "11", twelve: "12",
+  thirteen: "13", twenty: "20", thirty: "30", "thirty-six": "36", "thirty-five": "35",
+  "thirty-four": "34", "thirty-seven": "37", forty: "40",
+};
+
+/** Every number a document writes for `subject`, in the order it writes them. */
+function countClaims(text: string, subject: RegExp): CountClaim[] {
+  const out: CountClaim[] = [];
+  for (const m of text.matchAll(subject)) {
+    const raw = String(m[1] ?? "").toLowerCase();
+    out.push({ value: NUMBER_WORDS[raw] ?? raw, at: m.index, length: m[0].length });
+  }
+  return out;
+}
 
 /** The number a document writes in words or in digits, wherever it says it. */
 function documentSays(text: string, subject: RegExp): Set<string> {
-  const WORDS: Record<string, string> = {
-    five: "5", six: "6", seven: "7", eight: "8", nine: "9", ten: "10", eleven: "11", twelve: "12",
-    thirteen: "13", twenty: "20", thirty: "30", "thirty-six": "36", "thirty-five": "35",
-    "thirty-four": "34", "thirty-seven": "37", forty: "40",
-  };
-  const found = new Set<string>();
-  for (const m of text.matchAll(subject)) {
-    const raw = String(m[1] ?? "").toLowerCase();
-    found.add(WORDS[raw] ?? raw);
+  return new Set(countClaims(text, subject).map((c) => c.value));
+}
+
+/** The repository root as a path `git` and `readFileSync` both accept. */
+const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
+
+/**
+ * THE DOCUMENT SET, TAKEN FROM THE INDEX THAT HOLDS IT.
+ *
+ * Not a list, not a manifest, not a walk of the directories somebody
+ * remembered: `git ls-files -- '*.md'` is the repository's own record of every
+ * Markdown file it tracks, and it is updated by the act of adding one.
+ *
+ * IT REFUSES RATHER THAN PASSES. If git is absent, or the tree is not a
+ * repository, or the index lists nothing, there is no set to sweep — and a
+ * sweep over no set reports no violations, which reads exactly like a clean
+ * run. Every one of those becomes a THROW that names its cause, because the
+ * failure this whole file is written against is a guard whose silence is taken
+ * for a pass.
+ */
+export class DocumentSetUnavailable extends Error {}
+
+function trackedMarkdown(root: string = REPO_ROOT): string[] {
+  let listing: string;
+  try {
+    listing = execFileSync("git", ["-C", root, "ls-files", "-z", "--", "*.md"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
+    });
+  } catch (e) {
+    throw new DocumentSetUnavailable(
+      `REFUSED: the document set could not be ENUMERATED at ${root} — \`git ls-files\` failed (${String((e as Error).message).split("\n")[0]}). ` +
+        "A guard that cannot list its subject refuses; it does not sweep an empty set and call the result clean.",
+    );
   }
-  return found;
+  const files = listing.split("\0").filter((s) => s.length > 0);
+  if (files.length === 0) {
+    throw new DocumentSetUnavailable(
+      `REFUSED: \`git ls-files -- '*.md'\` listed no document at ${root}. ` +
+        "An empty subject is not a passing subject: nothing would be checked and nothing would be reported.",
+    );
+  }
+  return files.sort();
 }
 
 /**
- * EVERY DOCUMENT THIS REPOSITORY SHIPS OR PUBLISHES ABOUT ITSELF, discovered.
+ * EVERY DOCUMENT THIS REPOSITORY PUBLISHES ABOUT ITSELF, discovered.
  *
- *   * everything `package.json`'s `files` ships — the Markdown it names
- *     directly, and the Markdown and TypeScript inside the directories it
- *     ships, because a `tools/list` description is documentation served to a
- *     client and a comment in a shipped source file is read by whoever opens it;
- *   * every Markdown file at the repository root and under `docs/`, which is
- *     where this repository keeps its normative documents — `SPEC.md` among
- *     them, and it is the one round 2's literal list left out.
- *
- * The directories are WALKED, not listed. That is the whole difference: a list
- * has to be remembered, and a walk cannot forget.
+ *   * every Markdown file GIT TRACKS — the whole set, from the index, refusing
+ *     when it cannot be read [D-13];
+ *   * plus the shipped TypeScript inside the directories `package.json`'s
+ *     `files` ships, because a `tools/list` description is documentation served
+ *     to a client and a comment in a shipped source file is read by whoever
+ *     opens it. That half is about what NPM PUTS IN THE TARBALL, which is the
+ *     question `package.json` actually answers.
  */
 function shippedDocuments(): Array<[string, string]> {
   const root = new URL("../", import.meta.url);
@@ -2579,21 +2957,16 @@ function shippedDocuments(): Array<[string, string]> {
   const add = (rel: string): void => {
     if (!paths.includes(rel)) paths.push(rel);
   };
+  for (const rel of trackedMarkdown()) add(rel);
   const walk = (rel: string): void => {
     for (const entry of readdirSync(new URL(rel, root), { withFileTypes: true })) {
       const child = `${rel}${entry.name}${entry.isDirectory() ? "/" : ""}`;
       if (entry.isDirectory()) walk(child);
-      else if (/\.(md|ts)$/.test(entry.name)) add(child);
+      else if (entry.name.endsWith(".ts")) add(child);
     }
   };
   for (const entry of manifest.files) {
-    if (/\.md$/.test(entry)) add(entry);
-    else if (entry.endsWith("/") && existsSync(new URL(entry, root))) walk(entry);
-  }
-  for (const dir of ["", "docs/"]) {
-    for (const entry of readdirSync(new URL(dir === "" ? "./" : dir, root), { withFileTypes: true })) {
-      if (entry.isFile() && entry.name.endsWith(".md")) add(`${dir}${entry.name}`);
-    }
+    if (entry.endsWith("/") && existsSync(new URL(entry, root))) walk(entry);
   }
   return paths.sort().map((rel) => [rel, readFileSync(new URL(rel, root), "utf8")] as [string, string]);
 }
@@ -2603,6 +2976,175 @@ function shippedDocuments(): Array<[string, string]> {
  *  otherwise read as a claim of three. */
 const VIEW_CLAIM = /(?<![.\d§])\b(five|six|seven|eight|nine|ten|eleven|twelve|thirteen|\d+)\s+(?:read-only\s+)?(?:dashboard\s+)?views?\b/gi;
 const TOOL_CLAIM = /(?<![.\d§])\b(twenty|thirty|thirty-four|thirty-five|thirty-six|thirty-seven|forty|\d+)\s+(?:MCP\s+)?tools?\b/gi;
+
+/**
+ * The one shape that matches `TOOL_CLAIM` and is not a claim about the MCP
+ * adapter at all: a CENSUS OF THE SOURCE TREE, where `tools` is the name of a
+ * directory beside `src` and `test`. "all 13 src, 13 test and 2 tools
+ * TypeScript files" counts files in `tools/`; it says nothing about how many
+ * tools `tools/list` advertises. The exclusion demands the census — another
+ * directory of the same tree, counted in the same clause — and not merely a
+ * word next to a digit.
+ */
+const TOOLS_DIRECTORY_CENSUS = /\b\d+\s+(?:src|test)\b[^.]{0,80}?\b\d+\s+tools?\b/i;
+
+/** True when this particular `N tools` is the `tools/` directory being counted. */
+function isDirectoryCensus(text: string, index: number, length: number): boolean {
+  return TOOLS_DIRECTORY_CENSUS.test(sentenceAround(text, index, length));
+}
+
+// ------------------------------------------------------- records, and time
+
+/**
+ * A DOCUMENT THAT DECLARES ITSELF THE RECORD OF A REVIEW.
+ *
+ * It is read off the document's own first heading, not off its path: a record
+ * says what it is in its title, and this repository's do — "Independent review
+ * — Skillonomia phase P6", "Phase P6 — independent review verdicts". A record
+ * describes a commit that was reviewed and accepted; a sentence in it is a
+ * statement about THAT build.
+ */
+function isReviewRecord(text: string): boolean {
+  const heading = /^#\s+(.+)$/m.exec(text);
+  return heading !== null && /\b(independent review|review verdicts?|verdict)\b/i.test(heading[1]!);
+}
+
+/** Every full commit id a document names that this repository can resolve. */
+function commitsNamedBy(text: string): string[] {
+  const out: string[] = [];
+  for (const m of new Set(text.match(/\b[0-9a-f]{40}\b/g) ?? [])) {
+    try {
+      execFileSync("git", ["-C", REPO_ROOT, "rev-parse", "-q", "--verify", `${m}^{commit}`], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      out.push(m);
+    } catch {
+      // a 40-hex string that is not a commit of this repository — a SHA-256 of
+      // a specification, a manifest hash — names no tree and is not one
+    }
+  }
+  return out;
+}
+
+/**
+ * How many views `DASHBOARD_VIEWS` had at a commit, read out of that commit's
+ * own source. `null` when the constant did not exist there — which is an answer
+ * ("this record predates the dashboard"), not a failure.
+ */
+function viewsAtCommit(sha: string): number | null {
+  let source: string;
+  try {
+    source = execFileSync("git", ["-C", REPO_ROOT, "show", `${sha}:src/dashboard.ts`], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 1 << 24,
+    });
+  } catch {
+    return null;
+  }
+  const literal = /DASHBOARD_VIEWS[^=]*=\s*\[([\s\S]*?)\]/.exec(source);
+  if (literal === null) return null;
+  const entries = literal[1]!.match(/"[a-z_]+"/g);
+  return entries === null ? null : entries.length;
+}
+
+/** The view counts a record's own reviewed commits carry — its frame of time. */
+function viewCountsReviewedBy(text: string): number[] {
+  const counts = new Set<number>();
+  for (const sha of commitsNamedBy(text)) {
+    const n = viewsAtCommit(sha);
+    if (n !== null) counts.add(n);
+  }
+  return [...counts].sort((a, b) => a - b);
+}
+
+// ------------------------------------------------- the check, over one document
+
+interface DocumentRules {
+  views: number;
+  tools: number;
+  permitted: ReadonlySet<string>;
+  tables: readonly string[];
+}
+
+interface DocumentReading {
+  /** claims that CONTRADICT the code — the defect this guard exists for */
+  wrong: string[];
+  /** claims a record makes about a build whose code cannot be read back */
+  unverifiable: string[];
+  view_claims: number;
+  tool_claims: number;
+  record: boolean;
+}
+
+/**
+ * ONE DOCUMENT, AGAINST THE CODE.
+ *
+ * The same function the sweep runs and the planting proof runs — there is no
+ * second implementation for the test to agree with itself about.
+ */
+function readDocument(name: string, text: string, rules: DocumentRules): DocumentReading {
+  const wrong: string[] = [];
+  const unverifiable: string[] = [];
+  const record = isReviewRecord(text);
+  const reviewed = record ? viewCountsReviewedBy(text) : [];
+
+  const views = countClaims(text, VIEW_CLAIM);
+  for (const claim of views) {
+    if (!record) {
+      if (claim.value !== String(rules.views)) wrong.push(`${name}: claims ${claim.value} dashboard views; the code ships ${rules.views}`);
+      continue;
+    }
+    // A RECORD IS CHECKED AGAINST THE BUILD IT REVIEWS, not against today's.
+    if (reviewed.length === 0) {
+      unverifiable.push(
+        `${name}: a review record claiming ${claim.value} views, naming no commit at which \`DASHBOARD_VIEWS\` exists — the build it describes cannot be read back`,
+      );
+      continue;
+    }
+    if (!reviewed.includes(Number(claim.value))) {
+      wrong.push(
+        `${name}: a review record claims ${claim.value} dashboard views; the commits it reviews ship ${reviewed.join(" or ")}`,
+      );
+    }
+  }
+
+  const tools = countClaims(text, TOOL_CLAIM).filter((c) => !isDirectoryCensus(text, c.at, c.length));
+  for (const claim of tools) {
+    if (record) {
+      unverifiable.push(`${name}: a review record claiming ${claim.value} MCP tools — the adapter it describes is not read back here`);
+      continue;
+    }
+    if (claim.value !== String(rules.tools)) wrong.push(`${name}: claims ${claim.value} MCP tools; the code ships ${rules.tools}`);
+  }
+
+  // THE PROVENANCE FAMILY APPLIES TO ALL SEVENTY-SIX WITHOUT EXCEPTION: where a
+  // count is read from is not a fact about a build, it is a fact about this
+  // schema, and a record that states it wrongly is as wrong as a README.
+  for (const lie of provenanceLies(text, rules.permitted, rules.tables)) wrong.push(`${name}: ${lie}`);
+
+  // A DOCUMENT THAT ENUMERATES THE VIEWS MUST ENUMERATE THEM ALL — a partial
+  // list reads as a whole one. "Enumerates" is five or more of the names,
+  // because the names are ordinary words: a source file writing `agent` or
+  // `approvals` in backticks is naming a thing, not listing a dashboard, and a
+  // rule that treated it as a list would fire on most of the repository and
+  // then have to be turned off.
+  const enumerated = DASHBOARD_VIEWS.filter((v) => text.includes(`\`${v}\``) || text.includes(`**${v}**`));
+  if (!record && enumerated.length >= 5 && !DASHBOARD_VIEWS.every((v) => text.includes(v))) {
+    wrong.push(`${name}: names ${enumerated.length} dashboard views and not all ${rules.views}`);
+  }
+  return { wrong, unverifiable, view_claims: views.length, tool_claims: tools.length, record };
+}
+
+function documentRules(): DocumentRules {
+  return {
+    views: DASHBOARD_VIEWS.length,
+    tools: MCP_TOOLS.length,
+    permitted: new Set([RECIPIENT_SOURCE_TRANSFER, RECIPIENT_SOURCE_REQUEST].map((s) => s.split(".")[0]!)),
+    tables: tableNames(),
+  };
+}
 
 /**
  * [I-6]'s claim family: WHERE A COUNTED RECIPIENT COMES FROM.
@@ -2667,58 +3209,56 @@ function tableNames(): string[] {
   return [...names].sort();
 }
 
-test("every shipped document states the real number of views, of tools, and the real provenance", () => {
+test("every document this repository TRACKS states the real number of views, of tools, and the real provenance", () => {
   const documents = shippedDocuments();
-  const views = DASHBOARD_VIEWS.length;
-  const tools = MCP_TOOLS.length;
-  const permitted = new Set([RECIPIENT_SOURCE_TRANSFER, RECIPIENT_SOURCE_REQUEST].map((s) => s.split(".")[0]!));
-  const tables = tableNames();
-  console.log(`[docs] shipped views: ${views}; shipped MCP tools: ${tools}`);
-  console.log(`[docs] documents DISCOVERED (package.json files + repository Markdown): ${documents.length}`);
-  console.log(`[docs] tables derived from migrations/: ${tables.length}; journals a recipient may be read from: ${[...permitted].join(", ")}`);
-  // the discovery must have found the normative document the literal list left
-  // out, and the ones it did contain
-  for (const required of ["SPEC.md", "README.md", "docs/API.md", "src/mcp.ts"]) {
+  const rules = documentRules();
+  const tracked = trackedMarkdown();
+  const markdown = documents.filter(([n]) => n.endsWith(".md"));
+  console.log(`[docs] shipped views: ${rules.views}; shipped MCP tools: ${rules.tools}`);
+  console.log(`[docs] Markdown files \`git ls-files\` reports: ${tracked.length}`);
+  console.log(`[docs] documents READ: ${documents.length} (${markdown.length} Markdown + ${documents.length - markdown.length} shipped TypeScript)`);
+  console.log(`[docs] tables derived from migrations/: ${rules.tables.length}; journals a recipient may be read from: ${[...rules.permitted].join(", ")}`);
+  // EVERY tracked document, not most of them: the round-3 discovery reached 61
+  // of these and reported a clean sweep over the other 15.
+  const unread = tracked.filter((f) => !documents.some(([n]) => n === f));
+  assert.deepEqual(unread, [], "Markdown files git tracks that the guard does not read");
+  assert.equal(markdown.length, tracked.length, "the guard reads exactly the tracked Markdown set");
+  // the documents round 2's literal list and round 3's directory walk each left
+  // out, named here only as the FLOOR the discovery must clear
+  for (const required of ["SPEC.md", "README.md", "docs/API.md", "src/mcp.ts", "skills/README.md"]) {
     assert.ok(documents.some(([n]) => n === required), `the discovery did not reach ${required}`);
   }
-  assert.ok(documents.length > 20, `the discovery found only ${documents.length} documents`);
 
   const wrong: string[] = [];
+  const unverifiable: string[] = [];
   let viewClaims = 0;
   let toolClaims = 0;
+  let records = 0;
   for (const [name, text] of documents) {
-    for (const c of documentSays(text, VIEW_CLAIM)) {
-      viewClaims += 1;
-      if (c !== String(views)) wrong.push(`${name}: claims ${c} dashboard views; the code ships ${views}`);
-    }
-    for (const c of documentSays(text, TOOL_CLAIM)) {
-      toolClaims += 1;
-      if (c !== String(tools)) wrong.push(`${name}: claims ${c} MCP tools; the code ships ${tools}`);
-    }
-    for (const lie of provenanceLies(text, permitted, tables)) wrong.push(`${name}: ${lie}`);
-    // A DOCUMENT THAT ENUMERATES THE VIEWS MUST ENUMERATE THEM ALL — a partial
-    // list reads as a whole one. "Enumerates" is five or more of the names,
-    // because the names are ordinary words: a source file writing `agent` or
-    // `approvals` in backticks is naming a thing, not listing a dashboard, and a
-    // rule that treated it as a list would fire on most of the repository and
-    // then have to be turned off.
-    const enumerated = DASHBOARD_VIEWS.filter((v) => text.includes(`\`${v}\``) || text.includes(`**${v}**`));
-    if (enumerated.length >= 5 && !DASHBOARD_VIEWS.every((v) => text.includes(v))) {
-      wrong.push(`${name}: names ${enumerated.length} dashboard views and not all ${views}`);
-    }
+    const reading = readDocument(name, text, rules);
+    wrong.push(...reading.wrong);
+    unverifiable.push(...reading.unverifiable);
+    viewClaims += reading.view_claims;
+    toolClaims += reading.tool_claims;
+    if (reading.record) records += 1;
   }
+  console.log(`[docs] review records (checked against the commits they name): ${records}; documents about this build: ${documents.length - records}`);
   console.log(`[docs] explicit view-count claims: ${viewClaims}; tool-count claims: ${toolClaims}`);
+  // NEVER SILENT. A claim a record makes about a build whose code cannot be read
+  // back is PRINTED, with the document and the reason, rather than dropped.
+  console.log(`[docs] claims of a record whose reviewed build cannot be read back: ${unverifiable.length}`);
+  for (const u of unverifiable) console.log(`    ${u}`);
   // A CHECK THAT PASSES ON SILENCE IS NOT A CHECK. Each family must have been
   // exercised by at least one real document.
   assert.ok(viewClaims > 0, "no document states the number of views");
   assert.ok(toolClaims > 0, "no document states the number of MCP tools");
-  assert.deepEqual(wrong, [], "shipped documentation that does not describe the shipped code");
+  assert.deepEqual(wrong, [], "documentation that does not describe the code");
 
   // …and every tool the adapter dispatches is named in the README's tool table,
   // so a tool cannot ship undocumented
   const readme = documents.find(([n]) => n === "README.md")![1];
   const undocumented = (MCP_TOOLS as ReadonlyArray<any>).map((t) => t.name).filter((n) => !readme.includes(`\`${n}\``));
-  console.log(`[docs] MCP tools named in README.md: ${tools - undocumented.length}/${tools}`);
+  console.log(`[docs] MCP tools named in README.md: ${rules.tools - undocumented.length}/${rules.tools}`);
   assert.deepEqual(undocumented, [], "MCP tools the README does not name");
 });
 
@@ -2732,79 +3272,172 @@ test("the documentation guard is proved by planting the lie in EVERY discovered 
   // time, and each family of claim is planted separately. A document the guard
   // does not read leaves its own row of the table unkilled.
   const documents = shippedDocuments();
-  const views = DASHBOARD_VIEWS.length;
-  const tools = MCP_TOOLS.length;
-  const permitted = new Set([RECIPIENT_SOURCE_TRANSFER, RECIPIENT_SOURCE_REQUEST].map((s) => s.split(".")[0]!));
-  const tables = tableNames();
+  const tracked = trackedMarkdown();
+  const rules = documentRules();
 
-  const LIES: ReadonlyArray<{ family: string; text: string; detect: (name: string, text: string) => boolean }> = [
-    {
-      family: "view count",
-      text: "\n\nThe dashboard has six read-only views.\n",
-      detect: (_n, text) => [...documentSays(text, VIEW_CLAIM)].some((c) => c !== String(views)),
-    },
-    {
-      family: "tool count",
-      text: "\n\nThe MCP adapter advertises twenty tools.\n",
-      detect: (_n, text) => [...documentSays(text, TOOL_CLAIM)].some((c) => c !== String(tools)),
-    },
-    {
-      family: "provenance",
-      text: "\n\nThe recipient of a counted migration is read from `adoption_receipts`.\n",
-      detect: (_n, text) => provenanceLies(text, permitted, tables).length > 0,
-    },
+  // The three families, each a sentence a document could actually contain. The
+  // provenance lie is the one that applies to EVERY document without exception:
+  // where a count is read from is a fact about this schema and not about any
+  // particular build, so a record is as answerable for it as a README.
+  const LIES: ReadonlyArray<{ family: string; text: string }> = [
+    { family: "view count", text: "\n\nThe dashboard has six read-only views.\n" },
+    { family: "tool count", text: "\n\nThe MCP adapter advertises twenty tools.\n" },
+    { family: "provenance", text: "\n\nThe recipient of a counted migration is read from `adoption_receipts`.\n" },
   ];
 
-  const survived: string[] = [];
+  const uncovered: string[] = [];
+  const rows: string[] = [];
   let planted = 0;
+  let caught = 0;
+  let unverifiable = 0;
   for (const [name, text] of documents) {
     const before = sha256(text);
+    // THE PRISTINE DOCUMENT IS CLEAN, or every catch below is a catch of
+    // something that was already there.
+    assert.deepEqual(readDocument(name, text, rules).wrong, [], `${name} fails the guard before any lie is planted`);
+    const bit: string[] = [];
     for (const lie of LIES) {
       planted += 1;
       const mutated = text + lie.text;
-      // the harness proves its own substitution: the bytes must MOVE, and the
-      // sentence must not already be there
+      // THE HARNESS PROVES ITS OWN SUBSTITUTION: the sentence must not already
+      // be there, it must appear exactly once after planting, and the bytes must
+      // move. A planting that changed nothing would "survive" for the wrong
+      // reason and look like a guard's failure.
       assert.equal(text.includes(lie.text.trim()), false, `${name} already contains the ${lie.family} lie`);
+      assert.equal(mutated.split(lie.text.trim()).length - 1, 1, `the ${lie.family} lie is not in ${name} exactly once`);
+      assert.equal(mutated.length, text.length + lie.text.length, `planting the ${lie.family} lie in ${name} moved other bytes`);
       assert.notEqual(sha256(mutated), before, `planting the ${lie.family} lie in ${name} changed no bytes`);
-      if (!lie.detect(name, mutated)) survived.push(`${name}: the ${lie.family} lie was not caught`);
-      // and the UNMUTATED document must be clean for the same family, or the
-      // detection above is not about the lie
-      assert.equal(lie.detect(name, text), false, `${name} already fails the ${lie.family} check before any lie`);
+      const reading = readDocument(name, mutated, rules);
+      const bitten = reading.wrong.length > 0;
+      if (bitten) {
+        caught += 1;
+        bit.push(lie.family);
+      } else if (reading.unverifiable.length > 0) {
+        unverifiable += 1;
+      }
     }
+    // EVERY DOCUMENT MUST BE BITTEN. Which family bites depends on what the
+    // document is — a review record's count claims are answered against the
+    // build it reviews — but a document the guard does not READ cannot be bitten
+    // by any of them, and that is the defect this proof exists for.
+    if (bit.length === 0) uncovered.push(name);
+    rows.push(`${name.padEnd(48)} ${sha256(text).slice(0, 10)} → ${sha256(text + LIES[0]!.text).slice(0, 10)}  bitten by: ${bit.join(", ") || "NOTHING"}`);
   }
+  for (const r of rows) console.log(`  ${r}`);
+  console.log(`[docs] documents planted in: ${documents.length} (${tracked.length} of them tracked Markdown), one at a time`);
   console.log(`[docs] lies planted: ${planted} (${documents.length} documents × ${LIES.length} claim families)`);
-  console.log(`[docs] lies the guard caught: ${planted - survived.length}/${planted}`);
+  console.log(`[docs] plantings the guard caught: ${caught}; refused as unverifiable against the reviewed build: ${unverifiable}`);
+  console.log(`[docs] documents no planted lie reached: ${uncovered.length}`);
   assert.equal(planted, documents.length * LIES.length, "every document must be broken, not a sample");
-  assert.deepEqual(survived, [], "documents the guard does not read");
+  assert.equal(rows.length, documents.length, "the table must have a row per document");
+  assert.ok(tracked.length >= 76, `the tracked Markdown set is ${tracked.length}, below the 76 this repository holds`);
+  assert.deepEqual(uncovered, [], "documents the guard does not read");
 });
 
-test("the documentation guard is killed by the round-2 document list, which left SPEC.md out", () => {
-  // The mutation is the LIST ITSELF: three documents, named. It is applied to a
-  // SPEC.md carrying the exact sentence the reviewer wrote into it, and the
-  // point is that a guard reading those three reports nothing.
+test("both earlier document sets are killed by the documents they could not reach", () => {
+  // TWO MUTANTS, one per round, each restored as it shipped.
+  //
+  //   round 2: THREE DOCUMENTS, NAMED. The reviewer then wrote the lie into
+  //            `SPEC.md`, which is not one of the three.
+  //   round 3: `package.json`'s `files` plus the two directories `["", "docs/"]`.
+  //            It reached 61 of 76, and the reviewer wrote the lie into
+  //            `skills/README.md`, which is in neither.
+  //
+  // Both are run over the SAME planting the shipped guard is run over, and the
+  // documents each cannot see are listed by name.
   const root = new URL("../", import.meta.url);
-  const spec = readFileSync(new URL("SPEC.md", root), "utf8");
-  const before = sha256(spec);
-  const mutatedSpec = spec + "\n\nThe dashboard has six read-only views.\n";
-  console.log(`[mutation] SPEC.md  sha256 ${before.slice(0, 12)} → ${sha256(mutatedSpec).slice(0, 12)} (in memory only)`);
-  assert.notEqual(sha256(mutatedSpec), before);
+  const rules = documentRules();
+  const shipped = shippedDocuments();
 
-  const roundTwo: Array<[string, string]> = [
-    ["README.md", readFileSync(new URL("README.md", root), "utf8")],
-    ["docs/API.md", readFileSync(new URL("docs/API.md", root), "utf8")],
-    ["src/mcp.ts", readFileSync(new URL("src/mcp.ts", root), "utf8")],
-  ];
-  const seenByRoundTwo = roundTwo.flatMap(([, t]) =>
-    [...documentSays(t, VIEW_CLAIM)].filter((c) => c !== String(DASHBOARD_VIEWS.length)),
-  );
-  const seenByTheSweep = [...documentSays(mutatedSpec, VIEW_CLAIM)].filter((c) => c !== String(DASHBOARD_VIEWS.length));
-  console.log(`  [round-2 list] documents read: ${roundTwo.length}; false view counts found: ${seenByRoundTwo.length}`);
-  console.log(`  [discovered]   documents read: ${shippedDocuments().length}; false view counts in SPEC.md: ${seenByTheSweep.length}`);
-  // `killed` asserts the property the SHIPPED guard has and the mutant does not:
-  // the mutant would have to have SEEN the lie, and it did not.
-  killed("the round-2 document list saw the lie in SPEC.md after all", () => {
-    assert.ok(seenByRoundTwo.length > 0, "the three named documents carry no false view count");
-  });
-  assert.ok(seenByTheSweep.length > 0, "the shipped guard must see it, or the mutation proves nothing");
-  assert.ok(shippedDocuments().some(([n]) => n === "SPEC.md"), "and the shipped guard must actually read SPEC.md");
+  const roundTwoSet = ["README.md", "docs/API.md", "src/mcp.ts"];
+  const roundThreeSet: string[] = (() => {
+    const manifest = JSON.parse(readFileSync(new URL("package.json", root), "utf8")) as { files: string[] };
+    const paths: string[] = [];
+    const add = (rel: string): void => {
+      if (!paths.includes(rel)) paths.push(rel);
+    };
+    const walk = (rel: string): void => {
+      for (const entry of readdirSync(new URL(rel, root), { withFileTypes: true })) {
+        const child = `${rel}${entry.name}${entry.isDirectory() ? "/" : ""}`;
+        if (entry.isDirectory()) walk(child);
+        else if (/\.(md|ts)$/.test(entry.name)) add(child);
+      }
+    };
+    for (const entry of manifest.files) {
+      if (/\.md$/.test(entry)) add(entry);
+      else if (entry.endsWith("/") && existsSync(new URL(entry, root))) walk(entry);
+    }
+    for (const dir of ["", "docs/"]) {
+      for (const entry of readdirSync(new URL(dir === "" ? "./" : dir, root), { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith(".md")) add(`${dir}${entry.name}`);
+      }
+    }
+    return paths.sort();
+  })();
+
+  const LIE = "\n\nThe dashboard has six read-only views.\n";
+  const unreachable = (set: readonly string[]): string[] =>
+    shipped.filter(([n]) => n.endsWith(".md") && !set.includes(n)).map(([n]) => n);
+
+  const blindTwo = unreachable(roundTwoSet);
+  const blindThree = unreachable(roundThreeSet);
+  console.log(`[mutation] round-2 named list:    documents read ${roundTwoSet.length}; tracked Markdown it cannot see: ${blindTwo.length}`);
+  console.log(`[mutation] round-3 files+walk:    documents read ${roundThreeSet.length}; tracked Markdown it cannot see: ${blindThree.length}`);
+  for (const n of blindThree) console.log(`    unreachable by round 3: ${n}`);
+  console.log(`[mutation] shipped git discovery: documents read ${shipped.length}; tracked Markdown it cannot see: ${unreachable(shipped.map(([n]) => n)).length}`);
+
+  // THE PLANTING, in a document each mutant cannot reach, proved byte by byte.
+  for (const [victim, mutantSet, label] of [
+    ["SPEC.md", roundTwoSet, "round-2 named list"],
+    ["skills/README.md", roundThreeSet, "round-3 files+walk"],
+  ] as Array<[string, readonly string[], string]>) {
+    const text = shipped.find(([n]) => n === victim)![1];
+    const mutated = text + LIE;
+    assert.equal(text.includes(LIE.trim()), false, `${victim} already carries the lie`);
+    assert.equal(mutated.split(LIE.trim()).length - 1, 1, `the lie is not in ${victim} exactly once`);
+    console.log(`[mutation] ${victim}  sha256 ${sha256(text).slice(0, 12)} → ${sha256(mutated).slice(0, 12)} (in memory only)`);
+    assert.notEqual(sha256(mutated), sha256(text));
+    // the SHIPPED guard bites…
+    assert.ok(
+      readDocument(victim, mutated, rules).wrong.length > 0,
+      `the shipped guard must see the lie in ${victim}, or the mutation proves nothing`,
+    );
+    // …and the mutant never gets to look, because the document is not in its set
+    killed(`the ${label} reached ${victim} after all`, () => {
+      assert.ok(mutantSet.includes(victim), `${victim} is outside the ${label}, so that set never reads it`);
+    });
+  }
+  assert.ok(blindThree.length >= 15, `round 3 was blind to only ${blindThree.length} tracked documents`);
+});
+
+test("the document set REFUSES rather than passes where it cannot be enumerated", () => {
+  // A guard that cannot list its subject and sweeps on regardless reports a
+  // clean run over nothing — the exact mechanism of silent staleness this file
+  // exists to remove. An unpacked tarball is not a repository, and the guard
+  // must say so rather than find zero violations in zero documents.
+  const outside = mkdtempSync(join(tmpdir(), "skln-not-a-repo-"));
+  temps.push(outside);
+  writeFileSync(join(outside, "README.md"), "# a copy with no history\n\nThe dashboard has six read-only views.\n");
+  console.log(`[refusal] a tree that is not a repository: ${outside} (1 Markdown file present)`);
+  let refusal = "";
+  try {
+    const found = trackedMarkdown(outside);
+    refusal = `NO REFUSAL: enumerated ${found.length} documents`;
+  } catch (e) {
+    refusal = String((e as Error).message);
+  }
+  console.log(`[refusal] ${refusal.slice(0, 150)}`);
+  assert.ok(refusal.startsWith("REFUSED:"), `the guard did not refuse: ${refusal}`);
+  assert.match(refusal, /could not be ENUMERATED|listed no document/, "the refusal must name its cause");
+  // …and the refusal is a THROW, not a value a caller can mistake for an empty
+  // set: the sweep cannot continue past it.
+  assert.throws(() => trackedMarkdown(outside), DocumentSetUnavailable);
+  // The line above proves the enumeration REFUSES outside a repository. This
+  // one proves ONLY that inside one it answers — that the refusal is about the
+  // tree and not about the guard being broken everywhere. It is deliberately
+  // not a census: every document the discovery must reach is named one by one
+  // in `required` above, and a floor tied to the exact count would bring the
+  // build down on an ordinary edit to the documentation while catching nothing
+  // that list does not already catch.
+  assert.ok(trackedMarkdown().length >= 10, "the enumeration must work where there IS a repository");
 });

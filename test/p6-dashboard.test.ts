@@ -27,6 +27,7 @@ import {
   escapeHtml,
   type DashboardPayload,
 } from "../src/dashboard.ts";
+import { labelCell } from "../src/fleet-dashboard.ts";
 import { MemorySecretStore, runWorkerOnce, type WebhookRequest, type WebhookResponse, type WebhookTransport } from "../src/webhooks.ts";
 import { workerId, MAX_ATTEMPTS } from "../src/delivery.ts";
 
@@ -225,11 +226,11 @@ test("?format=html serves the same payload as HTML, and MCP can ask for it too",
 test("library: the search item's own fields, Reputation included", async () => {
   const f = await fixture();
   const payload = view(f.fx, "library", f.fx.keys.member);
-  const row = rowsOf(payload, "library").find((r) => r.slug === "dash-adopted");
+  const row = rowsOf(payload, "library").find((r) => answer(r.slug) === "dash-adopted");
   assert.ok(row, "the adopted version is in the library");
   const item = rest(f.fx, "GET", "/v1/skills?q=dash-adopted", f.fx.keys.member).body.items[0];
-  assert.equal(row!.skill_version_id, item.skill_version_id);
-  assert.equal(row!.state, item.state);
+  assert.equal(answer(row!.skill_version_id), item.skill_version_id);
+  assert.equal(answer(row!.state), item.state);
   assert.equal(answer(row!.adopted_count), String(item.registry.reputation.adopted_count));
   assert.equal(answer(row!.adopted_count), "1");
   assert.equal(answer(row!.avg_rating), "5");
@@ -241,7 +242,7 @@ test("library: the search item's own fields, Reputation included", async () => {
   // the view is a read layer: the same search filters narrow it
   const filtered = view(f.fx, "library", f.fx.keys.member, "?q=dash-held");
   assert.deepEqual(
-    rowsOf(filtered, "library").map((r) => r.slug),
+    rowsOf(filtered, "library").map((r) => answer(r.slug)),
     ["dash-held"],
   );
   f.fx.db.close();
@@ -251,8 +252,8 @@ test("evidence: the server-validated gate results behind each adopted receipt", 
   const f = await fixture();
   const rows = rowsOf(view(f.fx, "evidence", f.fx.keys.member, "?q=dash-adopted"), "evidence");
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].receipt_id, f.receiptId);
-  assert.equal(rows[0].adopter_agent_id, f.fx.member.agent_id);
+  assert.equal(answer(rows[0].receipt_id), f.receiptId);
+  assert.equal(answer(rows[0].adopter_agent_id), f.fx.member.agent_id);
   assert.equal(answer(rows[0].gate_results), "g1=pass");
   assert.equal(answer(rows[0].event_seq), "4", "requested → delivered → attempted → adopted");
   // a version without a validated adoption contributes no evidence row
@@ -263,9 +264,9 @@ test("evidence: the server-validated gate results behind each adopted receipt", 
 test("receipts: the chain in event_seq order, with the delivery request's state", async () => {
   const f = await fixture();
   const rows = rowsOf(view(f.fx, "receipts", f.fx.keys.member), "receipts");
-  const row = rows.find((r) => r.receipt_id === f.receiptId);
+  const row = rows.find((r) => answer(r.receipt_id) === f.receiptId);
   assert.ok(row, "the adopter sees their own receipt");
-  assert.equal(row!.derived_state, "adopted");
+  assert.equal(answer(row!.derived_state), "adopted");
   assert.match(answer(row!.stalled), /^no —/, "[I-1]: a boolean is a sentence, never a bare `false`");
   assert.deepEqual(
     answer(row!.events)
@@ -274,23 +275,23 @@ test("receipts: the chain in event_seq order, with the delivery request's state"
     ["requested", "delivered", "attempted", "adopted"],
   );
   const api = rest(f.fx, "GET", `/v1/receipts/${f.receiptId}`, f.fx.keys.member).body;
-  assert.equal(row!.derived_state, api.derived_state, "the view shows the receipt-read API's own fields");
-  assert.equal(row!.adoption_request_id, api.adoption_request_id);
+  assert.equal(answer(row!.derived_state), api.derived_state, "the view shows the receipt-read API's own fields");
+  assert.equal(answer(row!.adoption_request_id), api.adoption_request_id);
   f.fx.db.close();
 });
 
 test("approvals: the §7.3 hold with its matrix conditions, and the recorded decision", async () => {
   const f = await fixture();
   const payload = view(f.fx, "approvals", f.fx.keys.admin);
-  const hold = rowsOf(payload, "holds").find((r) => r.adoption_request_id === f.heldRequestId);
+  const hold = rowsOf(payload, "holds").find((r) => answer(r.adoption_request_id) === f.heldRequestId);
   assert.ok(hold, "the held request is visible to the workspace admin");
-  assert.equal(hold!.state, "approval_pending");
+  assert.equal(answer(hold!.state), "approval_pending");
   assert.equal(answer(hold!.conditions), "risk_high");
-  assert.equal(hold!.slug, "dash-held");
+  assert.equal(answer(hold!.slug), "dash-held");
 
   const decision = rowsOf(payload, "decisions")[0];
-  assert.equal(decision.scope, "adopt_high_risk");
-  assert.equal(decision.decision, "approved");
+  assert.equal(answer(decision.scope), "adopt_high_risk");
+  assert.equal(answer(decision.decision), "approved");
   assert.equal(answer(decision.note), "sandboxed rollout approved");
   // [I-5]: WHO, and WHAT KIND OF PRINCIPAL. `approved by the workspace owner in
   // person` and `approved by an agent holding a role` are different facts, and
@@ -307,22 +308,22 @@ test("approvals: the §7.3 hold with its matrix conditions, and the recorded dec
 test("dead letters: the loud §5.2 row AND the endpoint health that explains it", async () => {
   const f = await fixture();
   const payload = view(f.fx, "dead_letters", f.fx.keys.reviewer);
-  const dl = rowsOf(payload, "dead_letters").find((r) => r.adoption_request_id === f.deadRequestId);
+  const dl = rowsOf(payload, "dead_letters").find((r) => answer(r.adoption_request_id) === f.deadRequestId);
   assert.ok(dl, "the dead-lettered request is visible to its adopter");
   assert.equal(answer(dl!.reason), "max_attempts");
   assert.equal(answer(dl!.attempt_count), String(MAX_ATTEMPTS));
-  assert.equal(dl!.slug, "dash-adopted");
+  assert.equal(answer(dl!.slug), "dash-adopted");
 
-  const hook = rowsOf(payload, "webhook_health").find((r) => r.webhook_id === f.webhookId);
+  const hook = rowsOf(payload, "webhook_health").find((r) => answer(r.webhook_id) === f.webhookId);
   assert.ok(hook, "the endpoint's health is on the same view");
-  assert.equal(hook!.status, "dead", "five consecutive failures kill the endpoint (§5.2)");
+  assert.equal(answer(hook!.status), "dead", "five consecutive failures kill the endpoint (§5.2)");
   assert.equal(answer(hook!.failure_count), String(MAX_ATTEMPTS));
   assert.match(String(hook!.last_error), /receiver refused the push/);
-  assert.equal(hook!.url, "https://hooks.example/skillonomia");
+  assert.equal(answer(hook!.url), "https://hooks.example/skillonomia");
 
   // and the same numbers the webhook API itself serves
   const api = rest(f.fx, "GET", "/v1/webhooks", f.fx.keys.reviewer).body.items[0];
-  assert.equal(hook!.status, api.status);
+  assert.equal(answer(hook!.status), api.status);
   assert.equal(answer(hook!.failure_count), String(api.failure_count));
   f.fx.db.close();
 });
@@ -334,9 +335,9 @@ test("a FAILING (not yet dead) endpoint is shown as failing — the health rule 
   const transport = new DeadTransport();
   await runWorkerOnce(f.fx.db, f.secrets, transport, workerId(NOW), NOW);
   const hook = rowsOf(view(f.fx, "dead_letters", f.fx.keys.botAdmin), "webhook_health").find(
-    (r) => r.webhook_id === registered.body.webhook_id,
+    (r) => answer(r.webhook_id) === registered.body.webhook_id,
   );
-  assert.equal(hook!.status, "failing");
+  assert.equal(answer(hook!.status), "failing");
   assert.equal(answer(hook!.failure_count), "1");
   f.fx.db.close();
 });
@@ -347,18 +348,18 @@ test("the dashboard does not widen any ACL it composes", async () => {
   const f = await fixture();
   // a plain member is not party to the reviewer's dead-lettered request
   const memberDl = rowsOf(view(f.fx, "dead_letters", f.fx.keys.member), "dead_letters");
-  assert.ok(!memberDl.some((r) => r.adoption_request_id === f.deadRequestId), "another adopter's dead letter is hidden");
+  assert.ok(!memberDl.some((r) => answer(r.adoption_request_id) === f.deadRequestId), "another adopter's dead letter is hidden");
   // …and does not see the reviewer's endpoints
   assert.deepEqual(rowsOf(view(f.fx, "dead_letters", f.fx.keys.member), "webhook_health"), []);
   // the workspace admin does (§6: admins manage grants/memberships/webhooks)
   assert.ok(
-    rowsOf(view(f.fx, "dead_letters", f.fx.keys.admin), "webhook_health").some((r) => r.webhook_id === f.webhookId),
+    rowsOf(view(f.fx, "dead_letters", f.fx.keys.admin), "webhook_health").some((r) => answer(r.webhook_id) === f.webhookId),
   );
 
   // receipts: the reviewer never sees the member's chain
   const reviewerReceipts = rowsOf(view(f.fx, "receipts", f.fx.keys.reviewer), "receipts");
-  assert.ok(!reviewerReceipts.some((r) => r.receipt_id === f.receiptId), "another adopter's receipt is hidden");
-  assert.ok(rowsOf(view(f.fx, "receipts", f.fx.keys.owner), "receipts").some((r) => r.receipt_id === f.receiptId), "the skill owner reads it");
+  assert.ok(!reviewerReceipts.some((r) => answer(r.receipt_id) === f.receiptId), "another adopter's receipt is hidden");
+  assert.ok(rowsOf(view(f.fx, "receipts", f.fx.keys.owner), "receipts").some((r) => answer(r.receipt_id) === f.receiptId), "the skill owner reads it");
 
   // A CROSS-WORKSPACE ACTOR SEES NOTHING OF THIS WORKSPACE.
   //
@@ -443,7 +444,9 @@ test("rendering escapes hostile field values instead of emitting them as markup"
         key: "library",
         title: "t",
         fields: ["slug"],
-        rows: [{ slug: `<script>alert("x")</script>` }],
+        // the escaping probe goes through the cell builder, because a raw string
+        // is no longer something a section can hold — see `Cell` in src/dashboard.ts
+        rows: [{ slug: labelCell("slug", `<script>alert("x")</script>`, "a probe", "the escaping probe of this test") }],
         empty: "none",
       },
     ],
