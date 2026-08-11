@@ -460,13 +460,9 @@ test("[A-0] DEGENERATE 2: Codex `proposed` and `loaded` read `unknown` on the pa
   // THE MUTATION: the renderer decides that an unobserved cell is a negative
   // one — the single most damaging thing a screen over this data can do.
   const m = await mutantTree([
-    `export function stateCell(c: StateColumn): Cell {
-  const why = plain(c.reason, c.value === "yes" ? "observed" : "no_reason_recorded");
-  return mint([
+    `  return mint([
     c.value,`,
-    `export function stateCell(c: StateColumn): Cell {
-  const why = plain(c.reason, c.value === "yes" ? "observed" : "no_reason_recorded");
-  return mint([
+    `  return mint([
     c.value === "unknown" ? "no" : c.value,`,
   ]);
   const registry = new m.service.Registry(s.fx.db, { now: () => NOW, inventory: s.roots });

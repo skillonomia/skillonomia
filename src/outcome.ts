@@ -32,12 +32,33 @@ export const OUTCOME_CHECK_KINDS: readonly string[] = ["exit_code", "stdout_matc
  * be able to disagree about what a whole contract is: `test/p14-r5-probes` asks
  * both the same question about the same four truncations.
  */
-export const OUTCOME_CHECK_SHAPE: Readonly<Record<string, { parameter: string; evidence: string }>> = {
-  exit_code: { parameter: "exit_code", evidence: "exit_code" },
-  stdout_match: { parameter: "stdout_match", evidence: "stdout" },
-  artifact_exists: { parameter: "artifact_path", evidence: "artifacts" },
-  command: { parameter: "command", evidence: "exit_code" },
+export const OUTCOME_CHECK_SHAPE: Readonly<Record<string, { parameter: string; evidence: string; reads: readonly string[] }>> = {
+  exit_code: { parameter: "exit_code", evidence: "exit_code", reads: ["exit_code"] },
+  stdout_match: { parameter: "stdout_match", evidence: "stdout", reads: ["stdout"] },
+  artifact_exists: { parameter: "artifact_path", evidence: "artifacts", reads: ["artifacts"] },
+  command: { parameter: "command", evidence: "exit_code", reads: ["command", "exit_code"] },
 };
+
+/**
+ * THE NAMED VALUES A CHECK OF THIS REGISTRY READS — every one of them, and no
+ * other. `reads` above is the per-kind list; this is their union.
+ *
+ * It exists because [I-7]'s boundary needs a SET OF ADMISSIBLE NAMES and the
+ * only honest source for one is the code that consumes them. Written out as a
+ * literal at the boundary it would be a second list, free to disagree with
+ * `executeCheck` the moment a kind is added; derived here it cannot. The probe
+ * closes the remaining gap in the other direction: it executes all four checks
+ * against a recording proxy and asserts the names they actually touch are
+ * exactly this set, so a kind that starts reading a fifth value fails a test
+ * rather than silently narrowing what a report may present.
+ *
+ * WHAT IS NOT HERE, deliberately: `stdout_match`, `artifact_path` and the
+ * `exit_code` of a `check` are the CONTRACT's parameters — what the author
+ * demanded — and not values a run produces. A report presents the second kind.
+ */
+export const EVIDENCE_NAMES: readonly string[] = [
+  ...new Set(Object.values(OUTCOME_CHECK_SHAPE).flatMap((s) => s.reads)),
+].sort();
 
 export interface OutcomeCheck {
   kind: string;
@@ -86,6 +107,142 @@ export type OutcomeTrivalent = "yes" | "no" | "unknown";
 export interface OutcomeVerdict {
   value: OutcomeTrivalent;
   reason: string;
+}
+
+/**
+ * The three principal types `0001_init.sql` allows. Repeated rather than
+ * imported, so this module keeps its promise of having none; a test asserts the
+ * two agree.
+ */
+export type PrincipalType = "human" | "agent" | "service";
+
+/**
+ * A VERDICT WITH ITS PROVENANCE — [I-3] applied to the one number that shipped
+ * without any.
+ *
+ * §4's `outcome` was the last value in this product published as a bare answer.
+ * Every other number here carries its state, its source and its boundary; this
+ * one said `yes` and left a reader to assume the registry had checked.
+ *
+ * D-18 settled what it must say instead, and the three attributes are its three
+ * sentences:
+ *
+ *   * `assessed_by` — WHOSE values decided it. `registry` where the deciding
+ *     evidence is something this registry observed itself; `principal` where it
+ *     is what an agent reported about its own machine.
+ *   * `principal_type` — WHICH KIND of principal reported, out of the three
+ *     `agents.type` allows [I-5]. `null` where nothing was reported.
+ *   * `basis` — whether this is a SELF-REPORT or an OBSERVATION. It is the same
+ *     fact as `assessed_by` under the name a reader needs, and the two cannot
+ *     disagree because one is computed from the other, four lines below. Both
+ *     are published because D-18 requires both to be printed and because the
+ *     panel colours one and reads the other.
+ *
+ * And one more, which is not provenance but its consequence:
+ *
+ *   * `claim` — WHAT THE SELF-REPORT AMOUNTS TO, if it were believed. This is
+ *     how a self-report is published LOUDLY rather than swallowed: the reader
+ *     sees `unknown`, sees that a principal claimed `yes`, and sees that the
+ *     registry did not check it. `null` where there is no claim to speak of.
+ */
+export interface OutcomeAssessment extends OutcomeVerdict {
+  assessed_by: "registry" | "principal";
+  principal_type: PrincipalType | null;
+  basis: "registry_observation" | "self_report";
+  claim: OutcomeTrivalent | null;
+}
+
+/** The one place `basis` comes from, so the two names are one fact. */
+function basisOf(assessedBy: OutcomeAssessment["assessed_by"]): OutcomeAssessment["basis"] {
+  return assessedBy === "registry" ? "registry_observation" : "self_report";
+}
+
+export interface OutcomeInputs {
+  contract: unknown;
+  /** the named values a PRINCIPAL presented about its own machine */
+  claimed: unknown;
+  /** the named values THIS REGISTRY produced by looking itself, or `null` */
+  observed: unknown;
+  /** the principal that reported, for its type [I-5]. `null` where none did */
+  principal: { type: PrincipalType } | null;
+}
+
+/**
+ * THE PUBLISHED VERDICT — what §4's column says, and on whose authority.
+ *
+ * WHY THIS IS A SECOND FUNCTION AND NOT A CHANGE TO `evaluateOutcome`. The two
+ * answer different questions. `evaluateOutcome` answers "does this evidence
+ * satisfy this contract" — a pure, total function of two documents, and the
+ * thing D-14 asked for. This one answers "what may the registry PUBLISH", which
+ * needs one fact `evaluateOutcome` has no business knowing: WHERE THE EVIDENCE
+ * CAME FROM.
+ *
+ * D-18 IS THE REQUIREMENT CHANGE THIS IMPLEMENTS, and it is worth stating why
+ * the requirement moved rather than the code. D-14 said the evaluator EXECUTES
+ * the `check`. [M-7] says this registry does not assume access to the
+ * addressee's machine. For a remote addressee those two are not both
+ * satisfiable: `exit_code`, `stdout` and `command` are facts about a process on
+ * somebody else's computer, and nothing this registry can do will make them its
+ * own observations. The registry not running processes on other people's
+ * machines is a PROPERTY OF THE PRODUCT.
+ *
+ * So the split is by WHAT THE REGISTRY CAN CONFIRM:
+ *
+ *   * evidence the registry produced itself — today, exactly one thing: whether
+ *     an artifact is present under the activation root THIS REGISTRY writes to
+ *     and can read back (work 5, D-7) — decides a real `yes` or `no`, attributed
+ *     to the registry.
+ *
+ *   * evidence a principal presented is a SELF-REPORT. The contract is still
+ *     executed against it, because what the self-report AMOUNTS TO is worth
+ *     publishing, but the published verdict is `unknown` with a reason that says
+ *     it was not verified here, and the claim rides beside it under its own
+ *     name. `{"command":"false","exit_code":0}` is the case that makes this
+ *     obvious: `false` exits 1 on every machine there is, the report says 0, and
+ *     a registry that answered `yes` to that would be certifying a lie it has no
+ *     way to detect. [M-6] is kept whole — a task that finished is not a task
+ *     that succeeded, and neither is a task whose runner says it succeeded.
+ *
+ *   * `unknown` with a reason stays for everything else: no contract, no
+ *     evidence, evidence of a shape the check cannot read.
+ *
+ * [I-1] IS NOT WEAKENED. The verdict is still one of three values. Provenance is
+ * attributes BESIDE it, exactly as it is for every counted number in this
+ * product, and never a fourth answer.
+ */
+export function assessOutcome(input: OutcomeInputs): OutcomeAssessment {
+  const principalType = input.principal?.type ?? null;
+  const registry = (v: OutcomeVerdict, claim: OutcomeTrivalent | null = null): OutcomeAssessment => ({
+    ...v,
+    assessed_by: "registry",
+    principal_type: principalType,
+    basis: basisOf("registry"),
+    claim,
+  });
+
+  if (input.contract === null || input.contract === undefined) {
+    return registry({ value: "unknown", reason: "no_outcome_contract" });
+  }
+
+  // WHAT THE REGISTRY SAW ITSELF, FIRST. A root this registry manages is the one
+  // place it has standing to answer, so its own reading wins over a report about
+  // the same subject — and where its reading is `unknown` it does not pretend
+  // otherwise, it falls through to the self-report.
+  if (input.observed !== null && input.observed !== undefined) {
+    const own = evaluateOutcome(input.contract, input.observed);
+    if (own.value !== "unknown") return registry(own);
+  }
+
+  const claimed = evaluateOutcome(input.contract, input.claimed);
+  if (claimed.value === "unknown") return registry(claimed);
+  return {
+    value: "unknown",
+    reason: "self_reported_not_verified_by_the_registry",
+    assessed_by: "principal",
+    principal_type: principalType,
+    basis: basisOf("principal"),
+    claim: claimed.value,
+  };
 }
 
 export function evaluateOutcome(contract: unknown, evidence: unknown): OutcomeVerdict {

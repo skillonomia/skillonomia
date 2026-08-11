@@ -203,6 +203,27 @@ function methodOf(a: Attribution): string {
  */
 export function stateCell(c: StateColumn): Cell {
   const why = plain(c.reason, c.value === "yes" ? "observed" : "no_reason_recorded");
+  // A SELF-REPORT DOES NOT READ LIKE AN OBSERVATION [D-18].
+  //
+  // Half of D-18 is that the verdict CARRIES its provenance; the other half is
+  // that the page SHOWS the difference, because a reader who cannot tell a
+  // claim from a reading has been given a claim as a reading. The parts below
+  // appear only on the column that has an assessment (`outcome`), so the two
+  // kinds of cell differ in their BYTES and not merely in a field a renderer
+  // might drop: `assessed_by`, the principal's TYPE [I-5], and — for a
+  // self-report — what the principal's own evidence amounts to, printed under
+  // its own name beside a verdict that is not it.
+  const provenance: string[] = [];
+  if (c.assessment !== undefined) {
+    provenance.push(`assessed_by: ${c.assessment.assessed_by}`);
+    provenance.push(`basis: ${c.assessment.basis}`);
+    provenance.push(`principal_type: ${plain(c.assessment.principal_type, "none_reported")}`);
+    provenance.push(
+      c.assessment.basis === "self_report"
+        ? `claimed_by_the_principal: ${plain(c.assessment.claim, "nothing")} | not verified by the registry`
+        : "claimed_by_the_principal: nothing | this registry read it itself",
+    );
+  }
   return mint([
     c.value,
     `why: ${why}`,
@@ -211,6 +232,7 @@ export function stateCell(c: StateColumn): Cell {
     `is: ${c.is}`,
     `claim: ${matrixCell(c.state, c.runtime).explicit ? "explicit" : "reported"}`,
     `reliability: ${c.reliability}`,
+    ...provenance,
     // WHICH of §4's two column sets this cell belongs to. It is in the cell and
     // not merely in the table's caption, because the sweep rebuilds the cell
     // from the page and the matrix rule it must apply — can this cell ever say

@@ -212,6 +212,11 @@ export class StoredObservations implements FleetObservationSource, RuntimeRecord
       window: head.selection_window,
       window_detail: `${head.window_detail} (${head.records_read} record(s) examined)`,
       proposal_inventory_complete: head.proposal_inventory_complete === 1,
+      // WHO FILED IT, and of which of the three kinds `agents.type` allows. §4's
+      // `outcome` publishes it beside its verdict, because a self-report from a
+      // service and a self-report from a human are different things to read
+      // [I-5], [D-18].
+      reported_by: { agent_id: head.reported_by_agent_id, type: head.reported_by_type },
       records: rows.map((r) => ({
         agent_id: r.agent_id,
         runtime: r.runtime,

@@ -1296,11 +1296,22 @@ test("D-2: the contract is EXECUTED, and a principal's own word is not a verdict
   console.log(`[D-2] contract + the reporter's own \`failure\`     → outcome=${declaredFailure.value} (${declaredFailure.reason ?? "—"})`);
   console.log(`[D-2] contract + a run nothing evaluated          → outcome=${finished.value} (${finished.reason ?? "—"})`);
   console.log(`[D-2] no contract at all                          → outcome=${noContract.value} (${noContract.reason ?? "—"})`);
-  assert.equal(satisfied.value, "yes", "an executed check that was satisfied must answer `yes`");
-  assert.equal(unsatisfied.value, "no", "an executed check that was not satisfied must answer `no`");
+  // D-18 SPLIT THESE TWO BY WHO PRODUCED THE EVIDENCE, and the split is the
+  // requirement change and not a softening of this test. `stdout` is a fact
+  // about a process on the ADDRESSEE'S machine; this registry ran nothing and
+  // read nothing, so the contract is executed against a REPORT, the report's
+  // own conclusion is published under its own name, and the verdict stays
+  // `unknown` with a reason saying it was not verified here [M-7], [D-18]. The
+  // column still moves in both directions — `claim` is what moves.
+  assert.equal(satisfied.value, "unknown", "a report about another machine was published as this registry's verdict");
+  assert.equal(satisfied.assessment?.claim, "yes", "an executed check that was satisfied must publish the claim it establishes");
+  assert.equal(satisfied.assessment?.basis, "self_report");
+  assert.equal(unsatisfied.value, "unknown");
+  assert.equal(unsatisfied.assessment?.claim, "no", "an executed check that was not satisfied must publish the claim it refutes");
   // THE TWO THAT USED TO BE A VERDICT. Neither the word `success` nor the word
   // `failure` moves this column: without evidence the check was never run.
   assert.equal(declaredSuccess.value, "unknown", "a principal declared its own success and the registry printed it");
+  assert.equal(declaredSuccess.assessment?.claim, null, "a word with no working is not even a claim the contract establishes");
   assert.equal(declaredFailure.value, "unknown", "a principal declared its own failure and the registry printed it");
   assert.match(String(declaredSuccess.reason), /never_executed/);
   assert.equal(finished.value, "unknown");

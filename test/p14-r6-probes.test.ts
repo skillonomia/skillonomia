@@ -39,6 +39,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import * as outcomeNamespace from "../src/outcome.ts";
+import * as activationNamespace from "../src/activation.ts";
 import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, evaluateOutcome } from "../src/outcome.ts";
 import { arrivalMarker } from "../src/marker.ts";
 import { p4Fixture, reviewedVersion, rest, type P4Fixture } from "./p6-helpers.ts";
@@ -274,11 +275,42 @@ function freshTree(): string {
   return dir;
 }
 
+let probeCache: string | null = null;
+function probeNpmCache(): string {
+  if (probeCache === null) probeCache = temp("skln-r6-npm-cache-");
+  return probeCache;
+}
+
 /** `npm pack --dry-run --json` in `cwd`, tolerating whatever a lifecycle script
  *  printed before the JSON — which is the whole reason the flag was there. */
 function realPack(cwd: string, ignoreScripts: boolean): string[] {
-  const args = ["pack", "--dry-run", "--json", "--silent", ...(ignoreScripts ? ["--ignore-scripts"] : [])];
-  const out = execFileSync("npm", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 26 });
+  const args = ["pack", "--dry-run", "--json", ...(ignoreScripts ? ["--ignore-scripts"] : [])];
+  // TWO ATTEMPTS, ANNOUNCED. Same reason as the guard's own enumeration: this
+  // spawns a packer that runs a build while sixty test files are running, and a
+  // lost race is not a fact about the package. A second failure fails the probe.
+  let out = "";
+  let failure: { stderr?: string; message?: string } | null = null;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      out = execFileSync("npm", args, {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: 1 << 26,
+        // a cache of this probe's own: the default one is shared, and two
+        // packers racing on it produce an `EEXIST` that is a fact about npm
+        env: { ...process.env, npm_config_cache: probeNpmCache() },
+      });
+      failure = null;
+      break;
+    } catch (e) {
+      failure = e as { stderr?: string; message?: string };
+      console.log(`  npm pack attempt ${attempt} failed in ${cwd}: ${String(failure.message).split("\n")[0]} :: ${String(failure.stderr ?? "").split("\n").filter(Boolean).slice(0, 12).join(" / ")}`);
+    }
+  }
+  if (failure !== null) {
+    assert.fail(`npm pack failed twice in ${cwd}: ${String(failure.message).slice(0, 200)} :: STDERR ${String(failure.stderr ?? "").slice(0, 600)}`);
+  }
   const start = /^\[/m.exec(out);
   assert.ok(start, `\`npm pack --json\` produced no JSON array in ${cwd}`);
   const parsed = JSON.parse(out.slice(start.index)) as Array<{ files?: Array<{ path?: string }> }>;
@@ -296,7 +328,7 @@ test("[B-4] the guard's file set is the set a REAL pack ships, `prepack`'s produ
   // how it survived a round.
   const guardSource = readFileSync(new URL("./docs-guard.ts", import.meta.url), "utf8");
   assert.equal(
-    /--ignore-scripts/.test(guardSource),
+    /["']--ignore-scripts["']/.test(guardSource),
     false,
     "the guard enumerates with `--ignore-scripts`: it sees what the manifest lists, not what `npm pack` ships",
   );
@@ -311,16 +343,19 @@ test("[B-4] the guard's file set is the set a REAL pack ships, `prepack`'s produ
   )();
   console.log(`  the guard packs in: ${packRoot}`);
   assert.notEqual(packRoot.replace(/\/$/, ""), REPO_ROOT.replace(/\/$/, ""), "the guard packs in the working tree");
+  const enumerated = g.packedFiles();
   assert.ok(existsSync(join(packRoot, "dist-js", "cli.js")), "`prepack` did not build in the tree the guard packs in");
 
+  // ONE TREE, TWO ENUMERATIONS, IN THE ORDER THAT KEEPS THE SECOND HONEST: the
+  // `--ignore-scripts` run first, while the tree is still fresh, and the real
+  // one after — which is also the order that runs `bun build` once.
   const tree = freshTree();
   assert.equal(existsSync(join(tree, "dist-js", "cli.js")), false, "the probe's tree is not fresh: it already holds a build");
-
+  const withoutScripts = realPack(tree, true);
   const shipped = realPack(tree, false);
-  const withoutScripts = realPack(freshTree(), true);
   console.log(`  a real pack on a fresh tree:            ${shipped.length} files`);
   console.log(`  the same tree with --ignore-scripts:    ${withoutScripts.length} files`);
-  console.log(`  the guard's own enumeration:            ${g.packedFiles().length} files`);
+  console.log(`  the guard's own enumeration:            ${enumerated.length} files`);
 
   // THE DISCRIMINATION, STATED AS A FACT ABOUT THE TWO ENUMERATIONS: the flag
   // the guard passes is exactly the difference between them.
@@ -329,7 +364,7 @@ test("[B-4] the guard's file set is the set a REAL pack ships, `prepack`'s produ
   assert.equal(shipped.length, withoutScripts.length + 1, "the two enumerations differ by something other than the built file");
 
   // …AND THE GUARD MUST BE ON THE FIRST SIDE OF THAT DIFFERENCE.
-  assert.deepEqual(g.packedFiles(), shipped, "the guard enumerates a different package from the one npm ships");
+  assert.deepEqual(enumerated, shipped, "the guard enumerates a different package from the one npm ships");
 
   // …and it must READ what it enumerates. A file in the subject that nothing
   // opens is the round-3 defect with a longer list.
@@ -413,7 +448,7 @@ test("[D-18] a pair of values reported about somebody else's machine is a SELF-R
 test("[D-18] an artifact under the root THIS REGISTRY manages is the registry's own `yes` or `no`", () => {
   const assess = assessor();
   const observe = required<(site: unknown, contract: unknown) => Record<string, unknown> | null>(
-    outcomeNamespace as unknown as Record<string, unknown>,
+    activationNamespace as unknown as Record<string, unknown>,
     "registryObservedEvidence",
     "[D-18] requires the registry to produce evidence of its OWN for the one thing it can check: an artifact under the activation root it manages",
   );
@@ -502,16 +537,28 @@ test("[D-18] the §4 `outcome` column, end to end, publishes the provenance of i
   const fx = p4Fixture();
   const version = reviewedVersion(fx, "d18-probe", { manifest: { outcome_contract: REMOTE_CONTRACT } });
   const marker = arrivalMarker(version.versionId);
-  assert.equal(
-    rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
-      agent_id: fx.owner.agent_id,
-      action: "report_outcome",
-      recipient_scope: "local_agent",
-    }).status,
-    201,
-  );
+  for (const action of ["report_outcome", "assign"]) {
+    assert.equal(
+      rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
+        agent_id: fx.owner.agent_id,
+        action,
+        recipient_scope: "local_agent",
+      }).status,
+      201,
+    );
+  }
+  // THE VERSION HAS TO BE THIS AGENT'S CAPABILITY, or there is no row to carry a
+  // column and the probe would pass on an empty table.
+  const addressee = fx.reviewer.agent_id;
+  const pushed = rest(fx, "POST", `/v1/versions/${version.versionId}/transfers`, fx.keys.owner, {
+    recipient: { kind: "local_agent", ref: addressee },
+  });
+  assert.equal(pushed.status, 201, pushed.raw.slice(0, 200));
+
+  // FILED BY THE OWNER, ABOUT THE ADDRESSEE. The principal whose type the
+  // verdict must carry is the one that REPORTED, not the one that ran.
   const filed = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
-    agent_id: fx.owner.agent_id,
+    agent_id: addressee,
     runtime: "codex",
     window: "all_time",
     window_detail: "the probe's own records, all time",
@@ -522,7 +569,7 @@ test("[D-18] the §4 `outcome` column, end to end, publishes the provenance of i
   });
   assert.equal(filed.status, 201, `the probe could not file its observation: ${filed.raw.slice(0, 200)}`);
 
-  const view = rest(fx, "GET", `/v1/fleet/${fx.owner.agent_id}/capabilities`, fx.keys.owner);
+  const view = rest(fx, "GET", `/v1/fleet/${addressee}/capabilities`, fx.keys.owner);
   assert.equal(view.status, 200, view.raw.slice(0, 200));
   const columns = (view.body.capabilities as any[]).flatMap((c) => c.columns as any[]).filter((c) => c.column === "outcome");
   assert.ok(columns.length > 0, "no `outcome` column was published for this agent");

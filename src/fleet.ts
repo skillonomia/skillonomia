@@ -45,8 +45,15 @@
 // The assessment logic receives RECORDS. Reading a filesystem lives in the
 // ADAPTER (src/fleet-scan.ts) and nowhere else, and a test greps this file to
 // keep it that way — the same discipline `src/marker.ts` already holds to.
-import { evaluateOutcome, type OutcomeContract, type OutcomeVerdict } from "./outcome.ts";
-export { evaluateOutcome, type OutcomeContract, type OutcomeVerdict };
+import {
+  assessOutcome,
+  evaluateOutcome,
+  type OutcomeAssessment,
+  type OutcomeContract,
+  type OutcomeVerdict,
+  type PrincipalType,
+} from "./outcome.ts";
+export { assessOutcome, evaluateOutcome, type OutcomeAssessment, type OutcomeContract, type OutcomeVerdict };
 import {
   MARKER_RE,
   assessArrival,
@@ -421,6 +428,16 @@ export interface RuntimeSnapshot {
   window: SelectionWindow;
   window_detail: string;
   proposal_inventory_complete: boolean;
+  /**
+   * THE PRINCIPAL THAT FILED THIS REPORT, or `null` where a caller built the
+   * snapshot from records with no filing behind them.
+   *
+   * It is here because §4's `outcome` publishes the TYPE of whoever claimed a
+   * result [I-5], [D-18], and the claim and the claimant have to travel
+   * together: a verdict attributed to "a principal" with no kind attached is
+   * the same half-published number [I-3] exists to refuse.
+   */
+  reported_by?: { agent_id: string; type: PrincipalType } | null;
   records: readonly ObservedRecord[];
 }
 
@@ -452,6 +469,12 @@ export const NO_FLEET_OBSERVATIONS: FleetObservationSource = { snapshotFor: () =
 /** The source phrase for every arrival answer, so no cell is a bare value. */
 export const SCAN_SOURCE =
   "runtime records, reduced to §5 arrival markers, matched on a PAIRED call/output record sharing one call_id";
+
+/** The boundary of the one thing this registry checks for itself: the artifact
+ *  a contract names, under the activation root this deployment configured and
+ *  this registry writes to. Not a transcript, and not the report's window. */
+export const REGISTRY_ARTIFACT_WINDOW =
+  "the artifact the signed contract names, under the activation root this registry manages, as it stands now";
 
 /** The source phrase for the filesystem inventory. */
 export const REGISTERED_SOURCE =
@@ -600,6 +623,14 @@ export interface StateColumn extends Attribution {
   /** whether a `yes` here can be relied on */
   reliability: "reliable" | "unreliable" | "not_applicable";
   observability: Observability;
+  /**
+   * WHO ESTABLISHED THIS VALUE, on the one column where the answer is not
+   * always this registry [D-18]. Present on `outcome` and absent everywhere
+   * else, because everywhere else the column IS the registry's own reading of
+   * its own journals, and an attribute that said `registry` on every row would
+   * be furniture rather than information.
+   */
+  assessment?: OutcomeAssessment;
 }
 
 /** Everything a caller must supply before a column set means anything. */
@@ -629,6 +660,25 @@ export interface CapabilityEvidence {
    * The evaluator now receives the contract and EXECUTES its `check`.
    */
   outcome_contract: OutcomeContract | null;
+  /**
+   * THE NAMED VALUES THIS REGISTRY PRODUCED ITSELF, or `null` where it produced
+   * none — which is the ordinary case and the honest default.
+   *
+   * D-18's split lives here. Everything in `snapshot` is a SELF-REPORT: an agent
+   * telling this registry what happened on its own machine. This field is the
+   * other kind — what the registry saw by looking somewhere it manages. The
+   * caller decides what that means (today: an artifact under the activation
+   * root, `registryObservedEvidence` in `src/activation.ts`); this module only
+   * needs to know which of the two a value is, because that is the difference
+   * between a verdict and a claim.
+   *
+   * It is a bag of NAMED VALUES and not a path, a root or a handle — [M-7] is
+   * unchanged: nothing in this file can look at anything.
+   */
+  observed_evidence?: Record<string, unknown> | null;
+  /** WHO reported, for the verdict's `principal_type` [I-5]. `null` where
+   *  nothing was reported at all. */
+  reported_by?: { type: PrincipalType } | null;
 }
 
 function windowOf(snapshot: RuntimeSnapshot | null): { window: SelectionWindow; window_detail: string } {
@@ -644,7 +694,7 @@ function column(
   reason: string | null,
   source: EvidenceSource,
   win: { window: SelectionWindow; window_detail: string },
-  extra: { is?: "observation" | "intent"; reliability?: StateColumn["reliability"] } = {},
+  extra: { is?: "observation" | "intent"; reliability?: StateColumn["reliability"]; assessment?: OutcomeAssessment } = {},
 ): StateColumn {
   const m = matrixCell(state, runtime);
   // THE [A-0] RULE, ENFORCED RATHER THAN DOCUMENTED. A cell the matrix says can
@@ -653,6 +703,15 @@ function column(
   // a later surface or a later refactor from turning "nothing was reported"
   // into "it did not happen".
   const safe: Trivalent = value === "no" && !m.can_be_no ? "unknown" : value;
+  // …AND THE PROVENANCE FOLLOWS THE VALUE DOWN. A verdict the matrix has just
+  // turned into `unknown` may not go on carrying `no` in its assessment: the two
+  // would be one cell stating two answers, which is the [I-1] failure wearing a
+  // different hat. The [A-0] rule is applied to the whole publication or it is
+  // applied to half of it.
+  const assessment =
+    extra.assessment === undefined || safe === extra.assessment.value
+      ? extra.assessment
+      : { ...extra.assessment, value: safe, reason: `${extra.assessment.reason}:withheld_because_this_cell_can_never_say_no` };
   const col: StateColumn = {
     column: c,
     runtime,
@@ -666,9 +725,20 @@ function column(
     source,
     window: win.window,
     window_detail: win.window_detail,
+    ...(assessment === undefined ? {} : { assessment }),
   };
   const missing = missingAttribute(col);
   if (missing !== null) throw new Error(`a state column is not published without its method: \`${missing}\` [I-3]`);
+  // A VERDICT WITH A PROVENANCE THAT DISAGREES WITH ITSELF IS NOT PUBLISHED.
+  // `assessed_by` and `basis` are one fact under two names and are computed from
+  // each other in `src/outcome.ts`; this is the assertion that they arrived that
+  // way, applied to the finished column rather than trusted to the producer.
+  if (col.assessment !== undefined) {
+    const a = col.assessment;
+    const consistent = a.assessed_by === "registry" ? a.basis === "registry_observation" : a.basis === "self_report";
+    if (!consistent) throw new Error("a verdict whose `assessed_by` and `basis` disagree is not published [I-3], [D-18]");
+    if (a.value !== col.value) throw new Error("a verdict published beside an assessment of a different value [I-3]");
+  }
   return col;
 }
 
@@ -823,14 +893,40 @@ export function capabilityColumns(ev: CapabilityEvidence): StateColumn[] {
   // with the §6.2 `report_outcome` grant declared its own success and this
   // column printed it. `result` is not read here any more, in either direction:
   // a reporter's `success` is not a `yes`, and its `failure` is not a `no`.
-  let outcomeValue: Trivalent = "unknown";
-  let outcomeReason: string | null = ev.outcome_contract ? "no_evaluated_run" : "no_outcome_contract";
-  if (ev.outcome_contract && paired.length > 0) {
-    const verdict = evaluateOutcome(ev.outcome_contract, paired[paired.length - 1]!.evidence);
-    outcomeValue = verdict.value;
-    outcomeReason = verdict.value === "yes" ? null : verdict.reason;
+  //
+  // AND SINCE D-18 IT CARRIES ITS PROVENANCE [I-3]. `outcome` was the last value
+  // in this product published as a bare answer: every counted number here says
+  // what it measured, where it read it and over what boundary, and this column
+  // said `yes` and let a reader assume the registry had checked. It had not, and
+  // for a `command` or an `exit_code` it never can — those are facts about a
+  // process on the addressee's machine [M-7]. So the assessment says whose
+  // values decided it, what kind of principal reported, and whether it is an
+  // observation or a self-report, and a self-report's own conclusion is
+  // published beside the verdict instead of being printed as one.
+  const observedEvidence = ev.observed_evidence ?? null;
+  const claimedEvidence = paired.length > 0 ? paired[paired.length - 1]!.evidence : null;
+  let outcome: OutcomeAssessment = assessOutcome({
+    contract: ev.outcome_contract ?? null,
+    claimed: claimedEvidence,
+    observed: observedEvidence,
+    principal: ev.reported_by ?? null,
+  });
+  // NOTHING RAN AND NOTHING WAS LOOKED AT — distinguishable, in the reason, from
+  // a run that was reported and presented no evidence. Both are `unknown`; a
+  // reader holding one row must still be able to tell which of the two it is.
+  if (ev.outcome_contract && paired.length === 0 && observedEvidence === null) {
+    outcome = { ...outcome, reason: "no_evaluated_run" };
   }
-  out.push(column("outcome", "outcome", runtime, outcomeValue, outcomeReason, "transcript", win));
+  const outcomeReason = outcome.value === "yes" ? null : outcome.reason;
+  // …AND THE METHOD FOLLOWS THE AUTHORITY. A verdict this registry established
+  // by reading a root it manages was not read off a transcript, and publishing
+  // it with `source: transcript` over the report's selection window would be a
+  // number wearing somebody else's method — the [I-3] defect this column was
+  // just corrected for, reappearing one field to the left.
+  const byObservation = outcome.basis === "registry_observation" && observedEvidence !== null && outcome.value !== "unknown";
+  const outcomeSource: EvidenceSource = byObservation ? "filesystem" : "transcript";
+  const outcomeWindow = byObservation ? { window: all, window_detail: REGISTRY_ARTIFACT_WINDOW } : win;
+  out.push(column("outcome", "outcome", runtime, outcome.value, outcomeReason, outcomeSource, outcomeWindow, { assessment: outcome }));
 
   return out;
 }

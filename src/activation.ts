@@ -337,6 +337,57 @@ export function readBack(site: ActivationSite, name: string): Buffer | null {
   }
 }
 
+/**
+ * THE ONE THING THIS REGISTRY CAN CHECK FOR ITSELF — D-18, part 2.
+ *
+ * §4's `outcome` is decided by a contract, and a contract's `check` is executed
+ * against NAMED VALUES a run produced. Almost all of those values are facts
+ * about a process on somebody else's computer: an exit code, an output, a
+ * command line. This registry did not run that process and cannot, so what it
+ * receives about them is a self-report and is published as one [M-7], [M-6].
+ *
+ * There is exactly one exception, and it is this function. The activation root
+ * is a directory THIS REGISTRY WRITES TO (`materialize`) and reads back from
+ * (`readBack`); it is configured by a deployment, it belongs to the deployment,
+ * and looking in it is not reaching into an addressee's machine. So for a
+ * contract whose check is `artifact_exists` and whose path lands INSIDE that
+ * root, the registry produces the `artifacts` list ITSELF, and the verdict built
+ * from it is its own.
+ *
+ * `null` is "this registry observed nothing", which is not "the artifact is
+ * absent". No root configured, a root that will not resolve, a check of another
+ * kind, a path that leaves the root: all of them are `null`, and `null` sends
+ * the caller back to the self-report. A path that leaves the root is refused for
+ * the same reason a WRITE through one is — `within` is the same containment test
+ * both use — and refusing it is what keeps "the registry only reads what it
+ * manages" a property of the code.
+ *
+ * WHAT IT DOES NOT DO: it never opens a path a REPORTER named. The only path it
+ * joins is the one the SIGNED contract declares.
+ */
+export function registryObservedEvidence(
+  site: ActivationSite | null,
+  contract: unknown,
+): Record<string, unknown> | null {
+  if (site === null || site === undefined) return null;
+  const check = (contract as { check?: { kind?: unknown; artifact_path?: unknown } } | null)?.check;
+  if (check?.kind !== "artifact_exists" || typeof check.artifact_path !== "string" || check.artifact_path.length === 0) {
+    return null;
+  }
+  let realRoot: string;
+  try {
+    realRoot = resolveRoot(site.root);
+  } catch {
+    return null;
+  }
+  const target = resolve(realRoot, check.artifact_path);
+  if (!within(realRoot, target)) return null;
+  // THE WALK HAPPENED, so the answer is a list — empty when the artifact is not
+  // there. An empty list is what makes an honest `no` possible; `null` above is
+  // what keeps "nothing was looked at" from being read as one.
+  return { artifacts: existsSync(target) ? [check.artifact_path] : [] };
+}
+
 /** What became of a managed copy at one step. Four values, and never blank. */
 export type ManagedCopy = "written" | "removed" | "absent" | "retained";
 

@@ -68,25 +68,47 @@
 //   that history be rewritten to agree with the present.
 //
 //   Round 4 read that status off the document's first heading. A heading is
-//   text, and a reviewer proved it by writing one. So an exemption now requires
-//   ALL of:
+//   text, and a reviewer proved it by writing one. Round 5 required a commit as
+//   well — and accepted a claim that agreed with ANY of the commits a document
+//   named. A reviewer took that apart in one sentence: a record naming the
+//   candidate AND its baseline, saying "the dashboard currently has five views",
+//   agreed with the baseline and passed while stating something false about the
+//   build under review. AGREEING WITH ONE OF SEVERAL IS NOT A BINDING; it is the
+//   guard searching, on the document's behalf, for a commit that makes the
+//   sentence true.
+//
+//   So an exemption now requires ALL of:
 //
 //     * the document declares itself a record in its first heading, AND
+//     * the sentence is not in the present time — a present-time adverbial
+//       ("currently", "at present", "as of today") means the sentence is about
+//       THIS build and is checked against today's code, AND
 //     * it NAMES A COMMIT THIS REPOSITORY CAN RESOLVE, AND
-//     * the constant the claim is about CAN BE READ at one of those commits,
-//       AND
-//     * the claim equals the value it had there.
+//     * the commits THE CLAIM IS BOUND TO agree about the constant — the ones
+//       its own sentence names, or, where the sentence names none, the ones the
+//       document names — AND
+//     * the claim equals that one value.
 //
-//   A claim that fails any of those is checked against TODAY'S code. A record
-//   that names no commit exempts nothing, which is exactly the attack that
-//   worked. Where a record genuinely speaks of a set that no commit can answer
-//   for — a phase plan's five views, at a commit predating the dashboard — the
-//   sentence carries a machine-readable ANCHOR naming the code constant it
-//   means (`[skln:count=phase_plan_views]`), and the guard checks it against
-//   that constant. The true value still has exactly one source.
+//   Two different values among the bound commits is a REFUSAL naming both, and
+//   the remedy is for the sentence to name the build it means. A claim that
+//   fails any of those is checked against TODAY'S code. A record that names no
+//   commit exempts nothing, which is exactly the attack that worked in round 4.
+//
+//   THE LIMIT, STATED: the present-time rule is a closed list of adverbials and
+//   not a tense parser. A bare present-tense verb is not caught by it, and is
+//   left to the binding rule — which is the rule that does the work, and which
+//   does not care about tense at all.
+//
+//   Where a record genuinely speaks of a set that no commit can answer for — a
+//   phase plan's five views, at a commit predating the dashboard — the sentence
+//   carries a machine-readable ANCHOR naming the code constant it means
+//   (`[skln:count=phase_plan_views]`), and the guard checks it against that
+//   constant. The true value still has exactly one source.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { DASHBOARD_VIEWS, FLEET_SCREENS, PHASE_PLAN_VIEWS } from "../src/dashboard.ts";
@@ -106,33 +128,140 @@ export class DocumentSetUnavailable extends Error {}
 // ---------------------------------------------------------------- the subject
 
 /**
- * THE FILES THIS PACKAGE SHIPS, from `npm pack --json`.
+ * WHERE THE PACK IS RUN — a tree of this guard's own, never the repository.
  *
- * Not `package.json`'s `files`, which is an INPUT to that computation and
- * answers a different question (it says nothing about `package.json` itself,
- * about `.npmignore`, or about what the packer adds). `--dry-run` writes no
- * tarball; `--ignore-scripts` keeps `prepack` from building, because the
- * question is which files the manifest ships and not what a build would add.
+ * THE PROBLEM THE COPY SOLVES. A real `npm pack` runs `prepack`, and this
+ * package's `prepack` is `npm run build:js`, which WRITES `dist-js/cli.js`. So
+ * the honest enumeration and "the working tree is untouched" pull against each
+ * other, and the pull is silent: `dist-js/` is ignored by git, so a guard that
+ * built into the repository would leave a stale artifact behind and `git status`
+ * would say nothing about it. Worse, a leftover build makes `--ignore-scripts`
+ * and a real pack agree, which is how the wrong enumeration survived a round of
+ * review — on a fresh tree it reports 76 files where the packer ships 77.
+ *
+ * So the enumeration happens in a copy: every file git tracks, taken from the
+ * WORKING TREE (so uncommitted edits are what gets checked), plus a symbolic
+ * link to `node_modules`, which `prepack` needs and nothing writes into. The
+ * copy holds no `dist-js/`, so the pack that runs here is the pack a user's
+ * `npm install` performs on a fresh checkout, and `prepack` writes where a
+ * write costs nothing.
+ *
+ * WHAT THIS COPY IS NOT. It is not a substitute for the repository: untracked
+ * files are absent from it, deliberately, because an untracked file is either
+ * ignored (and not shipped) or would show in `git status`, which the regime
+ * requires to be empty. It is built ONCE per process and removed at exit.
  */
-export function packedFiles(): string[] {
-  let out: string;
+let packRootDir: string | null = null;
+let packCacheDir: string | null = null;
+
+/**
+ * A PRIVATE npm CACHE, OUTSIDE THE TREE BEING PACKED.
+ *
+ * `npm` writes into `~/.npm/_cacache` by default, and this suite runs sixty-odd
+ * files at once; two packers racing on the same content-addressed directory
+ * produce `EEXIST` from a `mkdir` neither of them needed. A cache per process
+ * removes the shared state rather than retrying around it. It lives beside the
+ * pack root and never inside it, because anything inside it would be a file
+ * offered to the packer.
+ */
+function packCache(): string {
+  if (packCacheDir !== null) return packCacheDir;
+  const dir = mkdtempSync(join(tmpdir(), "skln-docs-npm-cache-"));
+  packCacheDir = dir;
+  process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+export function packRoot(): string {
+  if (packRootDir !== null) return packRootDir;
+  let listing: string;
   try {
-    out = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts", "--silent"], {
-      cwd: REPO_ROOT,
+    listing = execFileSync("git", ["-C", REPO_ROOT, "ls-files", "-z"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 1 << 26,
     });
   } catch (e) {
     throw new DocumentSetUnavailable(
-      `REFUSED: the shipped file set could not be ENUMERATED — \`npm pack --json\` failed (${String((e as Error).message).split("\n")[0]}). ` +
+      `REFUSED: the package could not be COPIED for enumeration — \`git ls-files\` failed (${String((e as Error).message).split("\n")[0]}). ` +
         "A guard that cannot list its subject refuses; it does not sweep an empty set and call the result clean.",
     );
   }
+  const files = listing.split("\0").filter((s) => s.length > 0);
+  if (files.length === 0) {
+    throw new DocumentSetUnavailable("REFUSED: `git ls-files` listed no file, so there is no package to enumerate.");
+  }
+  const dir = mkdtempSync(join(tmpdir(), "skln-docs-pack-"));
+  for (const rel of files) {
+    mkdirSync(join(dir, dirname(rel)), { recursive: true });
+    copyFileSync(join(REPO_ROOT, rel), join(dir, rel));
+  }
+  symlinkSync(join(REPO_ROOT, "node_modules"), join(dir, "node_modules"));
+  packRootDir = dir;
+  process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+/**
+ * THE FILES THIS PACKAGE SHIPS, from `npm pack --json`, WITH ITS LIFECYCLE.
+ *
+ * Not `package.json`'s `files`, which is an INPUT to that computation and
+ * answers a different question (it says nothing about `package.json` itself,
+ * about `.npmignore`, or about what the packer adds). And not
+ * `--ignore-scripts`, which was here and was the defect: it answers "which
+ * files does the manifest list" where the subject is "which files does a user
+ * receive". `prepack` builds `dist-js/cli.js` and `dist-js/` is in the `files`
+ * list, so the built bundle IS shipped — 77 files, not 76 — and until this flag
+ * came off it was read by nobody.
+ *
+ * `--dry-run` still writes no tarball. The build `prepack` does write lands in
+ * `packRoot()`, which is not this repository.
+ *
+ * A LIFECYCLE SCRIPT PRINTS TO THE SAME STREAM `--json` DOES (`bun build`
+ * announces its bundle), so the JSON is located rather than assumed: the array
+ * starts at the first line that begins with `[`. Anything else is a refusal —
+ * a guard that cannot read the answer does not guess at one.
+ */
+export function packedFiles(): string[] {
+  const root = packRoot();
+  // TWO ATTEMPTS, AND THE SECOND ONE SAYS SO. `npm pack` is an external process
+  // that runs a build, and this suite runs sixty-odd files at once; a packer
+  // that lost a race is not a package that cannot be listed. The retry is
+  // ANNOUNCED rather than silent, and a second failure is still a refusal —
+  // nothing here turns "I could not read the subject" into a clean sweep.
+  let out = "";
+  let failure: Error | null = null;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      out = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: 1 << 26,
+        env: { ...process.env, npm_config_cache: packCache() },
+      });
+      failure = null;
+      break;
+    } catch (e) {
+      failure = e as Error;
+      const stderr = String((e as { stderr?: string }).stderr ?? "").split("\n").filter(Boolean).slice(-6).join(" / ");
+      console.log(`[B-4] \`npm pack\` attempt ${attempt} failed in ${root}: ${String(failure.message).split("\n")[0]} :: ${stderr}`);
+    }
+  }
+  if (failure !== null) {
+    throw new DocumentSetUnavailable(
+      `REFUSED: the shipped file set could not be ENUMERATED — \`npm pack --json\` failed twice (${String(failure.message).split("\n")[0]}). ` +
+        "A guard that cannot list its subject refuses; it does not sweep an empty set and call the result clean.",
+    );
+  }
+  const start = /^\[/m.exec(out);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(out);
+    parsed = start === null ? null : JSON.parse(out.slice(start.index));
   } catch {
+    parsed = null;
+  }
+  if (parsed === null) {
     throw new DocumentSetUnavailable("REFUSED: `npm pack --json` did not answer with JSON, so the shipped file set is unknown.");
   }
   const files = (Array.isArray(parsed) ? parsed : [])
@@ -183,8 +312,17 @@ const NOT_TEXT = /\.(png|jpg|jpeg|gif|ico|woff2?|ttf|zip|tgz|gz|wasm)$/i;
 
 /** THE UNION, read in full: what the package ships, plus what git tracks. */
 export function documentSet(): Array<[string, string]> {
+  // READ FROM THE TREE THAT WAS PACKED, and not from the repository. Every one
+  // of these paths exists there — it holds each tracked file's WORKING-TREE
+  // bytes, so an uncommitted edit is what gets checked — and one of them exists
+  // ONLY there: `dist-js/cli.js` is built by `prepack` during the enumeration,
+  // and a fresh checkout has no such file to open. Reading from the repository
+  // would work on this machine, today, because a stale build happens to be
+  // lying in it, and would fail on a clone — which is the same "it passed
+  // because of something nobody declared" this file exists to remove.
+  const root = packRoot();
   const paths = [...new Set([...packedFiles(), ...trackedMarkdown()])].filter((p) => !NOT_TEXT.test(p)).sort();
-  return paths.map((rel) => [rel, readFileSync(new URL(rel, new URL("../", import.meta.url)), "utf8")] as [string, string]);
+  return paths.map((rel) => [rel, readFileSync(join(root, rel), "utf8")] as [string, string]);
 }
 
 // ------------------------------------------------------------ the true values
@@ -539,6 +677,24 @@ function namedViews(sentence: string): string[] {
  */
 const NOT_A_CURRENT_CLAIM = /\b(never|not|no longer|used to|would|cannot|must not|before|was|were|had been|already)\b/i;
 
+/**
+ * A SENTENCE THAT SPEAKS OF NOW, and therefore of TODAY'S code.
+ *
+ * A review record's exemption exists so that an accepted verdict about a past
+ * build is not rewritten to agree with the present. It does not extend to a
+ * sentence that says the present: "the dashboard CURRENTLY has five views" is a
+ * claim about this build, and a baseline SHA further up the page does not make
+ * it true.
+ *
+ * WHAT THIS DOES AND DOES NOT CATCH, stated rather than implied. It is a closed
+ * list of present-TIME adverbials, not a tense parser: an English present-tense
+ * verb with no adverbial ("the dashboard has five views") is NOT caught here,
+ * and is left to the binding rule below, which is what actually carries the
+ * weight. The adverbials are here because they are the phrasings under which a
+ * record's exemption is plainly not being claimed at all.
+ */
+const PRESENT_TIME = /\b(currently|right now|as of today|as of now|at present|presently|as it stands|today's)\b/i;
+
 function provenanceLies(text: string, permitted: ReadonlySet<string>, tables: readonly string[]): string[] {
   const out: string[] = [];
   const named = tables.filter((t) => !permitted.has(t)).join("|");
@@ -619,16 +775,39 @@ export function readDocument(name: string, text: string, rules: DocumentRules): 
       const named = namedViews(sentence);
       if (subject.key !== "tools" && named.length === claim.value && isCodeDefinedSet(named)) continue;
 
-      // (4) THE BUILD A REVIEW RECORD NAMES. Checked against the constant read
-      //     out of that commit — for tools as well as for views, which round 4
-      //     never did: it reported every tool claim in every record as
-      //     unverifiable and passed, and that was sixty plantings nothing
-      //     caught.
-      if (record) {
-        const reviewed = [...new Set(commits.map((sha) => subject.atCommit(sha)).filter((n): n is number => n !== null))];
-        if (reviewed.includes(claim.value)) continue;
-        if (reviewed.length > 0) {
-          wrong.push(`${where} — a review record claims ${claim.value} ${subject.key}; the commits it names ship ${reviewed.join(" or ")}`);
+      // (4) THE BUILD A REVIEW RECORD NAMES — ONE CLAIM BOUND TO ONE COMMIT.
+      //
+      //     ROUND 5 TOOK "one of the commits this document mentions" AS THE
+      //     BINDING, and a reviewer took it apart in a sentence: a record that
+      //     names the candidate AND its baseline, and then writes "the dashboard
+      //     currently has five views", agrees with the BASELINE and passes,
+      //     while saying something false about the build it is reviewing.
+      //     Agreeing with one of several is not a binding — it is a search for a
+      //     commit that makes the sentence true, run by the guard, on the
+      //     document's behalf.
+      //
+      //     So: a sentence in the PRESENT TENSE is about the present and is
+      //     checked against today's code, record or no record (that is the `if`
+      //     below refusing to take this branch at all). Otherwise the claim is
+      //     bound to the commits ITS OWN SENTENCE names; where the sentence
+      //     names none, to the document's — and those must AGREE about the
+      //     constant. Two different answers among them is a refusal that says so
+      //     and asks the sentence to name which build it means.
+      if (record && !PRESENT_TIME.test(sentence)) {
+        const inSentence = commitsNamedBy(sentence);
+        const bound = inSentence.length > 0 ? inSentence : commits;
+        const scope = inSentence.length > 0 ? "the commit its sentence names" : "the commits the record names";
+        const reviewed = [...new Set(bound.map((sha) => subject.atCommit(sha)).filter((n): n is number => n !== null))];
+        if (reviewed.length > 1) {
+          wrong.push(
+            `${where} — a review record claims ${claim.value} ${subject.key} and ${scope} ship ${reviewed.join(" or ")}: ` +
+              "agreeing with one of several named commits is not a binding, so the sentence must name the build it is true at",
+          );
+          continue;
+        }
+        if (reviewed.length === 1) {
+          if (reviewed[0] === claim.value) continue;
+          wrong.push(`${where} — a review record claims ${claim.value} ${subject.key}; ${scope} ships ${reviewed[0]}`);
           continue;
         }
         // THE CONSTANT DID NOT EXIST AT ANY COMMIT THE RECORD NAMES — a P5

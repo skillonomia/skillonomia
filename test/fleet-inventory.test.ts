@@ -711,7 +711,16 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
     assert.equal(cellOf(word, "outcome").value, "unknown", `a principal's own \`${declared}\` was published as a verdict`);
   }
 
-  // and an EXECUTED check moves it in both directions, so the column is live
+  // AND AN EXECUTED CHECK MOVES IT IN BOTH DIRECTIONS, SO THE COLUMN IS LIVE.
+  //
+  // WHAT MOVES, SINCE D-18, IS THE SELF-REPORT'S OWN CONCLUSION — and this is
+  // the requirement change, not a relaxation of this test. `stdout` is a fact
+  // about a process on the ADDRESSEE'S machine. This registry ran nothing and
+  // read nothing; what it holds is a report. So the contract is executed
+  // against that report, its conclusion is published under its own name, and
+  // the VERDICT stays `unknown` with a reason saying it was not verified here
+  // [M-7]. A `yes` in this column means the registry checked, and after D-18 it
+  // means only that.
   const good = capabilityColumns(
     evidence({
       snapshot: snapshot([
@@ -721,7 +730,11 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
       outcome_contract: CONTRACT,
     }),
   );
-  assert.equal(cellOf(good, "outcome").value, "yes");
+  const goodCell = cellOf(good, "outcome");
+  assert.equal(goodCell.value, "unknown", "a report about somebody else's machine was published as a verdict");
+  assert.equal(goodCell.assessment?.claim, "yes", "the self-report's own conclusion is not published at all");
+  assert.equal(goodCell.assessment?.basis, "self_report");
+  assert.equal(goodCell.assessment?.assessed_by, "principal");
   const bad = capabilityColumns(
     evidence({
       snapshot: snapshot([
@@ -731,8 +744,31 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
       outcome_contract: CONTRACT,
     }),
   );
-  assert.equal(cellOf(bad, "outcome").value, "no", "a contract that ran and failed is a `no`, not an `unknown`");
-  assert.equal(bad.find((c) => c.column === "outcome")!.reason, "contract_not_satisfied");
+  const badCell = cellOf(bad, "outcome");
+  assert.equal(badCell.value, "unknown");
+  assert.equal(badCell.assessment?.claim, "no", "the column does not move for a report that refutes the contract");
+  assert.notEqual(goodCell.assessment?.claim, badCell.assessment?.claim, "the column is dead: it answers the same either way");
+
+  // …AND THE REGISTRY'S OWN READING IS A REAL `yes` AND A REAL `no`. Without
+  // this half the assertions above would be satisfied by a column that never
+  // says anything, which is its own way of lying.
+  const artifact = {
+    check: { kind: "artifact_exists", artifact_path: "out/report.json" },
+    evidence: ["artifacts"],
+    unknown: "no evaluated run of this skill was reported, which is not a failure of it",
+  } as const;
+  const seen = cellOf(
+    capabilityColumns(evidence({ snapshot: snapshot([]), outcome_contract: artifact as never, observed_evidence: { artifacts: ["out/report.json"] } })),
+    "outcome",
+  );
+  const unseen = cellOf(
+    capabilityColumns(evidence({ snapshot: snapshot([]), outcome_contract: artifact as never, observed_evidence: { artifacts: [] } })),
+    "outcome",
+  );
+  assert.equal(seen.value, "yes", "the registry read its own root and would not answer for it");
+  assert.equal(seen.assessment?.basis, "registry_observation");
+  assert.equal(unseen.value, "no", "a root that WAS walked and did not hold it answers `no`, not `unknown`");
+  assert.equal(unseen.assessment?.basis, "registry_observation");
 });
 
 // ===========================================================================
@@ -770,10 +806,12 @@ test("[I-3] DEGENERATE 5: a value that lost one of its three attributes is refus
   const m = await mutant("fleet.ts", [
     `    window: win.window,
     window_detail: win.window_detail,
+    ...(assessment === undefined ? {} : { assessment }),
   };
   const missing = missingAttribute(col);`,
     `    window: win.window,
     window_detail: win.window_detail,
+    ...(assessment === undefined ? {} : { assessment }),
   };
   delete (col as { window_detail?: string }).window_detail;
   const missing = missingAttribute(col);`,
@@ -1100,7 +1138,11 @@ test("[M-7] the assessment logic imports no filesystem, and the whole pipeline r
   ];
   const columns = capabilityColumns(evidence({ snapshot: snapshot(records), outcome_contract: CONTRACT }));
   assert.equal(cellOf(columns, "invoked").value, "yes");
-  assert.equal(cellOf(columns, "outcome").value, "yes");
+  // …and `outcome` reached its answer from those records too: a self-report,
+  // named as one, whose own conclusion is published beside it [D-18]. The
+  // point of this test is that the pipeline ran with no disk anywhere near it.
+  assert.equal(cellOf(columns, "outcome").value, "unknown");
+  assert.equal(cellOf(columns, "outcome").assessment?.claim, "yes");
   const rows = scanArrivals(records, [subject(V1)]);
   assert.equal(rows.length, 1, "[A-6]'s tuple came out of a message, not a file");
   assert.deepEqual(Object.keys(rows[0]!).sort(), [
@@ -1752,10 +1794,19 @@ const CHECK_CASES: ReadonlyArray<{
   },
 ];
 
-test("[D-2] over the WHOLE cross product, `outcome` moves only where a check was EXECUTED", () => {
+test("[D-2] over the WHOLE cross product, `outcome` moves only where a check was EXECUTED — and only the registry's own reading is a verdict", () => {
   // THE SET IS THE CROSS PRODUCT, not a sample: every declared check kind ×
-  // every word a reporter can write × every state its evidence can be in.
-  // A kind added to `OUTCOME_CHECK_SHAPE` and not to `CHECK_CASES` fails here.
+  // every word a reporter can write × every state its evidence can be in ×
+  // BOTH PROVENANCES. A kind added to `OUTCOME_CHECK_SHAPE` and not to
+  // `CHECK_CASES` fails here.
+  //
+  // THE SECOND AXIS IS D-18. The same evidence means two different things
+  // depending on WHO PRODUCED IT: presented by a principal about its own
+  // machine it is a self-report, and the verdict stays `unknown` while the
+  // report's own conclusion is published under its own name; read by this
+  // registry under the root it manages it is an observation, and there `yes`
+  // and `no` are the registry's own. Sweeping only the first axis is what let
+  // `outcome` print `yes` for a process nobody ran.
   assert.deepEqual(
     CHECK_CASES.map((c) => c.kind).sort(),
     [...OUTCOME_CHECK_KINDS].sort(),
@@ -1770,38 +1821,82 @@ test("[D-2] over the WHOLE cross product, `outcome` moves only where a check was
     ["refuting", (c) => c.refuting],
   ];
   let swept = 0;
-  let moved = 0;
+  let claimed = 0;
+  let observed = 0;
   const wrong: string[] = [];
   for (const c of CHECK_CASES) {
     for (const word of WORDS) {
       for (const [label, build] of EVIDENCE) {
-        swept += 1;
         const presented = build(c);
-        const columns = capabilityColumns(
-          evidence({
-            snapshot: snapshot([
-              record({ role: "call", call_id: `x-${swept}` }),
-              record({ role: "output", call_id: `x-${swept}`, result: word, evidence: presented }),
-            ]),
-            outcome_contract: c.contract,
-          }),
+        const executed = label === "satisfying" || label === "refuting";
+        const conclusion = label === "satisfying" ? "yes" : label === "refuting" ? "no" : null;
+
+        // ---- the SELF-REPORT axis: the values came from the addressee
+        swept += 1;
+        const asClaim = cellOf(
+          capabilityColumns(
+            evidence({
+              snapshot: snapshot([
+                record({ role: "call", call_id: `x-${swept}` }),
+                record({ role: "output", call_id: `x-${swept}`, result: word, evidence: presented }),
+              ]),
+              outcome_contract: c.contract,
+              reported_by: { type: "agent" },
+            }),
+          ),
+          "outcome",
         );
-        const cell = cellOf(columns, "outcome");
-        // THE ONLY TWO WAYS OUT OF `unknown`, and they are both the check.
-        const expected = label === "satisfying" ? "yes" : label === "refuting" ? "no" : "unknown";
-        if (cell.value !== expected) {
-          wrong.push(`${c.kind} · reporter said \`${word}\` · evidence ${label} → ${cell.value} (${cell.reason}), expected ${expected}`);
+        if (asClaim.value !== "unknown") {
+          wrong.push(`${c.kind} · reporter said \`${word}\` · evidence ${label} · SELF-REPORT → ${asClaim.value}, and a self-report is never a verdict`);
         }
-        if (cell.value !== "unknown") moved += 1;
+        if ((asClaim.assessment?.claim ?? null) !== conclusion) {
+          wrong.push(`${c.kind} · reporter said \`${word}\` · evidence ${label} · SELF-REPORT → claim ${asClaim.assessment?.claim ?? "none"}, expected ${conclusion ?? "none"}`);
+        }
+        if (executed) {
+          claimed += 1;
+          if (asClaim.assessment?.basis !== "self_report") wrong.push(`${c.kind} · ${label} · a claim was published as an observation`);
+          if (asClaim.assessment?.principal_type !== "agent") wrong.push(`${c.kind} · ${label} · the claim lost the principal's type [I-5]`);
+        }
+
+        // ---- the OBSERVATION axis: the registry produced the same values
+        swept += 1;
+        const asObservation = cellOf(
+          capabilityColumns(
+            evidence({
+              snapshot: snapshot([
+                record({ role: "call", call_id: `o-${swept}` }),
+                record({ role: "output", call_id: `o-${swept}`, result: word, evidence: null }),
+              ]),
+              outcome_contract: c.contract,
+              observed_evidence: presented,
+              reported_by: { type: "agent" },
+            }),
+          ),
+          "outcome",
+        );
+        const expected = conclusion ?? "unknown";
+        if (asObservation.value !== expected) {
+          wrong.push(`${c.kind} · reporter said \`${word}\` · evidence ${label} · OBSERVATION → ${asObservation.value} (${asObservation.reason}), expected ${expected}`);
+        }
+        if (asObservation.value !== "unknown") {
+          observed += 1;
+          if (asObservation.assessment?.basis !== "registry_observation") {
+            wrong.push(`${c.kind} · ${label} · the registry's own reading was published as a claim`);
+          }
+        }
         // an answer that is not `yes` always carries a reason a machine can read
-        if (cell.value !== "yes") assert.ok((cell.reason ?? "").length > 0, "an answer with no reason");
+        for (const cell of [asClaim, asObservation]) {
+          if (cell.value !== "yes") assert.ok((cell.reason ?? "").length > 0, "an answer with no reason");
+        }
       }
     }
   }
-  console.log(`[D-2] combinations swept: ${swept} (${CHECK_CASES.length} check kinds × ${WORDS.length} reported words × ${EVIDENCE.length} evidence states)`);
-  console.log(`[D-2] combinations where \`outcome\` left \`unknown\`: ${moved} — every one of them an EXECUTED check`);
-  assert.deepEqual(wrong, [], "the reporter's word, or the absence of evidence, moved the outcome column");
-  assert.equal(moved, CHECK_CASES.length * WORDS.length * 2, "the column must move for the two evidence states that run the check, and only those");
+  console.log(`[D-2] combinations swept: ${swept} (${CHECK_CASES.length} check kinds × ${WORDS.length} reported words × ${EVIDENCE.length} evidence states × 2 provenances)`);
+  console.log(`[D-2] self-reports whose own conclusion was published: ${claimed} — and NONE of them moved the verdict`);
+  console.log(`[D-2] verdicts the registry established by its own reading: ${observed}`);
+  assert.deepEqual(wrong, [], "the reporter's word, the absence of evidence, or a claim dressed as an observation moved the outcome column");
+  assert.equal(claimed, CHECK_CASES.length * WORDS.length * 2, "a self-report's conclusion must be published for the two evidence states that run the check, and only those");
+  assert.equal(observed, CHECK_CASES.length * WORDS.length * 2, "the registry's own reading must move the column for those two states, and only those");
 });
 
 test("[D-2] the evaluator that trusts the reporter is killed on the same records", async () => {
@@ -1810,19 +1905,18 @@ test("[D-2] the evaluator that trusts the reporter is killed on the same records
   const m = await mutant(
     "fleet.ts",
     [
-      `    const verdict = evaluateOutcome(ev.outcome_contract, paired[paired.length - 1]!.evidence);
-    outcomeValue = verdict.value;
-    outcomeReason = verdict.value === "yes" ? null : verdict.reason;`,
-      `    const last = paired[paired.length - 1]!;
+      `  const outcomeReason = outcome.value === "yes" ? null : outcome.reason;`,
+      `  let outcomeReason = outcome.value === "yes" ? null : outcome.reason;
+  const last = paired[paired.length - 1];
+  if (last !== undefined && ev.outcome_contract) {
     if (last.result === "success") {
-      outcomeValue = "yes";
+      outcome = { ...outcome, value: "yes", assessed_by: "registry", basis: "registry_observation" };
       outcomeReason = null;
     } else if (last.result === "failure") {
-      outcomeValue = "no";
+      outcome = { ...outcome, value: "no", assessed_by: "registry", basis: "registry_observation" };
       outcomeReason = "contract_not_satisfied";
-    } else {
-      outcomeReason = "run_completed_without_evaluation";
-    }`,
+    }
+  }`,
     ],
   );
   const declared = [
@@ -1853,7 +1947,13 @@ test("[D-2] the outcome path does not READ the field a reporter fills in", () =>
     .replace(/^\s*\/\/.*$/gm, " ");
   console.log(`[D-2] the outcome section of src/fleet.ts, comments removed: ${section.split("\n").filter((l) => l.trim().length > 0).length} lines of code`);
   assert.ok(!/\.result\b/.test(section), "the outcome column reads `result` — the field the REPORTING agent fills in [M-6]");
-  assert.match(section, /evaluateOutcome\(/, "…and it must reach the answer by executing the contract");
+  // THE ANSWER IS REACHED THROUGH THE ASSESSOR, which is the function that
+  // executes the contract AND says on whose authority the answer stands
+  // [D-18]. Asserting `evaluateOutcome` here would now be asserting the wrong
+  // call: this column may not publish a raw contract verdict, because a
+  // verdict with no provenance is the defect D-18 removed.
+  assert.match(section, /assessOutcome\(/, "…and it must reach the answer by asking the assessor");
+  assert.ok(!/evaluateOutcome\(/.test(section), "the column publishes a contract verdict with no provenance [I-3], [D-18]");
   // …and the evaluator itself never READS it either. The comparison is over
   // the CODE, with the comments removed: `src/outcome.ts` describes the defect
   // it was written against and naming a thing is not reading it.
@@ -1862,4 +1962,8 @@ test("[D-2] the outcome path does not READ the field a reporter fills in", () =>
     .replace(/^\s*\/\/.*$/gm, " ");
   console.log(`[D-2] src/outcome.ts, comments removed: ${code.split("\n").filter((l) => l.trim().length > 0).length} lines of code`);
   assert.ok(!/\bresult\b/.test(code), "src/outcome.ts reads `result`, which is not one of its inputs");
+  // …and the assessor does not invent a verdict of its own: it executes the
+  // contract, exactly as D-14 required, and then says who the evidence came
+  // from — which is the whole of the change D-18 made.
+  assert.match(code, /evaluateOutcome\(input\.contract/, "`assessOutcome` reaches a verdict without executing the contract");
 });

@@ -3130,9 +3130,32 @@ reason and never `no` [I-1], [A-0]. `PRAGMA user_version` = `10`.
 -- evidence, so its skill's `outcome` is `unknown` with a reason — never `no`
 -- [I-1], [A-0]. That is the same rule `0004` and `0009` were written under.
 --
--- The column is NULLable and bounded. It carries a JSON object of named values;
--- it is never a transcript, and [I-7] is unchanged — the TEXT of a record is
--- still reduced to markers at the boundary and never stored.
+-- The column is NULLable and bounded. It carries a JSON object of named values.
+--
+-- WHAT THIS COLUMN IS ALLOWED TO HOLD, AND WHERE THAT IS DECIDED. This comment
+-- used to say the column "is never a transcript" and that "[I-7] is unchanged".
+-- Neither was true of the code that shipped with it: `evidenceOf` in
+-- `src/service.ts` accepted ANY name of 1 to 80 characters, so a reviewer put a
+-- secret-shaped name and a field called `extra_transcript` through the shipped
+-- `/v1/observations` surface and both were stored verbatim. A CHECK on length
+-- is not a CHECK on subject, and this file asserted the second while enforcing
+-- the first.
+--
+-- The set of admissible names now has ONE source, and it is not SQL: it is
+-- `EVIDENCE_NAMES` (`src/outcome.ts`, derived from the check table) plus the
+-- names the SIGNED `outcome_contract.evidence` of the version a record's marker
+-- identifies declares. Everything else is refused at the boundary and never
+-- reaches this column. Where no contract can be read — an unknown marker, a
+-- manifest that no longer hashes to what was signed — only the derived list
+-- applies: the boundary fails closed.
+--
+-- SQLite cannot express that rule, so this comment does not claim SQLite does.
+-- What the constraint below enforces is a bound on SIZE, which is what a bound
+-- on size is. The rule about NAMES is enforced in one function, and a probe
+-- reads THIS TABLE after a refused report to show nothing of it was written.
+--
+-- [I-7]'s other half is untouched and always was: the TEXT of a record is
+-- reduced to §5 markers at the boundary and no column of this schema stores it.
 
 ALTER TABLE observed_records ADD COLUMN evidence TEXT
   CHECK(evidence IS NULL OR (length(evidence) BETWEEN 2 AND 4000));
