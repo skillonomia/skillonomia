@@ -13,7 +13,7 @@
 // ranking or visual polish is not a property of this format at all.
 //
 // So the contract this module implements is exactly that and nothing more:
-//   * the five views named as the internal phase plan names them,
+//   * the views named as the internal phase plan names them,
 //     `migrations` — the per-skill migration counter, which is a product
 //     surface rather than a phase-plan view: the operator who installed this
 //     registry has to be able to see whether anything ever migrated, and every
@@ -49,7 +49,7 @@ export type DashboardView =
   | "outcomes";
 
 /**
- * The five views of the internal phase plan, in the order it lists them,
+ * The views of the internal phase plan, in the order it lists them,
  * `migrations` after them — added later, and appended rather than inserted, so
  * the phase plan's own order stays readable — and then §9's five screens
  * ([D-1]..[D-5]), appended for the same reason.

@@ -21,7 +21,14 @@ import { validatePayload } from "./manifest.ts";
 import { validateEvidenceForVersion } from "./verified-gate.ts";
 import { ulid } from "./ulid.ts";
 
-export type ReceiptEvent = "delivered" | "attempted" | "adopted" | "failed" | "rolled_back" | "transferred";
+export type ReceiptEvent =
+  | "delivered"
+  | "attempted"
+  | "adopted"
+  | "failed"
+  | "rolled_back"
+  | "transferred"
+  | "requested";
 export type DerivedState = ReceiptEvent | "none";
 
 export const RECEIPT_EVENTS: readonly ReceiptEvent[] = [
@@ -31,14 +38,29 @@ export const RECEIPT_EVENTS: readonly ReceiptEvent[] = [
   "failed",
   "rolled_back",
   "transferred",
+  "requested",
 ];
 
 /**
- * The events an ADOPTER may append through surface 8. `transferred` is not one
- * of them and never becomes one: it records a SENDER's decision, is written by
- * the registry on that sender's authority (§5.4), and would otherwise be a way
- * for the receipt's own adopter to name any recipient it liked on a row the
- * migration counter reads.
+ * The two events that OPEN a chain by naming who the version is going to, and
+ * the only two that may carry `recipient_json`.
+ *
+ * `transferred` is the push half (§5.4): a sender decided. `requested` is the
+ * pull half (§5.2): the recipient asked for the version itself. They are one
+ * pair because the migration counter reads ONE fact off them — the recipient of
+ * a movement — and it must read it from the journal for both, or the sentence
+ * "every count is computed from `receipt_events`" is true of half the chains
+ * and the reader cannot tell which half is in front of them.
+ */
+export const RECIPIENT_EVENTS: readonly ReceiptEvent[] = ["transferred", "requested"];
+
+/**
+ * The events an ADOPTER may append through surface 8. Neither `transferred` nor
+ * `requested` is one of them and neither becomes one: both record who a version
+ * is moving TO, both are written by the registry in the transaction that opened
+ * the chain, and either in an adopter's hands would be a way for the receipt's
+ * own adopter to name any recipient it liked on a row the migration counter
+ * reads.
  */
 export const ADOPTER_EVENTS: readonly ReceiptEvent[] = ["delivered", "attempted", "adopted", "failed", "rolled_back"];
 
@@ -126,7 +148,18 @@ export function derivedState(db: Db, receiptId: string): DerivedState {
 export type TransitionAction = "append" | "synthesize_delivered";
 
 export const RECEIPT_TRANSITIONS: Readonly<Record<DerivedState, Partial<Record<ReceiptEvent, TransitionAction>>>> = {
-  none: { delivered: "append", attempted: "synthesize_delivered", transferred: "append" },
+  none: { delivered: "append", attempted: "synthesize_delivered", transferred: "append", requested: "append" },
+  // The PULL twin of `transferred`, and it claims exactly as little. A chain the
+  // recipient opened for itself records WHO opened it and nothing else: the
+  // package has not been fetched, nothing has run. What may follow is therefore
+  // what may follow an empty chain — the recipient's own `delivered`, or an
+  // `attempted` that auto-acks one.
+  //
+  // `none` keeps every entry it had. Chains opened before this event existed
+  // have no `requested` row and start from `none` forever; a table that moved
+  // its entries here instead of adding them would have made those chains
+  // unappendable, which is rewriting history by refusing it.
+  requested: { delivered: "append", attempted: "synthesize_delivered" },
   // §5.4: a transfer OPENS a chain and claims nothing beyond itself. What
   // follows it is exactly what follows an empty chain — the recipient's own
   // `delivered`, or an `attempted` that auto-acks one — because the recipient
@@ -281,20 +314,25 @@ export function appendReceiptEventInTx(db: Db, input: AppendInput): AppendResult
   if (input.environment !== undefined && input.event !== "delivered") {
     throw new ApiError("INVALID_SCHEMA", "the declared environment is recorded on `delivered` only (§5.3)");
   }
-  // §5.4: the recipient rides on `transferred`, for the same reason.
-  if (input.recipient !== undefined && input.event !== "transferred") {
-    throw new ApiError("INVALID_SCHEMA", "the transfer recipient is recorded on `transferred` only (§5.4)");
+  // §5.4/§5.2: the recipient rides on the event that OPENED the chain — the
+  // sender's `transferred` or the recipient's own `requested` — and on nothing
+  // else, for the same reason.
+  if (input.recipient !== undefined && !RECIPIENT_EVENTS.includes(input.event)) {
+    throw new ApiError(
+      "INVALID_SCHEMA",
+      `the recipient of a movement is recorded on \`${RECIPIENT_EVENTS.join("` or `")}\` only (§5.4)`,
+    );
   }
-  // …and `transferred` is the registry's own row. It says who a SENDER sent a
-  // version to; an adopter appending it would be naming its own recipient on a
-  // row the migration counter reads. Surface 8 never reaches this line — it
-  // refuses the event kind first — and this is the backstop under it, because
-  // "the surface filters it" is a property of one call site and this is a
-  // property of the journal.
-  if (input.event === "transferred" && !input.asRegistry) {
+  // …and both are the registry's own rows. One says who a SENDER sent a version
+  // to, the other who asked for it; an adopter appending either would be naming
+  // its own recipient on a row the migration counter reads. Surface 8 never
+  // reaches this line — it refuses the event kinds first — and this is the
+  // backstop under it, because "the surface filters it" is a property of one
+  // call site and this is a property of the journal.
+  if (RECIPIENT_EVENTS.includes(input.event) && !input.asRegistry) {
     throw new ApiError(
       "FORBIDDEN",
-      "a `transferred` event is written by the registry on the sender's authority, never by the receipt's adopter (§5.4)",
+      `a \`${input.event}\` event is written by the registry in the transaction that opened the chain, never by the receipt's adopter (§5.4)`,
     );
   }
 

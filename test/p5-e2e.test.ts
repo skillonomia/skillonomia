@@ -72,17 +72,19 @@ test("E2E (phase plan, P5): reviewed → trial adoption → evidence receipt →
   const adopted = rest(fx, "POST", `/v1/adoptions/${reqId}/adopt`, fx.keys.member, { environment_descriptor: ENV });
   assert.equal(adopted.status, 200);
   assert.equal(adopted.body.receipt_event, "delivered");
-  assert.equal(adopted.body.event_seq, 1);
+  // seq 2, not 1: the chain's first row is the `requested` event the registry
+  // wrote in the transaction that opened it, naming the recipient of this pull.
+  assert.equal(adopted.body.event_seq, 2);
   assert.equal(adopted.body.compat.result, "match");
   assert.ok(adopted.body.package.archive_base64.length > 0, "the package is actually handed over");
 
   const attempted = rest(fx, "POST", `/v1/receipts/${receiptId}/events`, fx.keys.member, { event: "attempted" });
-  assert.equal(attempted.body.event_seq, 2);
+  assert.equal(attempted.body.event_seq, 3);
 
   const evidence = goodEvidence(v.manifest);
   const done = rest(fx, "POST", `/v1/receipts/${receiptId}/events`, fx.keys.member, { event: "adopted", evidence });
   assert.equal(done.body.receipt_event, "adopted");
-  assert.equal(done.body.event_seq, 3);
+  assert.equal(done.body.event_seq, 4);
   assert.equal(derivedState(fx.db, receiptId), "adopted");
 
   // …and NOW the §5.1 conjunction is complete, so the same call that refused
@@ -95,7 +97,7 @@ test("E2E (phase plan, P5): reviewed → trial adoption → evidence receipt →
 
   // the whole chain is auditable, in event_seq order
   const view = rest(fx, "GET", `/v1/receipts/${receiptId}`, fx.keys.member);
-  assert.deepEqual(view.body.events.map((e: any) => e.event), ["delivered", "attempted", "adopted"]);
+  assert.deepEqual(view.body.events.map((e: any) => e.event), ["requested", "delivered", "attempted", "adopted"]);
   assert.equal(view.body.derived_state, "adopted");
   assert.equal(view.body.stalled, false);
 
@@ -191,7 +193,7 @@ test("§5.2 hold: a §7.3 condition holds the request, and only a bound human ap
     "FORBIDDEN",
     /human approval/,
   );
-  assert.equal(derivedState(fx.db, requested.receipt_id), "none", "nothing was delivered");
+  assert.equal(derivedState(fx.db, requested.receipt_id), "requested", "nothing was delivered: the chain is still at the event that opened it");
 
   // an approval bound to a DIFFERENT request does not release this one
   const other = fx.registry.requestAdoption(fx.reviewer, { skill_version_id: v.versionId }).response;
@@ -246,7 +248,7 @@ test("only the request's own adopter may adopt", () => {
   for (const intruder of [fx.author, fx.owner, fx.admin, fx.outsider]) {
     rejects(() => fx.registry.adopt(intruder, req.adoption_request_id, { environment_descriptor: ENV }), "NOT_FOUND");
   }
-  assert.equal(derivedState(fx.db, req.receipt_id), "none");
+  assert.equal(derivedState(fx.db, req.receipt_id), "requested");
   fx.db.close();
 });
 
@@ -297,7 +299,7 @@ test("§4.2: a mismatch blocks at medium/high risk and warns at low — two outc
     /does not match/,
   );
   assert.ok(err.message.includes("os"), "the block names the unmet clause");
-  assert.equal(derivedState(fx.db, medReq.receipt_id), "none", "a blocked adoption delivers nothing");
+  assert.equal(derivedState(fx.db, medReq.receipt_id), "requested", "a blocked adoption delivers nothing");
   // the same version with a matching environment goes through
   assert.equal(
     fx.registry.adopt(fx.member, medReq.adoption_request_id, { environment_descriptor: ENV }).response.compat.result,

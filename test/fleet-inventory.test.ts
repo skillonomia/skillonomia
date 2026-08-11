@@ -1392,7 +1392,6 @@ test("[I-8] the hints are true: three reads that touch a foreign disk, and one w
     const t = byName[name];
     assert.ok(t, `${name} is not advertised`);
     assert.equal(t.annotations.readOnlyHint, true, `${name} must be hinted as a read`);
-    assert.equal(t.annotations.destructiveHint, false);
     assert.equal(
       t.annotations.openWorldHint,
       true,
@@ -1401,7 +1400,8 @@ test("[I-8] the hints are true: three reads that touch a foreign disk, and one w
   }
   const report = byName["observation.report"];
   assert.equal(report.annotations.readOnlyHint, false, "a call that writes must not be hinted as a read [I-8]");
-  assert.equal(report.annotations.destructiveHint, true);
+  // `destructiveHint`/`idempotentHint`: proved behaviourally over all 36 tools
+  // in `test/p14-r2-invariants.test.ts`, not asserted as a literal here.
   assert.equal(report.annotations.openWorldHint, false, "the reporter did the reaching; this call stores its account");
   // the divergence is STATED in the description rather than papered over
   assert.match(report.description, /THIS TOOL WRITES/);

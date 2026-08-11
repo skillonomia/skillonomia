@@ -28,7 +28,7 @@ import { withIdempotency, type IdempotentOutcome } from "./idempotency.ts";
 import { RateLimiter, DEFAULT_RATE_LIMIT, type RateLimitOptions } from "./ratelimit.ts";
 import { ArchiveError, readPackage, computeIntegrity, writeTar, type PackageFiles } from "./archive.ts";
 import { parseJsonStrict, utf8Decode, jcsBytes } from "./jcs.ts";
-import { validateManifest } from "./manifest.ts";
+import { outcomeContractOf, validateManifest } from "./manifest.ts";
 import { manifestHash, contentHash, signManifest } from "./signing.ts";
 import {
   ARRIVAL_SCRIPT_PATH,
@@ -54,6 +54,7 @@ import {
 import { verifyVersionTransition, type VerifyTransitionOutcome } from "./verified-gate.ts";
 import {
   appendReceiptEvent,
+  appendReceiptEventInTx,
   derivedState,
   isStalled,
   ADOPTER_EVENTS,
@@ -202,8 +203,8 @@ import {
   migrationCounts as countMigrationsPerSkill,
   parseMigrationWindow,
   MIGRATION_SOURCE,
-  RECIPIENT_SOURCE_EVENT,
-  RECIPIENT_SOURCE_SHELL,
+  RECIPIENT_SOURCE_TRANSFER,
+  RECIPIENT_SOURCE_REQUEST,
   describeSource,
   type MigrationCountResponse,
   type MigrationWindow,
@@ -493,7 +494,7 @@ const RECEIPT_JOURNAL = "receipt_events (registry journal, INSERT-only), all tim
 const MANIFEST_BOUNDARY = "the version's manifest, as signed";
 
 /** The boundary a receipt-backed rating average was taken over. */
-const RATING_BOUNDARY = "ratings bound to a closed adoption receipt, all time";
+const RATING_BOUNDARY = "ratings bound to a closed adoption receipt, all time; the scale is 1 to 5";
 
 /** The boundary the request/queue rows were read over. */
 const REQUEST_BOUNDARY = "adoption_requests (registry), all time";
@@ -1150,6 +1151,30 @@ export class Registry {
     // and the real list is computed and validated again after the marker lands.
     const shapeCheck = validateManifest({ ...manifest, integrity: computeIntegrity(files) });
     if (!shapeCheck.valid) throw new ApiError("INVALID_SCHEMA", shapeCheck.errors.slice(0, 5).join("; "));
+
+    // D-2: THIS PATH REQUIRES A DEFINITION OF SUCCESS, and the older one does
+    // not. `skill.create` accepts a package an author signed elsewhere — the
+    // seed, the fifteen dogfood fixtures and `skills/git-bundle-verify` were
+    // signed before this section existed, and a registry that refused them would
+    // be demanding a document their authors could not have written. Those
+    // packages report `outcome` = `unknown` with the reason
+    // `no_outcome_contract`, which is the honest answer and never `no` [I-1],
+    // [A-0].
+    //
+    // A package packed HERE is different: the registry is producing it, now, and
+    // a skill whose success nobody defined is a skill whose §4 `outcome` column
+    // can never say anything. The refusal is BEFORE the transaction and before
+    // the marker, so a source without a contract leaves no row, no key and no
+    // blob behind. The section then rides inside the manifest that gets signed,
+    // which is what makes the definition of success unchangeable without a new
+    // version [M-6].
+    const contract = outcomeContractOf(manifest);
+    if (!contract.valid) {
+      throw new ApiError(
+        "INVALID_SCHEMA",
+        `a package packed by this registry declares what success is: manifest.outcome_contract with \`check\`, \`evidence\` and \`unknown\` (${contract.reason}) — D-2`,
+      );
+    }
 
     // The convergence identity, computed on the SOURCE and therefore BEFORE the
     // marker is written. Canonical rather than byte-wise: reformatting
@@ -2546,7 +2571,7 @@ export class Registry {
 
   // ================================================================ P6 =====
   // The dashboard (internal phase plan, P6 row; Appendix H `dashboard.view`).
-  // Five views, each a THIN read layer: every row is built from the fields the
+  // The phase-plan views, each a THIN read layer: every row is built from the fields the
   // surfaces already return, and every row is filtered by the SAME ACL the
   // underlying read enforces — a dashboard that widened visibility would be a
   // bypass, not a view.
@@ -2856,7 +2881,11 @@ export class Registry {
             : this.countCell(r.attempt_count, "outcome", REQUEST_BOUNDARY),
         events: this.registryCell(
           "events",
-          list(evs.map((e) => `seq ${e.event_seq}: ${e.event} at ${instant(e.server_at_ms) ?? "no time was recorded"}`), ""),
+          // `seq#N`, not `seq N`: the sequence number is an ORDINAL — it names
+          // this row's place in the chain — and a bare figure on a page is read
+          // as a count, which is why the render guard refuses one that carries
+          // no measurement state. Written joined to its sigil it is what it is.
+          list(evs.map((e) => `seq#${e.event_seq}: ${e.event} at ${instant(e.server_at_ms) ?? "no time was recorded"}`), ""),
           evs.length === 0 ? "no event has been appended to this chain" : "read_from_the_receipt_journal",
           RECEIPT_JOURNAL,
         ),
@@ -3231,8 +3260,8 @@ export class Registry {
       // read from. A constant here would republish `receipt_events` over an
       // answer whose recipients came, in part, from the receipt shell.
       source: describeSource({
-        from_event: rows.filter((r) => r.recipient_sources.includes(RECIPIENT_SOURCE_EVENT)).length,
-        from_shell: rows.filter((r) => r.recipient_sources.includes(RECIPIENT_SOURCE_SHELL)).length,
+        from_transfer: rows.filter((r) => r.recipient_sources.includes(RECIPIENT_SOURCE_TRANSFER)).length,
+        from_request: rows.filter((r) => r.recipient_sources.includes(RECIPIENT_SOURCE_REQUEST)).length,
       }),
       window: describeWindow(window),
       window_since_ms: window.since_ms,
@@ -3258,7 +3287,12 @@ export class Registry {
     // beside them as bare integers anyway, so the method sat in a neighbouring
     // column instead of travelling with the number. Every figure here is a
     // number cell, and the boundary each one names is the counter's own.
-    const boundary = `${MIGRATION_SOURCE} — ${counted.window}`;
+    // [I-3]: the boundary printed BESIDE each figure is the answer's OWN source
+    // phrase, not the module constant. A constant here republished
+    // `receipt_events` under every cell whatever the row was read from — the
+    // panel reasserting a provenance the API had already qualified. The two now
+    // cannot disagree, because there is one string and the API produced it.
+    const boundary = `${counted.source} — ${counted.window}`;
     const rows = counted.items.map((m) => ({
       skill_id: plain(m.skill_id, "unknown"),
       slug: plain(m.slug, "unnamed"),
@@ -3659,10 +3693,20 @@ export class Registry {
         migrations: registryCount(
           migration?.migrations ?? 0,
           "outcome",
-          `${MIGRATION_SOURCE} — ${describeWindow(ALL_TIME)}`,
+          // [I-3]: the counted row's OWN source phrase, exactly as the
+          // migrations panel prints it. A skill that was not among the counted
+          // subjects has no answer to name a source for, so the module constant
+          // is what the empty case states — and it says the journal, which is
+          // where the zero beside it would have been read from.
+          `${migration?.source ?? MIGRATION_SOURCE} — ${migration?.window ?? describeWindow(ALL_TIME)}`,
+          // [I-3]: the recipients and the unreadable runtimes are NOT restated
+          // as figures inside this sentence. They are numbers, they were
+          // measured, and each is published as its own number cell — with its
+          // own state, source and boundary — on the migrations view. A figure
+          // repeated into a reason arrives with none of the three.
           migration === undefined
             ? "this skill was not among the counted subjects"
-            : `${migration.distinct_recipients} distinct recipient(s), ${migration.runtimes_unknown} migration(s) whose declared runtime could not be read`,
+            : "the distinct recipients and the migrations whose declared runtime could not be read are their own number cells on the migrations view",
         ),
         rollback_steps: rollback,
       };
@@ -3913,6 +3957,30 @@ export class Registry {
       db.prepare(
         "INSERT INTO adoption_receipts(id, adoption_request_id, skill_version_id, adopter_agent_id, created_at_ms) VALUES (?,?,?,?,?)",
       ).run(receiptId, requestId, versionId, auth.agent_id, now);
+
+      // …and the EVENT that says who this movement is TO. `requested` is the
+      // pull twin of §5.4's `transferred`: this chain was opened by the
+      // authenticated caller, asking for this version for ITSELF, so the
+      // recipient is that caller and its kind is `local_agent`.
+      //
+      // It is written HERE, in the transaction that writes the request and the
+      // shell, for the reason `0004` moved the declared environment onto
+      // `delivered` and `0006` put the recipient onto `transferred`: the
+      // migration counter's key is (version, RECIPIENT), and a key half-read
+      // from outside the journal makes "every count is computed from
+      // `receipt_events`" a sentence that holds for push chains and quietly
+      // fails for pull ones. The recipient is taken from `AuthContext` and never
+      // from the payload — surface 6 names no recipient and never will, because
+      // a pull whose recipient is someone else is a push.
+      appendReceiptEventInTx(db, {
+        receiptId,
+        actorAgentId: auth.agent_id,
+        event: "requested",
+        recipient: { kind: "local_agent", id: auth.agent_id },
+        idempotencyKey: `request:${requestId}`,
+        nowMs: now,
+        asRegistry: true,
+      });
       db.exec("COMMIT");
       const res: RequestAdoptionResponse = { adoption_request_id: requestId, receipt_id: receiptId, state };
       if (conditions.length > 0) res.approval_required = conditions;
@@ -4353,12 +4421,13 @@ export class Registry {
     return out;
   }
 
-  /** D-2: whether this version declares what success is. Without a contract the
-   *  `outcome` column is `unknown` — a finished task is not a success [M-6]. */
+  /** D-2: whether this version declares what success is. Without a WHOLE
+   *  contract the `outcome` column is `unknown` — a finished task is not a
+   *  success [M-6] — and the shape rule lives in one place (src/manifest.ts) so
+   *  the packing gate and this dashboard cannot answer differently. */
   private hasOutcomeContract(manifestJson: string): boolean {
     try {
-      const m = JSON.parse(manifestJson) as { outcome_contract?: unknown } | null;
-      return !!m && typeof m === "object" && m.outcome_contract !== undefined && m.outcome_contract !== null;
+      return outcomeContractOf(JSON.parse(manifestJson)).valid;
     } catch {
       return false;
     }
@@ -4503,7 +4572,11 @@ export class Registry {
             window: "all_time",
             window_detail: "principals for which at least one runtime observation has been reported",
           },
-          observed === agents.length ? null : `${agents.length - observed} principal(s) have never been observed`,
+          // [I-3]: the COMPLEMENT is not stated as a figure here. A count
+          // inside a reason has no state, no source and no window of its own,
+          // and both numbers it would be computed from are published as number
+          // cells in this very table, each carrying all three.
+          observed === agents.length ? null : "not every readable principal has been observed",
         ),
       },
       runtimes: [...FLEET_RUNTIMES],
@@ -4974,8 +5047,11 @@ export class Registry {
     // a sender recorded an intent, and this call is the recipient fetching the
     // package that intent is about. Every other non-empty state means the
     // handover already happened.
+    // `requested` joins `transferred` here for the same reason: it is the event
+    // that OPENED this chain, it handed nothing over, and this call is the
+    // recipient fetching the package its own request is about.
     const already = derivedState(this.db, receipt.id);
-    if (already !== "none" && already !== "transferred") {
+    if (already !== "none" && already !== "transferred" && already !== "requested") {
       throw new ApiError(
         "PRECONDITION_FAILED",
         `this adoption request has already been handed over (its receipt is \`${already}\`); a repeat is served only to the same principal replaying the same idempotency_key (§5.3)`,

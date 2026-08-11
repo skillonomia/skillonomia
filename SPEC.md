@@ -1003,7 +1003,7 @@ not prove the adopter's runtime has the package. The receipt event `delivered`
 ### 5.3 Adoption receipt machine
 
 ```
-receipt_events.event: [ transferred → ] delivered → attempted → adopted | failed   [ → rolled_back ]
+receipt_events.event: [ transferred | requested → ] delivered → attempted → adopted | failed   [ → rolled_back ]
 ```
 
 - `delivered` — the adopter's runtime confirmed receipt of the package via an
@@ -1022,12 +1022,21 @@ receipt_events.event: [ transferred → ] delivered → attempted → adopted | 
 - `rolled_back` — the sole post-terminal event, allowed only after `adopted`;
   requires `rollback_report_json`.
 - `transferred` — a SENDER decided that this version goes to this recipient
-  (§5.4). It is the only event kind the registry writes on a principal's
-  authority rather than the adopter's, the only one that may carry
-  `recipient_json`, and it is NOT an adopter event: surface 8 refuses it by
-  name. It opens a chain and asserts nothing beyond itself — in particular it is
-  not `delivered`, because at the moment a transfer is recorded no package has
-  reached anybody.
+  (§5.4). It is written by the registry on a principal's authority rather than
+  the adopter's, may carry `recipient_json`, and it is NOT an adopter event:
+  surface 8 refuses it by name. It opens a chain and asserts nothing beyond
+  itself — in particular it is not `delivered`, because at the moment a transfer
+  is recorded no package has reached anybody.
+- `requested` — the RECIPIENT asked for this version for itself (surface 6,
+  §5.2). It is the PULL twin of `transferred` and is treated identically: written
+  by the registry, in the same transaction as the adoption request and the
+  receipt shell, carrying the typed recipient in `recipient_json`, refused to the
+  receipt's own adopter by surface 8 and by the append function beneath it. It
+  opens a chain and asserts nothing beyond itself. `transferred` and `requested`
+  are the ONLY event kinds that may carry `recipient_json`, and exactly one of
+  them opens any chain a conforming registry writes: that is what makes the
+  migration counter's recipient a value read from `receipt_events` for every
+  chain, which §6's `migration.count` requires of every count it publishes.
 
 **Normative transition table.** Derived state is the event kind of the row with
 the highest `event_seq` (`none` if the chain is empty). Every append goes
@@ -1045,6 +1054,9 @@ ULID lexicographic order within one millisecond is relied upon nowhere;
 | none | transferred | append (seq 1) — written by the registry on the sender's authority (§5.4), never by the receipt's adopter |
 | transferred | delivered | append — the recipient fetches the package the transfer is about |
 | transferred | attempted | synthesize `delivered` + append `attempted`, exactly as from `none` |
+| none | requested | append (seq 1) — written by the registry in the transaction that opens the request (§5.2), never by the receipt's adopter |
+| requested | delivered | append — the recipient fetches the package it asked for |
+| requested | attempted | synthesize `delivered` + append `attempted`, exactly as from `none` |
 | none | delivered | append (seq 1) |
 | none | attempted | synthesize `delivered` (seq 1, `idempotency_key="synth-delivered:"+receipt_id`, `evidence_json={"synthesized":true}`, activity-logged) + append `attempted` (seq 2), same transaction |
 | delivered | attempted | append |
@@ -1353,7 +1365,7 @@ Appendix H.
 | 11 | `skill.revoke` | The version's author, the skill's owner, or a workspace admin/owner; requires a reason; takes immediate effect on `skill.verify` verdicts and on search defaults; transparency-logged. **Active adopters are notified through the §5.2 delivery machine**: in the same transaction as the state change, one `notification_kind='revocation'` row is queued per adopter holding a receipt for this version whose chain carries no `failed` and no `rolled_back` event — one notice per adopter however many receipts it holds. From there the notices are ordinary jobs: claimed, leased, retried with backoff, and dead-lettered loudly (an adopter with no endpoint gets `endpoint_missing`). A convergent re-revoke queues nothing. |
 | 12 | `skill.publish` | Workspace admin/owner moves a `verified` version to `published`. The §4.3.9 registry countersign is appended in the SAME transaction — this is publication's only entry point, and the generic transition refuses `published` for that reason. Refuses with `FORBIDDEN` + `current_state` while the §7.3 publish column demands a human approval this version does not have. Republishing is a convergent noop. |
 | 13 | `skill.deprecate` | Author, skill owner or workspace admin retires a `published` version without naming a successor. The registry stamps `deprecation_date` from its own clock in the same transaction and transparency-logs the retirement. The version stays visible and adoptable with a warning (§5.1). Re-deprecating is a convergent noop that does not move the recorded date. |
-| 14 | `skill.create_from_dir` | The author sends a SOURCE tree — `manifest.json`, `SKILL.md` and files — and receives a signed version. The registry mints the `skill_version_id`, derives the §5 arrival marker from it, writes that marker into `SKILL.md` and — when the manifest declares a shell — into the generated `scripts/skln-arrive.sh`, refuses to pack unless every place that carries a marker agrees with the marker the id derives, computes §4.3 `integrity` over the resulting bytes and signs with a system-held key it generates for the author on first use. A manifest declaring `runtime.shell: ["none"]` receives the `SKILL.md` block and NO script, and its declaration is not amended to say otherwise; arrival is then structurally undemonstrable and is reported as `unknown` for want of an executable step, never as "not run". The author enters no cryptographic material, and none is returned. The registry reads bytes the client sent, never a path the caller named. Convergence is judged on the SOURCE, because the marker makes every packing of one source byte-different. |
+| 14 | `skill.create_from_dir` | The author sends a SOURCE tree — `manifest.json`, `SKILL.md` and files — and receives a signed version. The registry mints the `skill_version_id`, derives the §5 arrival marker from it, writes that marker into `SKILL.md` and — when the manifest declares a shell — into the generated `scripts/skln-arrive.sh`, refuses to pack unless every place that carries a marker agrees with the marker the id derives, computes §4.3 `integrity` over the resulting bytes and signs with a system-held key it generates for the author on first use. A manifest declaring `runtime.shell: ["none"]` receives the `SKILL.md` block and NO script, and its declaration is not amended to say otherwise; arrival is then structurally undemonstrable and is reported as `unknown` for want of an executable step, never as "not run". The author enters no cryptographic material, and none is returned. The registry reads bytes the client sent, never a path the caller named. Convergence is judged on the SOURCE, because the marker makes every packing of one source byte-different. The manifest must declare an `outcome_contract` — what success is — and that declaration is inside the signature, so redefining success means issuing a new version. |
 
 Auxiliary surfaces (not numbered, fixed in Appendix H): the §7.3 approval
 recorder `skill.approve` / `POST /v1/versions/{id}/approvals`, the
@@ -1924,10 +1936,10 @@ installs none is conforming.
 
 ## Appendix D. NORMATIVE SQLite DDL
 
-The normative schema is given in **eight** migrations, applied in ascending file
+The normative schema is given in **nine** migrations, applied in ascending file
 order, and the live schema of a conforming registry is their sum. Each is
 embedded below verbatim and is byte-identical to the file this repository ships;
-a test asserts that for all eight. Schema version is tracked in
+a test asserts that for all nine. Schema version is tracked in
 `PRAGMA user_version` and nowhere else — there is no bookkeeping table, because
 the live schema is compared object for object against D.1 plus the deltas below,
 and a table this specification does not name would fail that comparison. A
@@ -1996,18 +2008,32 @@ transaction, so a half-migrated database is not reachable.
   means `unknown` and never a default — a reporter that did not look does not
   thereby establish an absence. `call_id` is nullable and a NULL one can never
   form the PAIR [M-5] requires. `PRAGMA user_version` = `8`.
+- **D.1i is the ninth migration**, shipped as
+  `migrations/0009_the_recipient_of_a_pull_is_on_the_event.sql`. It adds no
+  table and no column: it rebuilds `receipt_events` a second time — SQLite
+  cannot alter a CHECK in place — to admit the event kind `requested`, which is
+  where a chain the RECIPIENT opened records who that recipient is (§5.2, §5.3).
+  It is the pull twin of D.1f's `transferred`, and it exists so that the
+  migration counter's (version, recipient) key is read from `receipt_events` for
+  BOTH kinds of chain rather than from the receipt shell for one of them. Every
+  row, every other constraint, the partial terminal index and both INSERT-only
+  triggers come over unchanged, and nothing is back-filled: a chain written
+  before this migration names no recipient on the journal, contributes nothing
+  to the count and is reported as unattributed. `PRAGMA user_version` = `9`.
 - **The live schema a fresh database reports is D.1 as edited by D.1b, D.1c,
-  D.1d, D.1e and D.1f, plus the tables of D.1f, D.1g and D.1h**, and never D.1
-  alone. Object counts are 26 tables, 20 triggers and 13 indexes: D.1's 20
+  D.1d, D.1e, D.1f and D.1i, plus the tables of D.1f, D.1g and D.1h**, and never
+  D.1 alone. Object counts are 26 tables, 20 triggers and 13 indexes: D.1's 20
   tables plus D.1f's two, D.1g's two and D.1h's two, D.1's 10 triggers plus the
   two INSERT-only triggers of `transfers`, D.1g's four and D.1h's four, and
   D.1's 9 indexes plus `idx_transfers_version`, `idx_assignments_agent`,
-  `idx_runtime_observations_agent` and `idx_observed_records_agent`. After all
-  eight migrations `PRAGMA user_version` MUST report `8`. A test in this
-  repository asserts the live schema equals D.1 plus exactly those ten edits and
-  the new objects of D.1f, D.1g and D.1h — the five of D.1b, the one of D.1c,
-  the one of D.1d, the two of D.1e and the one rebuilt table of D.1f — so any
-  further divergence fails.
+  `idx_runtime_observations_agent` and `idx_observed_records_agent`. D.1i moves
+  none of those counts: it rebuilds one table and re-creates its two triggers and
+  its partial index verbatim. After all nine migrations `PRAGMA user_version`
+  MUST report `9`. A test in this repository asserts the live schema equals D.1
+  plus exactly those eleven edits and the new objects of D.1f, D.1g and D.1h —
+  the five of D.1b, the one of D.1c, the one of D.1d, the two of D.1e, the one
+  rebuilt table of D.1f and the one further edit of D.1i to that same rebuilt
+  table — so any further divergence fails.
 
 ### D.1 NORMATIVE DDL (verbatim)
 
@@ -2939,6 +2965,125 @@ CREATE TRIGGER tg_obs_records_no_upd BEFORE UPDATE ON observed_records BEGIN SEL
 CREATE TRIGGER tg_obs_records_no_del BEFORE DELETE ON observed_records BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 ```
 
+### D.1i NORMATIVE DELTA — ninth migration (verbatim)
+
+§5.4 put the recipient of a PUSH on the `transferred` event. The other half of
+the movement — a chain the RECIPIENT opens for itself — had no such event, so its
+recipient was read from `adoption_receipts.adopter_agent_id`, the receipt shell.
+The shell is INSERT-only and the number was right; the place was not. This
+specification says every count of the migration surface is computed from
+`receipt_events`, and a rule that holds for push chains and silently does not
+hold for pull chains is a rule the next reader applies to the half it does not
+cover.
+
+So the pull gets its own opening event. `requested` is written by the registry,
+in the same transaction as the request and the receipt shell, carrying the typed
+recipient in `recipient_json` — the identical treatment `transferred` gets, and
+for the identical reason D.1d moved the declared environment onto `delivered`.
+It is refused to the receipt's own adopter, as `transferred` is, because an
+adopter naming its own recipient on a row the counter reads is the whole defect
+§5.4 keeps that event out of adopter hands to avoid.
+
+Nothing is back-filled. A chain written before this migration carries no
+`requested` row, contributes NOTHING to the count and is reported in
+`recipients_unattributed` — fail-closed, exactly as D.1d left history that was
+never recorded uninferable. One member is added to one CHECK enum; the table is
+rebuilt because SQLite cannot alter a CHECK in place, and every column, every
+constraint, the partial terminal index and both INSERT-only triggers come over
+unchanged.
+
+```sql
+-- SKILLONOMIA — the recipient of a PULL belongs to the receipt event too.
+--
+-- WHAT WAS WRONG. §5.4 put the recipient of a PUSH on the `transferred` event,
+-- on the INSERT-only row, in the transaction that recorded the push. It left
+-- the other half of the movement alone: a chain the recipient opens for itself
+-- (`skill.request_adoption`) has no `transferred` event and never had one, so
+-- the migration counter read its recipient from `adoption_receipts.
+-- adopter_agent_id` — the receipt SHELL. The shell is INSERT-only, so nothing
+-- was rewritable; but the shell is not `receipt_events`, and §5.3's own rule for
+-- this counter is "Every count MUST be computed from `receipt_events`". A rule
+-- that holds for half the chains is a rule the next reader will apply to the
+-- other half. The registry published a figure beside the sentence that says
+-- where figures come from, and for pull chains the sentence was false.
+--
+-- It also cost the number its provenance in the ordinary case: the `source`
+-- phrase named the receipt shell whenever ANY counted recipient came from it,
+-- which on a single-owner deployment is nearly every migration — so the honest
+-- attribution [I-3] forced was, in practice, a permanent footnote saying the
+-- count was not obtained from the journal it is specified to be obtained from.
+--
+-- WHAT CHANGES, AND WHY IT IS THE SAME CHANGE `0004` MADE. `0004` moved the
+-- declared environment off a mutable request column and onto the event that
+-- describes the handover, because a count taken from current state is a reading
+-- of whoever wrote last. The move here is the same in shape and for the
+-- adjacent reason: the RECIPIENT — the other half of the (version, recipient)
+-- key this counter counts — moves onto the journal, so the whole key is read
+-- from one INSERT-only place and the specified sentence becomes literally true.
+--
+-- `requested` is the pull twin of `transferred`. It says: this chain was opened
+-- by the agent named on it, asking for this version for itself. Like
+-- `transferred` it is written by the REGISTRY, in the same transaction as the
+-- request and the receipt shell, and it is refused to the receipt's own adopter
+-- through surface 8 — otherwise an adopter could name its own recipient on a row
+-- the counter reads, which is the whole reason §5.4 keeps `transferred` out of
+-- the adopter's hands. It opens a chain and asserts nothing beyond itself: what
+-- may follow it is exactly what may follow an empty chain or a `transferred`.
+--
+-- HISTORY IS NOT REWRITTEN, AND THAT IS FAIL-CLOSED. Rows written before this
+-- migration carry no `requested` event, and none is invented for them: a chain
+-- that names no recipient ON THE JOURNAL contributes NOTHING to the count and is
+-- reported as `recipients_unattributed`, exactly as a `transferred` event with
+-- an unreadable payload already was. That is the same fail-closed posture `0004`
+-- took for the declared environment — "history that was never recorded cannot be
+-- inferred, only recounted on a fresh instance" — and it is why this migration
+-- back-fills nothing. A back-fill would be the registry writing, today, an event
+-- asserting what it did not observe then.
+--
+-- Additive to the schema in every sense that matters: one more member of one
+-- CHECK enum. No column is added, no constraint is relaxed, no index or trigger
+-- changes meaning, no row is touched. SQLite cannot alter a CHECK in place, so
+-- the table is rebuilt exactly as `0006` rebuilt it — same columns, same order,
+-- same uniqueness, same partial terminal index, same two INSERT-only triggers,
+-- recreated verbatim after the rename.
+PRAGMA defer_foreign_keys=ON;
+PRAGMA legacy_alter_table=ON;
+
+DROP TRIGGER tg_revents_no_upd;
+DROP TRIGGER tg_revents_no_del;
+
+CREATE TABLE receipt_events_p14b(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  adoption_receipt_id TEXT NOT NULL REFERENCES adoption_receipts(id) ON DELETE RESTRICT,
+  event TEXT NOT NULL CHECK(event IN ('delivered','attempted','adopted','failed','rolled_back','transferred','requested')),
+  event_seq INTEGER NOT NULL CHECK(event_seq>=1),
+  evidence_json TEXT,
+  failure_report_json TEXT,
+  rollback_report_json TEXT,
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0),
+  idempotency_key TEXT NOT NULL,
+  environment_json TEXT,
+  recipient_json TEXT,
+  UNIQUE(adoption_receipt_id,idempotency_key),
+  UNIQUE(adoption_receipt_id,event_seq),
+  UNIQUE(adoption_receipt_id,event)
+);
+
+INSERT INTO receipt_events_p14b(id, adoption_receipt_id, event, event_seq, evidence_json,
+       failure_report_json, rollback_report_json, server_at_ms, idempotency_key, environment_json, recipient_json)
+  SELECT id, adoption_receipt_id, event, event_seq, evidence_json,
+         failure_report_json, rollback_report_json, server_at_ms, idempotency_key, environment_json, recipient_json
+    FROM receipt_events;
+
+DROP TABLE receipt_events;
+ALTER TABLE receipt_events_p14b RENAME TO receipt_events;
+PRAGMA legacy_alter_table=OFF;
+
+CREATE UNIQUE INDEX uq_receipt_terminal ON receipt_events(adoption_receipt_id) WHERE event IN ('adopted','failed');
+CREATE TRIGGER tg_revents_no_upd BEFORE UPDATE ON receipt_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_revents_no_del BEFORE DELETE ON receipt_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+```
+
 ### D.2 SQL negative probes
 
 Every probe below is executed as a test in this repository; each names the
@@ -2951,6 +3096,8 @@ T-1 invalid enum event → CHECK reject · T-2 second terminal event (`failed` a
 ## Appendix E. NORMATIVE JSON Schema (Verified Skill Package manifest, 2020-12)
 
 Ships in the public schema repo as `skill-package-v1.schema.json`. `additionalProperties: false` at every object level; the ONLY extension point is `x_ext`, a free-form object. Two of its members carry normative meaning and are read by the §7.3 human-approval matrix: `x_ext.destructive`, a boolean, where the value `true` and no other declares destructive operations; and `x_ext.blast_radius`, a string, where the values `large`, `fleet` and `org` declare a large blast radius and any other value or absence does not. Neither is required, and neither is constrained by the schema beyond `x_ext` being an object; the schema does not enforce their types, so a `destructive` that is not exactly `true` and a `blast_radius` outside those three strings simply fail to hold their §7.3 condition. All other content of `x_ext` is ignored by verifier and linter except the secret scan of gate 2, which covers the whole manifest. Sub-schemas for adopter-side payloads (`environment_descriptor`, `failure_report`, `rollback_report`, `evidence`) are separate documents in the same repo with the same strictness.
+
+`outcome_contract` is OPTIONAL in the schema and REQUIRED by surface 14: a package produced by `skill.create_from_dir` MUST carry one, and `skill.create` — which accepts a package an author signed elsewhere, including packages signed before this section existed — MUST NOT demand one. It states what SUCCESS is for this skill, in one machine-readable form and skill-specific content: `check` names the deterministic test (`exit_code`, `stdout_match`, `artifact_exists` or `command`, the last being a check command that itself returns 0 or 1), `evidence` names the values that MUST be presented, and `unknown` says what the ABSENCE of evidence means — always rendered as `unknown` and never as a failure [I-1], [A-0]. It sits inside the SIGNED manifest, so the definition of success is covered by `manifest_hash` and by the signature over it: changing what counts as success requires issuing a NEW VERSION, and a registry MUST NOT accept a changed contract under a version already published. A package that carries no contract is reported with `outcome` = `unknown` and the reason `no_outcome_contract` — never `no`, because a task that finished is not a task that succeeded and a task nobody evaluated is not a task that failed.
 
 ```json
 {
@@ -3042,6 +3189,17 @@ Ships in the public schema repo as `skill-package-v1.schema.json`. `additionalPr
       "required": ["path","sha256"], "properties": {
         "path": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)[^\\\\]+$"},
         "sha256": {"$ref": "#/$defs/hex64"}}}},
+    "outcome_contract": {"type": "object", "additionalProperties": false,
+      "required": ["check","evidence","unknown"], "properties": {
+        "check": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {
+          "kind": {"enum": ["exit_code","stdout_match","artifact_exists","command"]},
+          "exit_code": {"type": "integer", "minimum": 0, "maximum": 255},
+          "stdout_match": {"type": "string", "minLength": 1, "maxLength": 400},
+          "artifact_path": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)[^\\\\]+$", "maxLength": 400},
+          "command": {"type": "string", "minLength": 1, "maxLength": 400}}},
+        "evidence": {"type": "array", "minItems": 1, "maxItems": 20,
+          "items": {"type": "string", "minLength": 1, "maxLength": 80}},
+        "unknown": {"type": "string", "minLength": 10, "maxLength": 400}}},
     "x_ext": {"type": "object"}
   },
   "$defs": {
@@ -3471,13 +3629,13 @@ Conventions binding for every surface: REST base `/v1`; MCP tool names as listed
 | 5 | `skill.search` | `GET /v1/skills?q=&capability=&runtime=&tool=&risk=&state=&min_adopted=&min_rating=&limit=&cursor=` | any authenticated (results filtered by §5.1 visibility × access policy) | — | `200 {"items":[…],"next_cursor":null\|string}`. Each item is `{"skill_id","slug","skill_version_id","semantic_version","state","access_policy","registry"}` plus `"title"?`, `"capability_statement"?` and `"risk_level"?` — present exactly when the stored manifest carries them as strings — plus `"warning":"deprecated"\|"superseded"` on those two states. `registry` is the `version-registry-view-v1` object of E.2, in full. Items are ordered by `(created_at_ms, id)` descending, which is also what `cursor` encodes |
 | 6 | `skill.request_adoption` | `POST /v1/adoptions/requests` | member or X-ws (published only) | `{"skill_version_id","idempotency_key"?}` | `201 {"adoption_request_id","receipt_id","state":"pending"\|"approval_pending"}`, plus `"approval_required":[<§7.3 condition id>…]` exactly when the state is `approval_pending`, and `"webhook_id":null` exactly when the adopter has no selectable endpoint. A §7.3 condition does NOT refuse the call here — it creates the hold (§5.2); surface 7 is what refuses. A revoked version → `PRECONDITION_FAILED{current_state}`; a same-workspace version in `draft`/`linted` → `PRECONDITION_FAILED{current_state}`; a cross-workspace version that is visible but not `published` → `FORBIDDEN{current_state}` |
 | 7 | `skill.adopt` | `POST /v1/adoptions/{request_id}/adopt` | the request's adopter only | `{"environment_descriptor" per E.2,"idempotency_key"?}` | `200 {"receipt_event":"delivered","event_seq","receipt_id","compat":{"result":"match\|mismatch","unmet":[<clause>…]},"package":{"skill_version_id","semantic_version","manifest_hash","content_hash","archive_base64"}}`, plus `"warning"` when a mismatch was accepted (`risk_level: low`). The declared `environment_descriptor` is RECORDED on the `delivered` event this call writes, in the same transaction (§5.3), and is readable afterwards through `GET /v1/receipts/{id}`. A request whose receipt chain has already begun → `PRECONDITION_FAILED{current_state}` and NO package, exactly as the receipt surface answers a late append: handover happens once, and the response carries no `noop` member. The one caller entitled to a repeat is the SAME principal replaying the SAME `idempotency_key`, which `withIdempotency` serves from the stored response of the original call — byte for byte, `archive_base64` included, because a repeat is a match of (principal, key) and never a match of state. Mismatch + risk medium/high → `PRECONDITION_FAILED{current_state}`; a `risk_level: high` package to an adopter not attesting `sandbox_capable` → `FORBIDDEN` (§7.2); a request still in `approval_pending` → `FORBIDDEN{current_state}`; a request dead-lettered `approval_denied` → `PRECONDITION_FAILED{current_state}` — the other four dead-letter reasons are notification failures and do NOT refuse handover; a `notification_kind:"revocation"` queue row → `NOT_FOUND` |
-| 8 | `skill.validate_outcome` | `POST /v1/receipts/{receipt_id}/events` | the receipt's adopter only | `{"event":"attempted\|adopted\|failed\|rolled_back", "evidence"?\|"failure_report"?\|"rollback_report"? per E.2,"idempotency_key"?}` | `200 {"receipt_event","event_seq"}`, plus `"noop":true` on an idempotency replay and `"synthesized":{"receipt_event":"delivered","event_seq":1}` when the §5.3 table auto-acked a `delivered` in the same transaction. Illegal transition → `PRECONDITION_FAILED{current_state}` per the §5.3 table |
+| 8 | `skill.validate_outcome` | `POST /v1/receipts/{receipt_id}/events` | the receipt's adopter only | `{"event":"attempted\|adopted\|failed\|rolled_back", "evidence"?\|"failure_report"?\|"rollback_report"? per E.2,"idempotency_key"?}` | `200 {"receipt_event","event_seq"}`, plus `"noop":true` on an idempotency replay and `"synthesized":{"receipt_event":"delivered","event_seq"}` when the §5.3 table auto-acked a `delivered` in the same transaction. Illegal transition → `PRECONDITION_FAILED{current_state}` per the §5.3 table |
 | 9 | `skill.rate` | `POST /v1/versions/{id}/ratings` | adopter with terminal `adopted` receipt | `{"score":1-5,"note"?,"adoption_receipt_id","idempotency_key"?}` | `201 {"rating_id","score"}`; a second rating by the same rater for the same version converges on the recorded one — the same two fields plus `"noop":true`. A receipt that is not the caller's → `NOT_FOUND`; a receipt of a different version → `PRECONDITION_FAILED{current_state}` naming that version; a chain whose derived state is not `adopted` → `PRECONDITION_FAILED{current_state}` naming the derived state |
 | 10 | `skill.supersede` | `POST /v1/versions/{id}/supersede` | author/skill owner/reviewer/admin/owner | `{"successor_version_id","idempotency_key"?}` | `200 {"skill_version_id","state":"superseded","superseded_by","successor":{"skill_version_id","state"},"tlog_seq"}` — both versions' lifecycle links written atomically with the `version_superseded` entry. Already superseded → the same body minus `tlog_seq`, plus `"noop":true` and the RECORDED `superseded_by`. A successor that is not itself `verified`/`published` → `PRECONDITION_FAILED{current_state}`; a successor whose signed `lifecycle.supersedes` names a different version, or which already supersedes another → `CONFLICT{current_state}`; a successor of a different skill, or equal to the subject → `INVALID_SCHEMA`; a subject not `published` → `PRECONDITION_FAILED{current_state}` |
 | 11 | `skill.revoke` | `POST /v1/versions/{id}/revoke` | author/skill owner/admin/owner | `{"reason","idempotency_key"?}` — `reason` a non-empty string of ≤2000 characters, or `INVALID_SCHEMA` | `200 {"skill_version_id","state":"revoked","reason","tlog_seq","notified_adopters"}` — `notified_adopters` is the count of §5.2 revocation notices queued in the same transaction (§6 surface 11); already revoked → the same body plus `"noop":true`, the ORIGINAL reason, and no second tlog row or notice |
 | 12 | `skill.publish` | `POST /v1/versions/{id}/publish` | admin/owner | `{"idempotency_key"?}` | `200 {"skill_version_id","state":"published","manifest_hash","countersign_seq"}`; already published → the same body plus `"noop":true`; §7.3 approval missing → `FORBIDDEN{current_state}`; state ≠ `verified` → `PRECONDITION_FAILED{current_state}`, retired tails (`deprecated`/`superseded`/`revoked`) included; `CONFLICT{current_state}` only when the transition is legal (state `verified`) and a §4.3.9 countersign for this `manifest_hash` already exists |
 | 13 | `skill.deprecate` | `POST /v1/versions/{id}/deprecate` | author/skill owner/admin/owner | `{"idempotency_key"?}` | `200 {"skill_version_id","state":"deprecated","deprecation_date","tlog_seq"}`; already deprecated → the same body plus `"noop":true` and the ORIGINAL `deprecation_date`, no second tlog row; state ≠ `published` → `PRECONDITION_FAILED{current_state}` |
-| 14 | `skill.create_from_dir` | `POST /v1/skills/from-source` (new skill) · `POST /v1/skills/{skill_id}/versions/from-source` (new version) | member (author) | `{"slug"?,"source":"<base64 §4.1b archive of the SOURCE tree>","idempotency_key"?}`; the new-version form takes `skill_id` from the path (MCP: from the arguments object, and the upload field is `source_base64`). The source tree carries `manifest.json` and `SKILL.md` and MUST NOT carry `skill.json` or `SIGNATURE.jws` — those are produced here, and a source carrying them is `INVALID_SCHEMA` naming surface 1. The caller supplies NO cryptographic material: no seed, no `kid`, no `integrity`. `scripts/skln-arrive.sh` is a RESERVED path: generated here for a manifest that declares a shell, removed for one that declares `runtime.shell: ["none"]`, and in both cases replacing whatever the source shipped under that name | `201 {"skill_id","skill_version_id","state":"draft","arrival_marker","kid","manifest_hash","content_hash"}`. The registry mints `skill_version_id`, derives the §5 arrival marker from it and writes that marker into `SKILL.md`'s generated block — for EVERY version, `runtime.shell: ["none"]` included — and into `scripts/skln-arrive.sh` for a version that declares a shell. It then refuses to pack unless every place that carries a marker holds the SAME value as the one the id derives: three places for a version with a shell, two for one without, and a script present where the manifest declares none is itself a refusal. It computes §4.3 `integrity` over the resulting bytes and signs with a system-held key it generates for the caller on first use. The private half never crosses this boundary, in any direction: it is not an input, not an output, not a log line and not part of an error message [I-7]. Re-posting an unchanged SOURCE converges on the version already packed from it — the same fields, that version's CURRENT state, the marker THAT version derives, plus `"noop":true`. A different source under a `semantic_version` that already exists → `CONFLICT{current_state}` |
+| 14 | `skill.create_from_dir` | `POST /v1/skills/from-source` (new skill) · `POST /v1/skills/{skill_id}/versions/from-source` (new version) | member (author) | `{"slug"?,"source":"<base64 §4.1b archive of the SOURCE tree>","idempotency_key"?}`; the new-version form takes `skill_id` from the path (MCP: from the arguments object, and the upload field is `source_base64`). The source tree carries `manifest.json` and `SKILL.md` and MUST NOT carry `skill.json` or `SIGNATURE.jws` — those are produced here, and a source carrying them is `INVALID_SCHEMA` naming surface 1. The manifest MUST carry `outcome_contract` (Appendix E): a package this registry packs states what SUCCESS is, or §4's `outcome` column can never answer anything about it and completion would be read as success [M-6]. A source without one, or with a truncated one, is `INVALID_SCHEMA` BEFORE anything is written — no version, no signing key, no transparency-log row. Surface 1 does NOT require it: it accepts packages signed elsewhere, and one without a contract reports `outcome` = `unknown` with the reason `no_outcome_contract`, never `no`. The caller supplies NO cryptographic material: no seed, no `kid`, no `integrity`. `scripts/skln-arrive.sh` is a RESERVED path: generated here for a manifest that declares a shell, removed for one that declares `runtime.shell: ["none"]`, and in both cases replacing whatever the source shipped under that name | `201 {"skill_id","skill_version_id","state":"draft","arrival_marker","kid","manifest_hash","content_hash"}`. The registry mints `skill_version_id`, derives the §5 arrival marker from it and writes that marker into `SKILL.md`'s generated block — for EVERY version, `runtime.shell: ["none"]` included — and into `scripts/skln-arrive.sh` for a version that declares a shell. It then refuses to pack unless every place that carries a marker holds the SAME value as the one the id derives: three places for a version with a shell, two for one without, and a script present where the manifest declares none is itself a refusal. It computes §4.3 `integrity` over the resulting bytes and signs with a system-held key it generates for the caller on first use. The private half never crosses this boundary, in any direction: it is not an input, not an output, not a log line and not part of an error message [I-7]. Re-posting an unchanged SOURCE converges on the version already packed from it — the same fields, that version's CURRENT state, the marker THAT version derives, plus `"noop":true`. A different source under a `semantic_version` that already exists → `CONFLICT{current_state}` |
 
 | 15 | `skill.transfer` | `POST /v1/versions/{id}/transfers` | member (holder of an `assign` grant, §6.2) | `{"recipient":{"kind":"local_agent\|remote_fleet","ref":"<recipient identifier>"},"idempotency_key"?}`; `skill_version_id` comes from the path (MCP: from the arguments object). `recipient` is REQUIRED and has NO default — an absent `recipient`, an absent `kind` and an absent `ref` are each `INVALID_SCHEMA`, and no form of this call moves a version without naming who to (§5.4) | `201 {"transfer_id","skill_version_id","arrival_marker","sender":{"agent_id","type","role"},"recipient_kind","recipient_ref","permission":{"grant_id","action","recipient_scope","granted_by":{"agent_id","type","role"}},"adoption_request_id","receipt_id","receipt_event":"transferred","event_seq","request_state","assignment_id","deployment_intent_state":"assigned","superseded_assignment_ids","intent","observed_state":"unknown","observed_state_source"}`, plus `"approval_required":[<§7.3 condition id>…]` exactly when the opened request is held in `approval_pending`. The whole §5.4 signature is recorded and returned: the version, the sender WITH its principal type and workspace role, the TYPED recipient, the permission the call ran under WITH the type and role of the principal that issued it, the §5 arrival marker, and the receipt and `event_seq` of the `transferred` event written in the same transaction. The same transaction opens the §5.5 DEPLOYMENT — `assignment_id`, in state `assigned` — and supersedes whatever standing assignment of the same skill that agent held, returning those ids in `superseded_assignment_ids` (§6.3). **`observed_state` is always `unknown` here and is a SEPARATE field from `intent`:** recording a transfer establishes nothing about the recipient — not arrival, not installation, and never `active` — and a registry MUST NOT report an observed state derived from the intent. No `assign` grant scoped to that `kind` → `FORBIDDEN`; a `remote_fleet` recipient → `NOT_IMPLEMENTED`, raised AFTER the grant is found satisfied and with nothing recorded; a `local_agent` `ref` that is not an active principal of the caller's workspace → `NOT_FOUND`, and a `ref` equal to the sender → `INVALID_SCHEMA`; the §5.1 adoptability answers of surface 6 apply unchanged to the version |
 
@@ -3512,12 +3670,12 @@ Internal worker surface (NOT public, service-authenticated, single-binary in-pro
 | `agent.capabilities` | `GET /v1/fleet/{agent_id}/capabilities` | member+ (own agent; admin/owner any of the workspace) | — | `200 {"agent":<the fleet row above>,"columns":[…],"capabilities":[{"kind","name","runtime","skill_version_id","arrival_marker","has_executable_step","columns":[{"column","runtime","value","reason","is","explicit","reliability","observability","state","source","window","window_detail"}…]}…],"inventory":[{"value","measurement_state","reason","state","source","window","window_detail"}×5],"states":[…],"undiscoverable":{},"inventory_reason","gap":[{"agent_id","skill_id","slug","skill_version_id","intent_state","intent_state_is":"intent","intent_state_source","observed_arrival","observed_arrival_is":"observation","observed_arrival_reason","observed_arrival_source","observed_arrival_window","gap","gap_is":"comparison"}…],"dead_weight":{"items":[…],"registered","invoked","dead"}}`. `columns` is the column set of THIS agent's runtime and the two runtimes' sets DIFFER: `claude_code` publishes `proposed_now` and `proposed_historical`, `codex` publishes one `proposed`. Every cell and every number carries all THREE attributes — `state` (one of the six), `source` ∈ `filesystem\|registry\|runtime\|transcript`, `window` ∈ `live_session\|period\|all_time` — and one that lost any of them MUST NOT be published ([I-3]). `assigned` is the INTENT column and carries `is:"intent"`; every other column carries `is:"observation"`; neither is derived from the other ([I-2]). A number that could not be taken is `measurement_state:"unknown"` with `value:null` and a reason, NEVER a silent `0`. The filesystem walk FOLLOWS SYMBOLIC LINKS ([I-4]). An agent of another workspace → `NOT_FOUND`. Read-only |
 | `capability.get` | `GET /v1/fleet/{agent_id}/capabilities/{name}` | member+ (own agent; admin/owner any of the workspace) | — | `200 {"agent":…,"columns":[…],"capability":<one capability object above>,"matrix":[<§4's six cells for this runtime>],"scan":[{"skill_version_id","marker","agent_id","runtime","at_ms","call_id","result"}…],"gap":<one gap row>\|null}`. A `scan` row exists ONLY where a PAIRED call/output record sharing one non-null `call_id` carried THIS version's §5 marker: a lone call, a lone output, or a pair carrying another version's marker produces NO row ([M-5]), and a capability with no row is `unknown`, never `no`. A version declaring `runtime.shell: ["none"]` answers `unknown` with reason `no_executable_step`, machine-distinguishable from `no_paired_record`. A capability this agent does not have → `NOT_FOUND`. Read-only |
 | `observation.report` | `POST /v1/observations` | member (holder of a `report_outcome` grant, §6.2) | `{"agent_id","runtime":"claude_code\|codex","window":"live_session\|period\|all_time","window_detail","model"?,"session_active"?,"last_activity_ms"?,"proposal_inventory_complete"?,"records":[{"role":"proposal\|call\|output","call_id"?,"at_ms"?,"marker"?,"text"?,"result":"success\|failure\|unknown"?}…]?,"idempotency_key"?}` — `window` and `window_detail` are REQUIRED and an absent or empty `window_detail` is `INVALID_SCHEMA`: a report that does not say what it looked at is a number with no method ([I-3]), and a default would describe the wrong search | `201 {"observation_id","agent_id","runtime","records_examined","markers_recorded","window","window_detail","records_text_stored":false,"note"}`. **THIS SURFACE WRITES.** The V-1 requirements list it among the READING surfaces; a self-report is an agent TELLING the registry something, telling is storing, and this call appends to two INSERT-only tables and moves the observation column of every deployment of that agent. Its MCP annotations MUST therefore be those of a write (`readOnlyHint:false`), because [I-8] requires a tool's hints to be true and a client acts on a false one by not asking. The records' TEXT is reduced to §5 arrival markers at this boundary and is NOT stored, logged or returned ([I-7]); `records_text_stored` states that rather than leaving it to be inferred. A report can establish that a version RAN; it can NEVER establish that one did not — a marker absent from a report is `unknown`, never `no`. An agent of another workspace → `NOT_FOUND`; no `report_outcome` grant → `FORBIDDEN`; more than 5000 records → `LIMIT_EXCEEDED` |
-| — | `GET /v1/receipts/{id}` | the adopter, the skill's owner, or an admin/owner of the version's workspace | — | `200 {"receipt_id","adoption_request_id","skill_version_id","adopter_agent_id","derived_state","stalled","events":[{"event","event_seq","server_at_ms","evidence","failure_report","rollback_report","environment_descriptor","recipient"}…]}` — events in ascending `event_seq`, the payload members `null` where the event carries none, `derived_state` per §5.3 (`none` on an empty chain) and `stalled` derived at read time. `environment_descriptor` is the environment declared at handover: non-null on `delivered` rows written by surface 7, `null` on every other row and on a synthesized `delivered`. `recipient` is the TYPED recipient `{"kind","id"}` of a `transferred` row (§5.4) and is `null` on every other row. It is served so an adopter can read back its OWN declaration in its OWN event — the read half of §5.3's rule that a write is confirmed by reading the state back. Anyone else → `NOT_FOUND` |
+| — | `GET /v1/receipts/{id}` | the adopter, the skill's owner, or an admin/owner of the version's workspace | — | `200 {"receipt_id","adoption_request_id","skill_version_id","adopter_agent_id","derived_state","stalled","events":[{"event","event_seq","server_at_ms","evidence","failure_report","rollback_report","environment_descriptor","recipient"}…]}` — events in ascending `event_seq`, the payload members `null` where the event carries none, `derived_state` per §5.3 (`none` on an empty chain) and `stalled` derived at read time. `environment_descriptor` is the environment declared at handover: non-null on `delivered` rows written by surface 7, `null` on every other row and on a synthesized `delivered`. `recipient` is the TYPED recipient `{"kind","id"}` of the row that opened the chain — `transferred` (§5.4) or `requested` (§5.2) — and is `null` on every other row. It is served so an adopter can read back its OWN declaration in its OWN event — the read half of §5.3's rule that a write is confirmed by reading the state back. Anyone else → `NOT_FOUND` |
 | `tlog.read` | `GET /v1/tlog?cursor=&limit=` | any authenticated | `cursor` = the `seq` to read AFTER (decimal, ≥0); `limit` 1–100, default 20 | `200 {"items":[{"seq","event_kind","subject_id","payload_hash","prev_hash","this_hash","server_at_ms"}…],"next_cursor":null\|string}` — ascending `seq`, every column of `transparency_log`, so the §4.4 chain walk can be reproduced from the API alone. A malformed cursor → `INVALID_SCHEMA` |
 | — | `POST /v1/webhooks` | member+, own endpoint only | `{"url"}` — NO `idempotency_key`, for the reason §6.1 gives for the two secret-returning provisioning calls | `201 {"webhook_id","url","secret"}`; `secret` is shown ONCE and the URL is echoed exactly as written (§5.2). A URL the §5.2 registration rules refuse, or one longer than 2000 characters, or one Appendix D.1's `CHECK` cannot store → `INVALID_SCHEMA` with the reason |
 | — | `GET /v1/webhooks` | member+, own endpoints only | — | `200 {"items":[{"webhook_id","url","status","failure_count"}…]}` — never the secret, never its reference |
 | — | `DELETE /v1/webhooks/{id}` | the endpoint's own agent | — | `200 {"deleted":true}`; another agent's endpoint → `NOT_FOUND` |
-| `migration.count` | `GET /v1/migrations?since_ms=&until_ms=&q=&capability=&runtime=&tool=&risk=&state=&min_adopted=&min_rating=&limit=&cursor=` | any authenticated; the counted skills are exactly those surface 5 makes visible to the caller | the surface-5 filters and pagination controls, plus an optional selection window: `since_ms`/`until_ms`, integer milliseconds, applied to the `server_at_ms` of the terminal event. A bound that is not an integer, or a pair in the wrong order, is `INVALID_SCHEMA` on BOTH adapters | `200 {"source","window","window_since_ms","window_until_ms","next_cursor","items":[{"skill_id","slug","migrations","distinct_recipients","distinct_runtimes","runtimes","runtimes_unknown","recipients_unattributed","recipient_sources","measurement_state","source","window"}…]}` — one row per visible SKILL. `migrations` counts DISTINCT (version, recipient) pairs whose receipt carries a terminal `adopted` event with server-validated evidence (§5.3); repeating a pair does not raise it. `distinct_recipients` counts the recipient agents among them — read from the `transferred` event's `recipient_json` (§5.4) on a chain a transfer opened, and from the INSERT-only receipt shell on one the recipient opened itself, never from `adoption_requests` — and `distinct_runtimes` the DIFFERENT declared `environment_descriptor.runtime.id` values, read from the `delivered` events of those receipts. Fail-closed on the recipient too: a chain that HAS a `transferred` event whose `recipient_json` is absent or unparseable contributes NOTHING — no migration, no recipient, no runtime — and is reported in `recipients_unattributed`, never answered from the receipt shell, which would be answering from a journal the chain did not name. `recipient_sources` names the journals the counted recipients were actually read from, and `source` states them in words, so a figure whose keys came partly from the receipt shell cannot publish `receipt_events` alone as its provenance. Every count MUST be computed from `receipt_events` and MUST NOT be computed from `adoption_requests.requester_context_json` (§5.3). Fail-closed: a migration whose declared runtime cannot be read contributes no runtime id at all and is reported in `runtimes_unknown`, which is therefore never interchangeable with `distinct_runtimes: 0`. A visible skill with no qualifying receipt is a row of zeroes with `measurement_state:"not_migrated"`, never an absent row, and every row restates its `source` and its `window` so no number is published without its method. This surface is strictly reading: it appends nothing, transitions nothing and takes no `idempotency_key` |
+| `migration.count` | `GET /v1/migrations?since_ms=&until_ms=&q=&capability=&runtime=&tool=&risk=&state=&min_adopted=&min_rating=&limit=&cursor=` | any authenticated; the counted skills are exactly those surface 5 makes visible to the caller | the surface-5 filters and pagination controls, plus an optional selection window: `since_ms`/`until_ms`, integer milliseconds, applied to the `server_at_ms` of the terminal event. A bound that is not an integer, or a pair in the wrong order, is `INVALID_SCHEMA` on BOTH adapters | `200 {"source","window","window_since_ms","window_until_ms","next_cursor","items":[{"skill_id","slug","migrations","distinct_recipients","distinct_runtimes","runtimes","runtimes_unknown","recipients_unattributed","recipient_sources","measurement_state","source","window"}…]}` — one row per visible SKILL. `migrations` counts DISTINCT (version, recipient) pairs whose receipt carries a terminal `adopted` event with server-validated evidence (§5.3); repeating a pair does not raise it. `distinct_recipients` counts the recipient agents among them — read from the `recipient_json` of the event that OPENED the chain, which is `transferred` when a sender opened it (§5.4) and `requested` when the recipient opened it itself (§5.2), never from `adoption_receipts` and never from `adoption_requests` — and `distinct_runtimes` the DIFFERENT declared `environment_descriptor.runtime.id` values, read from the `delivered` events of those receipts. Fail-closed on the recipient too: a chain whose opening event is absent, or whose `recipient_json` is absent or unparseable, contributes NOTHING — no migration, no recipient, no runtime — and is reported in `recipients_unattributed`, never answered from the receipt shell or from any other table, which would be answering from a journal the chain did not name. `recipient_sources` names the opening events the counted recipients were actually read from — every one of them a row of `receipt_events` — and `source` states them in words, so the provenance published beside a figure is derived from what that figure was obtained from and is never a constant. Every count MUST be computed from `receipt_events` and MUST NOT be computed from `adoption_receipts.adopter_agent_id` or from `adoption_requests.requester_context_json` (§5.3), and a conforming registry MUST make that literally true of every statement the counter runs rather than true of most of them. Fail-closed: a migration whose declared runtime cannot be read contributes no runtime id at all and is reported in `runtimes_unknown`, which is therefore never interchangeable with `distinct_runtimes: 0`. A visible skill with no qualifying receipt is a row of zeroes with `measurement_state:"not_migrated"`, never an absent row, and every row restates its `source` and its `window` so no number is published without its method. This surface is strictly reading: it appends nothing, transitions nothing and takes no `idempotency_key` |
 | `dashboard.view` | `GET /v1/dashboard/{view}?format=json\|html` · `GET /v1/dashboard` (the view list) | any authenticated; every row is scoped by the SAME ACL as the surface it is read from | `view` ∈ `library \| evidence \| receipts \| approvals \| dead_letters \| migrations \| fleet \| agent \| skill_approval \| capability \| outcomes`; `format` defaults to `json`, and any other value of either is `INVALID_SCHEMA` on BOTH adapters. The surface-5 filters and pagination controls are accepted by the views that page over versions | `200 {"view","title","views":[the eleven names],"sections":[{"key","title","fields":[…],"rows":[…],"empty","note"?,"row_class_field"?,"next_cursor"?}],"demo_mode","notices":[{"kind","subject","detail"}]}`. `fields` names, in column order, the API fields of the numbered surfaces that the section+s `rows` carry — the dashboard computes nothing of its own and is a rendering, never a second source of truth, which is why the CHOICE of sections is presentation and is not fixed here while the envelope, the eleven view names, the ACL scoping and `demo_mode` (§9.1) are. `note` is a sentence rendered with a section whether or not it has rows. `row_class_field` names the row field whose value becomes the row+s CSS class, which is how §9+s fleet screen makes the colour of a row mean the state of the reconciliation between intent and fact and nothing else. `notices` are the blocks of a view that are NOT tables: `kind` `capability_absent` states that a part of a screen does not exist in this build and names the work it belongs to — an absent capability is never rendered as an empty table, because an empty table reads as a claim about the data — and `kind` `legend` states what a rendering device means. `format=html` renders that same payload: over REST as `text/html`, over MCP as `{"view","html"}`. `GET /v1/dashboard` answers `200 {"views":[the eleven names]}`. The `migrations` view renders `migration.count` over all time; the `fleet`, `agent`, `skill_approval`, `capability` and `outcomes` views are §9+s five screens ([D-1]..[D-5]) and render §6 part A, §5.5 and §5.3+s own answers |
 
 A principal, an API key or a signing key belonging to another workspace is `NOT_FOUND`, never `FORBIDDEN`: cross-workspace existence is not disclosed. The same rule governs every auxiliary above: a resource the caller may not see is absent, not forbidden.

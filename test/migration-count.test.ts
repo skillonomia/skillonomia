@@ -61,10 +61,12 @@ function migrationWithUnreadableEnvironment(fx: P4Fixture, v: any, key: string, 
   const req = rest(fx, "POST", "/v1/adoptions/requests", key, { skill_version_id: v.versionId });
   assert.equal(req.status, 201, req.raw);
   const receipt = req.body.receipt_id;
+  // seq 2: seq 1 is the `requested` event the registry wrote when this chain was
+  // opened through the real surface above.
   fx.db
     .prepare(
       `INSERT INTO receipt_events(id, adoption_receipt_id, event, event_seq, environment_json, server_at_ms, idempotency_key)
-       VALUES (?,?, 'delivered', 1, ?, ?, ?)`,
+       VALUES (?,?, 'delivered', 2, ?, ?, ?)`,
     )
     .run(`01DL${tag}`.padEnd(26, "0").slice(0, 26), receipt, payload, Date.now(), `raw-${tag}`);
   assert.equal(rest(fx, "POST", `/v1/receipts/${receipt}/events`, key, { event: "attempted" }).status, 200);

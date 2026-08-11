@@ -177,7 +177,11 @@ test("medium risk + mismatch: adoption is BLOCKED, and nothing was delivered", (
   assert.equal(out.body.error.code, "PRECONDITION_FAILED");
   assert.match(out.body.error.message, /shell/);
   assert.equal(out.body.error.current_state, "pending", "the converging-conflict rule still applies");
-  assert.equal(derivedState(fx.db, out.receiptId), "none", "no receipt event was written");
+  assert.equal(
+    derivedState(fx.db, out.receiptId),
+    "requested",
+    "no handover event was written: the chain is still at the `requested` row that opened it",
+  );
 
   // the SAME request converges once the environment matches — the block is
   // about the environment, not a dead end
@@ -207,7 +211,7 @@ test("high risk + mismatch: blocked even after the §7.3 approval released the h
   });
   assert.equal(blocked.status, 412, blocked.raw);
   assert.match(blocked.body.error.message, /risk_level high blocks on mismatch/);
-  assert.equal(derivedState(fx.db, receiptId), "none");
+  assert.equal(derivedState(fx.db, receiptId), "requested");
 
   // and a matching environment (still sandbox-capable, §7.2) goes through
   const ok = rest(fx, "POST", `/v1/adoptions/${reqId}/adopt`, fx.keys.member, { environment_descriptor: ENV });

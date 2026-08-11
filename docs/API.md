@@ -121,7 +121,7 @@ matches it against the package's declared compatibility and answers
 `{"compat":{"result":"match|mismatch","unmet":[…]}}`. A mismatch **warns** at
 low risk and **blocks** (`PRECONDITION_FAILED`) at medium or high. A high-risk
 package is only handed to an adopter attesting sandbox capability. On success:
-`{"receipt_event":"delivered","event_seq":1,"package":{…,"archive_base64"}}`.
+`{"receipt_event":"delivered","event_seq":2,"package":{…,"archive_base64"}}` — seq 1 is the `requested` event the registry wrote when the chain was opened.
 
 Handover happens **once**. The declared descriptor is recorded on the
 `delivered` receipt event this call writes, in the same transaction, and is
@@ -191,6 +191,18 @@ Body: `{"slug"?, "source": "<base64 tar of the SOURCE tree>", "idempotency_key"?
 version control — `manifest.json`, `SKILL.md`, `scripts/`, fixtures — and it must
 NOT contain `skill.json` or `SIGNATURE.jws`: those are produced here, and a
 source carrying them is `INVALID_SCHEMA` pointing you at surface 1.
+
+Your manifest MUST carry an `outcome_contract` — `check`, `evidence`, `unknown`
+— stating what SUCCESS is for this skill. Without it the dashboard's `outcome`
+column can say nothing about the skill, and a task that FINISHED would be read
+as a task that SUCCEEDED. A source without a contract, or with a truncated one,
+is `INVALID_SCHEMA` before anything is written: no version, no key, no
+transparency-log row. The contract is inside the manifest that gets signed, so
+redefining what success means requires issuing a new version — a receipt cannot
+come to certify something other than what it certified when it was approved.
+Surface 1 does not require a contract: it accepts packages signed elsewhere, and
+one without a contract reports `outcome` as `unknown` with the reason
+`no_outcome_contract`, never as `no`.
 
 You supply no cryptographic material. There is no `--seed-hex`, no `kid`, no
 hand-written `integrity` list and no packing step. The registry:
@@ -289,7 +301,7 @@ that terminal `adopted` makes the movement a counted migration.
 | `POST /v1/observations` | file what was observed at one agent's runtime (`observation.report`). **This writes**, although it reads as a reporting surface: telling the registry something is storing it, and the call appends to two append-only tables. Needs a `report_outcome` grant. `window` and `window_detail` are required — a report that does not say what it looked at is a number with no method. The records' text is reduced to arrival markers at the boundary and is not stored, logged or returned. A report can establish that a version RAN; it can never establish that one did not. |
 | `GET /v1/dashboard` | the list of views |
 | `GET /v1/dashboard/{view}` | one of `library`, `evidence`, `receipts`, `approvals`, `dead_letters`, `migrations`, `fleet`, `agent`, `skill_approval`, `capability`, `outcomes` — eleven in all; `?format=json` (default) or `?format=html`. Any other value is `INVALID_SCHEMA` on both adapters. Each section declares the API fields it renders; rows are scoped by the same rules as the underlying read. `demo_mode` is on the payload. On every view a cell carries an answer AND its method: `unknown` is the word and never a blank or a dash [I-1], and every number states its measurement state, source and selection window [I-3]. |
-| `GET /v1/migrations` | the migration counter (`migration.count`): one row per skill you can see, with `migrations`, `distinct_recipients`, `distinct_runtimes`, the runtime list and `runtimes_unknown`. Counted from the append-only receipt journal — a terminal `adopted` event with server-validated evidence — and never from `adoption_requests.requester_context_json`. Optional `since_ms`/`until_ms` bound the window; a non-integer bound, or a pair in the wrong order, is `INVALID_SCHEMA`. Every row restates its `source`, its `window` and its `measurement_state`, and a skill that never migrated is a row of zeroes rather than a missing row. Strictly reading. |
+| `GET /v1/migrations` | the migration counter (`migration.count`): one row per skill you can see, with `migrations`, `distinct_recipients`, `distinct_runtimes`, the runtime list and `runtimes_unknown`. Counted from the append-only receipt journal — a terminal `adopted` event with server-validated evidence — and never from `adoption_requests.requester_context_json` or from the receipt shell. The recipient of a counted migration is read from the `transferred` event of a chain a sender opened and from the `requested` event of a chain the recipient opened for itself; a chain naming no recipient on the journal contributes nothing and is reported in `recipients_unattributed`. Optional `since_ms`/`until_ms` bound the window; a non-integer bound, or a pair in the wrong order, is `INVALID_SCHEMA`. Every row restates its `source`, its `window` and its `measurement_state`, and a skill that never migrated is a row of zeroes rather than a missing row. Strictly reading. |
 
 ## MCP
 
@@ -300,10 +312,17 @@ advertised tools are the fifteen surface names above, plus `skill.approve`,
 `signing_key.register`, `signing_key.list`, `signing_key.revoke`, `tlog.read`,
 `migration.count`, `dashboard.view`, `assignment.activate`, `assignment.pause`,
 `assignment.revoke`, `assignment.list`, `fleet.list`, `agent.capabilities`,
-`capability.get` and `observation.report`.
+`capability.get` and `observation.report` — thirty-six tools in all.
 The reading tools and the writing ones are separate names — `migration.count`
 carries `readOnlyHint`, and there is no general-purpose tool that could stand in
-for either kind. Arguments are the REST
+for either kind. Every annotation is a statement about behaviour and is checked
+against it: `readOnlyHint` against whether the call moved a table,
+`destructiveHint` against whether it changed a row that already existed, and
+`idempotentHint` against whether calling twice with the same arguments wrote
+twice. `skill.transfer`, `skill.lint`, `skill.review.request`, `skill.approve`,
+`skill.request_adoption`, `observation.report` and `principal.issue_api_key`
+carry `idempotentHint: false`, because a second call without an
+`idempotency_key` really does record a second fact. Arguments are the REST
 body fields with the path parameter folded in (`skill_version_id`,
 `adoption_request_id`, `receipt_id`, `principal_id`, `api_key_id`, `kid`,
 `view`). Errors come back as a tool result with `isError: true` carrying the

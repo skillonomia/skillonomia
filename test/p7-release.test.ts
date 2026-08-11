@@ -124,14 +124,15 @@ test("§9.1 quickstart: clean start → seed found → adoption → fixture → 
     assert.equal(req.status, 201, JSON.stringify(req.body));
     const { adoption_request_id: requestId, receipt_id: receiptId } = req.body;
 
-    // 9.1.6.4 — adopt: delivered, event_seq 1, compat match, package handed over
+    // 9.1.6.4 — adopt: delivered, event_seq 2 (seq 1 is the `requested` event
+    // that opened this chain), compat match, package handed over
     const adopt = await api(base, "POST", `/v1/adoptions/${requestId}/adopt`, demoKey, {
       environment_descriptor: ENV_DESCRIPTOR,
       idempotency_key: "qs-2",
     });
     assert.equal(adopt.status, 200, JSON.stringify(adopt.body));
     assert.equal(adopt.body.receipt_event, "delivered");
-    assert.equal(adopt.body.event_seq, 1);
+    assert.equal(adopt.body.event_seq, 2);
     assert.equal(adopt.body.compat.result, "match");
 
     // 9.1.6.5 — the fixture the package hands over is the one the gate names
@@ -142,7 +143,7 @@ test("§9.1 quickstart: clean start → seed found → adoption → fixture → 
       event: "attempted",
       idempotency_key: "qs-3",
     });
-    assert.equal(attempted.body.event_seq, 2);
+    assert.equal(attempted.body.event_seq, 3);
     const adopted = await api(base, "POST", `/v1/receipts/${receiptId}/events`, demoKey, {
       event: "adopted",
       evidence: { gate_results: [{ gate_id: "g1", pass: true, observed: "skillonomia-tv01-ok" }] },
@@ -150,7 +151,7 @@ test("§9.1 quickstart: clean start → seed found → adoption → fixture → 
     });
     assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
     assert.equal(adopted.body.receipt_event, "adopted");
-    assert.equal(adopted.body.event_seq, 3);
+    assert.equal(adopted.body.event_seq, 4);
 
     const receipt = await api(base, "GET", `/v1/receipts/${receiptId}`, demoKey);
     assert.equal(receipt.body.derived_state, "adopted");

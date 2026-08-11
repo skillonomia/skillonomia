@@ -167,6 +167,15 @@ const AUTHORIZED_P5_EDITS: ReadonlyArray<{ readonly from: string; readonly to: s
     from: "idempotency_key TEXT NOT NULL, environment_json TEXT, UNIQUE(adoption_receipt_id,idempotency_key)",
     to: "idempotency_key TEXT NOT NULL, environment_json TEXT, recipient_json TEXT, UNIQUE(adoption_receipt_id,idempotency_key)",
   },
+  // D.1i: `requested` — the PULL twin of `transferred`. A chain the recipient
+  // opened for itself now names that recipient on its own INSERT-only row, so
+  // the count specified to come from `receipt_events` comes from it for both
+  // kinds of chain (§5.2, §5.3). A second rebuild, for the same reason as the
+  // first: SQLite cannot alter a CHECK in place.
+  {
+    from: "CHECK(event IN ('delivered','attempted','adopted','failed','rolled_back','transferred'))",
+    to: "CHECK(event IN ('delivered','attempted','adopted','failed','rolled_back','transferred','requested'))",
+  },
 ];
 
 /**
@@ -298,16 +307,17 @@ test("object counts: 26 tables, 20 triggers, 13 indexes; no bookkeeping table", 
   // `idx_transfers_version`, `idx_assignments_agent`,
   // `idx_runtime_observations_agent` and `idx_observed_records_agent`. The two
   // `receipt_events` triggers and the partial terminal index are the ORIGINALS
-  // re-created verbatim by the D.1f rebuild, not additions — which is why those
-  // counts move by exactly the new objects.
+  // re-created verbatim by the D.1f and D.1i rebuilds, not additions — which is
+  // why those counts move by exactly the new objects, and why a SECOND rebuild
+  // moves them by nothing at all.
   assert.equal(count("table"), 26);
   assert.equal(count("trigger"), 20);
   assert.equal(count("index"), 13);
   const uv = db.prepare("PRAGMA user_version").get() as { user_version: number };
   assert.equal(
     uv.user_version,
-    8,
-    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to; tracked in user_version",
+    9,
+    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull; tracked in user_version",
   );
 });
 

@@ -50,7 +50,7 @@ ADOPT_JSON=$(curl -sS -X POST "$BASE_URL/v1/adoptions/$REQUEST_ID/adopt" -H "$H"
   -d '{"environment_descriptor":{"runtime":{"id":"any","version":"1.0.0"},"model":{"id":"any","version":"1.0.0"},"tools":[{"id":"shell","version":"1.0.0"}],"os":"linux","shell":"bash","sandbox_capable":false},"idempotency_key":"qs-2"}')
 printf '%s\n' "$ADOPT_JSON" | cut -c1-400
 [ "$(printf '%s' "$ADOPT_JSON" | jqf "d['receipt_event']")" = "delivered" ] || fail "no delivered event"
-[ "$(printf '%s' "$ADOPT_JSON" | jqf "d['event_seq']")" = "1" ] || fail "delivered is not event_seq 1"
+[ "$(printf '%s' "$ADOPT_JSON" | jqf "d['event_seq']")" = "2" ] || fail "delivered is not event_seq 2 (seq 1 is the \`requested\` event that opened the chain)"
 [ "$(printf '%s' "$ADOPT_JSON" | jqf "d['compat']['result']")" = "match" ] || fail "compat is not match"
 
 step "9.1.6.5 run the fixture, then report the outcome"
@@ -73,7 +73,7 @@ ADOPTED_JSON=$(curl -sS -X POST "$BASE_URL/v1/receipts/$RECEIPT_ID/events" -H "$
   -d "{\"event\":\"adopted\",\"evidence\":{\"gate_results\":[{\"gate_id\":\"g1\",\"pass\":true,\"observed\":\"$OUT\"}]},\"idempotency_key\":\"qs-4\"}")
 echo "$ADOPTED_JSON"
 [ "$(printf '%s' "$ADOPTED_JSON" | jqf "d['receipt_event']")" = "adopted" ] || fail "terminal event is not adopted"
-[ "$(printf '%s' "$ADOPTED_JSON" | jqf "d['event_seq']")" = "3" ] || fail "adopted is not event_seq 3"
+[ "$(printf '%s' "$ADOPTED_JSON" | jqf "d['event_seq']")" = "4" ] || fail "adopted is not event_seq 4"
 
 step "receipt read-back: the chain is terminal"
 RECEIPT_JSON=$(curl -sS "$BASE_URL/v1/receipts/$RECEIPT_ID" -H "Authorization: Bearer $DEMO_ADOPTER_TOKEN")

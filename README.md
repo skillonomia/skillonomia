@@ -203,7 +203,7 @@ ADOPT=$(curl -sS -X POST "$BASE/v1/adoptions/$REQUEST_ID/adopt" -H "$H" \
        "model":{"id":"any","version":"1.0.0"},"tools":[{"id":"shell","version":"1.0.0"}],
        "os":"linux","shell":"bash","sandbox_capable":false},"idempotency_key":"qs-2"}')
 printf '%s' "$ADOPT" | show "{'receipt_event':d['receipt_event'],'event_seq':d['event_seq'],'compat':d['compat'],'package':sorted(d['package'])}"
-# → {"receipt_event":"delivered","event_seq":1,"compat":{"result":"match","unmet":[]},"package":["archive_base64","content_hash","manifest_hash","semantic_version","skill_version_id"]}
+# → {"receipt_event":"delivered","event_seq":2,"compat":{"result":"match","unmet":[]},"package":["archive_base64","content_hash","manifest_hash","semantic_version","skill_version_id"]}
 
 # 5. unpack what was delivered and run its fixture
 printf '%s' "$ADOPT" | python3 -c "import base64,json,sys; open('$WORK/package.tar','wb').write(base64.b64decode(json.load(sys.stdin)['package']['archive_base64']))"
@@ -215,16 +215,16 @@ OUT=$(sh "$WORK/fixtures/tv01.sh"); printf '{"stdout":"%s"}\n' "$OUT"
 curl -sS -X POST "$BASE/v1/receipts/$RECEIPT_ID/events" -H "$H" \
   -H "Authorization: Bearer $DEMO_ADOPTER_TOKEN" \
   -d '{"event":"attempted","idempotency_key":"qs-3"}' | show "d"
-# → {"receipt_event":"attempted","event_seq":2}
+# → {"receipt_event":"attempted","event_seq":3}
 curl -sS -X POST "$BASE/v1/receipts/$RECEIPT_ID/events" -H "$H" \
   -H "Authorization: Bearer $DEMO_ADOPTER_TOKEN" \
   -d "{\"event\":\"adopted\",\"evidence\":{\"gate_results\":[{\"gate_id\":\"g1\",\"pass\":true,\"observed\":\"$OUT\"}]},\"idempotency_key\":\"qs-4\"}" | show "d"
-# → {"receipt_event":"adopted","event_seq":3}
+# → {"receipt_event":"adopted","event_seq":4}
 
 # 7. read the receipt back: the chain is terminal
 curl -sS "$BASE/v1/receipts/$RECEIPT_ID" -H "Authorization: Bearer $DEMO_ADOPTER_TOKEN" \
   | show "{'derived_state':d['derived_state'],'events':[e['event'] for e in d['events']]}"
-# → {"derived_state":"adopted","events":["delivered","attempted","adopted"]}
+# → {"derived_state":"adopted","events":["requested","delivered","attempted","adopted"]}
 ```
 
 That block is **executed on every test run**, against a server started from
@@ -404,13 +404,13 @@ The migrations view, and `migration.count` behind it, answer the question the
 registry exists for: how often each skill actually moved to an agent that ran
 it. Per skill it counts the migrations, the distinct recipients and the distinct
 declared runtimes, so the figure cannot be raised after the fact. The qualifying
-event is always the append-only receipt journal. The recipient comes from the
-`transferred` event of a chain a transfer opened, and from the INSERT-only
-receipt shell of a chain the recipient opened for itself — never from any
-mutable column, and never from the shell when a transfer event exists but
-cannot be read: such a chain contributes nothing and is reported as
-`recipients_unattributed`. Each row names the journals its own numbers came
-from. A skill that never migrated is a row of zeroes rather than a missing row,
+event is always the append-only receipt journal, and so is the recipient: from
+the `transferred` event of a chain a sender opened, and from the `requested`
+event of a chain the recipient opened for itself. Both rows are written by the
+registry in the transaction that opens the chain, and neither is read from
+anywhere else — a chain whose opening event is missing or unreadable contributes
+nothing at all and is reported as `recipients_unattributed`. Each row names the
+opening events its own numbers came from. A skill that never migrated is a row of zeroes rather than a missing row,
 a runtime that could not be read is reported as unknown rather than silently
 dropped to zero, and every row states its source and the window it was counted
 over.

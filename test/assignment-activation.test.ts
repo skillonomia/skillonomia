@@ -1132,7 +1132,11 @@ test("the deployment tools are one step each, and their hints tell the truth abo
   for (const name of ["assignment.activate", "assignment.pause", "assignment.revoke"]) {
     const t = tools[name];
     assert.equal(t.annotations.readOnlyHint, false, `${name} writes`);
-    assert.equal(t.annotations.destructiveHint, true, `${name} is destructive`);
+    // `destructiveHint` and `idempotentHint` are NOT asserted here as
+    // literals. Both are statements about BEHAVIOUR, and both are proved in
+    // `test/p14-r2-invariants.test.ts` by driving every one of the 36 tools
+    // twice and comparing the hint with what the database did — a check over
+    // the shipped table rather than a value copied beside four names.
     // THE HONEST HINT, and the difference from every other tool in this
     // registry: these reach a filesystem that is not the registry's.
     assert.equal(t.annotations.openWorldHint, true, `${name} touches a runtime outside this registry and must say so`);
@@ -1144,7 +1148,6 @@ test("the deployment tools are one step each, and their hints tell the truth abo
   }
   const read = tools["assignment.list"];
   assert.equal(read.annotations.readOnlyHint, true, "reading deployments must be callable without an approval prompt");
-  assert.equal(read.annotations.destructiveHint, false);
   assert.equal(read.annotations.openWorldHint, false, "the read touches no runtime");
   assert.deepEqual(Object.keys(read.inputSchema.properties), [], "the read takes no arguments and activates nothing");
   // the read is not a mode of a write

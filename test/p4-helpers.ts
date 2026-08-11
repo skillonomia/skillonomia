@@ -66,6 +66,11 @@ export function p4Fixture(
     /** §6: where the richer §6 snapshot comes from. Absent = the stored
      *  self-reports, which is also the shipped default. */
     observations?: FleetObservationSource;
+    /** §6 per-key rate limit. Absent = the SHIPPED default, which is what every
+     *  suite gets; a sweep that drives all 36 tools more than once needs a
+     *  larger bucket to reach the behaviour it is measuring rather than the
+     *  limiter, and says so at its call site. */
+    rateLimit?: { capacity: number; refillPerSec: number };
   } = {},
 ): P4Fixture {
   const seed = seedGraph();
@@ -76,6 +81,7 @@ export function p4Fixture(
     runtimeRecords: opts.runtimeRecords,
     inventory: opts.inventory,
     observations: opts.observations,
+    rateLimit: opts.rateLimit,
   });
   const reviewer = agentCtx(seed.db, seed, "reviewer-a", "agent", "reviewer");
   const reviewer2 = agentCtx(seed.db, seed, "reviewer-a2", "agent", "reviewer");

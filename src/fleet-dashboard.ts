@@ -101,7 +101,7 @@ export const RECONCILIATION_FIELD = "reconciliation_state";
  * nothing, never as a dash.
  */
 /** The boundary a receipt-backed rating was taken over. */
-export const RATING_BOUNDARY = "ratings bound to a closed adoption receipt, all time";
+export const RATING_BOUNDARY = "ratings bound to a closed adoption receipt, all time; the scale is 1 to 5";
 
 export function plain(v: unknown, fallback: string): string {
   const s = v === null || v === undefined ? "" : String(v);
@@ -269,29 +269,96 @@ function answerOf(text: string): string {
 }
 
 /**
- * A RUN OF DIGITS A READER READS AS A COUNT — anywhere in a cell's answer, not
- * only as the whole of it.
+ * A FIGURE A READER READS AS A COUNT — in ANY notation, anywhere in the text.
  *
- * WHY THIS EXISTS. The sweep used to recognise a number only when the ENTIRE
- * cell was digits, or when the cell already declared `kind: measured_number`.
- * So `steps: 4 | files: 7` and `declared steps: 3` walked straight past it:
- * `auditRenderedHtml` reported ZERO violations and `number_cells: 0` for pages
- * carrying them. A guard that cannot see the thing it exists to check is worse
- * than no guard, because its silence is read as a pass.
+ * WHY THIS EXISTS, TWICE OVER. The first sweep recognised a number only when the
+ * ENTIRE cell was digits, so `steps: 4 | files: 7` and `declared steps: 3`
+ * walked past it: `auditRenderedHtml` reported ZERO violations and
+ * `number_cells: 0` for pages carrying them. The second recognised a standalone
+ * run of digits and STOPPED THERE — `<td>4.5</td>` still returned nothing, and a
+ * rating average is exactly the figure this project argues about. A guard that
+ * cannot see the thing it exists to check is worse than no guard, because its
+ * silence is read as a pass; a guard fixed to the shape of the last example is
+ * the same guard with one more example in it.
  *
- * The boundary is deliberately narrow, and each exclusion is a real value on
- * these pages rather than a convenience:
- *
- *   `1.0.0`                    a semantic version — digits joined by dots
- *   `01K1M83S80…`              a ULID — digits joined to letters
- *   `2026-08-10T00:00:00.000Z` an instant — digits joined by `-`, `:` and `.`
- *   `4/5`, `v2`, `sha256:…`    joined by `/`, letters, `:`
- *
- * What is left is a standalone integer, which on these pages is always a COUNT
- * and therefore always something [I-3] requires a measurement state for.
+ * So the rule is inverted. It no longer enumerates the shapes that ARE numbers
+ * and hopes the list is complete. It takes every whitespace- or pipe-separated
+ * TOKEN of the text, asks whether that token is a figure in ANY of the notations
+ * a figure is written in — integer, decimal, negative, grouped by separators,
+ * exponential, percentage, fraction — and then removes the few tokens that are
+ * numerals without being COUNTS. The list that has to be complete is now the
+ * list of EXCLUSIONS, which is short, closed, and stated below with a reason for
+ * each, rather than the list of ways a person can write a number, which is not.
  */
-export function embeddedNumbers(answer: string): string[] {
-  return answer.match(/(?<![\w.:\-\/])\d+(?![\w.:\-\/])/g) ?? [];
+
+/** The numeric notations. Written as one grammar so a shape cannot be forgotten
+ *  by being implemented somewhere else. */
+const GROUPED_DIGITS = String.raw`\d{1,3}(?:[  ,'_]\d{3})+`;
+const NUMBER_TOKEN = new RegExp(
+  // sign · (grouped | plain) · fraction part · exponent · percent
+  String.raw`^[+−-]?(?:${GROUPED_DIGITS}|\d+)(?:[.,]\d+)?(?:[eE][+-]?\d+)?%?$`,
+);
+/** …and a ratio, which is two counts and therefore twice a figure. */
+const FRACTION_TOKEN = /^[+−-]?\d+\/\d+$/;
+
+/**
+ * THE EXCLUSIONS. Each one is a value that is written with digits and is NOT a
+ * count, so [I-3] has nothing to require of it. Each is narrow — it demands a
+ * distinctive shape or sigil, never merely "has a letter next to it" — and each
+ * carries the reason it is here. Anything not on this list that looks like a
+ * figure IS a figure.
+ */
+export const NOT_A_COUNT: ReadonlyArray<{ name: string; pattern: RegExp; why: string }> = [
+  {
+    name: "ulid",
+    pattern: /^[0-9A-HJKMNP-TV-Z]{26}$/,
+    why: "an identifier of exactly 26 Crockford base32 characters; it names a row, and no reader adds two of them",
+  },
+  {
+    name: "all_digit_ulid",
+    pattern: /^\d{26}$/,
+    why: "the degenerate ULID whose 26 characters happen to be digits — still an identifier, and the only reason the rule above is not enough",
+  },
+];
+
+/** True when a token that LOOKS like a figure is one of the listed non-counts. */
+function excludedFromCounting(token: string): boolean {
+  return NOT_A_COUNT.some((e) => e.pattern.test(token));
+}
+
+/**
+ * Tokens, with the punctuation a sentence wraps them in removed.
+ *
+ * `§`, `[`…`]`-with-a-letter and `-` INSIDE a token are deliberately NOT
+ * stripped: `§5.3` is a section, `[I-3]` is an invariant, `2026-08-10T…Z` is an
+ * instant, `1.0.0` is a semantic version, `sha256:…` is a digest, `v2` is a
+ * revision and `dogfood-01-echo-token` is a slug — none of them survives the
+ * grammar above once its non-numeric characters are left in place, which is why
+ * none of them needs an exclusion of its own. Only the punctuation a figure can
+ * genuinely be wrapped in — brackets, quotes, and terminal sentence marks — is
+ * taken off.
+ */
+function tokensOf(text: string): string[] {
+  return text
+    .split(/[\s|]+/)
+    .map((t) => t.replace(/^[([{«"'`]+/, "").replace(/[)\]}»"'`.,;:!?]+$/, ""))
+    .filter((t) => t.length > 0);
+}
+
+/**
+ * Every figure in `text`, in the order it is written.
+ *
+ * The name is kept from the sweep it replaces: callers ask "which numbers does
+ * this cell publish", and the answer used to be "the integers I recognise".
+ */
+export function embeddedNumbers(text: string): string[] {
+  const out: string[] = [];
+  for (const token of tokensOf(text)) {
+    if (!NUMBER_TOKEN.test(token) && !FRACTION_TOKEN.test(token)) continue;
+    if (excludedFromCounting(token)) continue;
+    out.push(token);
+  }
+  return out;
 }
 
 /**
@@ -339,6 +406,26 @@ function stateColumnFromText(text: string): StateColumn | null {
  *   4. `explicitLoadedClaim`, `forbiddenNoClaim`, `missingAttribute` — work 2's
  *      own guards, applied to the cells reconstructed from the bytes.
  */
+/** The method keys whose value may legitimately contain digits: the two that
+ *  STATE THE SELECTION. Everything else in a cell's method is prose, and a
+ *  figure in prose is a count nobody can check. */
+export const BOUNDARY_KEYS: readonly string[] = ["window", "boundary"];
+
+/** Every figure written into a cell's method text, with the key it hid in. */
+export function methodFigures(text: string): Array<{ key: string; figure: string }> {
+  const out: Array<{ key: string; figure: string }> = [];
+  const i = text.indexOf(SEP);
+  if (i < 0) return out;
+  for (const part of text.slice(i + SEP.length).split("·")) {
+    const m = /^\s*([a-z_]+):([\s\S]*)$/.exec(part);
+    if (m === null) continue;
+    const key = m[1]!;
+    if (BOUNDARY_KEYS.includes(key)) continue;
+    for (const figure of embeddedNumbers(m[2]!)) out.push({ key, figure });
+  }
+  return out;
+}
+
 export function auditCells(cells: readonly ParsedCell[]): RenderAudit {
   const violations: RenderViolation[] = [];
   const columns: StateColumn[] = [];
@@ -352,7 +439,13 @@ export function auditCells(cells: readonly ParsedCell[]): RenderAudit {
       });
       continue;
     }
-    if (/^\d+$/.test(text)) {
+    // THE WHOLE CELL IS A FIGURE — recognised by the SAME rule that finds a
+    // figure inside one, so the two guards cannot disagree about what a number
+    // is. It used to be its own `/^\d+$/`, which meant an identifier written
+    // entirely in digits was a violation here and not a violation one separator
+    // to the right.
+    const whole = embeddedNumbers(text);
+    if (whole.length === 1 && whole[0] === text) {
       violations.push({
         where: cell.where,
         problem: `a bare number \`${text}\` with no state, source or selection boundary [I-3]`,
@@ -385,10 +478,10 @@ export function auditCells(cells: readonly ParsedCell[]): RenderAudit {
       continue;
     }
     // A NUMBER INSIDE A CELL IS STILL A NUMBER [I-3]. Whatever else this cell
-    // is, a standalone integer in its ANSWER is a count, and a count that is
-    // not in a `measured_number` cell is a figure with no measurement state.
-    // The two cells that got past the old sweep — `steps: N | files: N` and
-    // `declared steps: N` — were exactly this.
+    // is, a figure in its ANSWER is a count, and a count that is not in a
+    // `measured_number` cell is a figure with no measurement state. The two
+    // cells that got past the first sweep — `steps: N | files: N` and `declared
+    // steps: N` — were exactly this, and `4.5` got past the second.
     if (kind !== "measured_number") {
       const embedded = embeddedNumbers(answer);
       if (embedded.length > 0) {
@@ -399,6 +492,24 @@ export function auditCells(cells: readonly ParsedCell[]): RenderAudit {
         });
         continue;
       }
+    }
+    // …AND SO IS A NUMBER IN THE METHOD. A figure moved out of the answer and
+    // into `why:` is still published, still read, and now has neither its own
+    // state nor its own source — a count inside a sentence, which is the thing
+    // [I-3] exists to refuse. The answer half of this sweep was passed by
+    // putting the number one separator to the right, so the sweep covers both.
+    //
+    // TWO KEYS ARE EXEMPT, and they are the two where a figure is not a count
+    // but the STATEMENT OF A BOUNDARY: `window` and `boundary` are where [I-3]
+    // requires the selection to be named, and a window named in milliseconds is
+    // that requirement being met rather than evaded.
+    const methodNumbers = methodFigures(text);
+    if (methodNumbers.length > 0) {
+      violations.push({
+        where: cell.where,
+        problem: `a bare number \`${methodNumbers[0]!.figure}\` inside the cell's \`${methodNumbers[0]!.key}:\` method text: a count moved out of the answer is still a count, and still has no state, source or boundary of its own [I-3]`,
+      });
+      continue;
     }
     if (kind === undefined) {
       if (TRIVALENT_WORDS.includes(answer)) {
@@ -643,8 +754,28 @@ export function auditRenderedJson(text: string): RenderAudit {
   for (const section of (payload?.sections ?? []) as any[]) {
     for (const [r, row] of ((section?.rows ?? []) as any[]).entries()) {
       rows += 1;
-      for (const field of (section?.fields ?? []) as string[]) {
+      // EVERY MEMBER OF THE ROW, not only the ones the section declared.
+      //
+      // The sweep used to walk `section.fields`, which is the table's HEADER
+      // list — so a member the renderer put in the row and the section did not
+      // announce was served to the client and audited by nobody. That is the
+      // same failure the HTML sweep had in its first form: a guard over a subset
+      // chosen by the thing being guarded. The union is taken in the declared
+      // order first, so the output still reads in the order the table does, and
+      // a declared field MISSING from the row is a violation of its own rather
+      // than a silent skip.
+      const declared = (section?.fields ?? []) as string[];
+      const present = row === null || typeof row !== "object" ? [] : Object.keys(row);
+      const fields = [...declared, ...present.filter((k) => !declared.includes(k))];
+      for (const field of fields) {
         const where = `${payload?.view}/${section?.key}/row#${r}/${field}`;
+        if (!present.includes(field)) {
+          violations.push({
+            where,
+            problem: `the section declares the field \`${field}\` and the row does not carry it: a column with no value renders as a blank cell [I-1]`,
+          });
+          continue;
+        }
         const value = row?.[field];
         if (typeof value !== "string") {
           violations.push({
@@ -838,7 +969,10 @@ export function fleetSections(input: FleetViewInput): DashboardSection[] {
       last_feedback_score: numberCell(
         a.last_feedback === null
           ? registryUnknown("outcome", RATING_BOUNDARY, "this principal has recorded no rating")
-          : registryCount(a.last_feedback.score, "outcome", RATING_BOUNDARY, "the most recent rating this principal recorded, out of 5"),
+          // the SCALE lives in the boundary, which is where a method belongs;
+          // "out of 5" in the reason was a figure in prose with no state of its
+          // own, which is the same defect one separator to the right
+          : registryCount(a.last_feedback.score, "outcome", RATING_BOUNDARY, "the most recent rating this principal recorded"),
       ),
       last_feedback:
         a.last_feedback === null
@@ -1429,7 +1563,7 @@ export function outcomeSections(input: OutcomeViewInput): DashboardSection[] {
     avg_rating: numberCell(
       v.avg_rating === null
         ? registryUnknown("outcome", RATING_BOUNDARY, "no receipt-backed rating has been recorded for this version")
-        : { ...registryCount(0, "outcome", RATING_BOUNDARY, "receipt_backed_average, out of 5"), value: v.avg_rating },
+        : { ...registryCount(0, "outcome", RATING_BOUNDARY, "receipt_backed_average"), value: v.avg_rating },
     ),
     failure_modes: list(v.failure_modes, "no failure mode has been reported"),
     verdict: plain(v.verdict, "unknown"),

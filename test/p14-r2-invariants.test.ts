@@ -19,7 +19,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -44,9 +44,9 @@ import {
 } from "./p4-helpers.ts";
 import { buildPackage, makeManifest } from "./p2-helpers.ts";
 import { DASHBOARD_VIEWS } from "../src/dashboard.ts";
-import { auditRenderedHtml, auditRenderedJson, parseTables } from "../src/fleet-dashboard.ts";
+import { auditRenderedHtml, auditRenderedJson, NOT_A_COUNT, parseTables } from "../src/fleet-dashboard.ts";
 import { MCP_TOOLS } from "../src/mcp.ts";
-import { MIGRATION_SOURCE } from "../src/skill-migrations.ts";
+import { MIGRATION_SOURCE, RECIPIENT_SOURCE_REQUEST, RECIPIENT_SOURCE_TRANSFER } from "../src/skill-migrations.ts";
 import { FixedActivationRoots } from "../src/activation.ts";
 import { writeTar } from "../src/archive.ts";
 import { TRANSFER_ACTION } from "../src/transfer.ts";
@@ -365,11 +365,15 @@ test("THE LATEST REPORT WINS, and it wins on every report filed in one milliseco
 // not named. And the number then published `receipt_events` as its source —
 // [I-3]'s failure with an attribution attached, which is worse than none.
 //
-// The two kinds of chain are not the same and are not treated the same:
-// a chain a TRANSFER opened states its recipient on the `transferred` row and
-// is answered from there or not at all; a chain the recipient opened ITSELF
-// never had such an event, and its recipient is the INSERT-only receipt shell —
-// which the source phrase now says out loud.
+// Round 2 closed the fail-open and left the OTHER half standing: a chain the
+// recipient opened for itself was still answered from `adoption_receipts`, so
+// the sentence this surface is specified by — every count is computed from
+// `receipt_events` — held for push chains and quietly did not hold for pull
+// ones. `0009` gives the pull its own opening event, `requested`, carrying the
+// typed recipient on the same INSERT-only row in the same transaction. Both
+// kinds of chain are now answered from the journal or not answered at all, and
+// a chain that carries NO opening event — history from before `0009` — is
+// dropped and reported rather than answered from a second table.
 
 /** A chain whose `transferred` row carries a payload no build can produce.
  *
@@ -398,6 +402,49 @@ function chainWithDamagedRecipient(fx: P4Fixture, v: any, key: string, payload: 
   return receipt;
 }
 
+/**
+ * A chain carrying NO opening event at all — every row written by hand.
+ *
+ * This is what an instance's history looks like across `0009`: a receipt shell
+ * and a completed chain whose recipient was never recorded on the journal,
+ * because at the time it was written the journal had nowhere to record it. No
+ * back-fill invents one, so the counter has nothing to read and must drop it.
+ */
+function chainWithNoOpeningEvent(fx: P4Fixture, v: any, tag: string): string {
+  const requestId = `01LGRQ${tag}`.padEnd(26, "0").slice(0, 26);
+  const receiptId = `01LGRC${tag}`.padEnd(26, "0").slice(0, 26);
+  fx.db
+    .prepare(
+      `INSERT INTO adoption_requests(id, skill_version_id, adopter_agent_id, state, attempt_count,
+         next_attempt_at_ms, created_at_ms) VALUES (?,?,?, 'pushed', 0, 0, ?)`,
+    )
+    .run(requestId, v.versionId, fx.member.agent_id, NOW);
+  fx.db
+    .prepare(
+      "INSERT INTO adoption_receipts(id, adoption_request_id, skill_version_id, adopter_agent_id, created_at_ms) VALUES (?,?,?,?,?)",
+    )
+    .run(receiptId, requestId, v.versionId, fx.member.agent_id, NOW);
+  fx.db
+    .prepare(
+      `INSERT INTO receipt_events(id, adoption_receipt_id, event, event_seq, environment_json, server_at_ms, idempotency_key)
+       VALUES (?,?, 'delivered', 1, ?, ?, ?)`,
+    )
+    .run(`01LGDL${tag}`.padEnd(26, "0").slice(0, 26), receiptId, JSON.stringify(env()), NOW, `lg-d-${tag}`);
+  fx.db
+    .prepare(
+      `INSERT INTO receipt_events(id, adoption_receipt_id, event, event_seq, evidence_json, server_at_ms, idempotency_key)
+       VALUES (?,?, 'adopted', 2, ?, ?, ?)`,
+    )
+    .run(
+      `01LGAD${tag}`.padEnd(26, "0").slice(0, 26),
+      receiptId,
+      JSON.stringify(goodEvidence(v.manifest)),
+      NOW,
+      `lg-a-${tag}`,
+    );
+  return receiptId;
+}
+
 function migrationRow(fx: P4Fixture, slug: string): any {
   const res = rest(fx, "GET", "/v1/migrations", fx.keys.owner);
   assert.equal(res.status, 200, res.raw);
@@ -414,8 +461,10 @@ test("[I-6] a chain whose own recipient event cannot be read counts ZERO, and no
 
   chainWithDamagedRecipient(fx, damaged, fx.keys.member, "{not json at all", "A");
   chainWithDamagedRecipient(fx, empty, fx.keys.member, null, "B");
-  // …and a chain NO transfer opened, which is the case the shell legitimately
-  // answers. Without it the sweep would prove only that nothing is ever counted.
+  // …and a chain NO transfer opened, driven entirely through the surfaces:
+  // this is the PULL half, and after `0009` it is answered from its own
+  // `requested` event. Without it the sweep would prove only that nothing is
+  // ever counted.
   adoptThroughSurfaces(fx, honest, fx.keys.member);
 
   const d = migrationRow(fx, "mig-damaged");
@@ -449,47 +498,240 @@ test("[I-6] a chain whose own recipient event cannot be read counts ZERO, and no
   assert.equal(h.row.migrations, 1, "the fixture must count SOMETHING, or this test proves nothing");
   assert.equal(h.row.distinct_recipients, 1);
   assert.equal(h.row.recipients_unattributed, 0);
-  assert.deepEqual(h.row.recipient_sources, ["adoption_receipts"]);
-  // [I-3]: the number names the journal it was obtained from, in words
-  assert.match(h.row.source, /adoption_receipts/, "a figure keyed on the receipt shell published only `receipt_events`");
-  assert.match(h.row.source, /receipt_events/, "the qualifying event's journal is still named");
-  assert.match(h.envelope_source, /adoption_receipts/, "the envelope's source must name the truth too");
+  assert.deepEqual(h.row.recipient_sources, ["receipt_events.requested"]);
+  // [I-3]: the number names what it was obtained from, in words — the journal,
+  // and the opening event within it
+  assert.match(h.row.source, /receipt_events/, "the journal every count is specified to come from is not named");
+  assert.match(h.row.source, /`requested`/, "the opening event this row's recipient was read from is not named");
+  assert.doesNotMatch(h.row.source, /adoption_receipts/, "a count published a table outside the journal as its source");
+  assert.match(h.envelope_source, /`requested`/, "the envelope's source must name the truth too");
   // and a row that read nothing does not invent an attribution
   assert.equal(d.row.source, MIGRATION_SOURCE);
   fx.db.close();
 });
 
-test("[I-6] the mutation that restores the fallback is killed", async () => {
+test("[I-6] the mutation that puts the receipt shell back into the counter is killed", async () => {
+  // The mutation is the WHOLE fallback, restored the way it would have to be
+  // restored: the shell's adopter selected back into the query, and
+  // `recipientOf` reaching for it whenever the journal has nothing to say. Both
+  // halves are needed — the column is no longer selected at all — and that is
+  // the point of running the mutation over two templates rather than one: it
+  // shows the recipient has left the query, not only the branch.
   const m = await mutantTree("skill-migrations.ts", [
     [
+      `v.skill_id AS skill_id, r.skill_version_id AS version,
+              d.environment_json AS ctx,`,
+      `v.skill_id AS skill_id, r.skill_version_id AS version,
+              r.adopter_agent_id AS recipient, d.environment_json AS ctx,`,
+    ],
+    [
+      `  if (row.transfer_event_id !== null) return parse(row.transferred_to, RECIPIENT_SOURCE_TRANSFER);
+  if (row.request_event_id !== null) return parse(row.requested_to, RECIPIENT_SOURCE_REQUEST);
+  return null;`,
       `  if (row.transfer_event_id !== null) {
-    if (row.transferred_to === null) return null;
-    try {
-      const id = JSON.parse(row.transferred_to)?.id;
-      if (typeof id === "string" && id.length > 0) return { id, from: RECIPIENT_SOURCE_EVENT };
-    } catch {`,
-      `  if (row.transfer_event_id !== null) {
-    if (row.transferred_to === null) return { id: row.recipient, from: RECIPIENT_SOURCE_SHELL };
-    try {
-      const id = JSON.parse(row.transferred_to)?.id;
-      if (typeof id === "string" && id.length > 0) return { id, from: RECIPIENT_SOURCE_EVENT };
-    } catch {
-      return { id: row.recipient, from: RECIPIENT_SOURCE_SHELL };`,
+    return parse(row.transferred_to, RECIPIENT_SOURCE_TRANSFER)
+      ?? { id: (row as any).recipient, from: RECIPIENT_SOURCE_REQUEST };
+  }
+  if (row.request_event_id !== null) return parse(row.requested_to, RECIPIENT_SOURCE_REQUEST);
+  return { id: (row as any).recipient, from: RECIPIENT_SOURCE_REQUEST };`,
     ],
   ]);
   const fx = p4Fixture();
   const damaged = reviewedVersion(fx, "mig-damaged");
+  const legacy = reviewedVersion(fx, "mig-legacy");
   chainWithDamagedRecipient(fx, damaged, fx.keys.member, "{not json at all", "A");
-  const mutated = m["skill-migrations.ts"]!.migrationCounts(fx.db, [{ skill_id: damaged.skillId, slug: "mig-damaged" }]);
-  console.log(`  [mutant answered] migrations=${mutated[0].migrations}, recipients=${mutated[0].distinct_recipients}`);
-  killed("the receipt shell stood in for a `transferred` event nobody could read [I-6]", () => {
-    assert.equal(mutated[0].migrations, 0);
-    assert.equal(mutated[0].distinct_recipients, 0);
+  chainWithNoOpeningEvent(fx, legacy, "L");
+  const subjects = [
+    { skill_id: damaged.skillId, slug: "mig-damaged" },
+    { skill_id: legacy.skillId, slug: "mig-legacy" },
+  ];
+  const mutated = m["skill-migrations.ts"]!.migrationCounts(fx.db, subjects);
+  for (const row of mutated) {
+    console.log(`  [mutant answered] ${row.slug}: migrations=${row.migrations}, recipients=${row.distinct_recipients}`);
+  }
+  killed("the receipt shell stood in for an opening event the journal could not answer with [I-6]", () => {
+    for (const row of mutated) {
+      assert.equal(row.migrations, 0, `${row.slug}`);
+      assert.equal(row.distinct_recipients, 0, `${row.slug}`);
+    }
   });
-  // …and the shipped counter, on the same rows, answers zero
+  // …and the shipped counter, on the same rows, answers zero for BOTH
   const { migrationCounts } = await import("../src/skill-migrations.ts");
-  const honest = migrationCounts(fx.db, [{ skill_id: damaged.skillId, slug: "mig-damaged" }]);
-  assert.equal(honest[0]!.migrations, 0, "the shipped counter must drop it, or the mutation proves nothing");
+  const honest = migrationCounts(fx.db, subjects);
+  for (const row of honest) {
+    assert.equal(row.migrations, 0, `the shipped counter must drop ${row.slug}, or the mutation proves nothing`);
+    assert.equal(row.recipients_unattributed, 1, `${row.slug} must be REPORTED as dropped, not silently omitted`);
+  }
+  fx.db.close();
+});
+
+test("[I-6] a chain that carries NO opening event is dropped and REPORTED, never answered from the shell", () => {
+  // The class the round-2 fix left standing, in its purest form: a completed,
+  // evidenced chain whose recipient was never written to the journal. Before
+  // `0009` the shell answered for it and the figure published `receipt_events`.
+  const fx = p4Fixture();
+  const legacy = reviewedVersion(fx, "mig-legacy");
+  const live = reviewedVersion(fx, "mig-live");
+  chainWithNoOpeningEvent(fx, legacy, "L");
+  adoptThroughSurfaces(fx, live, fx.keys.member);
+
+  const l = migrationRow(fx, "mig-legacy");
+  console.log(
+    `[I-6] chain with no opening event → migrations=${l.row.migrations}, ` +
+      `recipients_unattributed=${l.row.recipients_unattributed}, sources=${JSON.stringify(l.row.recipient_sources)}`,
+  );
+  assert.equal(l.row.migrations, 0, "a chain naming no recipient on the journal was counted anyway");
+  assert.equal(l.row.distinct_recipients, 0, "the receipt shell was credited as the recipient");
+  assert.equal(l.row.distinct_runtimes, 0, "a dropped chain still contributed a runtime");
+  assert.equal(l.row.recipients_unattributed, 1, "a dropped chain is REPORTED, never silently omitted [I-1]");
+  assert.deepEqual(l.row.recipient_sources, [], "nothing was read, so nothing may be named");
+
+  // the discriminator: a chain the SAME surfaces opened today is counted, so
+  // the zeroes above are a fact about that chain and not about the counter
+  const v = migrationRow(fx, "mig-live");
+  assert.equal(v.row.migrations, 1, "the fixture must count SOMETHING, or this test proves nothing");
+  assert.deepEqual(v.row.recipient_sources, ["receipt_events.requested"]);
+  fx.db.close();
+});
+
+// ---------------------------------------------------------------------------
+// D-8, PROVED BY A DIFFERENT KIND OF PROBE
+//
+// The probe that FOUND this defect read the counter's OUTPUT — `recipient_
+// sources` said `adoption_receipts`, and the source phrase said so in words.
+// Fixing what a reading of the output shows is exactly how a fix comes to treat
+// the probe instead of the class: the next place the shell is consulted has its
+// own output, and nobody is reading that one.
+//
+// So the proof below never looks at an answer. It intercepts the DATABASE
+// HANDLE and inspects every SQL statement the counter prepares, refusing any
+// that reaches for a recipient outside `receipt_events`. `SPEC` says "Every
+// count MUST be computed from `receipt_events`"; this asks the statements
+// themselves whether that is true, which is a question the output cannot answer
+// and a question no future rewording of a source phrase can pass.
+// ---------------------------------------------------------------------------
+
+/** Column and table names that are NOT the receipt journal, and would each be a
+ *  different way of answering "who received it" from somewhere else. */
+const OUTSIDE_THE_JOURNAL: ReadonlyArray<[RegExp, string]> = [
+  [/adopter_agent_id/i, "`adoption_receipts.adopter_agent_id` — the receipt shell"],
+  [/requester_context_json/i, "`adoption_requests.requester_context_json` — the mutable request cache"],
+  [/\badoption_requests\b/i, "the `adoption_requests` table"],
+  [/\btransfers\b/i, "the `transfers` table — a record of the operation, not the journal"],
+];
+
+test("[I-6]/D-8 every statement the counter runs reads its recipient from `receipt_events` and from nothing else", async () => {
+  const { migrationCounts, migrationTotals } = await import("../src/skill-migrations.ts");
+  const fx = p4Fixture();
+  const pulled = reviewedVersion(fx, "sql-pull");
+  const pushed = publishedVersion(fx, "sql-push");
+  // one of EACH kind of chain, so the sweep covers both branches of the answer
+  adoptThroughSurfaces(fx, pulled, fx.keys.member);
+  const grant = rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
+    agent_id: fx.owner.agent_id,
+    action: TRANSFER_ACTION,
+    recipient_scope: "local_agent",
+  });
+  assert.equal(grant.status, 201, grant.raw);
+  const sent = rest(fx, "POST", `/v1/versions/${pushed.versionId}/transfers`, fx.keys.owner, {
+    recipient: { kind: "local_agent", ref: fx.reviewer.agent_id },
+  });
+  assert.equal(sent.status, 201, sent.raw);
+  const receipt = sent.body.receipt_id as string;
+  assert.equal(rest(fx, "POST", `/v1/receipts/${receipt}/events`, fx.keys.reviewer, { event: "delivered", environment: env() }).status, 200);
+  assert.equal(rest(fx, "POST", `/v1/receipts/${receipt}/events`, fx.keys.reviewer, { event: "attempted" }).status, 200);
+  assert.equal(
+    rest(fx, "POST", `/v1/receipts/${receipt}/events`, fx.keys.reviewer, { event: "adopted", evidence: goodEvidence(pushed.manifest) }).status,
+    200,
+  );
+
+  // the interception. Every `prepare` is recorded; a statement reaching outside
+  // the journal for a recipient throws, so the counter cannot answer at all
+  // rather than answering and being audited afterwards.
+  const seen: string[] = [];
+  const refusals: string[] = [];
+  const guarded = {
+    exec: (sql: string) => fx.db.exec(sql),
+    close: () => {},
+    prepare: (sql: string) => {
+      seen.push(sql);
+      for (const [pattern, what] of OUTSIDE_THE_JOURNAL) {
+        if (pattern.test(sql)) refusals.push(`${what} appears in a statement the counter runs`);
+      }
+      return fx.db.prepare(sql);
+    },
+  };
+
+  const subjects = [
+    { skill_id: pulled.skillId, slug: "sql-pull" },
+    { skill_id: pushed.skillId, slug: "sql-push" },
+  ];
+  const rows = migrationCounts(guarded as any, subjects);
+  const totals = migrationTotals(guarded as any);
+  console.log(`[D-8] statements the counter prepared: ${seen.length}`);
+  console.log(`[D-8] tables named across them: ${JSON.stringify([...new Set(seen.join(" ").match(/FROM\s+(\w+)|JOIN\s+(\w+)/gi) ?? [])])}`);
+  for (const row of rows) {
+    console.log(`[D-8] ${row.slug}: migrations=${row.migrations}, sources=${JSON.stringify(row.recipient_sources)}`);
+  }
+
+  // A SWEEP OVER NOTHING PROVES NOTHING, twice over: the counter must have run
+  // statements, and it must have COUNTED something with them.
+  assert.ok(seen.length > 0, "the interception saw no statement at all");
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0]!.migrations, 1, "the pull chain must count, or the sweep is over an empty answer");
+  assert.equal(rows[1]!.migrations, 1, "the push chain must count, or the sweep is over an empty answer");
+  assert.equal(totals.migrations, 2);
+  assert.deepEqual(rows[0]!.recipient_sources, ["receipt_events.requested"]);
+  assert.deepEqual(rows[1]!.recipient_sources, ["receipt_events.transferred"]);
+  assert.deepEqual(refusals, [], "a statement of the migration counter reached outside `receipt_events`");
+  // …and the journal IS what it read: the assertion above would also hold on a
+  // counter that read nothing at all.
+  assert.ok(
+    seen.some((sql) => /receipt_events/i.test(sql)),
+    "no statement of the counter names `receipt_events`",
+  );
+  fx.db.close();
+});
+
+test("[I-6]/D-8 the interception probe bites: a counter that reads the shell is refused by it", async () => {
+  // The guard above is a guard, so it is shown to fail on the code it exists to
+  // catch — the round-2 counter, which selected the shell's adopter and answered
+  // pull chains from it.
+  const m = await mutantTree("skill-migrations.ts", [
+    [
+      `v.skill_id AS skill_id, r.skill_version_id AS version,
+              d.environment_json AS ctx,`,
+      `v.skill_id AS skill_id, r.skill_version_id AS version,
+              r.adopter_agent_id AS recipient, d.environment_json AS ctx,`,
+    ],
+    [
+      `  if (row.request_event_id !== null) return parse(row.requested_to, RECIPIENT_SOURCE_REQUEST);
+  return null;`,
+      `  return { id: (row as any).recipient, from: RECIPIENT_SOURCE_REQUEST };`,
+    ],
+  ]);
+  const fx = p4Fixture();
+  const pulled = reviewedVersion(fx, "sql-pull-mutant");
+  adoptThroughSurfaces(fx, pulled, fx.keys.member);
+  const refusals: string[] = [];
+  const guarded = {
+    exec: (sql: string) => fx.db.exec(sql),
+    close: () => {},
+    prepare: (sql: string) => {
+      for (const [pattern, what] of OUTSIDE_THE_JOURNAL) if (pattern.test(sql)) refusals.push(what);
+      return fx.db.prepare(sql);
+    },
+  };
+  const mutated = m["skill-migrations.ts"]!.migrationCounts(guarded as any, [
+    { skill_id: pulled.skillId, slug: "sql-pull-mutant" },
+  ]);
+  console.log(`  [mutant answered] migrations=${mutated[0].migrations}, refusals=${JSON.stringify(refusals)}`);
+  killed("a counter selecting the receipt shell's adopter passed the statement sweep", () => {
+    assert.deepEqual(refusals, [], "a statement of the migration counter reached outside `receipt_events`");
+  });
+  // and the mutant really did answer from the shell — otherwise the refusal
+  // above could have come from a statement that read the column and ignored it
+  assert.equal(mutated[0].migrations, 1, "the mutant must still count, or its refusal is about nothing");
   fx.db.close();
 });
 
@@ -530,7 +772,16 @@ function freshArchive(fx: P4Fixture): Buffer {
 
 /** A SOURCE tree for surface 14: a manifest and a `SKILL.md`, no integrity. */
 function freshSource(fx: P4Fixture): Buffer {
-  const manifest: any = makeManifest({ access_policy: "workspace", semantic_version: `2.0.${++freshN}` });
+  const manifest: any = makeManifest({
+    access_policy: "workspace",
+    semantic_version: `2.0.${++freshN}`,
+    // D-2: surface 14 refuses a source that does not say what success is
+    outcome_contract: {
+      check: { kind: "exit_code", exit_code: 0 },
+      evidence: ["exit_code"],
+      unknown: "no evaluated run was reported, which is not a failure",
+    },
+  });
   delete manifest.integrity;
   delete manifest.author_agent;
   const files = new Map<string, Buffer>();
@@ -593,7 +844,14 @@ function toolDrive(): { fx: P4Fixture; args: Map<string, { key: string; args: an
   const base = tempBase("skln-r2-tools-");
   const activationRoot = join(base, "activation");
   mkdirSync(activationRoot, { recursive: true });
-  const fx = p4Fixture({ activation: new FixedActivationRoots(activationRoot, "claude_code_project") });
+  // The bucket is widened HERE and nowhere near the product: §6's shipped
+  // per-key limit is 60, the setup below spends a good part of it, and a sweep
+  // that drives 36 tools TWICE would otherwise be measuring the limiter instead
+  // of the tools. Nothing about the limit is under test in this file.
+  const fx = p4Fixture({
+    activation: new FixedActivationRoots(activationRoot, "claude_code_project"),
+    rateLimit: { capacity: 100_000, refillPerSec: 0 },
+  });
 
   const draft = createVersion(fx, "mcp-draft");
   const toLint = createVersion(fx, "mcp-lint");
@@ -778,6 +1036,257 @@ test("[I-8] every tool's `readOnlyHint` is checked against whether the database 
   fx.db.close();
 });
 
+// ---------------------------------------------------------------------------
+// [I-8], EVERY HINT — not only the one a probe happened to read
+//
+// Round 2 was given ONE defect: 23 tools carried no annotations. It added the
+// blocks and checked `readOnlyHint` against whether the database MOVED — a real
+// sweep, over the whole table, and the fix was accepted on it. What it did not
+// check is what it had just written: `skill.transfer` was given
+// `idempotentHint: true` with a COMMENT BESIDE IT admitting that a repeat
+// without an `idempotency_key` creates a second transfer. A guard over one hint
+// legitimised a false statement in the other two.
+//
+// `idempotentHint` and `destructiveHint` are statements about behaviour, in the
+// payload of `tools/list`, that a client acts on by not asking. So each is
+// given a mechanical meaning and compared with what the tool DOES:
+//
+//   readOnlyHint    true  ⟺ the call left every table untouched
+//   idempotentHint  true  ⟺ a SECOND call with the SAME arguments and NO
+//                           idempotency key left the database as the first left
+//                           it. That is the API's own definition: repeating the
+//                           call has no additional effect. A repeat that is
+//                           REFUSED satisfies it — nothing additional happened.
+//   destructiveHint true  ⟺ the call changed or removed a row that already
+//                           existed. A call that only INSERTS is additive, which
+//                           is the word the protocol uses for `false`.
+//
+// The third is the one that cannot be fudged by measuring the same thing twice:
+// a purely additive tool that declares itself destructive is telling a client to
+// ask a question it does not need to ask, which trains the client to ask about
+// nothing — the failure round 2's own comment named for the readOnly hint.
+// ---------------------------------------------------------------------------
+
+/**
+ * One `tools/call`, tolerating BOTH failure shapes.
+ *
+ * A tool that refuses answers with `isError`; a request the adapter itself
+ * refuses answers with a JSON-RPC `error` and no `result` at all. The second
+ * call of a pair reaches the second shape often — that is what a refused repeat
+ * looks like — and a helper that assumed the first would crash the sweep on the
+ * very behaviour it is measuring.
+ */
+function callTool(fx: P4Fixture, key: string, name: string, args: any): { ok: boolean } {
+  const res = rest(fx, "POST", "/mcp", key, {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: { name, arguments: args },
+  });
+  const result = res.body?.result;
+  if (result === undefined || result === null) return { ok: false };
+  return { ok: result.isError !== true };
+}
+
+/** Every row of every table, as a multiset of JSON strings per table. */
+function dbRows(fx: P4Fixture): Map<string, Map<string, number>> {
+  // `sqlite_%` is EXCLUDED, and this is the one narrow exclusion of the sweep.
+  // `sqlite_sequence` is the engine's AUTOINCREMENT bookkeeping for
+  // `transparency_log`, whose `seq` is `INTEGER PRIMARY KEY AUTOINCREMENT`:
+  // appending one row to an INSERT-only journal moves that counter, so counting
+  // it as "a row that already existed was changed" would make every tool that
+  // writes a transparency-log entry `destructive` — which is the opposite of
+  // what appending to an append-only log is.
+  const tables = (
+    fx.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+      .all() as Array<{ name: string }>
+  ).map((r) => r.name);
+  const out = new Map<string, Map<string, number>>();
+  for (const t of tables) {
+    const counts = new Map<string, number>();
+    for (const row of fx.db.prepare(`SELECT * FROM "${t}"`).all() as unknown[]) {
+      const key = JSON.stringify(row);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    out.set(t, counts);
+  }
+  return out;
+}
+
+/** What one call did to the database, in the two dimensions the hints claim. */
+function diffOf(
+  before: Map<string, Map<string, number>>,
+  after: Map<string, Map<string, number>>,
+): { wrote: boolean; changedExisting: boolean; changedTables: string[] } {
+  let wrote = false;
+  const changedTables: string[] = [];
+  const tables = new Set([...before.keys(), ...after.keys()]);
+  for (const t of tables) {
+    const b = before.get(t) ?? new Map();
+    const a = after.get(t) ?? new Map();
+    for (const [row, n] of b) {
+      const m = a.get(row) ?? 0;
+      // a row that was there and is not there any more was UPDATED or DELETED —
+      // the protocol's "destructive", as against an INSERT that only adds
+      if (m < n) {
+        wrote = true;
+        if (!changedTables.includes(t)) changedTables.push(t);
+      }
+    }
+    for (const [row, n] of a) if ((b.get(row) ?? 0) < n) wrote = true;
+  }
+  return { wrote, changedExisting: changedTables.length > 0, changedTables: changedTables.sort() };
+}
+
+interface ToolBehaviour {
+  /** the first call moved a table */
+  wrote: boolean;
+  /** the first call changed or removed a row that already existed */
+  changedExisting: boolean;
+  /** …and the tables it changed one in, named so the claim is auditable */
+  changedTables: string[];
+  /** a SECOND call with the same arguments and no idempotency key moved a table */
+  repeatWrote: boolean;
+  firstOk: boolean;
+  secondOk: boolean;
+}
+
+/**
+ * THE COMPARISON, as a pure function of the declared table and the observed
+ * behaviour — so the mutation below can break ONE member of the table at a time
+ * without rewriting a file, and every one of the 36 can be broken in turn.
+ */
+function hintViolations(
+  tools: ReadonlyArray<any>,
+  observed: ReadonlyMap<string, ToolBehaviour>,
+): string[] {
+  const out: string[] = [];
+  for (const tool of tools) {
+    const b = observed.get(tool.name);
+    if (b === undefined) {
+      out.push(`${tool.name}: readOnlyHint — the sweep could not drive this tool, so its hints are untested`);
+      continue;
+    }
+    const a = tool.annotations ?? {};
+    if (a.readOnlyHint === true && b.wrote) out.push(`${tool.name}: readOnlyHint declared true and the call wrote`);
+    if (a.readOnlyHint === false && !b.wrote) out.push(`${tool.name}: readOnlyHint declared false and the call changed nothing`);
+    if (a.readOnlyHint === true && a.destructiveHint === true) {
+      out.push(`${tool.name}: destructiveHint declared true on a tool declared read-only`);
+    }
+    if (a.destructiveHint === true && !b.changedExisting) {
+      out.push(`${tool.name}: destructiveHint declared true and the call only INSERTED — it is additive`);
+    }
+    if (a.destructiveHint === false && b.changedExisting) {
+      out.push(`${tool.name}: destructiveHint declared false and the call changed or removed an existing row`);
+    }
+    if (a.idempotentHint === true && b.repeatWrote) {
+      out.push(`${tool.name}: idempotentHint declared true and a repeat with the same arguments wrote again`);
+    }
+    if (a.idempotentHint === false && !b.repeatWrote) {
+      out.push(`${tool.name}: idempotentHint declared false and a repeat with the same arguments changed nothing`);
+    }
+  }
+  return out;
+}
+
+/** Drive every tool ONCE, then a SECOND time with the same arguments. */
+function observeEveryTool(): { fx: P4Fixture; observed: Map<string, ToolBehaviour> } {
+  const { fx, args } = toolDrive();
+  const names = (MCP_TOOLS as ReadonlyArray<any>).map((t) => t.name);
+  assert.deepEqual(
+    names.filter((n) => !args.has(n)),
+    [],
+    "a tool the sweep cannot drive is a tool the sweep does not check [I-8]",
+  );
+  const observed = new Map<string, ToolBehaviour>();
+  for (const tool of MCP_TOOLS as ReadonlyArray<any>) {
+    const drive = args.get(tool.name)!;
+    // NO idempotency key in either call: `withIdempotency` would replay the
+    // stored response of the first, and the question here is what the tool does
+    // when a client simply calls it twice — which is what the hint answers.
+    const before = dbRows(fx);
+    const first = callTool(fx, drive.key, tool.name, drive.args);
+    const between = dbRows(fx);
+    const second = callTool(fx, drive.key, tool.name, drive.args);
+    const after = dbRows(fx);
+    const d1 = diffOf(before, between);
+    const d2 = diffOf(between, after);
+    observed.set(tool.name, {
+      wrote: d1.wrote,
+      changedExisting: d1.changedExisting,
+      changedTables: d1.changedTables,
+      repeatWrote: d2.wrote,
+      firstOk: first.ok,
+      secondOk: second.ok,
+    });
+  }
+  return { fx, observed };
+}
+
+test("[I-8] `idempotentHint` and `destructiveHint` are checked against what each of the 36 tools DOES", () => {
+  const { fx, observed } = observeEveryTool();
+  console.log(`[I-8] tools driven twice through the shipped adapter: ${observed.size}/${MCP_TOOLS.length}`);
+  console.log(
+    `  ${"tool".padEnd(26)} ${"wrote".padEnd(6)} ${"destr".padEnd(6)} ${"repeat".padEnd(7)} ${"1st".padEnd(4)} 2nd`,
+  );
+  for (const tool of MCP_TOOLS as ReadonlyArray<any>) {
+    const b = observed.get(tool.name)!;
+    console.log(
+      `  ${tool.name.padEnd(26)} ${String(b.wrote).padEnd(6)} ${String(b.changedExisting).padEnd(6)} ` +
+        `${String(b.repeatWrote).padEnd(7)} ${String(b.firstOk).padEnd(4)} ${String(b.secondOk).padEnd(6)} ${b.changedTables.join(",")}`,
+    );
+  }
+  const driven = [...observed.values()].filter((b) => b.firstOk).length;
+  assert.equal(driven, observed.size, "every tool must reach SUCCESS on its first call, or its hints are untested");
+
+  // THE SPLIT MUST BE A REAL SPLIT in all three dimensions — a table whose
+  // every tool answered the same way would pass the comparison by never
+  // exercising one side of it.
+  const writes = [...observed.values()].filter((b) => b.wrote).length;
+  const destructive = [...observed.values()].filter((b) => b.changedExisting).length;
+  const repeats = [...observed.values()].filter((b) => b.repeatWrote).length;
+  console.log(
+    `[I-8] observed: ${writes} write, ${observed.size - writes} do not; ${destructive} change an existing row, ` +
+      `${observed.size - destructive} are additive; ${repeats} write again on a repeat, ${observed.size - repeats} do not`,
+  );
+  for (const [what, n] of [["writing", writes], ["destructive", destructive], ["non-idempotent", repeats]] as const) {
+    assert.ok(n > 0 && n < observed.size, `every tool answered the same way for ${what}: the check distinguishes nothing`);
+  }
+
+  assert.deepEqual(hintViolations(MCP_TOOLS as ReadonlyArray<any>, observed), [], "hints that are not true of the tool they are on [I-8]");
+  fx.db.close();
+});
+
+test("[I-8] the guard is proved by breaking EVERY member of the table in turn, hint by hint", () => {
+  const { fx, observed } = observeEveryTool();
+  assert.deepEqual(hintViolations(MCP_TOOLS as ReadonlyArray<any>, observed), [], "the shipped table must be clean first");
+
+  const HINTS = ["readOnlyHint", "destructiveHint", "idempotentHint"] as const;
+  const survived: string[] = [];
+  let mutations = 0;
+  for (const tool of MCP_TOOLS as ReadonlyArray<any>) {
+    for (const hint of HINTS) {
+      mutations += 1;
+      // one member, one hint, flipped — the rest of the table untouched
+      const mutated = (MCP_TOOLS as ReadonlyArray<any>).map((t) =>
+        t.name === tool.name
+          ? { ...t, annotations: { ...t.annotations, [hint]: !t.annotations[hint] } }
+          : t,
+      );
+      const found = hintViolations(mutated, observed);
+      if (!found.some((v) => v.startsWith(`${tool.name}: `))) {
+        survived.push(`${tool.name}.${hint} = ${!tool.annotations[hint]} produced no violation`);
+      }
+    }
+  }
+  console.log(`[I-8] hint mutations applied: ${mutations} (${MCP_TOOLS.length} tools × ${HINTS.length} hints)`);
+  console.log(`[I-8] mutations the guard caught: ${mutations - survived.length}/${mutations}`);
+  assert.equal(mutations, MCP_TOOLS.length * HINTS.length, "the sweep must break every member, not a sample");
+  assert.deepEqual(survived, [], "hint lies the guard does not see — the guard is true of some members and not of all");
+  fx.db.close();
+});
+
 test("[I-8] the mutation that removes ONE tool's annotations, and the one that lies in it, are both killed", async () => {
   // (a) STRIPPED. `dashboard.view` had no annotations at all until this round,
   // and the suite that shipped never noticed — because it asked about the tools
@@ -811,14 +1320,40 @@ test("[I-8] the mutation that removes ONE tool's annotations, and the one that l
   // a table of expected values kept beside it.
   const lying = await mutantTree("mcp.ts", [
     [
-      `    // [I-8]: a WRITE. It creates a skill and a draft version and appends to
-    // the transparency log. \`idempotentHint\` is true in the sense the API means
-    // it: an \`idempotency_key\` replays the original response byte for byte, and
-    // the same (workspace, slug) converges on one skill.
-    annotations: {
-      readOnlyHint: false,`,
-      `    annotations: {
-      readOnlyHint: true,`,
+      `    name: "skill.create",`,
+      `    name: "skill.create", // the tool below is about to be told to lie`,
+    ],
+    [
+      `      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string" },
+        skill_id: { type: "string" },
+        archive_base64: { type: "string" },
+        idempotency_key: { type: "string" },
+      },
+      required: ["archive_base64"],
+    },`,
+      `      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string" },
+        skill_id: { type: "string" },
+        archive_base64: { type: "string" },
+        idempotency_key: { type: "string" },
+      },
+      required: ["archive_base64"],
+    },`,
     ],
   ]);
   const { fx, args } = toolDrive();
@@ -967,6 +1502,204 @@ test("[I-1]/[I-3] all ELEVEN views audit clean on the finished HTML and the fini
   fx.db.close();
 });
 
+// ---------------------------------------------------------------------------
+// [I-3], PROVED OVER A GENERATED CORPUS OF NOTATIONS
+//
+// The probe that FOUND the second blind zone was one example: `<td>4.5</td>`
+// returned zero violations. Round 2 had already been given one example — an
+// integer inside a sentence — and had widened the rule until that example was
+// caught, which is why the next example walked past. Fixing the example is how
+// a guard comes to be a list of the failures somebody happened to write down.
+//
+// So the proof below is not an example. It is the SET of ways a figure is
+// written — integers, decimals, negatives, group separators, exponents,
+// percentages, ratios, figures buried in prose — beside the set of things that
+// are written with digits and are NOT counts. Every member of both runs through
+// the SHIPPED sweep, over finished HTML bytes, and the table of what each
+// answered is printed. A rule that catches the first set and spares the second
+// is a rule about the class; one more notation added to this array is one more
+// row of the table, and no change to the guard's shape.
+// ---------------------------------------------------------------------------
+
+/** The body of the round-2 sweep, as the mutation that restores it. */
+const ROUND_TWO_SWEEP = `  const out: string[] = [];
+  for (const token of tokensOf(text)) {
+    if (!NUMBER_TOKEN.test(token) && !FRACTION_TOKEN.test(token)) continue;
+    if (excludedFromCounting(token)) continue;
+    out.push(token);
+  }
+  return out;`;
+
+interface Notation {
+  /** the cell text, exactly as a renderer would emit it */
+  cell: string;
+  /** whether a reader reads a COUNT in it */
+  figure: boolean;
+  why: string;
+}
+
+const NUMBER_NOTATIONS: readonly Notation[] = [
+  // ---- figures, in every notation a figure is written in
+  { cell: "7", figure: true, why: "a bare integer — the shape round 1 could see" },
+  { cell: "steps: 4 | files: 7", figure: true, why: "integers inside prose — the shape round 2 was given" },
+  { cell: "declared steps: 3", figure: true, why: "one integer inside prose" },
+  { cell: "4.5", figure: true, why: "a DECIMAL — the shape round 2 stopped in front of" },
+  { cell: "the average is 4.5 across the fleet", figure: true, why: "a decimal inside prose" },
+  { cell: "0.5", figure: true, why: "a decimal below one" },
+  { cell: "-3", figure: true, why: "a negative integer" },
+  { cell: "−3", figure: true, why: "a negative written with U+2212, which a renderer may emit" },
+  { cell: "-2.5", figure: true, why: "a negative decimal" },
+  { cell: "+4", figure: true, why: "an explicitly signed integer" },
+  { cell: "1,234", figure: true, why: "grouped by commas" },
+  { cell: "1 234", figure: true, why: "grouped by a narrow no-break space" },
+  { cell: "1'234", figure: true, why: "grouped by apostrophes" },
+  { cell: "12,345,678", figure: true, why: "grouped twice" },
+  { cell: "1.5e3", figure: true, why: "exponential" },
+  { cell: "2E-4", figure: true, why: "exponential, negative exponent, capital E" },
+  { cell: "50%", figure: true, why: "a percentage" },
+  { cell: "99.9%", figure: true, why: "a decimal percentage" },
+  { cell: "4/5", figure: true, why: "a ratio — two counts, and round 2 excluded it by construction" },
+  { cell: "gates passed 4/5, average 4.5", figure: true, why: "a ratio and a decimal in one sentence" },
+  { cell: "0", figure: true, why: "zero is a measured count and the one most often published bare" },
+  { cell: "(12)", figure: true, why: "a figure a renderer wrapped in brackets" },
+  { cell: "the count is 12.", figure: true, why: "a figure at the end of a sentence" },
+  { cell: "adopted 3 times", figure: true, why: "a figure between two words" },
+
+  // ---- NOT figures: values written with digits that no reader adds up
+  { cell: "1.0.0", figure: false, why: "a semantic version" },
+  { cell: "version 2.11.3 of the package", figure: false, why: "a semantic version inside prose" },
+  { cell: "01K1M83S80ZZZZZZZZZZZZZZZZ", figure: false, why: "a ULID — 26 Crockford base32 characters" },
+  { cell: "01234567890123456789012345", figure: false, why: "the degenerate all-digit ULID, still 26 characters" },
+  { cell: "2026-08-10T00:00:00.000Z", figure: false, why: "an ISO-8601 instant" },
+  { cell: "sha256:9f86d081884c7d65", figure: false, why: "a digest" },
+  { cell: "SKLN1-ABCDEFGHIJKLMNOP", figure: false, why: "a §5 arrival marker" },
+  { cell: "§5.3", figure: false, why: "a section of the specification" },
+  { cell: "the §5.3 receipt machine", figure: false, why: "a section reference inside prose" },
+  { cell: "[I-3]", figure: false, why: "an invariant reference" },
+  { cell: "a count with no method [I-3]", figure: false, why: "an invariant reference at the end of a sentence" },
+  { cell: "evidence-v1", figure: false, why: "a schema revision" },
+  { cell: "dogfood-01-echo-token", figure: false, why: "a slug carrying digits" },
+  { cell: "claude-code", figure: false, why: "a runtime id with no digits at all" },
+  { cell: "g1=pass", figure: false, why: "a gate identifier and its result" },
+  { cell: "seq#4: adopted", figure: false, why: "an ordinal, written joined to its sigil" },
+];
+
+/** One notation, rendered the way a view renders a plain cell, then swept. */
+function sweepNotation(cell: string): number {
+  const html = `<table><thead><tr><th>c</th></tr></thead><tbody><tr><td>${cell}</td></tr></tbody></table>`;
+  return auditRenderedHtml(html).violations.length;
+}
+
+test("[I-3] every notation a figure is written in is caught, and every non-count is spared", () => {
+  const figures = NUMBER_NOTATIONS.filter((n) => n.figure);
+  const others = NUMBER_NOTATIONS.filter((n) => !n.figure);
+  console.log(`[I-3] notations in the corpus: ${NUMBER_NOTATIONS.length} (${figures.length} figures, ${others.length} not counts)`);
+  console.log(`  ${"cell".padEnd(34)} ${"expect".padEnd(8)} ${"violations".padEnd(11)} why`);
+  const wrong: string[] = [];
+  for (const n of NUMBER_NOTATIONS) {
+    const violations = sweepNotation(n.cell);
+    const ok = n.figure ? violations > 0 : violations === 0;
+    console.log(
+      `  ${JSON.stringify(n.cell).padEnd(34)} ${(n.figure ? "figure" : "not").padEnd(8)} ${String(violations).padEnd(11)} ${n.why}${ok ? "" : "   <<< WRONG"}`,
+    );
+    if (!ok) {
+      wrong.push(
+        n.figure
+          ? `${JSON.stringify(n.cell)} is a figure (${n.why}) and the sweep reported nothing`
+          : `${JSON.stringify(n.cell)} is not a count (${n.why}) and the sweep reported ${violations}`,
+      );
+    }
+  }
+  // A CORPUS WITH ONLY ONE SIDE PROVES NOTHING: a guard that flags everything
+  // passes the first half, and one that flags nothing passes the second.
+  assert.ok(figures.length >= 20, `the corpus must exercise the notations broadly, found ${figures.length}`);
+  assert.ok(others.length >= 10, `the corpus must exercise the exclusions too, found ${others.length}`);
+  assert.deepEqual(wrong, [], "notations the render guard answers wrongly");
+
+  // …and the EXCLUSION LIST is small, closed and reasoned — a guard that spares
+  // the second half by having a long list of special cases has not been shown
+  // to be a guard about the class.
+  console.log(`[I-3] exclusions the sweep carries: ${NOT_A_COUNT.length}`);
+  for (const e of NOT_A_COUNT) console.log(`  ${e.name}: ${e.why}`);
+  assert.ok(NOT_A_COUNT.length <= 4, "the exclusion list has grown into a list of the examples that embarrassed it");
+  for (const e of NOT_A_COUNT) assert.ok(e.why.length > 30, `${e.name} carries no reason`);
+});
+
+test("[I-3] the round-2 sweep is killed by the corpus it was never shown", async () => {
+  // The mutation is the sweep AS IT SHIPPED IN ROUND 2 — a standalone run of
+  // digits, integers only. It caught the example it had been given and nothing
+  // else, and the table below is how many of the corpus's figures it misses.
+  const round2 = await mutantTree("fleet-dashboard.ts", [
+    [ROUND_TWO_SWEEP, `  return text.match(/(?<![\\w.:\\-\\/])\\d+(?![\\w.:\\-\\/])/g) ?? [];`],
+  ]);
+  const mutantSweep = round2["fleet-dashboard.ts"]!.auditRenderedHtml as (html: string) => { violations: unknown[] };
+  const missed: string[] = [];
+  const falselyFlagged: string[] = [];
+  for (const n of NUMBER_NOTATIONS) {
+    const html = `<table><thead><tr><th>c</th></tr></thead><tbody><tr><td>${n.cell}</td></tr></tbody></table>`;
+    const violations = mutantSweep(html).violations.length;
+    if (n.figure && violations === 0) missed.push(`${JSON.stringify(n.cell)} (${n.why})`);
+    if (!n.figure && violations > 0) falselyFlagged.push(JSON.stringify(n.cell));
+  }
+  console.log(`  [round-2 sweep] figures it cannot see: ${missed.length}/${NUMBER_NOTATIONS.filter((n) => n.figure).length}`);
+  for (const m of missed) console.log(`    missed ${m}`);
+  console.log(`  [round-2 sweep] non-counts it flags anyway: ${falselyFlagged.length} ${JSON.stringify(falselyFlagged)}`);
+  killed("the round-2 sweep saw every notation in the corpus, so the widening changed nothing", () => {
+    assert.deepEqual(missed, [], "figures the round-2 sweep could not see");
+  });
+  // and the shipped sweep, on the same corpus, misses none — otherwise the
+  // mutation above is being compared against a guard that is no better
+  for (const n of NUMBER_NOTATIONS.filter((x) => x.figure)) {
+    assert.ok(sweepNotation(n.cell) > 0, `the shipped sweep missed ${JSON.stringify(n.cell)}`);
+  }
+});
+
+test("[I-3] a number in a row member the section never declared is still swept", () => {
+  // The other blind zone, and the same shape of mistake: `auditRenderedJson`
+  // walked `section.fields` — the table's HEADER list — so a member the
+  // renderer put into the row and the section did not announce was served to
+  // the client and audited by nobody. The guard's coverage was chosen by the
+  // thing it was guarding.
+  const undeclared = JSON.stringify({
+    view: "invented",
+    sections: [{ key: "s", fields: ["declared"], rows: [{ declared: "ok · kind: observation · observation: x · source: registry · window: all_time · boundary: b", smuggled: "4.5" }] }],
+  });
+  const audit = auditRenderedJson(undeclared);
+  console.log(`  [undeclared member] cells=${audit.cells} violations=${audit.violations.length}: ${audit.violations[0]?.problem.slice(0, 80) ?? "none"}`);
+  assert.equal(audit.cells, 2, "the sweep must have looked at BOTH members, or it proves nothing");
+  assert.ok(audit.violations.length > 0, "a decimal in an undeclared row member passed the JSON sweep");
+  assert.match(audit.violations[0]!.problem, /4\.5/);
+
+  // …and a field the section DECLARES and the row does not carry is a
+  // violation of its own: a column with no value renders as a blank cell.
+  const missing = JSON.stringify({
+    view: "invented",
+    sections: [{ key: "s", fields: ["declared", "absent"], rows: [{ declared: "ok · kind: observation · observation: x · source: registry · window: all_time · boundary: b" }] }],
+  });
+  const gap = auditRenderedJson(missing);
+  console.log(`  [missing member] violations=${gap.violations.length}: ${gap.violations[0]?.problem.slice(0, 80) ?? "none"}`);
+  assert.ok(gap.violations.length > 0, "a declared field the row does not carry passed the JSON sweep [I-1]");
+});
+
+test("[I-3] the mutation that puts the JSON sweep back on the declared fields is killed", async () => {
+  const declaredOnly = await mutantTree("fleet-dashboard.ts", [
+    [
+      `      const fields = [...declared, ...present.filter((k) => !declared.includes(k))];`,
+      `      const fields = [...declared];`,
+    ],
+  ]);
+  const undeclared = JSON.stringify({
+    view: "invented",
+    sections: [{ key: "s", fields: ["declared"], rows: [{ declared: "ok · kind: observation · observation: x · source: registry · window: all_time · boundary: b", smuggled: "4.5" }] }],
+  });
+  const audit = declaredOnly["fleet-dashboard.ts"]!.auditRenderedJson(undeclared);
+  console.log(`  [mutant answered] cells=${audit.cells} violations=${audit.violations.length}`);
+  killed("a decimal in an undeclared row member passed the fields-only JSON sweep", () => {
+    assert.ok(audit.violations.length > 0);
+  });
+  assert.equal(auditRenderedJson(undeclared).violations.length > 0, true, "the shipped sweep must catch it");
+});
+
 test("[I-3] the sweep that could not SEE an embedded number is killed, and so is a page that prints a dash", async () => {
   const fx = allViews();
   const capability = rest(fx, "GET", "/v1/dashboard/capability?format=html", fx.keys.owner).raw;
@@ -976,10 +1709,7 @@ test("[I-3] the sweep that could not SEE an embedded number is killed, and so is
   // number only when the whole cell is digits — and it must stop reporting the
   // embedded counts that were shipping past it.
   const blind = await mutantTree("fleet-dashboard.ts", [
-    [
-      `  return answer.match(/(?<![\\w.:\\-\\/])\\d+(?![\\w.:\\-\\/])/g) ?? [];`,
-      `  return /^\\d+$/.test(answer) ? [answer] : [];`,
-    ],
+    [ROUND_TWO_SWEEP, `  return /^\\d+$/.test(text) ? [text] : [];`],
   ]);
   // a page built the way the old renderer built it: a count inside a sentence
   const embedded = `<table><thead><tr><th>included</th></tr></thead><tbody><tr><td>steps: 4 | files: 7</td></tr></tbody></table>`;
@@ -1211,27 +1941,38 @@ test("[I-7] THE REVIEWER'S MUTATION: private material in the tlog preimage now R
 });
 
 // ===========================================================================
-// 7. THE SHIPPED DOCUMENTATION IS CHECKED AGAINST THE SHIPPED CODE
+// 7. EVERY SHIPPED DOCUMENT IS CHECKED AGAINST THE SHIPPED CODE
 // ===========================================================================
 //
 // `README.md` said the dashboard had SIX views. It has eleven. `src/mcp.ts`'s
 // own `dashboard.view` description said six as well — a tool telling a client,
 // in the payload of `tools/list`, a number that was wrong by five.
 //
-// A false statement in shipped documentation is the same class of defect as a
-// guard that proves something other than what it claims: a reader acts on it,
-// and nothing contradicts it. It counts as a blocker, so it is caught by a
-// check rather than by a reader.
+// Round 2 caught that, over THREE DOCUMENTS NAMED IN THE TEST: `README.md`,
+// `docs/API.md`, `src/mcp.ts`. The normative `SPEC.md` was not among them, and
+// a reviewer then wrote "six views" into it three times and the suite passed.
+// A guard whose subject is a literal list is a guard that goes stale silently:
+// the list is written once, the repository grows, and nothing ever says so.
 //
-// The numbers below are read FROM THE CODE. Nothing here is a literal that
-// would have to be updated in two places — adding a view or a tool changes what
-// this test demands, and the documents have to follow.
+// So the SUBJECT is derived. `package.json`'s `files` says what this package
+// ships; the repository's own Markdown — at the root and under `docs/` — says
+// what it publishes about itself. Both are DISCOVERED, by reading the manifest
+// and by walking the directories, so a document added tomorrow is swept
+// tomorrow. Nothing below names a document.
+//
+// The CLAIMS are derived too: the number of views from `DASHBOARD_VIEWS`, the
+// number of tools from `MCP_TOOLS`, and the journals a counted recipient may be
+// read from — the third family, [I-6]'s own — from the source constants the
+// counter exports. A document that states any of them wrongly is a defect of
+// the same class as a guard that proves something other than what it claims: a
+// reader acts on it, and nothing contradicts it.
 
 /** The number a document writes in words or in digits, wherever it says it. */
 function documentSays(text: string, subject: RegExp): Set<string> {
   const WORDS: Record<string, string> = {
     five: "5", six: "6", seven: "7", eight: "8", nine: "9", ten: "10", eleven: "11", twelve: "12",
     thirteen: "13", twenty: "20", thirty: "30", "thirty-six": "36", "thirty-five": "35",
+    "thirty-four": "34", "thirty-seven": "37", forty: "40",
   };
   const found = new Set<string>();
   for (const m of text.matchAll(subject)) {
@@ -1241,69 +1982,253 @@ function documentSays(text: string, subject: RegExp): Set<string> {
   return found;
 }
 
-test("the shipped documents state the real number of dashboard views and of MCP tools", () => {
-  const read = (rel: string): string => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
-  const views = DASHBOARD_VIEWS.length;
-  const tools = MCP_TOOLS.length;
-  console.log(`[docs] shipped views: ${views}; shipped MCP tools: ${tools}`);
-
-  const documents: Array<[string, string]> = [
-    ["README.md", read("README.md")],
-    ["docs/API.md", read("docs/API.md")],
-    ["src/mcp.ts", read("src/mcp.ts")],
-  ];
-  const wrong: string[] = [];
-  let claims = 0;
-  for (const [name, text] of documents) {
-    // "N views" / "N read-only views" / "one of the N views", in words or digits
-    const claimed = documentSays(
-      text,
-      /\b(five|six|seven|eight|nine|ten|eleven|twelve|thirteen|\d+)\s+(?:read-only\s+)?(?:dashboard\s+)?views?\b/gi,
-    );
-    for (const c of claimed) {
-      claims += 1;
-      if (c !== String(views)) wrong.push(`${name}: claims ${c} dashboard views; the code ships ${views}`);
+/**
+ * EVERY DOCUMENT THIS REPOSITORY SHIPS OR PUBLISHES ABOUT ITSELF, discovered.
+ *
+ *   * everything `package.json`'s `files` ships — the Markdown it names
+ *     directly, and the Markdown and TypeScript inside the directories it
+ *     ships, because a `tools/list` description is documentation served to a
+ *     client and a comment in a shipped source file is read by whoever opens it;
+ *   * every Markdown file at the repository root and under `docs/`, which is
+ *     where this repository keeps its normative documents — `SPEC.md` among
+ *     them, and it is the one round 2's literal list left out.
+ *
+ * The directories are WALKED, not listed. That is the whole difference: a list
+ * has to be remembered, and a walk cannot forget.
+ */
+function shippedDocuments(): Array<[string, string]> {
+  const root = new URL("../", import.meta.url);
+  const manifest = JSON.parse(readFileSync(new URL("package.json", root), "utf8")) as { files: string[] };
+  const paths: string[] = [];
+  const add = (rel: string): void => {
+    if (!paths.includes(rel)) paths.push(rel);
+  };
+  const walk = (rel: string): void => {
+    for (const entry of readdirSync(new URL(rel, root), { withFileTypes: true })) {
+      const child = `${rel}${entry.name}${entry.isDirectory() ? "/" : ""}`;
+      if (entry.isDirectory()) walk(child);
+      else if (/\.(md|ts)$/.test(entry.name)) add(child);
     }
-    // every view NAME the document lists must exist, and a document that lists
-    // any of them must list them all — a partial list reads as a whole one
-    for (const view of DASHBOARD_VIEWS) {
-      if (!text.includes(`\`${view}\``) && !text.includes(`**${view}**`)) continue;
-      const listedAll = DASHBOARD_VIEWS.every((v) => text.includes(v));
-      if (!listedAll) wrong.push(`${name}: names some dashboard views and not all ${views}`);
-      break;
+  };
+  for (const entry of manifest.files) {
+    if (/\.md$/.test(entry)) add(entry);
+    else if (entry.endsWith("/") && existsSync(new URL(entry, root))) walk(entry);
+  }
+  for (const dir of ["", "docs/"]) {
+    for (const entry of readdirSync(new URL(dir === "" ? "./" : dir, root), { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith(".md")) add(`${dir}${entry.name}`);
     }
   }
-  console.log(`[docs] documents checked: ${documents.length}; explicit view-count claims found: ${claims}`);
-  assert.ok(claims > 0, "no document states the number of views: the check would pass on silence");
+  return paths.sort().map((rel) => [rel, readFileSync(new URL(rel, root), "utf8")] as [string, string]);
+}
+
+/** "N views", in words or digits — but never the digits of a section reference
+ *  such as the internal phase plan's own numbering, where `10.3 views` would
+ *  otherwise read as a claim of three. */
+const VIEW_CLAIM = /(?<![.\d§])\b(five|six|seven|eight|nine|ten|eleven|twelve|thirteen|\d+)\s+(?:read-only\s+)?(?:dashboard\s+)?views?\b/gi;
+const TOOL_CLAIM = /(?<![.\d§])\b(twenty|thirty|thirty-four|thirty-five|thirty-six|thirty-seven|forty|\d+)\s+(?:MCP\s+)?tools?\b/gi;
+
+/**
+ * [I-6]'s claim family: WHERE A COUNTED RECIPIENT COMES FROM.
+ *
+ * The forbidden shape is a POSITIVE, PRESENT-TENSE assertion that a count or a
+ * recipient is obtained from a table the counter does not read it from. The
+ * tables are derived — every `CREATE TABLE` of the shipped migrations — and the
+ * permitted journal is derived from the source constants the counter exports,
+ * so neither list is written here.
+ *
+ * The markers below are what separate an assertion from a HISTORY: this
+ * repository's documents describe the defect they closed, and "it used to be
+ * read from the receipt shell" is the opposite of a lie about it. The list is
+ * short, closed, and each entry is a way English marks a claim as not-current.
+ */
+const NOT_A_CURRENT_CLAIM = /\b(never|not|no longer|used to|would|cannot|must not|before|was|were|had been|already)\b/i;
+
+/**
+ * The SENTENCE a match sits in — bounded, not a character window.
+ *
+ * A window of N characters is a guess, and it is the wrong guess in both
+ * directions: too short and a marker one clause away is missed, too long and a
+ * marker belonging to the previous paragraph exempts a lie. The sentence is the
+ * unit English marks tense in, so it is the unit read here. Comment prefixes
+ * (`--`, `//`, `*`) are stripped, because a sentence wrapped across the lines of
+ * a SQL or TypeScript comment is still one sentence.
+ */
+function sentenceAround(text: string, index: number, length: number): string {
+  const starts = [text.lastIndexOf(". ", index), text.lastIndexOf(".\n", index), text.lastIndexOf("\n\n", index)];
+  const from = Math.max(0, ...starts.map((i) => (i < 0 ? 0 : i + 1)));
+  const dot = text.indexOf(".", index + length);
+  const to = dot < 0 ? text.length : dot + 1;
+  return text.slice(from, to).replace(/^[\s>]*(--|\/\/|\*)\s?/gm, " ");
+}
+
+function provenanceLies(text: string, permitted: ReadonlySet<string>, tables: readonly string[]): string[] {
+  const out: string[] = [];
+  const named = tables.filter((t) => !permitted.has(t)).join("|");
+  if (named.length === 0) return out;
+  const claim = new RegExp(
+    String.raw`(?:recipient|migration|count|counted)[\s\S]{0,120}?\b(?:read|computed|obtained|answered|taken|comes?|counted)\s+from\s+(?:the\s+)?(?:INSERT-only\s+)?` +
+      "`?(" + named + ")\\b",
+    "gi",
+  );
+  for (const m of text.matchAll(claim)) {
+    const sentence = sentenceAround(text, m.index, m[0].length);
+    if (NOT_A_CURRENT_CLAIM.test(sentence)) continue;
+    out.push(`claims a counted recipient is read from \`${m[1]}\`: ${JSON.stringify(sentence.slice(0, 160))}`);
+  }
+  return out;
+}
+
+/** Every table this schema has, from the migrations — never a list kept here. */
+function tableNames(): string[] {
+  const dir = new URL("../migrations/", import.meta.url);
+  const names = new Set<string>();
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
+    for (const m of readFileSync(new URL(file, dir), "utf8").matchAll(/CREATE TABLE\s+"?([a-z_]+)"?\s*\(/gi)) {
+      names.add(m[1]!);
+    }
+  }
+  return [...names].sort();
+}
+
+test("every shipped document states the real number of views, of tools, and the real provenance", () => {
+  const documents = shippedDocuments();
+  const views = DASHBOARD_VIEWS.length;
+  const tools = MCP_TOOLS.length;
+  const permitted = new Set([RECIPIENT_SOURCE_TRANSFER, RECIPIENT_SOURCE_REQUEST].map((s) => s.split(".")[0]!));
+  const tables = tableNames();
+  console.log(`[docs] shipped views: ${views}; shipped MCP tools: ${tools}`);
+  console.log(`[docs] documents DISCOVERED (package.json files + repository Markdown): ${documents.length}`);
+  console.log(`[docs] tables derived from migrations/: ${tables.length}; journals a recipient may be read from: ${[...permitted].join(", ")}`);
+  // the discovery must have found the normative document the literal list left
+  // out, and the ones it did contain
+  for (const required of ["SPEC.md", "README.md", "docs/API.md", "src/mcp.ts"]) {
+    assert.ok(documents.some(([n]) => n === required), `the discovery did not reach ${required}`);
+  }
+  assert.ok(documents.length > 20, `the discovery found only ${documents.length} documents`);
+
+  const wrong: string[] = [];
+  let viewClaims = 0;
+  let toolClaims = 0;
+  for (const [name, text] of documents) {
+    for (const c of documentSays(text, VIEW_CLAIM)) {
+      viewClaims += 1;
+      if (c !== String(views)) wrong.push(`${name}: claims ${c} dashboard views; the code ships ${views}`);
+    }
+    for (const c of documentSays(text, TOOL_CLAIM)) {
+      toolClaims += 1;
+      if (c !== String(tools)) wrong.push(`${name}: claims ${c} MCP tools; the code ships ${tools}`);
+    }
+    for (const lie of provenanceLies(text, permitted, tables)) wrong.push(`${name}: ${lie}`);
+    // A DOCUMENT THAT ENUMERATES THE VIEWS MUST ENUMERATE THEM ALL — a partial
+    // list reads as a whole one. "Enumerates" is five or more of the names,
+    // because the names are ordinary words: a source file writing `agent` or
+    // `approvals` in backticks is naming a thing, not listing a dashboard, and a
+    // rule that treated it as a list would fire on most of the repository and
+    // then have to be turned off.
+    const enumerated = DASHBOARD_VIEWS.filter((v) => text.includes(`\`${v}\``) || text.includes(`**${v}**`));
+    if (enumerated.length >= 5 && !DASHBOARD_VIEWS.every((v) => text.includes(v))) {
+      wrong.push(`${name}: names ${enumerated.length} dashboard views and not all ${views}`);
+    }
+  }
+  console.log(`[docs] explicit view-count claims: ${viewClaims}; tool-count claims: ${toolClaims}`);
+  // A CHECK THAT PASSES ON SILENCE IS NOT A CHECK. Each family must have been
+  // exercised by at least one real document.
+  assert.ok(viewClaims > 0, "no document states the number of views");
+  assert.ok(toolClaims > 0, "no document states the number of MCP tools");
   assert.deepEqual(wrong, [], "shipped documentation that does not describe the shipped code");
 
   // …and every tool the adapter dispatches is named in the README's tool table,
   // so a tool cannot ship undocumented
-  const readme = read("README.md");
+  const readme = documents.find(([n]) => n === "README.md")![1];
   const undocumented = (MCP_TOOLS as ReadonlyArray<any>).map((t) => t.name).filter((n) => !readme.includes(`\`${n}\``));
   console.log(`[docs] MCP tools named in README.md: ${tools - undocumented.length}/${tools}`);
   assert.deepEqual(undocumented, [], "MCP tools the README does not name");
 });
 
-test("the documentation guard is killed by a document that overstates or understates", () => {
-  // A guard over documents has to be shown to bite, exactly like one over code.
-  // The mutation is the defect that shipped: the README saying `six`.
-  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-  const before = sha256(readme);
-  const template = "The dashboard has eleven read-only views";
-  const occurrences = readme.split(template).length - 1;
-  assert.equal(occurrences, 1, `the mutation template must occur EXACTLY ONCE in README.md, found ${occurrences}`);
-  const mutated = readme.replace(template, "The dashboard has six read-only views");
-  const after = sha256(mutated);
-  assert.notEqual(after, before, "the substitution did not change the bytes of README.md");
-  console.log(`  before: ${template}`);
-  console.log(`  after : The dashboard has six read-only views`);
-  console.log(`[mutation] README.md  sha256 ${before.slice(0, 12)} → ${after.slice(0, 12)} (in memory only)`);
-  const claimed = documentSays(
-    mutated,
-    /\b(five|six|seven|eight|nine|ten|eleven|twelve|thirteen|\d+)\s+(?:read-only\s+)?(?:dashboard\s+)?views?\b/gi,
+test("the documentation guard is proved by planting the lie in EVERY discovered document in turn", () => {
+  // Round 2's mutation was ONE substitution in ONE document — `README.md` saying
+  // `six`. That proves the guard bites on `README.md`. It is the same shape of
+  // proof as testing one MCP tool and claiming the table: the document the lie
+  // was actually written into next was `SPEC.md`, which the guard never read.
+  //
+  // So the lie is planted in each discovered document IN TURN, one document at a
+  // time, and each family of claim is planted separately. A document the guard
+  // does not read leaves its own row of the table unkilled.
+  const documents = shippedDocuments();
+  const views = DASHBOARD_VIEWS.length;
+  const tools = MCP_TOOLS.length;
+  const permitted = new Set([RECIPIENT_SOURCE_TRANSFER, RECIPIENT_SOURCE_REQUEST].map((s) => s.split(".")[0]!));
+  const tables = tableNames();
+
+  const LIES: ReadonlyArray<{ family: string; text: string; detect: (name: string, text: string) => boolean }> = [
+    {
+      family: "view count",
+      text: "\n\nThe dashboard has six read-only views.\n",
+      detect: (_n, text) => [...documentSays(text, VIEW_CLAIM)].some((c) => c !== String(views)),
+    },
+    {
+      family: "tool count",
+      text: "\n\nThe MCP adapter advertises twenty tools.\n",
+      detect: (_n, text) => [...documentSays(text, TOOL_CLAIM)].some((c) => c !== String(tools)),
+    },
+    {
+      family: "provenance",
+      text: "\n\nThe recipient of a counted migration is read from `adoption_receipts`.\n",
+      detect: (_n, text) => provenanceLies(text, permitted, tables).length > 0,
+    },
+  ];
+
+  const survived: string[] = [];
+  let planted = 0;
+  for (const [name, text] of documents) {
+    const before = sha256(text);
+    for (const lie of LIES) {
+      planted += 1;
+      const mutated = text + lie.text;
+      // the harness proves its own substitution: the bytes must MOVE, and the
+      // sentence must not already be there
+      assert.equal(text.includes(lie.text.trim()), false, `${name} already contains the ${lie.family} lie`);
+      assert.notEqual(sha256(mutated), before, `planting the ${lie.family} lie in ${name} changed no bytes`);
+      if (!lie.detect(name, mutated)) survived.push(`${name}: the ${lie.family} lie was not caught`);
+      // and the UNMUTATED document must be clean for the same family, or the
+      // detection above is not about the lie
+      assert.equal(lie.detect(name, text), false, `${name} already fails the ${lie.family} check before any lie`);
+    }
+  }
+  console.log(`[docs] lies planted: ${planted} (${documents.length} documents × ${LIES.length} claim families)`);
+  console.log(`[docs] lies the guard caught: ${planted - survived.length}/${planted}`);
+  assert.equal(planted, documents.length * LIES.length, "every document must be broken, not a sample");
+  assert.deepEqual(survived, [], "documents the guard does not read");
+});
+
+test("the documentation guard is killed by the round-2 document list, which left SPEC.md out", () => {
+  // The mutation is the LIST ITSELF: three documents, named. It is applied to a
+  // SPEC.md carrying the exact sentence the reviewer wrote into it, and the
+  // point is that a guard reading those three reports nothing.
+  const root = new URL("../", import.meta.url);
+  const spec = readFileSync(new URL("SPEC.md", root), "utf8");
+  const before = sha256(spec);
+  const mutatedSpec = spec + "\n\nThe dashboard has six read-only views.\n";
+  console.log(`[mutation] SPEC.md  sha256 ${before.slice(0, 12)} → ${sha256(mutatedSpec).slice(0, 12)} (in memory only)`);
+  assert.notEqual(sha256(mutatedSpec), before);
+
+  const roundTwo: Array<[string, string]> = [
+    ["README.md", readFileSync(new URL("README.md", root), "utf8")],
+    ["docs/API.md", readFileSync(new URL("docs/API.md", root), "utf8")],
+    ["src/mcp.ts", readFileSync(new URL("src/mcp.ts", root), "utf8")],
+  ];
+  const seenByRoundTwo = roundTwo.flatMap(([, t]) =>
+    [...documentSays(t, VIEW_CLAIM)].filter((c) => c !== String(DASHBOARD_VIEWS.length)),
   );
-  killed("a README claiming six views passed the documentation guard", () => {
-    for (const c of claimed) assert.equal(c, String(DASHBOARD_VIEWS.length));
+  const seenByTheSweep = [...documentSays(mutatedSpec, VIEW_CLAIM)].filter((c) => c !== String(DASHBOARD_VIEWS.length));
+  console.log(`  [round-2 list] documents read: ${roundTwo.length}; false view counts found: ${seenByRoundTwo.length}`);
+  console.log(`  [discovered]   documents read: ${shippedDocuments().length}; false view counts in SPEC.md: ${seenByTheSweep.length}`);
+  // `killed` asserts the property the SHIPPED guard has and the mutant does not:
+  // the mutant would have to have SEEN the lie, and it did not.
+  killed("the round-2 document list saw the lie in SPEC.md after all", () => {
+    assert.ok(seenByRoundTwo.length > 0, "the three named documents carry no false view count");
   });
+  assert.ok(seenByTheSweep.length > 0, "the shipped guard must see it, or the mutation proves nothing");
+  assert.ok(shippedDocuments().some(([n]) => n === "SPEC.md"), "and the shipped guard must actually read SPEC.md");
 });

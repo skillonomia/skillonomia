@@ -87,6 +87,17 @@
       "required": ["path","sha256"], "properties": {
         "path": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)[^\\\\]+$"},
         "sha256": {"$ref": "#/$defs/hex64"}}}},
+    "outcome_contract": {"type": "object", "additionalProperties": false,
+      "required": ["check","evidence","unknown"], "properties": {
+        "check": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {
+          "kind": {"enum": ["exit_code","stdout_match","artifact_exists","command"]},
+          "exit_code": {"type": "integer", "minimum": 0, "maximum": 255},
+          "stdout_match": {"type": "string", "minLength": 1, "maxLength": 400},
+          "artifact_path": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)[^\\\\]+$", "maxLength": 400},
+          "command": {"type": "string", "minLength": 1, "maxLength": 400}}},
+        "evidence": {"type": "array", "minItems": 1, "maxItems": 20,
+          "items": {"type": "string", "minLength": 1, "maxLength": 80}},
+        "unknown": {"type": "string", "minLength": 10, "maxLength": 400}}},
     "x_ext": {"type": "object"}
   },
   "$defs": {

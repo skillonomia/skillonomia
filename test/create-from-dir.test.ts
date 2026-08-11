@@ -42,6 +42,10 @@ import {
   type ArrivalRecord,
 } from "../src/marker.ts";
 import { SYSTEM_KID_PREFIX, systemKidFor } from "../src/system-key.ts";
+import { readFileSync } from "node:fs";
+import { manifestHash, verifyJws } from "../src/signing.ts";
+import { OUTCOME_CHECK_KINDS, outcomeContractOf, validateManifest } from "../src/manifest.ts";
+import { capabilityColumns } from "../src/fleet.ts";
 
 // --------------------------------------------------------------- source trees
 
@@ -57,6 +61,20 @@ const SKILL_MD = [
 ].join("\n");
 
 /**
+ * D-2: what SUCCESS is, for a package this registry packs.
+ *
+ * Surface 14 refuses a source without one, so every source tree below carries
+ * it. The content is skill-specific by design — the FORM is shared and the
+ * criterion is not — and this one says: the fixture run exits 0, the run must
+ * present its exit code and its stdout, and no evidence means `unknown`.
+ */
+const OUTCOME_CONTRACT = {
+  check: { kind: "exit_code", exit_code: 0 },
+  evidence: ["exit_code", "stdout"],
+  unknown: "no evaluated run of this skill was reported, which is not a failure of it",
+} as const;
+
+/**
  * A SOURCE tree: `manifest.json` + `SKILL.md`, and no packed artefacts.
  *
  * `skill_id` is overridable because "the same source, submitted twice" has to
@@ -67,7 +85,7 @@ function sourceTree(
   overrides: Record<string, unknown> = {},
   extras: Record<string, string> = {},
 ): { tar: Buffer; files: PackageFiles; manifest: any } {
-  const manifest = makeManifest({ semantic_version: "1.0.0", ...overrides });
+  const manifest = makeManifest({ semantic_version: "1.0.0", outcome_contract: OUTCOME_CONTRACT, ...overrides });
   delete manifest.integrity; // a source tree does not carry one; packing computes it
   // nor an author, normally: the registry fills that in from AuthContext. A test
   // that deliberately plants one keeps it, so the refusal can be observed.
@@ -629,13 +647,14 @@ test("skill.create_from_dir advertises itself as a write, and its read twin stil
   const write = MCP_TOOLS.find((t) => t.name === "skill.create_from_dir") as any;
   assert.ok(write, "the tool is advertised");
   assert.equal(write.annotations?.readOnlyHint, false, "a client must not take this for a read");
-  assert.equal(write.annotations?.destructiveHint, true, "it mints a version and a key; a client may ask first");
+  // `destructiveHint` is not asserted here: the behavioural sweep in
+  // `test/p14-r2-invariants.test.ts` compares it, for all 36 tools, with whether
+  // the call changed a row that already existed. This one only INSERTS.
   assert.equal(write.annotations?.openWorldHint, false, "it touches this registry and nothing else");
 
   // the contrast the invariant is about: the read tool next door is still a read
   const read = MCP_TOOLS.find((t) => t.name === "migration.count") as any;
   assert.equal(read.annotations?.readOnlyHint, true);
-  assert.equal(read.annotations?.destructiveHint, false);
 
   // and it is ONE step, not a catch-all: no tool name is a prefix router
   assert.equal(
@@ -1076,4 +1095,245 @@ test("skill.create still takes a locally packed, locally signed archive", async 
   };
   assert.equal(row.source_hash, null);
   fx.db.close();
+});
+
+/** One agent's evidence for the §4 `outcome` column, with the two dials this
+ *  test turns: whether the version declares a contract, and what the last
+ *  PAIRED call/output record reported. */
+function outcomeEvidence(input: { contract: boolean; result: "success" | "failure" | "unknown" }): any {
+  const marker = "SKLN1-AAAAAAAAAAAAAAAA";
+  const at = NOW;
+  return {
+    runtime: "claude_code",
+    subject: { skill_version_id: "01OUTCOMEVERSION0000000000", marker, has_executable_step: true },
+    registered: { value: "yes", reason: null, window_detail: "the inventory root of this test" },
+    intent: null,
+    snapshot: {
+      runtime: "claude_code",
+      window: "period",
+      window_detail: "the records of this test",
+      proposal_inventory_complete: false,
+      records_read: 2,
+      records: [
+        { role: "call", call_id: "c-1", at_ms: at, marker, result: "unknown" },
+        { role: "output", call_id: "c-1", at_ms: at, marker, result: input.result },
+      ],
+    },
+    outcome_contract: input.contract,
+  };
+}
+
+// ===========================================================================
+// 8. D-2 — THE PACKAGE SAYS WHAT SUCCESS IS, AND SAYS IT INSIDE THE SIGNATURE
+// ===========================================================================
+//
+// §4's `outcome` column cannot answer anything about a skill whose success
+// nobody defined: a task that FINISHED is not a task that SUCCEEDED [M-6], and
+// a registry that read completion as success would be publishing the model's
+// own self-report as a verdict. So a package this registry packs carries an
+// `outcome_contract` — `check`, `evidence`, `unknown` — and surface 14 refuses
+// a source without one.
+//
+// The owner's hardening is the second half and the more important one: the
+// contract sits INSIDE the signed manifest. A definition of success that could
+// be edited after approval would let a receipt certify something other than
+// what it certified when it was approved, which §3 names as the principal
+// defect this registry exists against.
+//
+// The OLD path is deliberately untouched. `skill.create` accepts packages
+// signed elsewhere, and the seed and `skills/git-bundle-verify` were signed
+// before this section existed. They
+// report `outcome` = `unknown` with the reason `no_outcome_contract` — never
+// `no` [I-1], [A-0] — and their bytes are not touched.
+
+test("D-2: surface 14 refuses a source that does not say what success is, and refuses a half-written one", () => {
+  const fx = p2Fixture();
+  const cases: Array<[string, unknown, RegExp]> = [
+    ["absent", undefined, /no_outcome_contract/],
+    ["not a section", "exit 0", /outcome_contract/],
+    ["no deterministic check", { check: {}, evidence: ["exit_code"], unknown: "nothing was reported at all" }, /names_no_deterministic_check|INVALID_SCHEMA/],
+    ["a check kind nobody implemented", { check: { kind: "vibes" }, evidence: ["exit_code"], unknown: "nothing was reported at all" }, /INVALID_SCHEMA/],
+    ["no evidence", { check: { kind: "exit_code", exit_code: 0 }, evidence: [], unknown: "nothing was reported at all" }, /INVALID_SCHEMA/],
+    ["no meaning for absent evidence", { check: { kind: "exit_code", exit_code: 0 }, evidence: ["exit_code"] }, /INVALID_SCHEMA/],
+  ];
+  console.log(`[D-2] malformed contracts refused: ${cases.length}`);
+  for (const [what, contract, expected] of cases) {
+    const manifest: any = { outcome_contract: contract };
+    if (contract === undefined) delete manifest.outcome_contract;
+    const src = sourceTree(fx, contract === undefined ? { outcome_contract: undefined } : manifest);
+    if (contract === undefined) {
+      const m = JSON.parse(src.files.get("manifest.json")!.toString("utf8"));
+      delete m.outcome_contract;
+      src.files.set("manifest.json", Buffer.from(JSON.stringify(m), "utf8"));
+    }
+    let message = "";
+    try {
+      fx.registry.createFromDir(fx.author, { slug: `no-contract-${cases.indexOf([what, contract, expected] as any)}`, source: writeTar(src.files) });
+    } catch (e: any) {
+      message = String(e.message ?? e);
+    }
+    console.log(`  ${what.padEnd(30)} → ${message.slice(0, 110)}`);
+    assert.match(message, expected, `a source whose contract is ${what} was packed anyway`);
+  }
+  // NOTHING WAS WRITTEN. The refusal is before the transaction, so a rejected
+  // source leaves no version, no signing key and no transparency-log row.
+  for (const table of ["skill_versions", "signing_keys", "transparency_log"]) {
+    const before = (fx.db.prepare(`SELECT COUNT(*) c FROM ${table}`).get() as { c: number }).c;
+    console.log(`  ${table}: ${before} row(s) after ${cases.length} refusals`);
+  }
+  assert.equal((fx.db.prepare("SELECT COUNT(*) c FROM signing_keys").get() as { c: number }).c, 0, "a refused pack minted a key");
+  // …and the SAME source WITH a contract packs, or the refusals prove nothing
+  const ok = fx.registry.createFromDir(fx.author, { slug: "with-contract", source: sourceTree(fx).tar }).response;
+  assert.equal(ok.state, "draft");
+  fx.db.close();
+});
+
+test("D-2: the contract is inside the signature, so success cannot be redefined without a new version", () => {
+  const fx = p2Fixture();
+  const original = sourceTree(fx);
+  const skillId = original.manifest.skill_id;
+  const first = fx.registry.createFromDir(fx.author, { slug: "contract-signed", source: original.tar }).response;
+
+  // (a) THE CONTRACT IS IN THE PREIMAGE. Two sources differing ONLY in what
+  // counts as success are two different manifests and two different hashes.
+  const other = sourceTree(fx, {
+    skill_id: skillId,
+    semantic_version: "1.0.1",
+    outcome_contract: {
+      check: { kind: "stdout_match", stdout_match: "anything at all" },
+      evidence: ["stdout"],
+      unknown: "no evaluated run of this skill was reported, which is not a failure of it",
+    },
+  });
+  const second = fx.registry.createFromDir(fx.author, { skill_id: first.skill_id, source: other.tar }).response;
+  console.log(`[D-2] manifest_hash with contract A: ${first.manifest_hash.slice(0, 16)}…`);
+  console.log(`[D-2] manifest_hash with contract B: ${second.manifest_hash.slice(0, 16)}…`);
+  assert.notEqual(first.manifest_hash, second.manifest_hash, "the contract is not covered by the manifest hash");
+
+  // (b) REDEFINING SUCCESS UNDER THE SAME VERSION IS REFUSED. The convergence
+  // identity is taken on the SOURCE, so a changed contract is a changed source,
+  // and a changed source under an existing `semantic_version` is a CONFLICT.
+  const redefined = sourceTree(fx, {
+    skill_id: skillId,
+    semantic_version: "1.0.0",
+    outcome_contract: {
+      check: { kind: "command", command: "true" },
+      evidence: ["exit_code"],
+      unknown: "no evaluated run of this skill was reported, which is not a failure of it",
+    },
+  });
+  let refusal = "";
+  try {
+    fx.registry.createFromDir(fx.author, { skill_id: first.skill_id, source: redefined.tar });
+  } catch (e: any) {
+    refusal = `${e.code}: ${e.message}`;
+  }
+  console.log(`[D-2] redefining success under 1.0.0 → ${refusal}`);
+  assert.match(refusal, /CONFLICT/, "the definition of success was changed under a version that already exists");
+
+  // (c) AND THE STORED MANIFEST STILL VERIFIES ONLY WITH ITS OWN CONTRACT. The
+  // signature is over the canonicalized manifest; swap the contract and the
+  // hash the signature was made over is not the hash of what is there.
+  const stored = JSON.parse(
+    (fx.db.prepare("SELECT manifest_json m FROM skill_versions WHERE id=?").get(first.skill_version_id) as { m: string }).m,
+  );
+  assert.deepEqual(stored.outcome_contract, JSON.parse(JSON.stringify(OUTCOME_CONTRACT)), "the contract is stored as signed");
+  // …and the STORED manifest is what the §4 `outcome` column reads its contract
+  // from: this is the wiring D-2 asked for — the contract reaches the evaluator
+  // THROUGH the signed manifest and through nothing else.
+  assert.equal(outcomeContractOf(stored).valid, true, "the stored manifest does not carry a usable contract");
+  assert.equal(outcomeContractOf(stored).reason, "outcome_contract");
+  const tampered = { ...stored, outcome_contract: { ...stored.outcome_contract, check: { kind: "command", command: "true" } } };
+  const before = manifestHash(stored);
+  const after = manifestHash(tampered);
+  console.log(`[D-2] manifest_hash before tampering: ${before.slice(0, 16)}… after: ${after.slice(0, 16)}…`);
+  assert.equal(before, first.manifest_hash, "the stored manifest is the one that was signed");
+  assert.notEqual(after, before, "editing the contract left the manifest hash where it was");
+  const jws = (fx.db.prepare("SELECT signature_jws s FROM skill_versions WHERE id=?").get(first.skill_version_id) as { s: string }).s;
+  const pub = (
+    fx.db.prepare("SELECT public_key_ed25519 k FROM signing_keys WHERE kid=?").get(first.kid) as { k: string }
+  ).k;
+  assert.equal(verifyJws(stored, jws, pub).ok, true, "the shipped manifest must verify, or the tamper proves nothing");
+  assert.equal(
+    verifyJws(tampered, jws, pub).ok,
+    false,
+    "a manifest whose definition of success was edited still verified against the signature",
+  );
+  fx.db.close();
+});
+
+test("D-2: a package WITH a contract answers the §4 `outcome` column; one without answers `unknown` with its reason", () => {
+  // The evaluator is the shipped one. What this proves is the WIRING: the
+  // contract reaches it THROUGH THE MANIFEST, which is the half D-2 asked for,
+  // and the answer for a package without one is `unknown` with a machine-
+  // readable reason and never `no` [I-1], [A-0].
+  const withContract = capabilityColumns(
+    outcomeEvidence({ contract: true, result: "success" }),
+  ).find((c) => c.column === "outcome")!;
+  const failed = capabilityColumns(outcomeEvidence({ contract: true, result: "failure" })).find((c) => c.column === "outcome")!;
+  const finished = capabilityColumns(outcomeEvidence({ contract: true, result: "unknown" })).find((c) => c.column === "outcome")!;
+  const noContract = capabilityColumns(outcomeEvidence({ contract: false, result: "success" })).find((c) => c.column === "outcome")!;
+  console.log(`[D-2] contract + success  → outcome=${withContract.value} (${withContract.reason ?? "—"})`);
+  console.log(`[D-2] contract + failure  → outcome=${failed.value} (${failed.reason ?? "—"})`);
+  console.log(`[D-2] contract + finished → outcome=${finished.value} (${finished.reason ?? "—"})`);
+  console.log(`[D-2] no contract         → outcome=${noContract.value} (${noContract.reason ?? "—"})`);
+  assert.equal(withContract.value, "yes", "a contract and an evaluated success must answer `yes`");
+  assert.equal(failed.value, "no", "a contract and an evaluated failure must answer `no`");
+  // [M-6]: the run FINISHED and nothing evaluated it. That is not a success and
+  // it is not a failure either.
+  assert.equal(finished.value, "unknown");
+  assert.equal(finished.reason, "run_completed_without_evaluation");
+  assert.equal(noContract.value, "unknown", "a package with no contract must never answer `no` [A-0]");
+  assert.equal(noContract.reason, "no_outcome_contract");
+});
+
+test("D-2: the shape rule has ONE home, and the packing gate and the dashboard read it", () => {
+  // The failure this guards against is the two-implementation kind: a packing
+  // gate that accepts a truncated contract and a dashboard that then answers
+  // `no` on the strength of it, or the reverse. Both call `outcomeContractOf`.
+  const whole = {
+    check: { kind: "exit_code", exit_code: 0 },
+    evidence: ["exit_code"],
+    unknown: "no evaluated run was reported, which is not a failure",
+  };
+  const truncations: Array<[string, unknown]> = [
+    ["absent", undefined],
+    ["a string", "exit 0"],
+    ["an array", [whole]],
+    ["no check", { evidence: whole.evidence, unknown: whole.unknown }],
+    ["a check with no kind", { ...whole, check: {} }],
+    ["a check kind nobody implemented", { ...whole, check: { kind: "vibes" } }],
+    ["empty evidence", { ...whole, evidence: [] }],
+    ["evidence that is not names", { ...whole, evidence: [1, 2] }],
+    ["no meaning for absent evidence", { check: whole.check, evidence: whole.evidence }],
+  ];
+  console.log(`[D-2] contract shapes checked: ${truncations.length + 1}`);
+  assert.equal(outcomeContractOf({ outcome_contract: whole }).valid, true, "the whole contract must be accepted");
+  for (const [what, contract] of truncations) {
+    const answer = outcomeContractOf({ outcome_contract: contract });
+    console.log(`  ${what.padEnd(34)} → valid=${answer.valid} reason=${answer.reason}`);
+    assert.equal(answer.valid, false, `a contract that is ${what} was accepted as a definition of success`);
+    assert.ok(answer.reason.length > 0, "a refusal must carry a machine-readable reason");
+  }
+  // every check kind the schema admits is a kind this rule admits, and the list
+  // is the CODE's, not a copy kept here
+  for (const kind of OUTCOME_CHECK_KINDS) {
+    assert.equal(outcomeContractOf({ outcome_contract: { ...whole, check: { kind } } }).valid, true, `${kind} is a declared check kind`);
+  }
+  console.log(`[D-2] declared check kinds: ${OUTCOME_CHECK_KINDS.length} — ${OUTCOME_CHECK_KINDS.join(", ")}`);
+});
+
+test("D-2: the frozen artefacts are NOT given a contract, and are not refused for lacking one", () => {
+  // The seed and `skills/git-bundle-verify` were signed before this section
+  // existed. They go through `skill.create`, which must not demand one — and
+  // their bytes are not touched, which is a hard constraint of this work.
+  const seedManifest = JSON.parse(readFileSync(new URL("../seed/hello-skillonomia/skill.json", import.meta.url), "utf8"));
+  assert.equal(seedManifest.outcome_contract, undefined, "the seed was regenerated with a contract");
+  assert.equal(outcomeContractOf(seedManifest).valid, false);
+  assert.equal(outcomeContractOf(seedManifest).reason, "no_outcome_contract");
+  // it still validates against Appendix E — the section is OPTIONAL there
+  assert.equal(validateManifest(seedManifest).valid, true, "the frozen seed no longer validates against the schema");
+
+  const bundle = JSON.parse(readFileSync(new URL("../skills/git-bundle-verify/manifest.json", import.meta.url), "utf8"));
+  assert.equal(bundle.outcome_contract, undefined, "skills/git-bundle-verify was given a contract");
 });

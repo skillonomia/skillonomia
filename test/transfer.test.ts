@@ -553,18 +553,22 @@ test("the counted recipient comes from the transfer EVENT, shown where the two s
   const res = transfer(fx, fx.keys.member, v.versionId, { kind: "local_agent", ref: fx.reviewer.agent_id });
   assert.equal(res.status, 201, res.raw);
 
-  // In production the event and the receipt shell agree — the transfer writes
-  // both, in one transaction. The disagreement below is therefore built by
-  // hand, and that is the point: it is the only way to show WHICH of the two
-  // the answer came from. A second chain is opened by the recipient itself, and
-  // a `transferred` event naming a DIFFERENT recipient is written onto it.
+  // In production a chain carries ONE opening event: `transferred` if a sender
+  // opened it, `requested` if the recipient did, and both name the same agent
+  // the shell does because one transaction writes them together. The
+  // disagreement below is therefore built by hand, and that is the point: it is
+  // the only way to show WHICH statement the answer came from. A second chain is
+  // opened by the recipient itself — so it carries a `requested` event naming
+  // that recipient — and a `transferred` event naming a DIFFERENT one is written
+  // onto it. The shell agrees with the `requested` event and disagrees with the
+  // `transferred` one, so the answer distinguishes all three.
   const asked = rest(fx, "POST", "/v1/adoptions/requests", fx.keys.admin, { skill_version_id: v.versionId });
   assert.equal(asked.status, 201, asked.raw);
   const receipt = asked.body.receipt_id;
   fx.db
     .prepare(
       `INSERT INTO receipt_events(id, adoption_receipt_id, event, event_seq, recipient_json, server_at_ms, idempotency_key)
-       VALUES (?,?, 'transferred', 1, ?, ?, ?)`,
+       VALUES (?,?, 'transferred', 5, ?, ?, ?)`,
     )
     .run(ulid(Date.now()), receipt, JSON.stringify({ kind: "local_agent", id: fx.reviewer2.agent_id }), Date.now(), "hand-written");
 
@@ -617,7 +621,7 @@ test("the counted recipient comes from the transfer EVENT, shown where the two s
   fx.db
     .prepare(
       `INSERT INTO receipt_events(id, adoption_receipt_id, event, event_seq, recipient_json, server_at_ms, idempotency_key)
-       VALUES (?,?, 'transferred', 1, ?, ?, ?)`,
+       VALUES (?,?, 'transferred', 5, ?, ?, ?)`,
     )
     .run(
       ulid(Date.now()),
@@ -895,7 +899,10 @@ test("the two adapters serve one transfer, and an idempotency_key replays it byt
 test("`skill.transfer` is advertised as a WRITE, and the grant tools as a write and a read", () => {
   const write = MCP_TOOLS.find((t) => t.name === "skill.transfer") as any;
   assert.equal(write.annotations.readOnlyHint, false, "a step that appends to the journal is not a read");
-  assert.equal(write.annotations.destructiveHint, true);
+  // `idempotentHint` used to be `true` here, with a comment beside it admitting
+  // that a repeat without an `idempotency_key` creates a SECOND transfer. It is
+  // not asserted as a literal any more: the behavioural sweep in
+  // `test/p14-r2-invariants.test.ts` calls every tool twice and compares.
   assert.equal(write.annotations.openWorldHint, false, "V-1 reaches nothing outside this registry");
   assert.ok(/not implemented in V-1/i.test(write.description), "the hint must not promise the unimplemented kind");
   // one step of the loop: the transfer does not also report an outcome
@@ -906,7 +913,6 @@ test("`skill.transfer` is advertised as a WRITE, and the grant tools as a write 
   const list = MCP_TOOLS.find((t) => t.name === "transfer_grant.list") as any;
   assert.equal(create.annotations.readOnlyHint, false);
   assert.equal(list.annotations.readOnlyHint, true, "reading grants must be callable without an approval prompt");
-  assert.equal(list.annotations.destructiveHint, false);
   assert.deepEqual(Object.keys(list.inputSchema.properties), [], "the read takes no arguments and grants nothing");
   assert.deepEqual(create.inputSchema.properties.action.enum, [...GRANT_ACTIONS]);
   assert.deepEqual(create.inputSchema.properties.recipient_scope.enum, [...RECIPIENT_KINDS]);
@@ -934,5 +940,38 @@ test("grants converge, and a member reads exactly its own", () => {
   );
   const asOutsider = rest(fx, "GET", "/v1/transfer-grants", fx.keys.outsider);
   assert.deepEqual(asOutsider.body.items, [], "another workspace's grants are not disclosed");
+  fx.db.close();
+});
+
+test("[I-8] THE REVIEWER'S PROBE: two `skill.transfer` calls with the same arguments record TWO transfers", () => {
+  // The probe that found the false `idempotentHint`, kept in the set exactly as
+  // it was run: call the tool twice with the same arguments and NO
+  // `idempotency_key`, and count the rows. It is pinned here because a probe
+  // that found a defect is the cheapest regression test there is — but it is not
+  // what proves the FIX. That is the sweep in `test/p14-r2-invariants.test.ts`,
+  // which drives every one of the 36 tools twice and compares each hint with
+  // what the database did, and which would have caught this one without anybody
+  // suspecting `skill.transfer` in particular.
+  const fx = p4Fixture();
+  const v = ready(fx, "transfer-twice");
+  const count = (): number => (fx.db.prepare("SELECT COUNT(*) AS c FROM transfers").get() as { c: number }).c;
+  const recipient = { kind: "local_agent", ref: fx.reviewer.agent_id };
+
+  assert.equal(count(), 0, "no transfer yet");
+  const first = mcp(fx, fx.keys.member!, "skill.transfer", { skill_version_id: v.versionId, recipient });
+  assert.equal(first.isError, false, JSON.stringify(first.data));
+  assert.equal(count(), 1);
+  const second = mcp(fx, fx.keys.member!, "skill.transfer", { skill_version_id: v.versionId, recipient });
+  assert.equal(second.isError, false, JSON.stringify(second.data));
+  assert.equal(count(), 2, "the second call recorded a second transfer");
+  console.log(
+    `[I-8] transfers after two identical calls: ${count()} — ids ${first.data.transfer_id} and ${second.data.transfer_id}`,
+  );
+  assert.notEqual(first.data.transfer_id, second.data.transfer_id, "two calls, two different results");
+
+  // …and the hint now says so. It said `true`.
+  const hint = (MCP_TOOLS.find((t) => t.name === "skill.transfer") as any).annotations.idempotentHint;
+  console.log(`[I-8] skill.transfer idempotentHint = ${hint}`);
+  assert.equal(hint, false, "a tool whose repeat records a second fact is not idempotent");
   fx.db.close();
 });

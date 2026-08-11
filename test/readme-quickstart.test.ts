@@ -267,7 +267,7 @@ test("the README's quickstart block, run verbatim, reaches a terminal `adopted` 
     // from the loop above
     const last = JSON.parse(printed[printed.length - 1]) as { derived_state: string; events: string[] };
     assert.equal(last.derived_state, "adopted", "the quickstart ends at a TERMINAL adopted receipt");
-    assert.deepEqual(last.events, ["delivered", "attempted", "adopted"]);
+    assert.deepEqual(last.events, ["requested", "delivered", "attempted", "adopted"]);
   } finally {
     stop(inst);
   }

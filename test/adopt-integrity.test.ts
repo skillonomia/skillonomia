@@ -142,10 +142,19 @@ test("the same principal replaying the same key gets its bytes back, package inc
   assert.equal(b.raw, a.raw, "the replayed body is the original bytes");
   assert.equal(b.headers["Idempotency-Replayed"], "true");
 
-  // and the replay wrote nothing: one delivered event on the first chain
+  // and the replay wrote nothing: the chain still holds exactly the two rows the
+  // first pass wrote — the `requested` event that opened it and one `delivered`
   assert.equal(
     (fx.db.prepare("SELECT COUNT(*) c FROM receipt_events WHERE adoption_receipt_id=?").get(receiptId) as { c: number }).c,
-    1,
+    2,
+  );
+  assert.deepEqual(
+    (
+      fx.db
+        .prepare("SELECT event FROM receipt_events WHERE adoption_receipt_id=? ORDER BY event_seq")
+        .all(receiptId) as Array<{ event: string }>
+    ).map((r) => r.event),
+    ["requested", "delivered"],
   );
   fx.db.close();
 });

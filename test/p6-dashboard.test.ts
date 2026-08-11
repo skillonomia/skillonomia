@@ -254,7 +254,7 @@ test("evidence: the server-validated gate results behind each adopted receipt", 
   assert.equal(rows[0].receipt_id, f.receiptId);
   assert.equal(rows[0].adopter_agent_id, f.fx.member.agent_id);
   assert.equal(answer(rows[0].gate_results), "g1=pass");
-  assert.equal(answer(rows[0].event_seq), "3", "delivered → attempted → adopted");
+  assert.equal(answer(rows[0].event_seq), "4", "requested → delivered → attempted → adopted");
   // a version without a validated adoption contributes no evidence row
   assert.deepEqual(rowsOf(view(f.fx, "evidence", f.fx.keys.member, "?q=dash-held"), "evidence"), []);
   f.fx.db.close();
@@ -271,7 +271,7 @@ test("receipts: the chain in event_seq order, with the delivery request's state"
     answer(row!.events)
       .split(" | ")
       .map((e) => e.split(": ")[1]!.split(" at ")[0]),
-    ["delivered", "attempted", "adopted"],
+    ["requested", "delivered", "attempted", "adopted"],
   );
   const api = rest(f.fx, "GET", `/v1/receipts/${f.receiptId}`, f.fx.keys.member).body;
   assert.equal(row!.derived_state, api.derived_state, "the view shows the receipt-read API's own fields");

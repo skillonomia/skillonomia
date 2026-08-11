@@ -28,12 +28,14 @@ export const MCP_TOOLS = [
     description:
       "Create a skill (idempotent on workspace+slug) and a new version in draft from a §4.1b package archive.",
     // [I-8]: a WRITE. It creates a skill and a draft version and appends to
-    // the transparency log. `idempotentHint` is true in the sense the API means
-    // it: an `idempotency_key` replays the original response byte for byte, and
-    // the same (workspace, slug) converges on one skill.
+    // the transparency log. `destructiveHint` is FALSE because every one of
+    // those is an INSERT — nothing that already existed is changed or removed,
+    // which is what the protocol calls additive. `idempotentHint` is true:
+    // sending the same source again converges on the skill and version already
+    // created from it, so a repeat adds nothing.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     },
@@ -51,18 +53,18 @@ export const MCP_TOOLS = [
   {
     name: "skill.create_from_dir",
     description:
-      "Surface 14: pack, sign and create a version from a SOURCE tree (`manifest.json` + `SKILL.md` + files) in one call. The registry mints the version id, derives the §5 arrival marker from it, writes the marker into `SKILL.md` and `scripts/skln-arrive.sh`, computes §4.3 `integrity` over those bytes and signs with a system-held key it generates on first use. No seed, no kid, no hand-written `integrity`, no packing step: the caller supplies no cryptographic material at all, and none is returned. The source archive is bytes the CLIENT read from its own directory — the registry never opens a path a caller names.",
+      "Surface 14: pack, sign and create a version from a SOURCE tree (`manifest.json` + `SKILL.md` + files) in one call. The registry mints the version id, derives the §5 arrival marker from it, writes the marker into `SKILL.md` and `scripts/skln-arrive.sh`, computes §4.3 `integrity` over those bytes and signs with a system-held key it generates on first use. The manifest MUST declare an `outcome_contract` (`check`/`evidence`/`unknown`) — what success is for this skill — and that declaration rides inside the signature, so redefining success means issuing a new version; a source without one is refused before anything is written. No seed, no kid, no hand-written `integrity`, no packing step: the caller supplies no cryptographic material at all, and none is returned. The source archive is bytes the CLIENT read from its own directory — the registry never opens a path a caller names.",
     // [I-8]: every tool is one step of the loop, and this one WRITES. It mints
     // a version, generates a signing key on first use and appends to the
-    // transparency log, so `readOnlyHint` is false and `destructiveHint` is
-    // true — a client must be given the chance to ask before it runs.
-    // `idempotentHint` is true in the sense the API means it: resubmitting the
-    // SAME source converges on the version already packed from it, and an
-    // `idempotency_key` replays the original response byte for byte.
-    // `openWorldHint` is false — it touches this registry and nothing else.
+    // transparency log, so `readOnlyHint` is false. `destructiveHint` is FALSE
+    // and that is a measured fact, not a courtesy: every row it writes is new,
+    // and it changes nothing that was already there. `idempotentHint` is true:
+    // resubmitting the SAME source converges on the version already packed from
+    // it and writes nothing further. `openWorldHint` is false — it touches this
+    // registry and nothing else.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     },
@@ -83,11 +85,13 @@ export const MCP_TOOLS = [
     // [I-8]: a WRITE, and one that is easy to mistake for a read. Running the
     // §7.1 gates TRANSITIONS the version from `draft` to `linted` when they all
     // pass, and that transition is a recorded fact about a version other
-    // callers can see.
+    // callers can see — a change to a row that already existed, so
+    // `destructiveHint` is true. `idempotentHint` is FALSE: running the gates
+    // again files a second gate run, which is a new set of rows every time.
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,
-      idempotentHint: true,
+      idempotentHint: false,
       openWorldHint: false,
     },
     inputSchema: {
@@ -153,11 +157,13 @@ export const MCP_TOOLS = [
     description:
       "Surface 3: request review, or record a reviewer verdict. An approve verdict atomically writes the reviewer attestation.",
     // [I-8]: a WRITE. It records a review request or a reviewer's verdict, and
-    // an approving verdict atomically writes the reviewer attestation.
+    // an approving verdict atomically writes the reviewer attestation. Both are
+    // INSERTs, so `destructiveHint` is false; both happen AGAIN on a repeat, so
+    // `idempotentHint` is false.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
     inputSchema: {
@@ -259,11 +265,14 @@ export const MCP_TOOLS = [
     description:
       "§7.3 human-approval matrix: record an approval decision. Requires agents.type='human' with workspace role admin/owner; adopt_high_risk binds one exact adoption_request_id.",
     // [I-8]: a WRITE. It records a §7.3 human approval decision in the approval
-    // journal, and a recorded decision is not withdrawn by calling again.
+    // journal, and a recorded decision is not withdrawn by calling again — an
+    // INSERT, so `destructiveHint` is false. `idempotentHint` is FALSE: a
+    // `publish`-scope decision is not unique per version, so calling twice
+    // records the decision twice.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
     inputSchema: {
@@ -283,11 +292,15 @@ export const MCP_TOOLS = [
     name: "skill.request_adoption",
     description:
       "Surface 6: create an adoption request + receipt shell. A §7.3 condition holds the request in approval_pending until a human approval names it.",
-    // [I-8]: a WRITE. It opens an adoption request and its receipt chain.
+    // [I-8]: a WRITE. It opens an adoption request, its receipt shell and the
+    // `requested` event that names the recipient — three INSERTs, so
+    // `destructiveHint` is false. `idempotentHint` is FALSE: without an
+    // `idempotency_key` a second call opens a SECOND chain, which is a thing an
+    // adopter may genuinely mean and a client must not be told is free.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
     inputSchema: {
@@ -301,7 +314,10 @@ export const MCP_TOOLS = [
     description:
       "Surface 7: adopter-side compatibility check, then package handover and the `delivered` receipt event. The request's adopter only.",
     // [I-8]: a WRITE. It appends to the INSERT-only receipt journal, and an
-    // appended event cannot be withdrawn.
+    // appended event cannot be withdrawn. `destructiveHint` is TRUE — the
+    // handover also moves the adoption REQUEST row, which already existed.
+    // `idempotentHint` is true: the chain has begun, and a second call is
+    // refused without writing.
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,
@@ -322,10 +338,13 @@ export const MCP_TOOLS = [
     name: "skill.validate_outcome",
     description:
       "Surface 8: append attempted/adopted/failed/rolled_back to your own receipt, per the §5.3 table. `adopted` requires evidence matching the declared validation gates.",
-    // [I-8]: a WRITE. It appends the terminal outcome event to a receipt chain.
+    // [I-8]: a WRITE. It appends the terminal outcome event to a receipt chain
+    // — an INSERT into an INSERT-only journal, so `destructiveHint` is false,
+    // and a repeat is refused by the §5.3 table without writing, so
+    // `idempotentHint` is true.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     },
@@ -346,10 +365,11 @@ export const MCP_TOOLS = [
     name: "skill.rate",
     description: "Surface 9: rate a version. Requires one of your own receipts whose terminal event is `adopted`.",
     // [I-8]: a WRITE. A rating is bound to a closed adoption receipt and
-    // recorded against the version.
+    // recorded against the version — an INSERT, and one per (version, rater),
+    // so a repeat is refused without writing: additive and idempotent.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     },
@@ -370,18 +390,25 @@ export const MCP_TOOLS = [
     description:
       "Surface 15: transfer a version to a NAMED, TYPED recipient — `recipient` is `{kind,ref}` and has no default. `kind` is `local_agent` (carried out) or `remote_fleet` (declared by §5.4 and NOT implemented in V-1: refused with NOT_IMPLEMENTED after the permission is checked, never silently treated as local). The sender must hold an `assign` grant scoped to that recipient kind (§6.2). It records the transfer, opens the recipient's adoption request and receipt, and writes ONE `transferred` receipt event carrying the recipient. It is an INTENT and reports one: the answer carries `observed_state:\"unknown\"` beside it, because nothing has been observed at the recipient — a transfer never says a skill was installed, is running, or is active.",
     // [I-8]: one step of the loop, and this one WRITES. It opens a receipt
-    // chain and appends to the INSERT-only journal, so `readOnlyHint` is false
-    // and `destructiveHint` true — a client must be given the chance to ask.
-    // `idempotentHint` is true only in the sense the API means it: an
-    // `idempotency_key` replays the original response byte for byte. Repeating
-    // the call WITHOUT one records a second transfer, because sending the same
-    // version to the same recipient twice is a thing a sender may genuinely
-    // mean. `openWorldHint` is false — V-1 reaches nothing outside this
-    // registry, which is precisely why `remote_fleet` refuses.
+    // chain and appends to the INSERT-only journal, so `readOnlyHint` is false.
+    //
+    // `idempotentHint` IS FALSE, and the previous value of this field is the
+    // reason the sweep beside it exists. It said `true`, and the comment under
+    // it said, in the same breath, that repeating the call without an
+    // `idempotency_key` records a second transfer. Both statements shipped. The
+    // protocol's `idempotentHint` means exactly one thing — repeating the call
+    // with the same arguments has no additional effect — and a second transfer
+    // is an additional effect, so the hint was false and the comment beside it
+    // was the proof. A client acting on `true` retries and moves the version
+    // twice.
+    //
+    // `destructiveHint` is false: every row this writes is new. `openWorldHint`
+    // is false — V-1 reaches nothing outside this registry, which is precisely
+    // why `remote_fleet` refuses.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
     inputSchema: {
@@ -406,10 +433,12 @@ export const MCP_TOOLS = [
     description:
       "§6.2: grant one principal one step of the transfer loop towards one KIND of recipient — the triple (agent, action, recipient scope). `action` ∈ receive|assign|activate|revoke|report_outcome, a closed list; `recipient_scope` ∈ local_agent|remote_fleet, the same closed list `skill.transfer` uses. It introduces NO workspace role: the roles and principal types of the schema are untouched and approvals still stand on them. Requires admin/owner of the grantee's workspace. Re-issuing the same triple converges on the recorded grant.",
     // A write: it creates a capability. The read half is `transfer_grant.list`
-    // and the two are separate steps, never one tool with a mode argument.
+    // and the two are separate steps, never one tool with a mode argument. The
+    // triple (agent, action, scope) is unique, so a repeat is refused without
+    // writing — additive, and idempotent.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     },
@@ -447,7 +476,7 @@ export const MCP_TOOLS = [
     // this one does.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: true,
     },
@@ -463,7 +492,7 @@ export const MCP_TOOLS = [
       "§5.5: suspend a deployment — the managed copy is taken out of the native location and the assignment stays, so it can be activated again. Requires a `revoke` grant scoped to the assignment's recipient kind (§6.2): pausing and revoking exercise the same capability on the runtime and differ only in whether the deployment can be resumed. The answer states what became of the copy — `removed`, `absent` or `retained`, never a bare success — and states that a new session is required before the withdrawal changes what an agent is working from. It does NOT claim that an agent which has already read these instructions no longer has them.",
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: true,
     },
@@ -479,7 +508,7 @@ export const MCP_TOOLS = [
       "§5.5: end a deployment and take the managed copy out of the native location. Terminal: a revoked assignment is not resumed, and handing the skill over again is a fresh push. Requires a `revoke` grant scoped to the assignment's recipient kind (§6.2). The answer states what became of the copy — `removed`, `absent` or `retained` (a copy that is still there because the registry could not reach it) — and carries the limit of the operation in words: removing a file does not reach into a session that has already loaded the skill, so a new session is required before the withdrawal has any effect on what that agent is working from.",
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: true,
     },
@@ -557,14 +586,16 @@ export const MCP_TOOLS = [
     description:
       "§6 part A: file what was OBSERVED at one agent's runtime — the model, whether a session is live, when it was last active, and the runtime records themselves. THIS TOOL WRITES. The V-1 requirements list it among the READING surfaces and that classification is contradicted here deliberately: a self-report is an agent telling this registry something, telling is storing, and this call appends to two INSERT-only tables and moves the observation column of every deployment of that agent. [I-8] requires a tool's hints to be TRUE, and `readOnlyHint: true` on a call that writes is a false hint a client acts on by not asking. Requires a `report_outcome` grant scoped to `local_agent` (§6.2). `window` and `window_detail` are REQUIRED: a report that does not say what it looked at is a number with no method [I-3], and it is refused rather than given a default. The records' TEXT is reduced to §5 arrival markers at this boundary and is NOT stored, logged or returned [I-7]. A report can establish that a version RAN; it can never establish that one did not.",
     // [I-8]: one step of the loop — `report_outcome` — and it WRITES. The hints
-    // say so. `destructiveHint` is true because the tables are INSERT-only and
-    // a filed report cannot be withdrawn; `openWorldHint` is false because this
+    // say so. `destructiveHint` is FALSE: the tables are INSERT-only, so a filed
+    // report cannot be withdrawn AND cannot disturb one already filed, which is
+    // the protocol's "additive" exactly. `idempotentHint` is false — filing the
+    // same report twice files it twice. `openWorldHint` is false because this
     // call reaches nothing outside this registry — the reporter did the
     // reaching, and what crosses this boundary is its account of it.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
     inputSchema: {
@@ -602,15 +633,16 @@ export const MCP_TOOLS = [
     name: "principal.create",
     description:
       "Provisioning: create a principal (agent, human or service) in the caller's workspace with a workspace role, and issue its API key. Requires role admin/owner (§6 manage-memberships row); the new role may not outrank the caller's. The api_key is returned EXACTLY ONCE and is never retrievable — this call takes no idempotency_key, because a replay would have to persist that secret.",
-    // [I-8]: a WRITE. It creates a principal and its workspace membership.
-    // `idempotentHint` is FALSE, and truthfully: this call takes no
-    // `idempotency_key` — a replay would have to persist the returned secret —
-    // so calling it twice creates two principals, and a hint claiming otherwise
-    // is one a client acts on by retrying.
+    // [I-8]: a WRITE. It creates a principal and its workspace membership —
+    // two INSERTs, so `destructiveHint` is false. `idempotentHint` is true, and
+    // for a reason worth stating rather than assuming: this call takes no
+    // `idempotency_key`, but a NAME is unique within a workspace, so a repeat
+    // with the same arguments is refused and writes nothing. Change the name
+    // and it is a different call, not a repeat.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
     inputSchema: {
@@ -646,7 +678,7 @@ export const MCP_TOOLS = [
     // is FALSE and that is the honest value — calling twice mints two keys.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: false,
       openWorldHint: false,
     },
@@ -683,9 +715,11 @@ export const MCP_TOOLS = [
       "Register the CALLER's own Ed25519 signing key (kid + unpadded base64url raw public key) — §4.4 step 3 resolves a package's kid against manifest.author_agent, so this is what makes a signed package attributable. A key is registered for the authenticated principal and for no one else, at every role: registering on another principal's behalf would forge authorship. Transparency-logged.",
     // [I-8]: a WRITE. It binds a `kid` to a principal and appends that binding
     // to the transparency log, where §4.4 step 3 reads it as a trust input.
+    // Both are INSERTs — `destructiveHint` false — and a `kid` is unique, so a
+    // repeat is refused and writes nothing: `idempotentHint` true.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: true,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     },
