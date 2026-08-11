@@ -44,10 +44,11 @@ import {
   verifiableVersion,
 } from "./p4-helpers.ts";
 import { buildPackage, makeManifest } from "./p2-helpers.ts";
-import { DASHBOARD_VIEWS, escapeHtml } from "../src/dashboard.ts";
+import { DASHBOARD_VIEWS, escapeHtml, isMintedCell } from "../src/dashboard.ts";
 import {
   APPROVAL_NOTICES,
   RECONCILIATION_LEGEND,
+  auditDashboardPayload,
   auditRenderedHtml,
   auditRenderedJson,
   cellAttr as cellAttrOf,
@@ -2048,6 +2049,8 @@ test("[I-1]/[I-3] all ELEVEN views audit clean on the finished HTML and the fini
   let totalNumbers = 0;
   let builtCells = 0;
   let notices = 0;
+  let payloadCells = 0;
+  let payloadStrings = 0;
   const problems: string[] = [];
   /** every notice this build can serve, from the source constants */
   const DECLARED_NOTICES = [RECONCILIATION_LEGEND, ...APPROVAL_NOTICES];
@@ -2058,6 +2061,20 @@ test("[I-1]/[I-3] all ELEVEN views audit clean on the finished HTML and the fini
     assert.equal(json.status, 200, json.raw);
     const h = auditRenderedHtml(html.raw);
     const j = auditRenderedJson(json.raw);
+    // [B-2] THE PROVENANCE SWEEP, over the payload the registry BUILT rather
+    // than over its bytes: every row value a member of the constructor's own
+    // set, and every string that is not a row value — title, section title,
+    // column names, `empty`, `note`, notices, cursor, row-class field — under
+    // the rule its own name selects. Both numbers are printed, because a sweep
+    // over an empty payload proves nothing.
+    const built = fx.registry.dashboard(fx.owner, view);
+    const prov = auditDashboardPayload(built);
+    payloadCells += prov.cells;
+    payloadStrings += prov.string_fields;
+    assert.deepEqual(prov.violations, [], `${view}: the payload the registry built`);
+    assert.equal(prov.unminted, 0, `${view}: row values no cell constructor produced`);
+    assert.ok(prov.cells > 0, `${view}: the payload carried no row value at all`);
+    assert.ok(prov.string_fields > 0, `${view}: no furniture string was checked`);
     console.log(
       `  ${view.padEnd(15)} html: rows=${String(h.rows).padStart(3)} cells=${String(h.cells).padStart(4)} ` +
         `built=${String(h.constructed).padStart(4)} unbuilt=${String(h.unconstructed).padStart(2)} ` +
@@ -2116,6 +2133,8 @@ test("[I-1]/[I-3] all ELEVEN views audit clean on the finished HTML and the fini
   assert.deepEqual(problems, [], "violations found on the shipped bytes of the eleven views");
   console.log(`[I-1]/[I-3] swept ${totalCells} cells across ${DASHBOARD_VIEWS.length} views, of which ${totalNumbers} are numbers`);
   console.log(`[B-2] cells carrying a constructor's mark: ${builtCells}/${totalCells}; cells carrying none: ${totalCells - builtCells}`);
+  console.log(`[B-2] row values whose PROVENANCE was checked by identity across the eleven payloads: ${payloadCells}, of which 0 came from anywhere but the constructor`);
+  console.log(`[B-2] non-cell strings checked by their own rule across the eleven payloads: ${payloadStrings}`);
   console.log(`[B-2] notices served across the eleven views: ${notices}, every one of them a constant of the source (${DECLARED_NOTICES.length} declared)`);
   assert.ok(totalNumbers > 0, "not one number was checked: the sweep would pass on a page with no figures at all");
   assert.equal(builtCells, totalCells, "cells reached a reader without passing a cell builder");
@@ -2255,7 +2274,7 @@ function constructedCell(n: Notation, i: number): RenderAudit {
     ? numberCell(registryCount(i, "outcome", "the corpus of notations, as a measured number", "one entry of the corpus"))
     : labelCell("corpus_entry", n.cell, "one entry of the corpus", "the corpus of notations, as a label");
   return auditRenderedHtml(
-    `<table><thead><tr><th>c</th></tr></thead><tbody><tr><td>${escapeHtml(String(cell))}</td></tr></tbody></table>`,
+    `<table><thead><tr><th>c</th></tr></thead><tbody><tr><td>${escapeHtml(cell.text)}</td></tr></tbody></table>`,
   );
 }
 
@@ -2307,7 +2326,7 @@ test("[I-3] NO notation reaches a page without a method, and the constructed cel
   for (const n of figures) {
     const inALabel = auditRenderedHtml(
       `<table><thead><tr><th>c</th></tr></thead><tbody><tr><td>${escapeHtml(
-        String(labelCell("corpus_entry", n.cell, "one entry of the corpus", "the corpus of notations, as a label")),
+        labelCell("corpus_entry", n.cell, "one entry of the corpus", "the corpus of notations, as a label").text,
       )}</td></tr></tbody></table>`,
     );
     (inALabel.violations.length > 0 ? seen : unseen).push(n.cell);
@@ -2373,11 +2392,18 @@ test("[I-3] the round-3 sweep, which skipped a cell with no `kind:`, is killed b
   });
 });
 
-test("[B-2] a bare value in a row is a COMPILE ERROR, not a finding", () => {
-  // THE OTHER HALF OF THE PROOF, and the half a sweep cannot give: the bypass is
-  // not merely detected on the page — IT CANNOT BE WRITTEN. `Cell` is branded
-  // with a `unique symbol`, a section's `rows` hold `Cell`s, so a template that
-  // interpolates a value does not typecheck.
+test("[B-2] a bare value in a row does not compile — the FIRST layer, and not the mechanism", () => {
+  // WHAT THIS PROVES, AND WHAT THE ROUND BEFORE THIS ONE CLAIMED IT PROVED.
+  //
+  // It proves that a row value written by accident is caught by `tsc`: `Cell`
+  // is an object type, a section's `rows` hold `Cell`s, so a template that
+  // interpolates a string does not typecheck. That is worth having and it is a
+  // convenience, not a guarantee — `as unknown as Cell` compiles, and so does
+  // anything that arrives through `any` or `JSON.parse`.
+  //
+  // THE GUARANTEE IS `isMintedCell`, which is checked in the test below this
+  // one. The two are kept apart deliberately: a comment that called this one
+  // the mechanism is exactly the kind of false claim [B-4] exists to catch.
   //
   // The proof is `tsc` itself, run over a fragment that does exactly that, in a
   // directory of its own so nothing shipped is touched. A fragment that COMPILES
@@ -2426,9 +2452,84 @@ test("[B-2] a bare value in a row is a COMPILE ERROR, not a finding", () => {
   console.log(`[B-2] tsc on the BARE-VALUE row   → status ${bad.status}`);
   console.log(`      ${bad.out.trim().split("\n")[0]?.slice(0, 160) ?? ""}`);
   assert.equal(good.status, 0, `a row built from a cell must compile, or this probe proves nothing: ${good.out}`);
-  assert.notEqual(bad.status, 0, "a bare string in a row COMPILED — the brand is not enforcing anything");
+  assert.notEqual(bad.status, 0, "a bare string in a row COMPILED — the type is not even inconveniencing anybody");
   assert.match(bad.out, /not assignable to type/, "the refusal must be the type refusal, not some other error");
-  assert.match(bad.out, /CELL_BRAND|Cell/, "…and it must be the CELL brand that refused it");
+  assert.match(bad.out, /Cell/, "…and it must be the CELL type that refused it");
+
+  // …AND THE CAST THAT DEFEATS IT, STATED RATHER THAN LEFT UNSAID. This is the
+  // fragment round 4 called impossible. It compiles. It has always compiled.
+  const cast = write(
+    "cast.ts",
+    preamble.replace("labelCell", "labelCell as _unused") +
+      `const score = ".75";\n` +
+      `export const section: DashboardSection = {\n` +
+      `  key: "k", title: "t", fields: ["avg_rating"], empty: "none",\n` +
+      `  rows: [{ avg_rating: score as unknown as import(${JSON.stringify(join(root, "src/dashboard.ts"))}).Cell }],\n` +
+      `};\n`,
+  );
+  const casted = compile(cast);
+  console.log(`[B-2] tsc on the CAST row         → status ${casted.status} (a cast is not a finding: it is the language)`);
+  assert.equal(casted.status, 0, "if a cast stopped compiling, this file's whole argument would need rewriting");
+});
+
+test("[B-2] provenance is MEMBERSHIP, and a cast, a literal, a parse and a clone are all outside it", () => {
+  // THE MECHANISM, as opposed to the convenience above. `mintCell` records what
+  // it made; `isMintedCell` answers about THAT OBJECT. Nothing below can be made
+  // a member without calling the constructor.
+  const real = labelCell("probe", "an answer", "a reason", "a boundary");
+  const cases: Array<[string, unknown]> = [
+    ["the constructed cell itself", real],
+    ["a cast string", real.text as unknown as object],
+    ["an object literal with the same field", { text: real.text }],
+    ["a `JSON.parse` of its own bytes", JSON.parse(JSON.stringify(real))],
+    ["a `structuredClone` of it", structuredClone(real)],
+    ["a spread of it", { ...real }],
+    ["an `Object.freeze` of a copy", Object.freeze({ text: real.text })],
+  ];
+  const wrong: string[] = [];
+  for (const [name, value] of cases) {
+    const member = isMintedCell(value);
+    const expected = name === "the constructed cell itself";
+    console.log(`  ${name.padEnd(38)} member=${member}`);
+    if (member !== expected) wrong.push(`${name}: membership ${member}, expected ${expected}`);
+  }
+  assert.deepEqual(wrong, [], "values that are, or are not, members of the constructor's own set");
+});
+
+test("[B-2] the set of CALLERS of the constructor is closed, and it is read out of the shipped source", () => {
+  // MEMBERSHIP SAYS A CONSTRUCTOR MADE THE CELL. It says nothing about whether
+  // that constructor attached a method — `mintCell("5")` is a member and
+  // carries none. So the second layer needs the set of callers to be small,
+  // named, and DERIVED FROM THE SOURCE rather than remembered here: a new
+  // caller in a new module must break this test on the day it is written.
+  const root = fileURLToPath(new URL("../src/", import.meta.url));
+  const callers: Array<{ file: string; count: number }> = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(path);
+        continue;
+      }
+      if (!entry.name.endsWith(".ts")) continue;
+      const text = readFileSync(path, "utf8");
+      // the declaration itself is in `dashboard.ts`; a CALL is the name
+      // followed by an open parenthesis, anywhere else
+      const count = [...text.matchAll(/\bmintCell\s*\(/g)].length - (entry.name === "dashboard.ts" ? 1 : 0);
+      if (count > 0) callers.push({ file: relative(root, path), count });
+    }
+  };
+  walk(root);
+  for (const c of callers) console.log(`  ${c.file.padEnd(24)} ${c.count} call(s) to mintCell`);
+  console.log(`[B-2] shipped modules that call the cell constructor: ${callers.length}`);
+  assert.deepEqual(
+    callers.map((c) => c.file).sort(),
+    ["fleet-dashboard.ts"],
+    "a module outside the cell constructors calls `mintCell`: membership would then prove less than this file says it does",
+  );
+  // …and inside that file the calls are the two the grammar has: `mint`, which
+  // every attributed constructor ends at, and the reconciliation token.
+  assert.ok(callers[0]!.count >= 2, "the constructor is not actually called");
 });
 
 test("[B-2] a value handed to the free-text path cannot FORGE the constructor's mark", () => {
@@ -2449,7 +2550,7 @@ test("[B-2] a value handed to the free-text path cannot FORGE the constructor's 
   ];
   console.log(`[B-2] forgeries attempted through the free-text path: ${forgeries.length}`);
   for (const forgery of forgeries) {
-    const cell = String(labelCell("note", forgery, "written by a stranger", "the note this principal recorded"));
+    const cell = labelCell("note", forgery, "written by a stranger", "the note this principal recorded").text;
     const marks = [...cell.matchAll(/(?:^|·\s)kind:/g)].length;
     console.log(`  ${JSON.stringify(forgery.slice(0, 46))} → marks=${marks} kind=${cellAttrOf(cell, "kind")} state=${cellAttrOf(cell, "state") ?? "none"}`);
     assert.equal(marks, 1, `the forgery put ${marks} marks in one cell: ${cell}`);
@@ -2464,9 +2565,9 @@ test("[B-2] a value handed to the free-text path cannot FORGE the constructor's 
   }
   // and the predicate the neutralisation is stated by holds of every answer this
   // file can publish, not merely of the five above
-  assert.equal(forgesMethod(String(labelCell("note", forgeries[0]!, "w", "b"))).valueOf(), true, "the CELL itself carries a method — that is what it is");
+  assert.equal(forgesMethod(labelCell("note", forgeries[0]!, "w", "b").text).valueOf(), true, "the CELL itself carries a method — that is what it is");
   for (const forgery of forgeries) {
-    const answerPart = String(labelCell("note", forgery, "w", "b")).split(" · ")[0]!;
+    const answerPart = labelCell("note", forgery, "w", "b").text.split(" · ")[0]!;
     assert.equal(forgesMethod(answerPart), false, `the ANSWER half still forges a method: ${answerPart}`);
   }
 });
@@ -2490,7 +2591,7 @@ test("[B-2] a real view whose builder stops attaching the method is killed on it
   return observationCell({ observation, answer, why, source: "registry", window: "all_time", boundary });
 }`,
         `export function labelCell(observation: string, answer: string | null, why: string, boundary: string): Cell {
-  return String(answer ?? "unknown") as unknown as Cell;
+  return mintCell(String(answer ?? "unknown"));
 }`,
       ],
     ],
@@ -2580,7 +2681,7 @@ test("[I-3] the sweep that could not SEE an embedded number is killed, and so is
   // mutation is about: does the pattern still recognise `steps: 4 | files: 7`
   // as two counts sitting in a label?
   const embedded = `<table><thead><tr><th>included</th></tr></thead><tbody><tr><td>${escapeHtml(
-    String(labelCell("what_went_in", "steps: 4 | files: 7", "as the old renderer wrote it", "the manifest of this version")),
+    labelCell("what_went_in", "steps: 4 | files: 7", "as the old renderer wrote it", "the manifest of this version").text,
   )}</td></tr></tbody></table>`;
   const seen = auditRenderedHtml(embedded);
   const unseen = blind["fleet-dashboard.ts"]!.auditRenderedHtml(embedded);

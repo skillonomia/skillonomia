@@ -63,7 +63,15 @@ import {
   type SyncStatus,
   type Trivalent,
 } from "./fleet.ts";
-import type { Cell, DashboardNotice, DashboardSection } from "./dashboard.ts";
+import { decodeCursor } from "./cursor.ts";
+import {
+  isMintedCell,
+  mintCell,
+  type Cell,
+  type DashboardNotice,
+  type DashboardPayload,
+  type DashboardSection,
+} from "./dashboard.ts";
 
 // =========================================================================
 // The grammar of a cell
@@ -73,23 +81,25 @@ import type { Cell, DashboardNotice, DashboardSection } from "./dashboard.ts";
 export const SEP = " · ";
 
 /**
- * THE ONLY PLACE A `Cell` IS MADE.
+ * THE ONLY PLACE A `Cell` IS MADE IN THIS MODULE.
  *
- * Every constructor below ends here, and nothing else in the codebase can: the
- * brand on `Cell` is a `unique symbol` declared in `src/dashboard.ts` and never
- * exported, so `mint` is the sole expression in the program whose type the
- * compiler will accept where a row value is required. A renderer, a template or
- * a service method holding a string — a slug, a count, a hex figure, a fraction
- * — has NO WAY TO SPELL a row value out of it, in any notation, because the
- * refusal is about the TYPE and not about the text.
+ * Every constructor below ends here, and `mint` ends at `mintCell`, which is
+ * the one expression in the program that produces a cell and the one that
+ * records what it produced. A renderer, a template or a service method holding
+ * a string — a slug, a count, a hex figure, a fraction — cannot make a row
+ * value out of it: not because the type refuses (a cast defeats any type), but
+ * because the boundary asks whether THIS OBJECT is one `mintCell` returned, and
+ * a string is not an object at all.
  *
  * `parts[0]` is the answer; everything after it is the method, and `kind:` is
  * among the parts every caller supplies. That token is the mark this function's
  * output carries into the rendered bytes, where `auditCells` requires it of
- * every cell it finds.
+ * every cell it finds. THE MARK IS THE SECOND LAYER, NOT THE FIRST: it says a
+ * cell carries a method, and membership says a constructor made it. Neither
+ * statement covers the other.
  */
 function mint(parts: readonly string[]): Cell {
-  return parts.join(SEP) as Cell;
+  return mintCell(parts.join(SEP));
 }
 
 /**
@@ -259,12 +269,21 @@ export function observationCell(input: {
   //     method is parsed by or the mark the sweep reads as proof of a builder.
   //     Both halves are defined in this file, so that set is closed by
   //     construction rather than by enumeration.
+  //
+  // EVERY FIELD, NOT FIVE OF THE SIX. `observation` used to be interpolated
+  // raw, because it is "the name of the column" and a name is written by this
+  // code. That reasoning is exactly the reasoning this project keeps paying
+  // for: the guarantee was stated of the constructor and kept of five of its
+  // arguments, and `observation: kind: measured_number · state: outcome` put a
+  // second method key into a cell through the one that was left out. The list
+  // below is the constructor's whole input, and there is no field of it that
+  // reaches the cell without `plain`.
   const answer = plain(input.answer, "unknown");
   return mint([
     answer,
     `why: ${plain(input.why, "no_reason_recorded")}`,
     "kind: observation",
-    `observation: ${input.observation}`,
+    `observation: ${plain(input.observation, "unnamed")}`,
     `source: ${plain(input.source, "none")}`,
     `window: ${plain(input.window, "all_time")}`,
     `boundary: ${plain(input.boundary, "no boundary was recorded")}`,
@@ -340,7 +359,7 @@ export function reconciliationCell(status: SyncStatus): Cell {
         "the colour of a row is the state of the reconciliation, and a word outside the vocabulary encodes something else",
     );
   }
-  return status as string as Cell;
+  return mintCell(status);
 }
 
 // =========================================================================
@@ -415,14 +434,14 @@ function answerOf(text: string): string {
  * under it stayed finite. THE SET OF NOTATIONS A PERSON CAN WRITE A NUMBER IN IS
  * NOT ENUMERABLE, so no pattern here will ever be the thing that closes [I-3].
  *
- * WHAT CLOSES IT IS ONE LAYER UP, AND IT IS STRUCTURAL. A value reaches a reader
- * only inside a `Cell`, a `Cell` exists only where a constructor above returned
- * one, and every constructor attaches the method its kind requires. So a figure
- * on a page — in `.75`, in `٤٫٥`, in a notation invented tomorrow — arrives
- * carrying its source, its selection window and its boundary, because there is
- * no expression in this program that puts a bare value in a row. `auditCells`
- * enforces that over the finished bytes by demanding the constructor's mark of
- * EVERY cell it finds, whatever the cell says.
+ * WHAT CLOSES IT IS ONE LAYER UP, AND IT IS TWO CHECKS, NOT ONE. A value reaches
+ * a reader only through `cellTextOf`, which admits an object `mintCell` made and
+ * refuses everything else BY IDENTITY; and every constructor in this file
+ * attaches the method its kind requires, which `auditCells` demands of every cell
+ * on the finished page. So a figure on a page — in `.75`, in `٤٫٥`, in a notation
+ * invented tomorrow — arrives carrying its source, its selection window and its
+ * boundary. The first check is about WHO MADE the value, the second about WHAT IT
+ * CARRIES, and neither of them stands in for the other.
  *
  * WHAT THIS PATTERN IS FOR, THEN. One narrower question, and it is a question of
  * JUDGEMENT rather than of escape: did an author put a count inside a cell of
@@ -648,22 +667,27 @@ export function auditCells(cells: readonly ParsedCell[]): RenderAudit {
       continue;
     }
     // ===================================================================
-    // THE STRUCTURAL RULE: NOTHING REACHED THIS PAGE PAST A CONSTRUCTOR.
+    // THE SECOND LAYER: THIS CELL CARRIES A METHOD.
     // ===================================================================
     //
-    // Every cell carries `kind:`, because every constructor stamps it and
-    // there is no other way to obtain a row value — the type refuses one. So a
-    // cell WITHOUT the mark was not built by a constructor, and it is refused
-    // HERE, before anything is asked about what it says.
+    // WHAT THIS CHECK DOES AND DOES NOT PROVE, because the round before this
+    // one got the two confused and shipped the confusion as a comment.
     //
-    // That order is the fix. The sweep used to reach this question last and
+    //   * It does NOT prove a constructor made the cell. `kind:` is TEXT, and
+    //     text on a page can be written by anyone whose sentence ends up in a
+    //     cell. THAT question is answered by identity, at the render and
+    //     serialise boundaries (`cellTextOf`), before any bytes exist.
+    //   * It DOES prove that whatever produced this cell attached the method
+    //     its kind requires — which is a property of the CALLER of `mintCell`,
+    //     not of `mintCell`, and therefore needs a check of its own.
+    //
+    // The order still matters: the sweep used to reach this question last and
     // ask it only of cells that said `yes`/`no`/`unknown`; everything else with
     // no `kind:` fell through to a `continue` and was never seen. A reviewer
     // walked `.75`, `⅔`, `٤٫٥`, `1:2`, `1×10³`, `5‰`, `0x10` and `12·5` through
     // that gap, one notation at a time, and every one of them is refused now —
     // not because the figure pattern learned eight more shapes, but because
-    // none of the eight carries a method, and a cell with no method is not a
-    // cell this program can produce. The notation stopped mattering.
+    // none of the eight carries a method. The notation stopped mattering.
     if (kind === undefined || !CELL_KINDS.includes(kind)) {
       violations.push({
         where: cell.where,
@@ -987,13 +1011,234 @@ export function auditRenderedJson(text: string): RenderAudit {
   return { ...swept, rows, violations: [...violations, ...swept.violations] };
 }
 
+// =========================================================================
+// [B-2] — PROVENANCE, CHECKED BEFORE ANY BYTES EXIST
+// =========================================================================
+//
+// WHAT THE PREVIOUS ROUND CLAIMED AND COULD NOT KEEP. It made `Cell` a branded
+// string and wrote, in a shipped comment, that a value could not reach a page
+// without a method. `as Cell` compiles. `as unknown as Cell` compiles.
+// `JSON.parse` returns `any` and needs no cast. And the mark the byte sweep
+// read as proof of a constructor — a `kind:` token — is TEXT, which means a
+// forger writes the guard's own evidence. The comment asserted an impossibility
+// the code did not provide, which is the very defect [B-4] exists to catch, in
+// this repository's own source.
+//
+// WHAT IS PROVIDED INSTEAD. `mintCell` (src/dashboard.ts) records every cell it
+// makes in a `WeakSet`; `isMintedCell` answers by IDENTITY. The two boundaries
+// that turn a payload into bytes — `renderDashboard` and `serializeDashboard` —
+// admit members and refuse everything else, so the check is not a sweep that
+// might be run: it is the read itself.
+//
+// THIS FUNCTION IS THE THIRD LOOK, over the payload as a whole, and it exists
+// so a test can COUNT what the boundaries refuse instead of catching a throw.
+//
+// THE SCOPE OF THE CLAIM, STATED HONESTLY AND NARROWLY:
+//
+//     PROVENANCE IS A PROPERTY OF THE ROW VALUES — the cells of a table. It is
+//     not a property of a view's title, a section's title, its column names,
+//     its `empty` sentence, its `note`, its notices, its cursor or its
+//     row-class field, because NONE OF THOSE IS A CELL and none of them is
+//     going to be made one: they are the furniture of the page, written by this
+//     code, and turning a column header into an attributed observation would
+//     make a table unreadable to buy nothing.
+//
+// So each of those fields gets a guard OF ITS OWN, below, and the guards are
+// what the narrowing is worth. The walk is STRUCTURAL — every string anywhere
+// in the payload that is not a row value is checked — so a string field added
+// to `DashboardPayload` tomorrow is covered on the day it is added, by the
+// strictest rule, without anybody remembering to list it here.
+
+export interface PayloadAudit {
+  /** row values examined */
+  cells: number;
+  rows: number;
+  /** row values that are members of the constructor's own set */
+  minted: number;
+  /** row values that are not. The invariant is that this is 0. */
+  unminted: number;
+  /** non-cell strings examined — the furniture, and the size of that sweep */
+  string_fields: number;
+  violations: RenderViolation[];
+}
+
+/**
+ * The rule a non-cell string field is read by, and why it is that rule.
+ *
+ * `prose` is the DEFAULT and the strictest: a sentence a person reads. It may
+ * not carry a figure (a count on a page states its method or is not published
+ * [I-3]), may not carry the separator or the mark a cell's method is parsed by
+ * (or the furniture could forge a cell), and may not carry markup.
+ *
+ * The two exceptions are not softenings. A `token` is checked against a
+ * character class no sentence satisfies, and an `opaque` cursor is checked by
+ * BEING DECODED — a stricter test than any pattern over its characters.
+ */
+type FieldRule = "prose" | "token" | "opaque_cursor";
+
+/**
+ * The fields that are NOT prose, by name, with the reason each is not.
+ *
+ * Everything absent from this table is prose. That direction matters: an
+ * unlisted field gets the strict rule, so forgetting to list one is safe and
+ * listing one is the thing that needs a reason.
+ */
+const NON_PROSE_FIELDS: ReadonlyArray<{ field: string; rule: FieldRule; why: string }> = [
+  { field: "view", rule: "token", why: "the view's own name — a member of `DASHBOARD_VIEWS`, never a sentence" },
+  { field: "views", rule: "token", why: "the navigation list — the same names again" },
+  { field: "key", rule: "token", why: "a section's anchor, which becomes an HTML id" },
+  { field: "kind", rule: "token", why: "a notice's kind — `capability_absent` or `legend`, a closed vocabulary" },
+  {
+    field: "row_class_field",
+    rule: "token",
+    why: "the NAME of the row member whose value colours the row; it is checked against the section's own fields as well",
+  },
+  {
+    field: "next_cursor",
+    rule: "opaque_cursor",
+    why: "an opaque pagination token, verified by DECODING it to the shape `parseCursor` accepts — not by looking at its characters",
+  },
+];
+
+function ruleFor(field: string): FieldRule {
+  return NON_PROSE_FIELDS.find((f) => f.field === field)?.rule ?? "prose";
+}
+
+/** A name this code writes: lowercase, digits and underscores, nothing else. */
+const TOKEN_RE = /^[a-z0-9_]+$/;
+
+/** Markup a furniture string must not carry: it is escaped on the page, so a
+ *  tag here is either an author's mistake or somebody else's text arriving
+ *  where only this code's own sentences belong. */
+const MARKUP_RE = /[<>]|&#/;
+
+function checkFurniture(field: string, value: string, where: string, violations: RenderViolation[]): void {
+  switch (ruleFor(field)) {
+    case "token":
+      if (!TOKEN_RE.test(value)) {
+        violations.push({ where, problem: `\`${field}\` is a name this code writes and this one is not one: ${JSON.stringify(value.slice(0, 60))}` });
+      }
+      return;
+    case "opaque_cursor":
+      if (decodeCursor(value) === null) {
+        violations.push({
+          where,
+          problem: `\`${field}\` does not decode to a pagination cursor: an opaque token a client hands back is machine-made, and a string that is not one is a message somebody wrote into a machine field (${JSON.stringify(value.slice(0, 60))})`,
+        });
+      }
+      return;
+    case "prose": {
+      const figures = embeddedNumbers(value);
+      if (figures.length > 0) {
+        violations.push({
+          where,
+          problem: `a bare number \`${figures[0]}\` in \`${field}\`, which is not a cell and carries no state, source or selection boundary [I-3]`,
+        });
+      }
+      if (forgesMethod(value)) {
+        violations.push({
+          where,
+          problem: `\`${field}\` carries a cell's own separator or mark: the furniture of a page cannot be allowed to spell a cell (${JSON.stringify(value.slice(0, 60))})`,
+        });
+      }
+      if (MARKUP_RE.test(value)) {
+        violations.push({ where, problem: `\`${field}\` carries markup: ${JSON.stringify(value.slice(0, 60))}` });
+      }
+      return;
+    }
+  }
+}
+
+/**
+ * ONE PAYLOAD: every row value by provenance, every other string by its rule.
+ *
+ * It takes `unknown` on purpose. The whole question is what happens when
+ * something that is NOT a `DashboardPayload` is handed to a boundary, and a
+ * signature that could only be called with a well-typed payload would be
+ * answering a question nobody asked.
+ */
+export function auditDashboardPayload(payload: unknown): PayloadAudit {
+  const violations: RenderViolation[] = [];
+  let cells = 0;
+  let rows = 0;
+  let minted = 0;
+  let unminted = 0;
+  let stringFields = 0;
+
+  const p = (payload ?? {}) as Record<string, any>;
+
+  /** Every string in a value that is not a row — arrays and nested objects
+   *  included, so a field added as a list of sentences is covered too. */
+  const furniture = (field: string, value: unknown, where: string): void => {
+    if (typeof value === "string") {
+      stringFields += 1;
+      checkFurniture(field, value, where, violations);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((v, i) => furniture(field, v, `${where}[${i}]`));
+      return;
+    }
+    if (value !== null && typeof value === "object") {
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) furniture(k, v, `${where}.${k}`);
+    }
+  };
+
+  for (const [key, value] of Object.entries(p)) {
+    if (key === "sections") continue;
+    furniture(key, value, key);
+  }
+
+  const sections = Array.isArray(p.sections) ? p.sections : [];
+  sections.forEach((section: any, s: number) => {
+    const where = `sections[${s}]`;
+    for (const [key, value] of Object.entries((section ?? {}) as Record<string, unknown>)) {
+      if (key === "rows") continue;
+      furniture(key, value, `${where}.${key}`);
+    }
+    // THE ROW-CLASS FIELD NAMES A COLUMN OF THIS SECTION, or the colour of a row
+    // is taken from a member no reader can see beside it [D-1].
+    const fields: string[] = Array.isArray(section?.fields) ? section.fields.filter((f: unknown) => typeof f === "string") : [];
+    if (typeof section?.row_class_field === "string" && !fields.includes(section.row_class_field)) {
+      violations.push({
+        where: `${where}.row_class_field`,
+        problem: `the row's colour is taken from \`${section.row_class_field}\`, which is not a column of this section: the colour would encode a value no reader can see [D-1]`,
+      });
+    }
+    const rowList = Array.isArray(section?.rows) ? section.rows : [];
+    rowList.forEach((row: any, r: number) => {
+      rows += 1;
+      if (row === null || typeof row !== "object") {
+        violations.push({ where: `${where}/row#${r}`, problem: "a row that is not an object" });
+        return;
+      }
+      for (const [field, value] of Object.entries(row as Record<string, unknown>)) {
+        cells += 1;
+        if (isMintedCell(value)) {
+          minted += 1;
+          continue;
+        }
+        unminted += 1;
+        violations.push({
+          where: `${where}/row#${r}/${field}`,
+          problem:
+            "a row value that no cell constructor produced: membership of the constructor's own set is checked by IDENTITY, " +
+            "so a cast, an object literal of the same shape, a `JSON.parse` of a cell's bytes and a clone of a real cell are all refused [B-2]",
+        });
+      }
+    });
+  });
+
+  return { cells, rows, minted, unminted, string_fields: stringFields, violations };
+}
+
 /**
  * [D-3] — THE HONEST ABSENCE.
  *
  * The approval screen is missing two things on purpose: the draft inbox with
  * its `parameter / personal context / secret / non-transferable` marking and
- * its redaction preview ([B-2]/[B-3], work 9), and the register of refusals
- * ([B-5], work 10). §9 forbids BOTH failure modes — imitating them, and
+ * its redaction preview ([B-2]/[B-3], work #9), and the register of refusals
+ * ([B-5], work #10). §9 forbids BOTH failure modes — imitating them, and
  * rendering an empty block that reads as "we looked and found nothing".
  *
  * So the rule has two halves and needs both: a `capability_absent` notice for
@@ -1443,16 +1688,16 @@ export function agentSections(input: AgentViewInput): DashboardSection[] {
 export const APPROVAL_NOTICES: readonly DashboardNotice[] = [
   {
     kind: "capability_absent",
-    subject: "the drafts inbox and its redaction preview ([B-2]/[B-3], work 9)",
+    subject: "the drafts inbox and its redaction preview ([B-2]/[B-3], work #9)",
     detail:
-      "NOT BUILT. `skill.capture` and the inbox of drafts marked `parameter / personal context / secret / non-transferable`, with the preview of what would be redacted, are work 9 (P1) and do not exist in this build. " +
+      "NOT BUILT. `skill.capture` and the inbox of drafts marked `parameter / personal context / secret / non-transferable`, with the preview of what would be redacted, are work #9 (P1) and do not exist in this build. " +
       "This screen shows no drafts and no redaction preview because THE CAPABILITY IS ABSENT, not because a search returned nothing: there is no drafts table on this page for exactly that reason [I-1].",
   },
   {
     kind: "capability_absent",
-    subject: "the register of refusals ([B-5], work 10)",
+    subject: "the register of refusals ([B-5], work #10)",
     detail:
-      "NOT BUILT. The register of rejected proposals — what was declined, by whom, and on what ground — is work 10 (P1) and does not exist in this build. " +
+      "NOT BUILT. The register of rejected proposals — what was declined, by whom, and on what ground — is work #10 (P1) and does not exist in this build. " +
       "No rejected register is rendered here, empty or otherwise: an absent capability and an empty result are different facts [I-1].",
   },
 ];

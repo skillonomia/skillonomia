@@ -46,7 +46,7 @@ import { makeManifest } from "./p2-helpers.ts";
 import { TRANSFER_ACTION } from "../src/transfer.ts";
 import { arrivalMarker, embedArrivalStep } from "../src/marker.ts";
 import { FixedActivationRoots } from "../src/activation.ts";
-import { renderDashboard, type DashboardPayload } from "../src/dashboard.ts";
+import { ForeignValue, renderDashboard, serializeDashboard, type DashboardPayload, type SerializedPayload } from "../src/dashboard.ts";
 import { SYNC_STATUSES, columnsOf } from "../src/fleet.ts";
 import type { InventoryRoots, InventorySite } from "../src/fleet-scan.ts";
 import {
@@ -298,10 +298,21 @@ function screens(): Screens {
   return { fx, roots, claudeAgent, codexAgent, alpha, beta };
 }
 
-function payloadOf(fx: P4Fixture, view: string, key: string, query = ""): DashboardPayload {
+/**
+ * The payload AS THE WIRE CARRIES IT. A cell is an object in the payload the
+ * registry builds and a string on the wire; `serializeDashboard` is the
+ * boundary that flattens one into the other AFTER checking that every row value
+ * is one the cell constructor made [B-2].
+ */
+function payloadOf(fx: P4Fixture, view: string, key: string, query = ""): SerializedPayload {
   const res = rest(fx, "GET", `/v1/dashboard/${view}${query}`, key);
   assert.equal(res.status, 200, res.raw);
-  return res.body as DashboardPayload;
+  return res.body as SerializedPayload;
+}
+
+/** The payload as the REGISTRY builds it — cells, not their texts. */
+function builtOf(fx: P4Fixture, view: string): DashboardPayload {
+  return fx.registry.dashboard(fx.owner, view);
 }
 
 function rawOf(fx: P4Fixture, view: string, key: string): string {
@@ -351,7 +362,8 @@ test("§9's five screens are served by both adapters, and none of them is an emp
 
     // …and the page is a rendering of that payload, never a second source
     const html = htmlOf(s.fx, view, s.fx.keys.owner);
-    assert.equal(html, renderDashboard(payload));
+    assert.equal(html, renderDashboard(builtOf(s.fx, view)));
+    assert.deepEqual(serializeDashboard(builtOf(s.fx, view)), payload, `${view}: the wire payload is the flattened one`);
     assert.equal(mcp(s.fx, s.fx.keys.owner, "dashboard.view", { view, format: "html" }).data.html, html);
   }
   s.fx.db.close();
@@ -404,7 +416,7 @@ test("[I-1] DEGENERATE 1: not one cell of the five screens is blank, a dash or a
   // MUTATION 1a — `unknown` printed as nothing at all.
   const blanked = await mutantTree([
     `  const answer = plain(input.answer, "unknown");`,
-    `  if (input.answer === null) return "" as unknown as Cell;
+    `  if (input.answer === null) return mintCell("");
   const answer = plain(input.answer, "unknown");`,
   ]);
   const registryA = new blanked.service.Registry(s.fx.db, { now: () => NOW, inventory: s.roots });
@@ -598,7 +610,14 @@ test("[I-2] DEGENERATE 4: intent and fact are two columns on every screen that h
   mustCatch("the fact column dropped, leaving the intent column alone on the page [I-2]", m.fleetDashboard.auditRenderedHtml(page));
 
   // …and the other direction: one column carrying both, which is the merge
-  const merged = await mutantTree([`  "intent_assigned",\n  "fact_available",`, `  "intent_and_fact_assigned",\n  "fact_available",`]);
+  // BOTH the declared column and the row member are renamed. Renaming only the
+  // header would leave the section declaring a field no row carries, and that is
+  // refused at the render boundary before the [I-2] question is ever reached —
+  // a kill, but by the wrong guard.
+  const merged = await mutantTree(
+    [`  "intent_assigned",\n  "fact_available",`, `  "intent_and_fact_assigned",\n  "fact_available",`],
+    [`      intent_assigned: numberCell(agent.intent_active),`, `      intent_and_fact_assigned: numberCell(agent.intent_active),`],
+  );
   const registryM = new merged.service.Registry(s.fx.db, { now: () => NOW, inventory: s.roots });
   const pageM = merged.dashboard.renderDashboard(registryM.dashboard(s.fx.owner, "fleet"));
   mustCatch("one column named for BOTH the intent and the fact [I-2]", merged.fleetDashboard.auditRenderedHtml(pageM));
@@ -663,7 +682,7 @@ test("DEGENERATE 7: a cell built by a template instead of by the builders is cau
     `          row[fieldOfColumn(column)] = cell
             ? stateCell(cell)`,
     `          row[fieldOfColumn(column)] = cell
-            ? (cell.column === "invoked" ? cell.value : stateCell(cell))`,
+            ? (cell.column === "invoked" ? mintCell(cell.value) : stateCell(cell))`,
   ]);
   const registry = new m.service.Registry(s.fx.db, { now: () => NOW, inventory: s.roots });
   const payload = registry.dashboard(s.fx.owner, "agent");
@@ -693,8 +712,8 @@ test("[D-3] DEGENERATE 8: what is NOT built is declared, and rendering it as an 
   const absent = payload.notices.filter((n) => n.kind === "capability_absent");
   console.log(`[D-3] declared absent: ${absent.map((n) => n.subject).join(" | ")}`);
   assert.equal(absent.length, 2, "both missing parts of §9's approval screen must be declared");
-  assert.match(absent.map((n) => n.detail).join("\n"), /work 9/);
-  assert.match(absent.map((n) => n.detail).join("\n"), /work 10/);
+  assert.match(absent.map((n) => n.detail).join("\n"), /work #9/);
+  assert.match(absent.map((n) => n.detail).join("\n"), /work #10/);
   for (const capability of ABSENT_APPROVAL_CAPABILITIES) {
     assert.ok(
       absent.some((n) => n.subject.includes(capability) || n.detail.includes(capability)),
@@ -736,7 +755,7 @@ test("[D-3] DEGENERATE 8: what is NOT built is declared, and rendering it as an 
   // …and the other half: the notice removed, leaving nothing said at all
   const silent = await mutantTree([
     `    kind: "capability_absent",
-    subject: "the register of refusals ([B-5], work 10)",`,
+    subject: "the register of refusals ([B-5], work #10)",`,
     `    kind: "legend",
     subject: "refusals",`,
   ]);

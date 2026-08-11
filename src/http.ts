@@ -8,7 +8,7 @@ import type { Registry, SearchParams } from "./service.ts";
 import { SEARCH_FILTERS } from "./service.ts";
 import { ApiError, isApiError } from "./errors.ts";
 import { handleMcpMessage, type JsonRpcRequest } from "./mcp.ts";
-import { DASHBOARD_VIEWS, renderDashboard, parseDashboardFormat } from "./dashboard.ts";
+import { DASHBOARD_VIEWS, renderDashboard, serializeDashboard, parseDashboardFormat } from "./dashboard.ts";
 import { VERSION } from "./version.ts";
 
 /** Reported by `/health`; the release version of the running build.
@@ -456,7 +456,9 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       if (format === "html") {
         return { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" }, body: renderDashboard(payload) };
       }
-      return json(200, JSON.stringify(payload));
+      // the cells are objects in the payload and strings on the wire, and
+      // `serializeDashboard` is where the provenance of each is checked [B-2]
+      return json(200, JSON.stringify(serializeDashboard(payload)));
     }
 
     throw new ApiError("NOT_FOUND", `no route ${method} ${path}`);

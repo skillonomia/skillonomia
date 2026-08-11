@@ -29,6 +29,7 @@ import { RateLimiter, DEFAULT_RATE_LIMIT, type RateLimitOptions } from "./rateli
 import { ArchiveError, readPackage, computeIntegrity, writeTar, type PackageFiles } from "./archive.ts";
 import { parseJsonStrict, utf8Decode, jcsBytes } from "./jcs.ts";
 import { outcomeContractOf, validateManifest } from "./manifest.ts";
+import { decodeCursor, encodeCursor as encodeCursorToken, type Cursor } from "./cursor.ts";
 import { manifestHash, contentHash, signManifest } from "./signing.ts";
 import {
   ARRIVAL_SCRIPT_PATH,
@@ -5296,10 +5297,6 @@ function parseMinAdopted(v: SearchParams["min_adopted"]): number | undefined {
   return n;
 }
 
-interface Cursor {
-  ms: number;
-  id: string;
-}
 
 /** §6's rating half of the trust threshold: a score on the 1–5 `ratings` scale. */
 function parseMinRating(v: SearchParams["min_rating"]): number | undefined {
@@ -5313,19 +5310,17 @@ function parseMinRating(v: SearchParams["min_rating"]): number | undefined {
 
 function parseCursor(cursor: string | undefined): Cursor | null {
   if (cursor === undefined) return null;
-  try {
-    const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-    if (Array.isArray(decoded) && typeof decoded[0] === "number" && typeof decoded[1] === "string") {
-      return { ms: decoded[0], id: decoded[1] };
-    }
-  } catch {
-    // fall through to the typed error below
-  }
-  throw new ApiError("INVALID_SCHEMA", "malformed cursor");
+  // ONE CODEC, in `src/cursor.ts`, because `auditDashboardPayload` decodes the
+  // same token to answer whether a `next_cursor` on a payload is an opaque
+  // machine value; two implementations of the shape would be a guard agreeing
+  // with itself.
+  const decoded = decodeCursor(cursor);
+  if (decoded === null) throw new ApiError("INVALID_SCHEMA", "malformed cursor");
+  return decoded;
 }
 
 function encodeCursor(row: VersionRow): string {
-  return Buffer.from(JSON.stringify([row.created_at_ms, row.id]), "utf8").toString("base64url");
+  return encodeCursorToken({ ms: row.created_at_ms, id: row.id });
 }
 
 function matchesFilters(params: SearchParams, row: VersionRow, manifest: any): boolean {

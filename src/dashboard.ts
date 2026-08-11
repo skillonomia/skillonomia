@@ -119,35 +119,98 @@ export interface DashboardNotice {
 }
 
 /**
- * A CELL — AND THE REASON THIS TYPE EXISTS AT ALL.
+ * A CELL — AND WHY IT IS AN OBJECT WITH A MEMBERSHIP AND NOT A MARKED STRING.
  *
- * `Cell` is a string the type system will not let you WRITE. It is a branded
- * string: the brand is a `unique symbol` no module can name, so the only
- * expressions of this type are the ones the cell constructors in
- * `src/fleet-dashboard.ts` return. A section's `rows` hold `Cell`s and nothing
- * else, which makes
+ * ROUND 4 MADE THIS TYPE A BRANDED STRING and called the brand a mechanism of
+ * impossibility. It is not one. `as Cell` exists in TypeScript for exactly the
+ * purpose of defeating a brand; `as unknown as Cell`, a widening through `any`
+ * and `JSON.parse` (whose return type is `any`) each reach the same place
+ * without a cast being written anywhere near a renderer. A mark carried IN THE
+ * VALUE — a `kind:` token in the text — is worse still: it is evidence a
+ * stranger can write, and the free-text path of a dashboard exists to publish
+ * text strangers wrote.
  *
- *     rows.push({ avg_rating: `${score}` })      // ← a bare value
+ * SO PROVENANCE IS NOT READ OFF THE VALUE. `mintCell` is the only expression in
+ * the program that produces a cell, and it records what it produced in a
+ * `WeakSet` held in this module's closure. `isMintedCell` answers by IDENTITY:
+ * is THIS OBJECT one of the ones that function returned. A cast changes a type
+ * and changes no object; a literal with the same fields is a different object;
+ * `JSON.parse` of a real cell's own bytes produces a different object; a
+ * `structuredClone` of one produces a different object. None of them can be
+ * made a member without calling the constructor, and calling the constructor is
+ * the thing that was wanted.
  *
- * A COMPILE ERROR rather than a finding. That is the whole point, and it is
- * what the two rounds before this one could not achieve: they widened a pattern
- * that recognised a figure — integers, then decimals — and a reviewer answered
- * each widening with a notation it had not been shown (`.75`, `⅔`, `٤٫٥`, `1:2`,
- * `1×10³`, `5‰`, `0x10`, `12·5`). The set of notations a person can write a
- * number in is not enumerable, so a guard that enumerates it is behind by
- * whatever the next reviewer thinks of. THE SET OF WAYS A VALUE CAN REACH THE
- * PAGE is enumerable — there are the constructors, and there is nothing else —
- * so that is the set this build closes.
+ * WHAT THIS COSTS, STATED PLAINLY: a cell is no longer a string, so a payload
+ * carries objects and the two adapters serialise them at the boundary
+ * (`serializeDashboard`). That is a change to the shape of the data, and it is
+ * the price of the guarantee — the wire format is unchanged because the
+ * boundary flattens each cell to its text after checking its provenance.
  *
- * A deliberate `as unknown as Cell` still compiles, as every brand in every
- * language does. It is not a way past the guard: a cell forged that way carries
- * no `kind:` and `auditCells` refuses it over the finished bytes. The two
- * layers are independent — one at compile time over the source, one at run time
- * over the rendered page — and a value has to defeat BOTH to reach a reader
- * without its method.
+ * WHAT THIS DOES NOT CLAIM. Membership proves a cell came from `mintCell`. It
+ * does NOT prove the caller of `mintCell` attached a method: that is a separate
+ * property, kept by the constructors in `src/fleet-dashboard.ts`, checked over
+ * the finished bytes by `auditCells`, and checked at the payload by
+ * `auditDashboardPayload`. Two independent layers, and each is described here
+ * as what it is.
  */
-declare const CELL_BRAND: unique symbol;
-export type Cell = string & { readonly [CELL_BRAND]: "skillonomia.dashboard.cell" };
+export interface Cell {
+  readonly text: string;
+}
+
+/**
+ * The set of cells this program has made. A `WeakSet` because it must not keep
+ * a page alive, and because membership is the whole of the answer: there is
+ * nothing to read out of it, only a yes or a no about one object.
+ */
+const MINTED = new WeakSet<object>();
+
+/**
+ * THE ONE EXPRESSION THAT PRODUCES A CELL.
+ *
+ * Frozen, so the text a caller checked is the text the boundary renders, and
+ * recorded, so `isMintedCell` can answer about it later.
+ */
+export function mintCell(text: string): Cell {
+  const cell: Cell = Object.freeze({ text });
+  MINTED.add(cell);
+  return cell;
+}
+
+/** Whether this exact object is one `mintCell` returned. */
+export function isMintedCell(value: unknown): value is Cell {
+  return typeof value === "object" && value !== null && MINTED.has(value as object);
+}
+
+/**
+ * The refusal a boundary raises. Its own class, so a caller can tell "a value
+ * of unknown provenance reached the render" from any other failure, and so the
+ * refusal cannot be swallowed by a `catch` written for something else.
+ */
+export class ForeignValue extends Error {}
+
+/**
+ * A cell's text, or a REFUSAL. Every boundary that turns a payload into bytes
+ * goes through here, which is what makes "the render accepts members of the
+ * constructor's set and nothing else" a property of the code rather than a
+ * sentence in a comment.
+ */
+export function cellTextOf(value: unknown, where: string): string {
+  if (!isMintedCell(value)) {
+    throw new ForeignValue(
+      `[B-2] refused at ${where}: a row value that no cell constructor produced (${describe(value)}). ` +
+        "A cell is admitted by IDENTITY — it is one of the objects `mintCell` returned — so a cast, a literal of the " +
+        "same shape, a `JSON.parse` of a cell's own bytes and a clone of one are all refused here.",
+    );
+  }
+  return value.text;
+}
+
+/** What a refused value IS, without printing what it says. */
+function describe(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value !== "object") return `a ${typeof value}`;
+  return `an object with keys [${Object.keys(value as object).join(", ")}]`;
+}
 
 export interface DashboardSection {
   key: string;
@@ -269,16 +332,59 @@ function renderSection(s: DashboardSection): string {
 <p class="empty">${escapeHtml(s.empty)}</p></section>`;
   }
   const body = s.rows
-    .map((row) => {
-      const cls = s.row_class_field === undefined ? null : rowClassOf(row[s.row_class_field]);
+    .map((row, r) => {
+      // THE PROVENANCE CHECK IS THE READ ITSELF. There is no path from a row to
+      // the page that does not go through `cellTextOf`, so a value of unknown
+      // provenance cannot be rendered — not "is detected on the finished page",
+      // which is what the round before this one claimed and could not keep.
+      const cls =
+        s.row_class_field === undefined
+          ? null
+          : rowClassOf(cellTextOf(row[s.row_class_field], `${s.key}/row#${r}/${s.row_class_field}`));
       const open = cls === null ? "<tr>" : `<tr class="${escapeHtml(cls)}">`;
-      return `${open}${s.fields.map((f) => `<td>${escapeHtml(renderValue(row[f]))}</td>`).join("")}</tr>`;
+      return `${open}${s.fields.map((f) => `<td>${escapeHtml(cellTextOf(row[f], `${s.key}/row#${r}/${f}`))}</td>`).join("")}</tr>`;
     })
     .join("\n");
   return `<section id="${escapeHtml(s.key)}"><h2>${escapeHtml(s.title)}</h2>${note}
 <table><thead><tr>${head}</tr></thead><tbody>
 ${body}
 </tbody></table></section>`;
+}
+
+/**
+ * THE JSON BOUNDARY — the same provenance check, on the other adapter.
+ *
+ * A cell is an object in the payload and a string on the wire. Both adapters
+ * call this, so a value that no constructor produced cannot be served as JSON
+ * any more than it can be rendered as HTML: the two boundaries ask the SAME
+ * question of the SAME set, and neither reads anything out of the value to
+ * decide it.
+ */
+export interface SerializedSection extends Omit<DashboardSection, "rows"> {
+  rows: Array<Record<string, string>>;
+}
+export interface SerializedPayload extends Omit<DashboardPayload, "sections"> {
+  sections: SerializedSection[];
+}
+
+export function serializeDashboard(payload: DashboardPayload): SerializedPayload {
+  return {
+    ...payload,
+    sections: payload.sections.map((s) => ({
+      ...s,
+      rows: s.rows.map((row, r) => {
+        const out: Record<string, string> = {};
+        // EVERY MEMBER OF THE ROW, not the declared fields: a member the section
+        // did not announce is still served to the client, and a guard whose
+        // coverage is chosen by the thing it guards is the defect this file
+        // keeps being corrected for.
+        for (const [field, value] of Object.entries(row)) {
+          out[field] = cellTextOf(value, `${s.key}/row#${r}/${field}`);
+        }
+        return out;
+      }),
+    })),
+  };
 }
 
 /** The view as a self-contained HTML page (no scripts, no external assets). */

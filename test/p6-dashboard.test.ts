@@ -25,7 +25,9 @@ import {
   renderDashboard,
   renderValue,
   escapeHtml,
+  serializeDashboard,
   type DashboardPayload,
+  type SerializedPayload,
 } from "../src/dashboard.ts";
 import { labelCell } from "../src/fleet-dashboard.ts";
 import { MemorySecretStore, runWorkerOnce, type WebhookRequest, type WebhookResponse, type WebhookTransport } from "../src/webhooks.ts";
@@ -110,10 +112,21 @@ async function fixture(): Promise<Fixture> {
   };
 }
 
-function view(fx: P4Fixture, name: string, key: string, query = ""): DashboardPayload {
+/**
+ * The payload as the WIRE carries it: a cell is an object in the payload the
+ * registry builds and a string on the wire, and `serializeDashboard` is the
+ * boundary that flattens one into the other after checking its provenance
+ * [B-2]. A test that reads a response body is reading the flattened shape.
+ */
+function view(fx: P4Fixture, name: string, key: string, query = ""): SerializedPayload {
   const res = rest(fx, "GET", `/v1/dashboard/${name}${query}`, key);
   assert.equal(res.status, 200, res.raw);
-  return res.body as DashboardPayload;
+  return res.body as SerializedPayload;
+}
+
+/** The payload as the REGISTRY builds it — cells, not their texts. */
+function payloadOf(fx: P4Fixture, name: string): DashboardPayload {
+  return fx.registry.dashboard(fx.owner, name);
 }
 
 /**
@@ -132,7 +145,7 @@ function answer(cell: unknown): string {
   return (i < 0 ? text : text.slice(0, i)).trim();
 }
 
-function rowsOf(p: DashboardPayload, key: string): Array<Record<string, any>> {
+function rowsOf(p: SerializedPayload, key: string): Array<Record<string, any>> {
   const s = p.sections.find((x) => x.key === key);
   assert.ok(s, `section ${key} exists`);
   return s!.rows;
@@ -181,8 +194,9 @@ test("the dashboard is exactly the named views, on both adapters", async () => {
 test("every view RENDERS every declared API field of every row it returns", async () => {
   const f = await fixture();
   for (const name of DASHBOARD_VIEWS) {
-    const payload = view(f.fx, name, f.fx.keys.owner);
-    const html = renderDashboard(payload);
+    const built = payloadOf(f.fx, name);
+    const html = renderDashboard(built);
+    const payload = serializeDashboard(built);
     let rendered = 0;
     for (const section of payload.sections) {
       for (const field of section.fields) {
@@ -214,8 +228,11 @@ test("?format=html serves the same payload as HTML, and MCP can ask for it too",
   assert.match(res.headers["Content-Type"], /^text\/html/);
   assert.match(res.raw, /^<!doctype html>/);
   assert.ok(res.raw.includes("dash-adopted"), "the library page names the skill");
-  const json = view(f.fx, "library", f.fx.keys.owner);
-  assert.equal(res.raw, renderDashboard(json), "the HTML is a rendering of the JSON payload, not a second source");
+  assert.equal(
+    res.raw,
+    renderDashboard(payloadOf(f.fx, "library")),
+    "the HTML is a rendering of the same payload, not a second source",
+  );
   const viaMcp = mcp(f.fx, f.fx.keys.owner, "dashboard.view", { view: "library", format: "html" });
   assert.equal(viaMcp.data.html, res.raw);
   f.fx.db.close();
@@ -468,7 +485,7 @@ test("an empty view is still a rendered view (the P6 acceptance item is the fiel
     assert.deepEqual(section.rows, []);
     assert.ok(section.empty.length > 0);
   }
-  const html = renderDashboard(payload);
+  const html = renderDashboard(fx.registry.dashboard(fx.member, "dead_letters"));
   assert.ok(html.includes("<th>reason</th>"), "the dead-letter columns are declared even when empty");
   assert.ok(html.includes("<th>status</th>"), "so is webhook health");
   assert.ok(html.includes(escapeHtml(payload.sections[0].empty)));

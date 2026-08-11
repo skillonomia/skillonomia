@@ -5,7 +5,7 @@
 import type { Registry, SearchParams } from "./service.ts";
 import type { AuthContext } from "./auth.ts";
 import { ApiError, isApiError } from "./errors.ts";
-import { renderDashboard, parseDashboardFormat } from "./dashboard.ts";
+import { renderDashboard, serializeDashboard, parseDashboardFormat } from "./dashboard.ts";
 import { VERSION } from "./version.ts";
 
 export interface JsonRpcRequest {
@@ -1080,7 +1080,7 @@ function callTool(registry: Registry, auth: AuthContext, name: string, args: any
       const format = parseDashboardFormat(args?.format);
       const payload = registry.dashboard(auth, args?.view, (args ?? {}) as SearchParams);
       return {
-        json: JSON.stringify(format === "html" ? { view: payload.view, html: renderDashboard(payload) } : payload),
+        json: JSON.stringify(format === "html" ? { view: payload.view, html: renderDashboard(payload) } : serializeDashboard(payload)),
         replayed: false,
       };
     }
