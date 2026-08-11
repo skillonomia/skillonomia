@@ -1392,6 +1392,10 @@ test("[I-8] the hints are true: three reads that touch a foreign disk, and one w
     const t = byName[name];
     assert.ok(t, `${name} is not advertised`);
     assert.equal(t.annotations.readOnlyHint, true, `${name} must be hinted as a read`);
+    // A READ THAT TOUCHES A DISK IS STILL A READ, and the sweep is what says
+    // so: `readOnlyHint` is compared with whether the call moved a row OR a
+    // watched path, and these three moved neither. Reading a foreign directory
+    // is not a write; it is an OPEN WORLD, which is the next line.
     assert.equal(
       t.annotations.openWorldHint,
       true,
@@ -1401,7 +1405,18 @@ test("[I-8] the hints are true: three reads that touch a foreign disk, and one w
   const report = byName["observation.report"];
   assert.equal(report.annotations.readOnlyHint, false, "a call that writes must not be hinted as a read [I-8]");
   // `destructiveHint`/`idempotentHint`: proved behaviourally over all 36 tools
-  // in `test/p14-r2-invariants.test.ts`, not asserted as a literal here.
+  // in `test/p14-r2-invariants.test.ts`, not asserted as a literal here. The
+  // clause covering the `destructiveHint: false` these three carry is
+  // `destructiveHint declared true and the call only ADDED`, which fires the
+  // moment a shipped `false` is flipped.
+  //
+  // THE ONE LITERAL THAT IS NOT COMING BACK, and the reason is not tidiness.
+  // This test used to assert `report.annotations.destructiveHint === true`. It
+  // was WRONG. `recordObservationInTx` runs two INSERTs and nothing else; this
+  // call reaches no disk, asks for no foreign root, and removes and overwrites
+  // nothing. The behavioural sweep says `false` and the sweep is right, so the
+  // literal is recorded here as contradicted rather than restored — an
+  // assertion is not owed a place just because it used to have one.
   assert.equal(report.annotations.openWorldHint, false, "the reporter did the reaching; this call stores its account");
   // the divergence is STATED in the description rather than papered over
   assert.match(report.description, /THIS TOOL WRITES/);

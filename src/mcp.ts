@@ -474,9 +474,20 @@ export const MCP_TOOLS = [
     // for exactly that reason and is the honest difference from every other
     // tool here: `skill.transfer` reaches nothing outside the registry, and
     // this one does.
+    //
+    // `destructiveHint` IS TRUE, and the previous value of this field is why
+    // this comment is long. It said FALSE, on the ground that this call only
+    // INSERTS rows — true of the database and beside the point. Activation
+    // ends in `src/activation.ts` at `rmSync(target, { force: true })` and
+    // `writeFileSync(target, bytes)`: on a copy that has DRIFTED, that unlinks
+    // a file in a runtime's own directory and writes different bytes over its
+    // name. MCP's word is "destructive updates to its ENVIRONMENT", and this
+    // tool's environment includes a disk this registry does not own. A client
+    // told `false` here is a client told not to ask before something on its
+    // machine is overwritten.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: true,
       openWorldHint: true,
     },
@@ -490,9 +501,14 @@ export const MCP_TOOLS = [
     name: "assignment.pause",
     description:
       "§5.5: suspend a deployment — the managed copy is taken out of the native location and the assignment stays, so it can be activated again. Requires a `revoke` grant scoped to the assignment's recipient kind (§6.2): pausing and revoking exercise the same capability on the runtime and differ only in whether the deployment can be resumed. The answer states what became of the copy — `removed`, `absent` or `retained`, never a bare success — and states that a new session is required before the withdrawal changes what an agent is working from. It does NOT claim that an agent which has already read these instructions no longer has them.",
+    // [I-8]: `destructiveHint` is TRUE. Withdrawing a deployment runs
+    // `removeManaged`, which ends at `rmSync(dir, { recursive: true, force:
+    // true })` — a directory on somebody else's disk and everything under it.
+    // That the assignment row is only APPENDED to is a fact about the journal,
+    // not about the environment, and the two are not the same measurement.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: true,
       openWorldHint: true,
     },
@@ -506,9 +522,11 @@ export const MCP_TOOLS = [
     name: "assignment.revoke",
     description:
       "§5.5: end a deployment and take the managed copy out of the native location. Terminal: a revoked assignment is not resumed, and handing the skill over again is a fresh push. Requires a `revoke` grant scoped to the assignment's recipient kind (§6.2). The answer states what became of the copy — `removed`, `absent` or `retained` (a copy that is still there because the registry could not reach it) — and carries the limit of the operation in words: removing a file does not reach into a session that has already loaded the skill, so a new session is required before the withdrawal has any effect on what that agent is working from.",
+    // [I-8]: `destructiveHint` is TRUE, for the reason `assignment.pause`
+    // gives — the same `removeManaged`, the same recursive removal.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: true,
       openWorldHint: true,
     },
@@ -521,26 +539,41 @@ export const MCP_TOOLS = [
   {
     name: "assignment.list",
     description:
-      "§5.5: the deployments this actor may read — its own, or the workspace's for an admin/owner. Every row carries TWO COLUMNS that are never merged: `intent_state` (what Skillonomia decided, read from the INSERT-only assignment journal, labelled `intent`) and `observed_arrival` (what a runtime record showed, computed only from the §5 arrival marker on a paired call/output record, `yes` or `unknown` and never `no`). Each states its own source and selection window, so no cell is a bare value. A version declaring `runtime.shell: [\"none\"]` reports `unknown` with the reason `no_executable_step`, which is machine-distinguishable from `no_paired_record`. Read-only: it activates nothing and changes nothing.",
+      "§5.5: the deployments this actor may read — its own, or the workspace's for an admin/owner. Every row carries TWO COLUMNS that are never merged: `intent_state` (what Skillonomia decided, read from the INSERT-only assignment journal, labelled `intent`) and `observed_arrival` (what a runtime record showed, computed only from the §5 arrival marker on a paired call/output record, `yes` or `unknown` and never `no`). Each states its own source and selection window, so no cell is a bare value. A version declaring `runtime.shell: [\"none\"]` reports `unknown` with the reason `no_executable_step`, which is machine-distinguishable from `no_paired_record`. Read-only: it activates nothing and changes nothing. It does READ outside this registry: the answer carries a native inventory count taken by walking the configured activation roots, symbolic links followed, and `openWorldHint` is true for that walk.",
+    // [I-8]: a READ that nonetheless reaches a foreign disk. `openWorldHint`
+    // said FALSE until a sweep that watched the FILESYSTEM as well as the
+    // tables caught it: this call walks every configured activation root to
+    // publish `inventory.skill_files`. The comment on `fleet.list` below used
+    // to draw its own honest hint as a CONTRAST with this tool, which made a
+    // false statement here into a justification there — one wrong hint holding
+    // a right one up for the wrong reason.
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
-      openWorldHint: false,
+      openWorldHint: true,
     },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "fleet.list",
     description:
-      "§6 part A: the fleet inventory — one row per principal this actor may read, carrying its identity and type as recorded, the runtime it was OBSERVED on (or the one this deployment is configured to read, labelled as configuration), its model, whether a session is active, when it was last active, and a synchronisation status of `in_sync|pending|drifted|failed|unknown`. Every one of those is three-valued: `unknown` is a VALUE and is never rendered as `no`, because the absence of a record is not the absence of a fact. The answer also publishes §4's state × runtime MATRIX itself, which is ASYMMETRIC: Claude Code splits `proposed` into `proposed_now` and `proposed_historical`, Codex has one `proposed` whose value is `unknown` ALWAYS, and `loaded` is shown as an explicit column on neither. Read-only: it walks nothing, writes nothing and observes nothing on its own.",
+      "§6 part A: the fleet inventory — one row per principal this actor may read, carrying its identity and type as recorded, the runtime it was OBSERVED on (or the one this deployment is configured to read, labelled as configuration), its model, whether a session is active, when it was last active, and a synchronisation status of `in_sync|pending|drifted|failed|unknown`. Every one of those is three-valued: `unknown` is a VALUE and is never rendered as `no`, because the absence of a record is not the absence of a fact. The answer also publishes §4's state × runtime MATRIX itself, which is ASYMMETRIC: Claude Code splits `proposed` into `proposed_now` and `proposed_historical`, Codex has one `proposed` whose value is `unknown` ALWAYS, and `loaded` is shown as an explicit column on neither. Read-only: it writes nothing and observes nothing on its own. It does WALK a fleet member's configured inventory root while assembling each row, which is why `openWorldHint` is true.",
     // [I-8]: one step of the loop, and this one READS. `openWorldHint` is TRUE
-    // and that is the honest difference from `assignment.list`: this surface
-    // walks a filesystem that is not this registry's — a fleet member's own
-    // directory, reached through whatever links it contains. `assignment.
-    // activate` carries the same hint for writing into that filesystem; reading
-    // it is a smaller act, not a different KIND of act, and a client deciding
-    // whether to ask deserves to know which of its machines is being touched.
+    // because this surface walks a filesystem that is not this registry's — a
+    // fleet member's own directory, reached through whatever links it contains.
+    // `assignment.activate` carries the same hint for writing into that
+    // filesystem; reading it is a smaller act, not a different KIND of act, and
+    // a client deciding whether to ask deserves to know which of its machines
+    // is being touched.
+    //
+    // The reason is stated here on its own terms and NOT as a contrast with
+    // `assignment.list`, which is how it was written before: that tool walks a
+    // foreign disk too, so the contrast was false, and a hint justified by a
+    // comparison is a hint that goes wrong when the thing compared with does.
+    // A black-box sweep cannot catch this one by its ANSWER, either — the walk
+    // feeds nothing that reaches this payload — so the guard grades it ASKED
+    // and says so rather than claiming a proof it does not have.
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -822,11 +855,18 @@ export const MCP_TOOLS = [
     // already read, under the SAME access rules, and none of them writes: a
     // dashboard that widened visibility or recorded a visit would be a second
     // source of truth rather than a view.
+    //
+    // `openWorldHint` is TRUE, and said FALSE until the sweep was driven with
+    // EVERY view rather than the one that touches nothing. Three of the eleven
+    // — `fleet`, `agent`, `capability` — render surfaces that walk a fleet
+    // member's own directory, so this tool reaches outside this registry for
+    // some of its arguments. A hint is a statement about the TOOL: "for the
+    // argument the test happened to pass" is not a qualifier a client can read.
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
-      openWorldHint: false,
+      openWorldHint: true,
     },
     inputSchema: {
       type: "object",

@@ -316,13 +316,28 @@ advertised tools are the fifteen surface names above, plus `skill.approve`,
 The reading tools and the writing ones are separate names — `migration.count`
 carries `readOnlyHint`, and there is no general-purpose tool that could stand in
 for either kind. Every annotation is a statement about behaviour and is checked
-against it: `readOnlyHint` against whether the call moved a table,
-`destructiveHint` against whether it changed a row that already existed, and
-`idempotentHint` against whether calling twice with the same arguments wrote
-twice. `skill.transfer`, `skill.lint`, `skill.review.request`, `skill.approve`,
-`skill.request_adoption`, `observation.report` and `principal.issue_api_key`
-carry `idempotentHint: false`, because a second call without an
-`idempotency_key` really does record a second fact. Arguments are the REST
+against it — against the WHOLE environment a call can move, which is the rows
+of the registry's database and the filesystem a tool is configured to reach,
+because "destructive updates to its environment" is what the protocol's own
+wording says and a directory removed with `rm -rf` is destroyed whatever the
+tables did. So: `readOnlyHint` against whether the call moved a row or a
+watched path; `destructiveHint` against whether it changed or removed a row
+that already existed, removed a path that existed, or replaced the bytes of
+one; `idempotentHint` against whether calling twice with the same arguments
+moved either half a second time; and `openWorldHint` against whether the call
+asked the deployment where a foreign root is — corroborated, where the tool's
+behaviour allows it, by having moved something under one or by answering
+differently once that root was taken away.
+`assignment.activate`, `assignment.pause` and `assignment.revoke` carry
+`destructiveHint: true`: the first unlinks and rewrites a drifted copy in a
+runtime's own directory, and the other two remove the copy's directory and
+everything under it. `assignment.list`, `fleet.list`, `agent.capabilities`,
+`capability.get` and `dashboard.view` carry `openWorldHint: true` while
+remaining `readOnlyHint: true` — they walk a fleet member's directory and
+change nothing in it. `skill.transfer`, `skill.lint`, `skill.review.request`,
+`skill.approve`, `skill.request_adoption`, `observation.report` and
+`principal.issue_api_key` carry `idempotentHint: false`, because a second call
+without an `idempotency_key` really does record a second fact. Arguments are the REST
 body fields with the path parameter folded in (`skill_version_id`,
 `adoption_request_id`, `receipt_id`, `principal_id`, `api_key_id`, `kid`,
 `view`). Errors come back as a tool result with `isError: true` carrying the

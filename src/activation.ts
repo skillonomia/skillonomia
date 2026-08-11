@@ -310,9 +310,24 @@ export function materialize(site: ActivationSite, name: string, files: PackageFi
  * runtime will read them, and not when a write call returned without error.
  * Symbolic links are followed here — a shared library reached through a link is
  * a legitimate way for the bytes to be there.
+ *
+ * A ROOT THAT WILL NOT RESOLVE ANSWERS `null`, like every other way of failing
+ * to read. `removeManaged` below has always treated an unresolvable root as an
+ * ordinary answer, and the asymmetry between the two was a defect and not a
+ * distinction: a root that has been unmounted or renamed made the reading half
+ * throw out of a call that its caller handles by state, so the caller's own
+ * `failed` path — the one that records a REASON on the journal — was skipped
+ * and the deployment kept claiming `active`. There is one honest answer to
+ * "are the version's bytes at the native location", and when the location
+ * cannot even be reached the answer is no.
  */
 export function readBack(site: ActivationSite, name: string): Buffer | null {
-  const realRoot = resolveRoot(site.root);
+  let realRoot: string;
+  try {
+    realRoot = resolveRoot(site.root);
+  } catch {
+    return null;
+  }
   const target = resolve(realRoot, nativeRelativePath(site.target, name));
   if (!within(realRoot, target)) return null;
   try {

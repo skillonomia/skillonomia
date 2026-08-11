@@ -49,6 +49,8 @@ import {
   NO_ACTIVATION_ROOTS,
   erasureClaim,
   nativeRelativePath,
+  readBack,
+  removeManaged,
   skillFilesUnder,
   type ActivationRoots,
   type ActivationSite,
@@ -504,6 +506,51 @@ test("activation writes nothing outside the root — measured, by fingerprinting
   // and the root itself DID move, so the measurement above is about the
   // boundary and not about a run in which nothing happened at all
   assert.ok(Object.keys(fingerprint(root)).length > 0, "nothing was written inside the root either — the run did nothing");
+  fx.db.close();
+});
+
+test("a root that has GONE AWAY under an active deployment is recorded as failed, not raised as a crash", () => {
+  // FOUND BY THE HINT SWEEP, and it is the reading half of the adapter that had
+  // it. `removeManaged` has always treated an unresolvable root as an ordinary
+  // answer — `retained` — and `readBack` did not: it called `resolveRoot`
+  // outside its own `try`, so a root that had been unmounted or renamed threw
+  // out of `activateInner`'s DRIFT CHECK, which sits before the guarded region.
+  // The guarded region is the one that appends `failed` with a reason. So the
+  // one case where the registry most needs to stop claiming `active` was the
+  // one case where it never got to write anything down.
+  const base = tempBase();
+  const root = join(base, "root");
+  mkdirSync(root);
+  const fx = p4Fixture({ activation: new FixedActivationRoots(root, "claude_code_project") });
+  const d = deploy(fx, "act-root-vanished");
+  allow(fx, fx.member.agent_id, "activate");
+  assert.equal(act(fx, fx.keys.member, d.assignmentId, "activate").status, 200);
+  assert.equal(listed(fx, fx.keys.owner, d.assignmentId).intent_state, "active");
+  const eventsBefore = journal(fx, d.assignmentId).length;
+
+  // the disk goes away underneath it — an unmounted share, a renamed home
+  rmSync(root, { recursive: true, force: true });
+  assert.equal(existsSync(root), false, "the root is still there; this test would prove nothing");
+
+  const again = act(fx, fx.keys.member, d.assignmentId, "activate");
+  assert.equal(again.status, 412, again.raw);
+  assert.match(again.body.error.message, /root_missing/, "the reason is a CODE and it names what happened");
+  assert.ok(!/\/tmp|\/home/.test(again.raw), "an absolute path from an errno string escaped into the answer [I-7]");
+
+  const after = journal(fx, d.assignmentId);
+  const written = after.slice(eventsBefore).map((e) => `${e.event}:${e.reason ?? "—"}`);
+  console.log(`[root vanished] events appended: ${written.join(", ")}`);
+  assert.deepEqual(written, ["drifted:native_copy_missing", "activating:—", "failed:root_missing"]);
+  assert.equal(after[after.length - 1]!.event, "failed", "the deployment must stop claiming it is active");
+  assert.equal(listed(fx, fx.keys.owner, d.assignmentId).intent_state, "failed");
+
+  // AND THE UNIT BEHIND IT, so the fix is stated where it lives: the two halves
+  // of the adapter answer an unreachable root the SAME way. `readBack` says
+  // "the bytes are not there" and `removeManaged` says "the copy is retained";
+  // neither throws, and it was the asymmetry that was the defect.
+  const site = { root, target: "claude_code_project" } as const;
+  assert.equal(readBack(site, "act-root-vanished"), null, "readBack threw on a root it could not resolve");
+  assert.equal(removeManaged(site, "act-root-vanished"), "retained", "removeManaged threw on a root it could not resolve");
   fx.db.close();
 });
 
@@ -1132,11 +1179,20 @@ test("the deployment tools are one step each, and their hints tell the truth abo
   for (const name of ["assignment.activate", "assignment.pause", "assignment.revoke"]) {
     const t = tools[name];
     assert.equal(t.annotations.readOnlyHint, false, `${name} writes`);
-    // `destructiveHint` and `idempotentHint` are NOT asserted here as
-    // literals. Both are statements about BEHAVIOUR, and both are proved in
-    // `test/p14-r2-invariants.test.ts` by driving every one of the 36 tools
-    // twice and comparing the hint with what the database did — a check over
-    // the shipped table rather than a value copied beside four names.
+    // `destructiveHint` and `idempotentHint` are NOT asserted here as literals.
+    // Both are statements about BEHAVIOUR and both are proved in
+    // `test/p14-r2-invariants.test.ts`, where every one of the 36 tools is
+    // driven and the hint compared with what the call did. WHICH CLAUSE covers
+    // what this line used to assert, named so the transfer is checkable and not
+    // a promise: `destructiveHint declared false and the call ... removed or
+    // overwrote N path(s) that existed`. The measure it runs against is the
+    // UNION of the database and the filesystem, which is what this literal was
+    // right about and round 3's database-only measure was not: it asserted
+    // `true` here, the narrow sweep observed only INSERTs, and the shipped
+    // value was flipped to `false` while `removeManaged` went on running
+    // `rmSync(dir, {recursive: true})`. The value is `true` again, and now it
+    // is true because something was watched dying rather than because a line
+    // in this file said so.
     // THE HONEST HINT, and the difference from every other tool in this
     // registry: these reach a filesystem that is not the registry's.
     assert.equal(t.annotations.openWorldHint, true, `${name} touches a runtime outside this registry and must say so`);
@@ -1148,7 +1204,17 @@ test("the deployment tools are one step each, and their hints tell the truth abo
   }
   const read = tools["assignment.list"];
   assert.equal(read.annotations.readOnlyHint, true, "reading deployments must be callable without an approval prompt");
-  assert.equal(read.annotations.openWorldHint, false, "the read touches no runtime");
+  // …AND IT STILL REACHES OUT. This line asserted `false` — "the read touches
+  // no runtime" — and the read walks every configured activation root to
+  // publish `inventory.skill_files`. Reading somebody's directory is a smaller
+  // act than writing into it and it is not a different KIND of act. The
+  // behavioural sweep in `test/p14-r2-invariants.test.ts` settles it without a
+  // literal: with the root taken away, this call's ANSWER changes, which it
+  // could not do if it had never looked.
+  // `destructiveHint` is likewise not asserted here; the clause that covers the
+  // `false` this line used to state is `destructiveHint declared true and the
+  // call only ADDED`, which fires the moment the shipped value is flipped.
+  assert.equal(read.annotations.openWorldHint, true, "the read walks a fleet member's own directory and must say so");
   assert.deepEqual(Object.keys(read.inputSchema.properties), [], "the read takes no arguments and activates nothing");
   // the read is not a mode of a write
   assert.ok(!("assignment.manage" in tools), "a catch-all deployment tool");

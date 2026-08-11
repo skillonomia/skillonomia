@@ -19,8 +19,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -47,7 +47,8 @@ import { DASHBOARD_VIEWS } from "../src/dashboard.ts";
 import { auditRenderedHtml, auditRenderedJson, NOT_A_COUNT, parseTables } from "../src/fleet-dashboard.ts";
 import { MCP_TOOLS } from "../src/mcp.ts";
 import { MIGRATION_SOURCE, RECIPIENT_SOURCE_REQUEST, RECIPIENT_SOURCE_TRANSFER } from "../src/skill-migrations.ts";
-import { FixedActivationRoots } from "../src/activation.ts";
+import { FixedActivationRoots, type ActivationRoots, type ActivationSite } from "../src/activation.ts";
+import type { InventoryRoots, InventorySite } from "../src/fleet-scan.ts";
 import { writeTar } from "../src/archive.ts";
 import { TRANSFER_ACTION } from "../src/transfer.ts";
 import { arrivalMarker } from "../src/marker.ts";
@@ -836,20 +837,298 @@ test("[I-8] every one of the 36 MCP tools carries annotations, and every hint is
   assert.ok(reading.length > 0 && reading.length < MCP_TOOLS.length, "the hints must actually distinguish the two");
 });
 
+// ---------------------------------------------------------------------------
+// THE ENVIRONMENT A TOOL ACTS ON — BOTH HALVES OF IT
+//
+// THE DEFECT THIS SECTION EXISTS FOR. Round 3 compared every one of the 36
+// hints with behaviour, which was the right move, and measured behaviour as
+// A ROW OF THIS DATABASE MOVING. Twenty-seven tools were then re-declared
+// `destructiveHint: false` on the grounds that they only INSERT. Among them:
+//
+//   * `assignment.activate` — `src/activation.ts:291` `rmSync(target, {force})`
+//     and `:296` `writeFileSync(target, bytes)`: it DELETES and REWRITES a file
+//     in a runtime's own directory.
+//   * `assignment.revoke` (and `assignment.pause`, the same `withdraw` path) —
+//     `src/activation.ts:368` `rmSync(dir, {recursive: true, force: true})`: a
+//     RECURSIVE DIRECTORY REMOVAL on somebody else's disk.
+//
+// Both carry `openWorldHint: true`, which is the annotation table saying in
+// its own words that these tools reach outside this registry. The measure did
+// not follow them there. It watched the tables, saw them stand still, and
+// concluded "additive" — a guard reporting the quantity it could measure under
+// the name of the quantity it was asked about. MCP's own wording is
+// `destructiveHint`: "the tool may perform destructive updates to its
+// ENVIRONMENT". A tree removed with `rm -rf` is destroyed under any reading.
+//
+// So the measure below covers BOTH halves of the environment a call can move:
+// the rows of this database, and the FILESYSTEM the call is configured to
+// reach. Neither is the whole; the union is what the hints are compared with.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every path under the watched trees, with the sha256 of its BYTES.
+ *
+ * Written here rather than taken from `src/activation.ts`: the question is
+ * whether that module's writes and removals are visible, and a sensor built
+ * from the walker under test would answer with the walker's own blind spots.
+ * Symbolic links are recorded AS LINKS and not followed — a link swapped for
+ * another target is itself a change to the environment, and following one
+ * would count the same bytes twice.
+ */
+function fsFingerprint(roots: readonly string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const walk = (root: string, current: string): void => {
+    let entries: Array<{ name: string }>;
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
+      const abs = join(current, entry.name);
+      const key = `${relative(root, abs)}`;
+      let st;
+      try {
+        st = lstatSync(abs);
+      } catch {
+        continue;
+      }
+      if (st.isSymbolicLink()) {
+        out.set(key, `symlink→${readlinkSync(abs)}`);
+        continue;
+      }
+      if (st.isDirectory()) {
+        out.set(key, "dir");
+        walk(root, abs);
+        continue;
+      }
+      out.set(key, `file:${createHash("sha256").update(readFileSync(abs)).digest("hex")}`);
+    }
+  };
+  for (const root of roots) walk(root, root);
+  return out;
+}
+
+/** The blind measure, kept beside the real one so the difference is provable:
+ *  it records that a path EXISTS and never looks at what is in it. */
+function fsNamesOnly(roots: readonly string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [k] of fsFingerprint(roots)) out.set(k, "exists");
+  return out;
+}
+
+interface FsDiff {
+  added: string[];
+  removed: string[];
+  modified: string[];
+}
+
+function fsDiff(before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>): FsDiff {
+  const added: string[] = [];
+  const removed: string[] = [];
+  const modified: string[] = [];
+  for (const [k, v] of after) {
+    const b = before.get(k);
+    if (b === undefined) added.push(k);
+    else if (b !== v) modified.push(k);
+  }
+  for (const k of before.keys()) if (!after.has(k)) removed.push(k);
+  return { added: added.sort(), removed: removed.sort(), modified: modified.sort() };
+}
+
+/** the call PUT something in the environment, of any kind */
+const fsMoved = (d: FsDiff): boolean => d.added.length + d.removed.length + d.modified.length > 0;
+/** the call took away or overwrote something that was ALREADY THERE */
+const fsDestroyed = (d: FsDiff): boolean => d.removed.length + d.modified.length > 0;
+
+/**
+ * THE SENSOR PROVES IT SEES THE FILESYSTEM BEFORE IT IS ALLOWED TO JUDGE ONE.
+ *
+ * This is the discipline `test/assignment-activation.test.ts` already applies
+ * to its own fingerprint and the discipline round 3's database measure was
+ * never held to: a measure that cannot see a change it was built to see proves
+ * nothing by staying silent. So the two acts `src/activation.ts` actually
+ * performs are performed HERE, on a temporary tree, and the sensor is required
+ * to name each of them — and required to stay silent when nothing happened and
+ * when a file is rewritten with identical bytes.
+ *
+ * It returns a printable line, and every caller that judges a tool prints it,
+ * so the output of a passing run carries the evidence that the eye was open.
+ */
+function proveTheSensorSeesTheFilesystem(): string {
+  const base = tempBase("skln-r2-fs-eye-");
+  // a tree shaped like the places a fleet keeps its skills
+  mkdirSync(join(base, ".claude", "skills", "kept"), { recursive: true });
+  mkdirSync(join(base, ".agents", "skills", "doomed", "nested"), { recursive: true });
+  writeFileSync(join(base, ".claude", "skills", "kept", "SKILL.md"), "kept\n");
+  writeFileSync(join(base, ".agents", "skills", "doomed", "SKILL.md"), "doomed\n");
+  writeFileSync(join(base, ".agents", "skills", "doomed", "nested", "extra.md"), "extra\n");
+  const roots = [base];
+  const nothing: FsDiff = { added: [], removed: [], modified: [] };
+  const origin = fsFingerprint(roots);
+  const originNames = fsNamesOnly(roots);
+  assert.ok(origin.size >= 8, `only ${origin.size} paths in the sensor's own tree — it would compare nothing with nothing`);
+
+  // (0) SILENCE WHEN NOTHING HAPPENED. A sensor that reports a change on every
+  // call would "catch" every tool and distinguish none of them.
+  assert.deepEqual(fsDiff(origin, fsFingerprint(roots)), nothing, "the sensor invented a change");
+
+  // (1) A PLANTED FILE — added, and NOT destruction: the distinction the whole
+  // `destructiveHint` question turns on.
+  const planted = join(base, ".claude", "skills", "kept", "PLANTED.md");
+  writeFileSync(planted, "planted\n");
+  const d1 = fsDiff(origin, fsFingerprint(roots));
+  assert.deepEqual(d1.added, [".claude/skills/kept/PLANTED.md"], `the sensor missed a planted file: ${JSON.stringify(d1)}`);
+  assert.equal(fsDestroyed(d1), false, "a file that was not there before is an ADDITION, not a destruction");
+  rmSync(planted);
+  assert.deepEqual(fsDiff(origin, fsFingerprint(roots)), nothing, "the sensor did not see its own file go away again");
+
+  // (2) `materialize`'s act, exactly: unlink the entry and write new bytes over
+  // it. One path, same name, different content — invisible to any measure that
+  // asks only whether a path exists.
+  const entry = join(base, ".claude", "skills", "kept", "SKILL.md");
+  rmSync(entry, { force: true });
+  writeFileSync(entry, "kepu\n");
+  const d2 = fsDiff(origin, fsFingerprint(roots));
+  assert.deepEqual(d2.modified, [".claude/skills/kept/SKILL.md"], `the sensor missed a rewritten file: ${JSON.stringify(d2)}`);
+  assert.equal(fsDestroyed(d2), true, "a file whose bytes were replaced was DESTROYED and rewritten");
+  // …and A NARROWER MEASURE IS SHOWN TO MISS PRECISELY THIS. `fsNamesOnly` is
+  // the same walk with the hashing taken out — the shape of measure that sees
+  // paths appear and disappear and calls a file rewritten in place unchanged.
+  // It is the filesystem analogue of round 3's database-only measure, and it is
+  // run against the same tree at the same moment so the difference is not an
+  // argument but an observation.
+  killed("a measure that records only that a path exists saw the rewritten bytes", () => {
+    assert.equal(fsDestroyed(fsDiff(originNames, fsNamesOnly(roots))), true, "the blind measure saw the rewrite");
+  });
+
+  // (3) IDENTICAL BYTES ARE NOT A CHANGE. `materialize` rewrites every file of
+  // the package on every activation; a sensor keyed on mtime would call a
+  // convergent noop destructive and make the hint mean nothing.
+  rmSync(entry, { force: true });
+  writeFileSync(entry, "kept\n");
+  assert.deepEqual(fsDiff(origin, fsFingerprint(roots)), nothing, "a file rewritten with the SAME bytes is not a change");
+
+  // (4) `removeManaged`'s act, exactly: `rmSync(dir, {recursive: true})`. The
+  // directory AND everything under it must be named, or a guard could see a
+  // skill's folder vanish and report that one path changed.
+  rmSync(join(base, ".agents", "skills", "doomed"), { recursive: true, force: true });
+  const d4 = fsDiff(origin, fsFingerprint(roots));
+  assert.deepEqual(
+    d4.removed,
+    [".agents/skills/doomed", ".agents/skills/doomed/SKILL.md", ".agents/skills/doomed/nested", ".agents/skills/doomed/nested/extra.md"],
+    `the sensor did not see a recursive removal whole: ${JSON.stringify(d4)}`,
+  );
+  assert.equal(fsDestroyed(d4), true, "a recursively removed directory is destruction");
+
+  return (
+    `[env] the filesystem sensor proved it sees: 1 planted file (additive), 1 file rewritten in place (destructive), ` +
+    `4 paths removed by one rm -rf (destructive), and stayed silent on a no-op and on a rewrite with identical bytes; ` +
+    `${origin.size} paths in its own tree`
+  );
+}
+
+/**
+ * The configured foreign roots, WITH A SWITCH and a counter.
+ *
+ * Two things the sweep cannot get any other way. The counter answers "did this
+ * call ask where the foreign environment is" — a tool that never asks cannot
+ * have reached one, which is what makes `openWorldHint: false` provable. The
+ * switch answers the opposite question for a call that changes nothing: take
+ * the root away and call again, and an answer that MOVES could only have come
+ * from a disk. Neither is a code path read off the source; both are behaviour.
+ */
+class SwitchableActivationRoots implements ActivationRoots {
+  present = true;
+  consulted = 0;
+  private readonly here: ActivationSite;
+  private readonly gone: ActivationSite;
+  constructor(here: ActivationSite, gone: ActivationSite) {
+    this.here = here;
+    this.gone = gone;
+  }
+  rootFor(): ActivationSite {
+    this.consulted += 1;
+    return this.present ? this.here : this.gone;
+  }
+}
+
+class SwitchableInventoryRoots implements InventoryRoots {
+  present = true;
+  consulted = 0;
+  private readonly here: InventorySite;
+  private readonly gone: InventorySite;
+  constructor(here: InventorySite, gone: InventorySite) {
+    this.here = here;
+    this.gone = gone;
+  }
+  rootFor(): InventorySite {
+    this.consulted += 1;
+    return this.present ? this.here : this.gone;
+  }
+}
+
+/** One argument set a tool is driven with. A tool may have several: the hints
+ *  are statements about the TOOL, so what it does is the union over the calls
+ *  it can be made, not one convenient call. */
+interface Drive {
+  key: string;
+  args: any;
+  /** what this argument set is FOR, printed beside the result */
+  label: string;
+}
+
+interface ToolWorld {
+  fx: P4Fixture;
+  drives: Map<string, Drive[]>;
+  /** every tree the sweep watches — the configured roots and the decoys beside
+   *  them, so a write that escapes a root still lands somewhere measured */
+  watched: string[];
+  activation: SwitchableActivationRoots;
+  inventory: SwitchableInventoryRoots;
+}
+
 /** One live registry with everything the 36 calls need, and the arguments for
  *  each — built by NAME LOOKUP into a table that is checked for completeness
  *  against `MCP_TOOLS`, so a tool added tomorrow fails this suite rather than
  *  quietly escaping it. */
-function toolDrive(): { fx: P4Fixture; args: Map<string, { key: string; args: any }> } {
+function toolDrive(): ToolWorld {
   const base = tempBase("skln-r2-tools-");
   const activationRoot = join(base, "activation");
+  const inventoryRoot = join(base, "inventory");
   mkdirSync(activationRoot, { recursive: true });
+  // A foreign disk with something ON it. The three reading tools that declare
+  // `openWorldHint: true` walk this tree; against an EMPTY root they would walk
+  // nothing and the measurement of them would be a measurement of nothing.
+  for (const name of ["inv-one", "inv-two", "inv-three"]) {
+    mkdirSync(join(inventoryRoot, ".claude", "skills", name), { recursive: true });
+    writeFileSync(join(inventoryRoot, ".claude", "skills", name, "SKILL.md"), `# ${name}\n`);
+  }
+  mkdirSync(join(inventoryRoot, ".claude", "plugins", "inv-plugin"), { recursive: true });
+  writeFileSync(join(inventoryRoot, ".claude", "plugins", "inv-plugin", "SKILL.md"), "# a plugin\n");
+  // DECOYS, shaped like the real places a fleet keeps skills, OUTSIDE both
+  // configured roots and inside the watched tree: a write that escapes a root
+  // has somewhere recognisable to land where the sensor will still see it.
+  mkdirSync(join(base, "home", ".claude", "skills", "shared"), { recursive: true });
+  mkdirSync(join(base, "project", ".agents", "skills", "shared"), { recursive: true });
+  writeFileSync(join(base, "home", ".claude", "skills", "shared", "SKILL.md"), "decoy A\n");
+  writeFileSync(join(base, "project", ".agents", "skills", "shared", "SKILL.md"), "decoy B\n");
+
+  const activation = new SwitchableActivationRoots(
+    { root: activationRoot, target: "claude_code_project" },
+    { root: join(base, "no-such-activation-root"), target: "claude_code_project" },
+  );
+  const inventory = new SwitchableInventoryRoots(
+    { root: inventoryRoot, runtime: "claude_code" },
+    { root: join(base, "no-such-inventory-root"), runtime: "claude_code" },
+  );
   // The bucket is widened HERE and nowhere near the product: §6's shipped
   // per-key limit is 60, the setup below spends a good part of it, and a sweep
   // that drives 36 tools TWICE would otherwise be measuring the limiter instead
   // of the tools. Nothing about the limit is under test in this file.
   const fx = p4Fixture({
-    activation: new FixedActivationRoots(activationRoot, "claude_code_project"),
+    activation,
+    inventory,
     rateLimit: { capacity: 100_000, refillPerSec: 0 },
   });
 
@@ -898,15 +1177,36 @@ function toolDrive(): { fx: P4Fixture; args: Map<string, { key: string; args: an
     });
     assert.equal(res.status, 201, res.raw);
   }
-  const deployments: string[] = [];
-  for (const slug of ["mcp-act", "mcp-pause", "mcp-revoke-assignment"]) {
+  // FOUR deployments, because three of the states the deployment tools reach
+  // are only reachable from a deployment that is ALREADY ACTIVE, and a sweep
+  // that drove them from `queued` would watch them do nothing to a disk and
+  // conclude they never touch one. `mcp-act` is fresh — the additive half of
+  // activation. `mcp-act-drift` is active with a TAMPERED copy, which is the
+  // state `src/service.ts` records as `drifted` and rewrites: the half where
+  // `rmSync` + `writeFileSync` land on bytes that were already there.
+  // `mcp-pause` and `mcp-revoke-assignment` are active, so withdrawing them
+  // performs the recursive removal `removeManaged` is for.
+  const deployment = new Map<string, string>();
+  for (const slug of ["mcp-act", "mcp-act-drift", "mcp-pause", "mcp-revoke-assignment"]) {
     const v = publishedVersion(fx, slug);
     const pushed = rest(fx, "POST", `/v1/versions/${v.versionId}/transfers`, fx.keys.owner, {
       recipient: { kind: "local_agent", ref: fx.reviewer.agent_id },
     });
     assert.equal(pushed.status, 201, pushed.raw);
-    deployments.push(pushed.body.assignment_id);
+    deployment.set(slug, pushed.body.assignment_id);
   }
+  for (const slug of ["mcp-act-drift", "mcp-pause", "mcp-revoke-assignment"]) {
+    const res = rest(fx, "POST", `/v1/assignments/${deployment.get(slug)}/activate`, fx.keys.owner, {});
+    assert.equal(res.status, 200, res.raw);
+    assert.equal(res.body.managed_copy, "written", `${slug} was not materialized: ${res.raw}`);
+    const onDisk = join(activationRoot, ".claude", "skills", slug, "SKILL.md");
+    assert.ok(existsSync(onDisk), `${slug}: the setup did not put a file where the sweep will watch for its removal`);
+  }
+  // …and the drift, planted after the copy exists and before the sweep runs
+  const drifted = join(activationRoot, ".claude", "skills", "mcp-act-drift", "SKILL.md");
+  const trueBytes = readFileSync(drifted);
+  writeFileSync(drifted, Buffer.concat([trueBytes, Buffer.from("\n<!-- edited by a hand that is not this registry -->\n")]));
+  assert.notDeepEqual(readFileSync(drifted), trueBytes, "the drift was not planted");
 
   // a principal to issue and revoke keys for, and a signing key to revoke
   const victim = rest(fx, "POST", "/v1/principals", fx.keys.owner, {
@@ -927,88 +1227,96 @@ function toolDrive(): { fx: P4Fixture; args: Map<string, { key: string; args: an
 
   const O = fx.keys.owner!;
   const A = fx.keys.author!;
-  const args = new Map<string, { key: string; args: any }>([
-    ["skill.create", { key: A, args: { slug: "mcp-created", archive_base64: freshArchive(fx).toString("base64") } }],
-    ["skill.create_from_dir", { key: A, args: { slug: "mcp-from-dir", source_base64: freshSource(fx).toString("base64") } }],
-    ["skill.lint", { key: A, args: { skill_version_id: toLint.versionId } }],
-    ["skill.verify", { key: O, args: { skill_version_id: toVerify.versionId } }],
-    ["skill.search", { key: O, args: {} }],
-    ["skill.review.request", { key: A, args: { skill_version_id: toReview.versionId, action: "request" } }],
-    ["skill.publish", { key: O, args: { skill_version_id: toPublish.versionId } }],
+  /** one argument set, when one is all the tool has */
+  const one = (key: string, a: any, label = "the call"): Drive[] => [{ key, args: a, label }];
+  const drives = new Map<string, Drive[]>([
+    ["skill.create", one(A, { slug: "mcp-created", archive_base64: freshArchive(fx).toString("base64") })],
+    ["skill.create_from_dir", one(A, { slug: "mcp-from-dir", source_base64: freshSource(fx).toString("base64") })],
+    ["skill.lint", one(A, { skill_version_id: toLint.versionId })],
+    ["skill.verify", one(O, { skill_version_id: toVerify.versionId })],
+    ["skill.search", one(O, {})],
+    ["skill.review.request", one(A, { skill_version_id: toReview.versionId, action: "request" })],
+    ["skill.publish", one(O, { skill_version_id: toPublish.versionId })],
     [
       "skill.supersede",
-      { key: O, args: { skill_version_id: toSupersede.versionId, successor_version_id: successor.versionId } },
+      one(O, { skill_version_id: toSupersede.versionId, successor_version_id: successor.versionId }),
     ],
-    ["skill.deprecate", { key: O, args: { skill_version_id: toDeprecate.versionId } }],
-    ["skill.revoke", { key: O, args: { skill_version_id: toRevoke.versionId, reason: "a sweep of the tool table" } }],
+    ["skill.deprecate", one(O, { skill_version_id: toDeprecate.versionId })],
+    ["skill.revoke", one(O, { skill_version_id: toRevoke.versionId, reason: "a sweep of the tool table" })],
     [
       "skill.approve",
-      { key: O, args: { skill_version_id: toApprove.versionId, scope: "publish", decision: "approved" } },
+      one(O, { skill_version_id: toApprove.versionId, scope: "publish", decision: "approved" }),
     ],
-    ["skill.request_adoption", { key: fx.keys.member!, args: { skill_version_id: toTransfer.versionId } }],
-    ["skill.adopt", { key: fx.keys.reviewer2!, args: { adoption_request_id: inFlight.body.adoption_request_id, environment_descriptor: env() } }],
+    ["skill.request_adoption", one(fx.keys.member!, { skill_version_id: toTransfer.versionId })],
+    ["skill.adopt", one(fx.keys.reviewer2!, { adoption_request_id: inFlight.body.adoption_request_id, environment_descriptor: env() })],
     [
       "skill.validate_outcome",
-      { key: fx.keys.member!, args: { receipt_id: pending.receiptId, event: "adopted", evidence: goodEvidence(toAdopt.manifest) } },
+      one(fx.keys.member!, { receipt_id: pending.receiptId, event: "adopted", evidence: goodEvidence(toAdopt.manifest) }),
     ],
-    ["skill.rate", { key: fx.keys.admin!, args: { skill_version_id: toAdopt.versionId, adoption_receipt_id: closed.receiptId, score: 5 } }],
+    ["skill.rate", one(fx.keys.admin!, { skill_version_id: toAdopt.versionId, adoption_receipt_id: closed.receiptId, score: 5 })],
     [
       "skill.transfer",
-      { key: O, args: { skill_version_id: toTransfer.versionId, recipient: { kind: "local_agent", ref: fx.reviewer2.agent_id } } },
+      one(O, { skill_version_id: toTransfer.versionId, recipient: { kind: "local_agent", ref: fx.reviewer2.agent_id } }),
     ],
     [
       "transfer_grant.create",
-      { key: O, args: { agent_id: fx.member.agent_id, action: "receive", recipient_scope: "local_agent" } },
+      one(O, { agent_id: fx.member.agent_id, action: "receive", recipient_scope: "local_agent" }),
     ],
-    ["transfer_grant.list", { key: O, args: {} }],
-    ["assignment.activate", { key: O, args: { assignment_id: deployments[0] } }],
-    ["assignment.pause", { key: O, args: { assignment_id: deployments[1] } }],
-    ["assignment.revoke", { key: O, args: { assignment_id: deployments[2] } }],
-    ["assignment.list", { key: O, args: {} }],
-    ["fleet.list", { key: O, args: {} }],
-    ["agent.capabilities", { key: O, args: { agent_id: fx.reviewer.agent_id } }],
-    ["capability.get", { key: O, args: { agent_id: fx.reviewer.agent_id, name: "mcp-act" } }],
+    ["transfer_grant.list", one(O, {})],
+    [
+      "assignment.activate",
+      [
+        { key: O, args: { assignment_id: deployment.get("mcp-act") }, label: "a fresh deployment — the additive half" },
+        { key: O, args: { assignment_id: deployment.get("mcp-act-drift") }, label: "a DRIFTED copy — the half that overwrites" },
+      ],
+    ],
+    ["assignment.pause", one(O, { assignment_id: deployment.get("mcp-pause") }, "an ACTIVE deployment, so the copy is really there to take away")],
+    ["assignment.revoke", one(O, { assignment_id: deployment.get("mcp-revoke-assignment") }, "an ACTIVE deployment, so the copy is really there to take away")],
+    ["assignment.list", one(O, {})],
+    ["fleet.list", one(O, {})],
+    ["agent.capabilities", one(O, { agent_id: fx.reviewer.agent_id })],
+    ["capability.get", one(O, { agent_id: fx.reviewer.agent_id, name: "mcp-act" })],
     [
       "observation.report",
-      {
-        key: O,
-        args: {
-          agent_id: fx.reviewer.agent_id,
-          runtime: "codex",
-          window: "period",
-          window_detail: "the tool sweep's own records",
-          records: [{ role: "call", call_id: "s-1", at_ms: NOW, text: "nothing in particular" }],
-        },
-      },
+      one(O, {
+        agent_id: fx.reviewer.agent_id,
+        runtime: "codex",
+        window: "period",
+        window_detail: "the tool sweep's own records",
+        records: [{ role: "call", call_id: "s-1", at_ms: NOW, text: "nothing in particular" }],
+      }),
     ],
-    ["principal.create", { key: O, args: { name: "mcp-sweep-new", type: "agent", role: "member" } }],
-    ["principal.list", { key: O, args: {} }],
-    ["principal.issue_api_key", { key: O, args: { principal_id: victimId } }],
-    ["principal.revoke_api_key", { key: O, args: { principal_id: victimId, api_key_id: keyId } }],
-    ["signing_key.register", { key: O, args: { kid: "mcp-sweep-fresh", public_key_ed25519: SPARE_PUBLIC_KEY_2 } }],
-    ["signing_key.list", { key: O, args: {} }],
-    ["signing_key.revoke", { key: O, args: { kid: "mcp-sweep-doomed" } }],
-    ["tlog.read", { key: O, args: {} }],
-    ["migration.count", { key: O, args: {} }],
-    ["dashboard.view", { key: O, args: { view: "library" } }],
+    ["principal.create", one(O, { name: "mcp-sweep-new", type: "agent", role: "member" })],
+    ["principal.list", one(O, {})],
+    ["principal.issue_api_key", one(O, { principal_id: victimId })],
+    ["principal.revoke_api_key", one(O, { principal_id: victimId, api_key_id: keyId })],
+    ["signing_key.register", one(O, { kid: "mcp-sweep-fresh", public_key_ed25519: SPARE_PUBLIC_KEY_2 })],
+    ["signing_key.list", one(O, {})],
+    ["signing_key.revoke", one(O, { kid: "mcp-sweep-doomed" })],
+    ["tlog.read", one(O, {})],
+    ["migration.count", one(O, {})],
+    // EVERY VIEW, not the one that happens to touch nothing: three of the
+    // eleven read a fleet member's own disk, and a sweep driven with `library`
+    // alone would measure this tool's reach as none at all.
+    ["dashboard.view", DASHBOARD_VIEWS.map((view) => ({ key: O, args: { view }, label: `view=${view}` }))],
   ]);
-  return { fx, args };
+  return { fx, drives, watched: [base], activation, inventory };
 }
 
 test("[I-8] every tool's `readOnlyHint` is checked against whether the database MOVED", () => {
-  const { fx, args } = toolDrive();
+  const { fx, drives } = toolDrive();
   // COMPLETENESS FIRST: the sweep covers the shipped table, not a list beside it
   const names = (MCP_TOOLS as ReadonlyArray<any>).map((t) => t.name);
   assert.deepEqual(
-    names.filter((n) => !args.has(n)),
+    names.filter((n) => !drives.has(n)),
     [],
     "a tool the sweep cannot drive is a tool the sweep does not check [I-8]",
   );
-  assert.deepEqual([...args.keys()].filter((n) => !names.includes(n)), [], "the sweep drives a tool that does not exist");
+  assert.deepEqual([...drives.keys()].filter((n) => !names.includes(n)), [], "the sweep drives a tool that does not exist");
 
   const report: Array<{ name: string; readOnly: boolean; ok: boolean; wrote: boolean }> = [];
   for (const tool of MCP_TOOLS as ReadonlyArray<any>) {
-    const drive = args.get(tool.name)!;
+    const drive = drives.get(tool.name)![0]!;
     const before = dbSnapshot(fx);
     const out = mcp(fx, drive.key, tool.name, drive.args);
     const after = dbSnapshot(fx);
@@ -1037,46 +1345,78 @@ test("[I-8] every tool's `readOnlyHint` is checked against whether the database 
 });
 
 // ---------------------------------------------------------------------------
-// [I-8], EVERY HINT — not only the one a probe happened to read
+// [I-8], EVERY HINT, AGAINST THE WHOLE ENVIRONMENT
 //
-// Round 2 was given ONE defect: 23 tools carried no annotations. It added the
+// ROUND 2 was given ONE defect: 23 tools carried no annotations. It added the
 // blocks and checked `readOnlyHint` against whether the database MOVED — a real
 // sweep, over the whole table, and the fix was accepted on it. What it did not
 // check is what it had just written: `skill.transfer` was given
 // `idempotentHint: true` with a COMMENT BESIDE IT admitting that a repeat
-// without an `idempotency_key` creates a second transfer. A guard over one hint
-// legitimised a false statement in the other two.
+// without an `idempotency_key` creates a second transfer.
 //
-// `idempotentHint` and `destructiveHint` are statements about behaviour, in the
-// payload of `tools/list`, that a client acts on by not asking. So each is
-// given a mechanical meaning and compared with what the tool DOES:
+// ROUND 3 fixed that: all three hints, all 36 tools, compared with behaviour.
+// And it inherited round 2's MEASURE — a row of this database moving — which is
+// not the environment the protocol's words are about. Twenty-seven tools were
+// re-declared additive on the strength of a measure that never looked at the
+// place two of them do their work. The class is one floor up from the one it
+// fixed: not an incomplete SET OF MEMBERS, an incomplete QUANTITY.
 //
-//   readOnlyHint    true  ⟺ the call left every table untouched
+// So the mechanical meanings below are stated over BOTH halves of the
+// environment, and every one of them is a statement about the TOOL rather than
+// about one convenient call of it — which is why a tool may be driven with
+// several argument sets and is judged on the UNION of what they do:
+//
+//   readOnlyHint    true  ⟺ the call left every table AND every watched path
+//                           untouched.
 //   idempotentHint  true  ⟺ a SECOND call with the SAME arguments and NO
-//                           idempotency key left the database as the first left
-//                           it. That is the API's own definition: repeating the
-//                           call has no additional effect. A repeat that is
-//                           REFUSED satisfies it — nothing additional happened.
+//                           idempotency key moved neither. That is the API's own
+//                           definition: repeating the call has no additional
+//                           effect. A repeat that is REFUSED satisfies it —
+//                           nothing additional happened.
 //   destructiveHint true  ⟺ the call changed or removed a row that already
-//                           existed. A call that only INSERTS is additive, which
-//                           is the word the protocol uses for `false`.
+//                           existed, OR removed a path that existed, OR replaced
+//                           the bytes of one. A call that only INSERTS rows and
+//                           only ADDS files is additive, which is the word the
+//                           protocol uses for `false`.
+//   openWorldHint   true  ⟺ the call ASKED the deployment where a foreign root
+//                           is. That question has exactly one use, and a call
+//                           that never asks it cannot have reached one — which
+//                           is what makes the FALSE direction provable rather
+//                           than merely unrefuted.
 //
-// The third is the one that cannot be fudged by measuring the same thing twice:
-// a purely additive tool that declares itself destructive is telling a client to
-// ask a question it does not need to ask, which trains the client to ask about
-// nothing — the failure round 2's own comment named for the readOnly hint.
+// The last is new here and it is what closes the hole the other three sit in. A
+// measure applied only to the tools that DECLARE they reach outside would be
+// the guard naming its own subject again — so the filesystem is fingerprinted
+// around every one of the 36, and the hint is compared with what was seen.
+//
+// AND THE ASKING IS CORROBORATED, per tool, by whichever of two direct
+// observations the tool's behaviour admits — with the grade printed beside each
+// one, so nothing is claimed past what was seen:
+//
+//   MOVED    something under a configured root changed. The strongest grade,
+//            and the one the deployment tools earn.
+//   ANSWERED the call moves nothing, so it can be repeated: take the root away
+//            and call again, and an answer that MOVES could not have come from
+//            anywhere but the disk that went away.
+//   ASKED    it asked, and neither corroboration is available to a black-box
+//            measure — `fleet.list` walks a fleet member's directory and builds
+//            an answer that happens not to carry anything from it, so no reply
+//            of its can betray the walk. The sweep says ASKED and does not
+//            pretend to more; both corroborations are required to fire
+//            SOMEWHERE in the table, so neither instrument may quietly die.
 // ---------------------------------------------------------------------------
 
 /**
- * One `tools/call`, tolerating BOTH failure shapes.
+ * One `tools/call`, tolerating BOTH failure shapes, and returning the ANSWER.
  *
  * A tool that refuses answers with `isError`; a request the adapter itself
  * refuses answers with a JSON-RPC `error` and no `result` at all. The second
  * call of a pair reaches the second shape often — that is what a refused repeat
  * looks like — and a helper that assumed the first would crash the sweep on the
- * very behaviour it is measuring.
+ * very behaviour it is measuring. The answer's BYTES are returned because the
+ * root-withdrawal probe below compares two of them.
  */
-function callTool(fx: P4Fixture, key: string, name: string, args: any): { ok: boolean } {
+function callTool(fx: P4Fixture, key: string, name: string, args: any): { ok: boolean; answer: string } {
   const res = rest(fx, "POST", "/mcp", key, {
     jsonrpc: "2.0",
     id: 1,
@@ -1084,8 +1424,8 @@ function callTool(fx: P4Fixture, key: string, name: string, args: any): { ok: bo
     params: { name, arguments: args },
   });
   const result = res.body?.result;
-  if (result === undefined || result === null) return { ok: false };
-  return { ok: result.isError !== true };
+  if (result === undefined || result === null) return { ok: false, answer: JSON.stringify(res.body?.error ?? null) };
+  return { ok: result.isError !== true, answer: JSON.stringify(result) };
 }
 
 /** Every row of every table, as a multiset of JSON strings per table. */
@@ -1114,7 +1454,7 @@ function dbRows(fx: P4Fixture): Map<string, Map<string, number>> {
   return out;
 }
 
-/** What one call did to the database, in the two dimensions the hints claim. */
+/** What one call did to the DATABASE, in the two dimensions the hints claim. */
 function diffOf(
   before: Map<string, Map<string, number>>,
   after: Map<string, Map<string, number>>,
@@ -1146,10 +1486,37 @@ interface ToolBehaviour {
   changedExisting: boolean;
   /** …and the tables it changed one in, named so the claim is auditable */
   changedTables: string[];
+  /** the first call moved a watched path — added, removed or rewritten */
+  fsWrote: boolean;
+  /** the first call REMOVED a path that existed, or replaced its bytes */
+  fsDestroyed: boolean;
+  /** …and the paths it took away or overwrote, named so the claim is auditable */
+  fsGone: string[];
+  /** how many paths it added, so an additive filesystem effect is visible too */
+  fsAdded: number;
   /** a SECOND call with the same arguments and no idempotency key moved a table */
   repeatWrote: boolean;
+  /** …or a watched path */
+  repeatFsWrote: boolean;
+  /** the call ASKED a configured foreign root where it is */
+  consulted: boolean;
+  /** the call answered DIFFERENTLY once that root was taken away. `null` means
+   *  the probe was not applicable: it needs a repeat that changes nothing, so
+   *  that the two answers being compared are answers to the same state. */
+  answerDependsOnTheDisk: boolean | null;
   firstOk: boolean;
   secondOk: boolean;
+  /** the argument sets this tool was driven with, printed with the result */
+  labels: string[];
+}
+
+/** How well the tool's reach outside this registry is evidenced. */
+type ForeignGrade = "MOVED" | "ANSWERED" | "ASKED" | "none";
+
+function foreignGrade(b: ToolBehaviour): ForeignGrade {
+  if (b.fsWrote) return "MOVED";
+  if (b.answerDependsOnTheDisk === true) return "ANSWERED";
+  return b.consulted ? "ASKED" : "none";
 }
 
 /**
@@ -1169,92 +1536,299 @@ function hintViolations(
       continue;
     }
     const a = tool.annotations ?? {};
-    if (a.readOnlyHint === true && b.wrote) out.push(`${tool.name}: readOnlyHint declared true and the call wrote`);
-    if (a.readOnlyHint === false && !b.wrote) out.push(`${tool.name}: readOnlyHint declared false and the call changed nothing`);
+    const movedSomething = b.wrote || b.fsWrote;
+    const destroyedSomething = b.changedExisting || b.fsDestroyed;
+    const repeatMovedSomething = b.repeatWrote || b.repeatFsWrote;
+    if (a.readOnlyHint === true && movedSomething) {
+      out.push(`${tool.name}: readOnlyHint declared true and the call moved ${b.wrote ? "a row" : "a file"}`);
+    }
+    if (a.readOnlyHint === false && !movedSomething) out.push(`${tool.name}: readOnlyHint declared false and the call changed nothing`);
     if (a.readOnlyHint === true && a.destructiveHint === true) {
       out.push(`${tool.name}: destructiveHint declared true on a tool declared read-only`);
     }
-    if (a.destructiveHint === true && !b.changedExisting) {
-      out.push(`${tool.name}: destructiveHint declared true and the call only INSERTED — it is additive`);
+    if (a.destructiveHint === true && !destroyedSomething) {
+      out.push(`${tool.name}: destructiveHint declared true and the call only ADDED — no row and no path that existed was touched`);
     }
-    if (a.destructiveHint === false && b.changedExisting) {
-      out.push(`${tool.name}: destructiveHint declared false and the call changed or removed an existing row`);
+    if (a.destructiveHint === false && destroyedSomething) {
+      out.push(
+        `${tool.name}: destructiveHint declared false and the call ${b.changedExisting ? "changed or removed an existing row" : `removed or overwrote ${b.fsGone.length} path(s) that existed`}`,
+      );
     }
-    if (a.idempotentHint === true && b.repeatWrote) {
+    if (a.idempotentHint === true && repeatMovedSomething) {
       out.push(`${tool.name}: idempotentHint declared true and a repeat with the same arguments wrote again`);
     }
-    if (a.idempotentHint === false && !b.repeatWrote) {
+    if (a.idempotentHint === false && !repeatMovedSomething) {
       out.push(`${tool.name}: idempotentHint declared false and a repeat with the same arguments changed nothing`);
+    }
+    // THE FOREIGN HALF. Declared TRUE has to be shown; declared FALSE has to be
+    // shown too, and the two are shown by different evidence because they are
+    // different claims. "It reached one" needs a positive observation. "It
+    // reached none" is settled by the tool never having asked where one is —
+    // an unasked question cannot have been followed to a disk.
+    if (a.openWorldHint === true && foreignGrade(b) === "none") {
+      out.push(`${tool.name}: openWorldHint declared true and the call never asked for a foreign root, let alone reached one`);
+    }
+    if (a.openWorldHint === false && foreignGrade(b) !== "none") {
+      out.push(`${tool.name}: openWorldHint declared false and the call reached outside this registry (${foreignGrade(b)})`);
     }
   }
   return out;
 }
 
-/** Drive every tool ONCE, then a SECOND time with the same arguments. */
-function observeEveryTool(): { fx: P4Fixture; observed: Map<string, ToolBehaviour> } {
-  const { fx, args } = toolDrive();
+/**
+ * Drive every tool, with every argument set it has, ONCE and then a SECOND time
+ * with the same arguments — measuring BOTH halves of the environment around
+ * each call, and then asking whether the answer depended on a foreign disk.
+ */
+function observeEveryTool(): { fx: P4Fixture; observed: Map<string, ToolBehaviour>; watched: string[] } {
+  const world = toolDrive();
+  const { fx, drives, watched, activation, inventory } = world;
   const names = (MCP_TOOLS as ReadonlyArray<any>).map((t) => t.name);
   assert.deepEqual(
-    names.filter((n) => !args.has(n)),
+    names.filter((n) => !drives.has(n)),
     [],
     "a tool the sweep cannot drive is a tool the sweep does not check [I-8]",
   );
   const observed = new Map<string, ToolBehaviour>();
   for (const tool of MCP_TOOLS as ReadonlyArray<any>) {
-    const drive = args.get(tool.name)!;
-    // NO idempotency key in either call: `withIdempotency` would replay the
-    // stored response of the first, and the question here is what the tool does
-    // when a client simply calls it twice — which is what the hint answers.
-    const before = dbRows(fx);
-    const first = callTool(fx, drive.key, tool.name, drive.args);
-    const between = dbRows(fx);
-    const second = callTool(fx, drive.key, tool.name, drive.args);
-    const after = dbRows(fx);
-    const d1 = diffOf(before, between);
-    const d2 = diffOf(between, after);
-    observed.set(tool.name, {
-      wrote: d1.wrote,
-      changedExisting: d1.changedExisting,
-      changedTables: d1.changedTables,
-      repeatWrote: d2.wrote,
-      firstOk: first.ok,
-      secondOk: second.ok,
-    });
+    const set = drives.get(tool.name)!;
+    assert.ok(set.length > 0, `${tool.name}: no argument set at all`);
+    const acc: ToolBehaviour = {
+      wrote: false,
+      changedExisting: false,
+      changedTables: [],
+      fsWrote: false,
+      fsDestroyed: false,
+      fsGone: [],
+      fsAdded: 0,
+      repeatWrote: false,
+      repeatFsWrote: false,
+      consulted: false,
+      answerDependsOnTheDisk: null,
+      firstOk: true,
+      secondOk: true,
+      labels: set.map((d) => d.label),
+    };
+    for (const drive of set) {
+      // NO idempotency key in either call: `withIdempotency` would replay the
+      // stored response of the first, and the question here is what the tool does
+      // when a client simply calls it twice — which is what the hint answers.
+      const consultedBefore = activation.consulted + inventory.consulted;
+      const before = dbRows(fx);
+      const fsBefore = fsFingerprint(watched);
+      const first = callTool(fx, drive.key, tool.name, drive.args);
+      const between = dbRows(fx);
+      const fsBetween = fsFingerprint(watched);
+      const second = callTool(fx, drive.key, tool.name, drive.args);
+      const after = dbRows(fx);
+      const fsAfter = fsFingerprint(watched);
+      const d1 = diffOf(before, between);
+      const d2 = diffOf(between, after);
+      const f1 = fsDiff(fsBefore, fsBetween);
+      const f2 = fsDiff(fsBetween, fsAfter);
+      acc.wrote ||= d1.wrote;
+      acc.changedExisting ||= d1.changedExisting;
+      for (const t of d1.changedTables) if (!acc.changedTables.includes(t)) acc.changedTables.push(t);
+      acc.fsWrote ||= fsMoved(f1);
+      acc.fsDestroyed ||= fsDestroyed(f1);
+      acc.fsGone.push(...f1.removed, ...f1.modified);
+      acc.fsAdded += f1.added.length;
+      acc.repeatWrote ||= d2.wrote;
+      acc.repeatFsWrote ||= fsMoved(f2);
+      acc.firstOk &&= first.ok;
+      acc.secondOk &&= second.ok;
+      acc.consulted ||= activation.consulted + inventory.consulted > consultedBefore;
+
+      // THE ROOT-WITHDRAWAL PROBE. It is only meaningful where the SECOND call
+      // changed nothing in either half: then the state the third call meets is
+      // the state the second met, the two answers are answers to the same
+      // question, and a difference between them cannot come from anywhere but
+      // the disk that was taken away.
+      if (!d2.wrote && !fsMoved(f2)) {
+        activation.present = false;
+        inventory.present = false;
+        const third = callTool(fx, drive.key, tool.name, drive.args);
+        activation.present = true;
+        inventory.present = true;
+        acc.answerDependsOnTheDisk = (acc.answerDependsOnTheDisk ?? false) || third.answer !== second.answer;
+      }
+    }
+    acc.changedTables.sort();
+    acc.fsGone.sort();
+    observed.set(tool.name, acc);
   }
-  return { fx, observed };
+  return { fx, observed, watched };
 }
 
-test("[I-8] `idempotentHint` and `destructiveHint` are checked against what each of the 36 tools DOES", () => {
+test("[I-8] the filesystem half of the measure proves it SEES a file die before it is used to judge one", () => {
+  // The proof runs inside the judging tests too — this one gives it a name of
+  // its own in the output, so a run in which the eye stopped working reports
+  // THAT rather than a table of tools that all look additive.
+  console.log(proveTheSensorSeesTheFilesystem());
+});
+
+test("[I-8] the clauses no shipped tool exercises are proved on constructed behaviour, and the emptiness is PRINTED", () => {
+  // A SWEEP OVER AN EMPTY SET PROVES NOTHING, and three of the clauses added
+  // this round have no member in the shipped table: no tool writes to a disk
+  // WITHOUT writing a row, and none rewrites a disk on a repeat. Their rules
+  // cannot be exercised by driving the registry, so they are exercised
+  // directly — and the count of shipped members is printed beside each, so
+  // nobody reads a silent pass as coverage that is not there.
+  const inert = {
+    wrote: false,
+    changedExisting: false,
+    changedTables: [],
+    fsWrote: false,
+    fsDestroyed: false,
+    fsGone: [],
+    fsAdded: 0,
+    repeatWrote: false,
+    repeatFsWrote: false,
+    consulted: false,
+    answerDependsOnTheDisk: null,
+    firstOk: true,
+    secondOk: true,
+    labels: ["constructed"],
+  } satisfies ToolBehaviour;
+  const cases: Array<{ what: string; annotations: any; behaviour: ToolBehaviour; expect: RegExp }> = [
+    {
+      what: "a tool that declares itself a READ and writes only to a disk",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      behaviour: { ...inert, fsWrote: true, fsAdded: 1, consulted: true },
+      expect: /readOnlyHint declared true and the call moved a file/,
+    },
+    {
+      what: "a tool that declares itself additive and only removes files",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      behaviour: { ...inert, fsWrote: true, fsDestroyed: true, fsGone: ["a/SKILL.md"], consulted: true },
+      expect: /destructiveHint declared false and the call removed or overwrote 1 path/,
+    },
+    {
+      what: "a tool that declares itself idempotent and rewrites a disk on the repeat",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      behaviour: { ...inert, fsWrote: true, fsAdded: 1, repeatFsWrote: true, consulted: true },
+      expect: /idempotentHint declared true and a repeat with the same arguments wrote again/,
+    },
+    {
+      what: "a tool that declares a closed world and moves something outside it",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      behaviour: { ...inert, wrote: true, fsWrote: true, fsAdded: 1 },
+      expect: /openWorldHint declared false and the call reached outside this registry \(MOVED\)/,
+    },
+    {
+      what: "a tool that declares an open world and never asks where one is",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      behaviour: { ...inert },
+      expect: /openWorldHint declared true and the call never asked for a foreign root/,
+    },
+  ];
+  for (const c of cases) {
+    const found = hintViolations([{ name: "constructed.tool", annotations: c.annotations }], new Map([["constructed.tool", c.behaviour]]));
+    console.log(`  ${c.what}\n      → ${found.join(" · ") || "(nothing)"}`);
+    assert.ok(found.some((v) => c.expect.test(v)), `${c.what}: the clause did not fire — ${JSON.stringify(found)}`);
+  }
+
+  // …and how many of the 36 stand on each clause today, printed rather than assumed
   const { fx, observed } = observeEveryTool();
+  const members = [
+    ["a filesystem write with no row behind it", [...observed].filter(([, b]) => b.fsWrote && !b.wrote)],
+    ["a repeat that moves the filesystem again", [...observed].filter(([, b]) => b.repeatFsWrote)],
+    ["a filesystem removal or overwrite", [...observed].filter(([, b]) => b.fsDestroyed)],
+  ] as const;
+  for (const [what, rows] of members) {
+    console.log(`[I-8] shipped tools exercising "${what}": ${rows.length}${rows.length ? ` (${rows.map(([n]) => n).join(", ")})` : " — the clause above is its only proof"}`);
+  }
+  fx.db.close();
+});
+
+test("[I-8] every hint is checked against what each of the 36 tools does to BOTH halves of its environment", () => {
+  // THE EYE IS PROVED OPEN BEFORE IT IS TRUSTED TO JUDGE.
+  console.log(proveTheSensorSeesTheFilesystem());
+  const { fx, observed, watched } = observeEveryTool();
   console.log(`[I-8] tools driven twice through the shipped adapter: ${observed.size}/${MCP_TOOLS.length}`);
+  console.log(`[I-8] argument sets driven: ${[...observed.values()].reduce((n, b) => n + b.labels.length, 0)}`);
+  console.log(`[I-8] paths under watch at the end of the sweep: ${fsFingerprint(watched).size}`);
   console.log(
-    `  ${"tool".padEnd(26)} ${"wrote".padEnd(6)} ${"destr".padEnd(6)} ${"repeat".padEnd(7)} ${"1st".padEnd(4)} 2nd`,
+    `  ${"tool".padEnd(26)} ${"row+".padEnd(5)} ${"row!".padEnd(5)} ${"fs+".padEnd(5)} ${"fs!".padEnd(5)} ` +
+      `${"rpt".padEnd(4)} ${"foreign".padEnd(8)} ${"1st".padEnd(4)} 2nd`,
   );
   for (const tool of MCP_TOOLS as ReadonlyArray<any>) {
     const b = observed.get(tool.name)!;
     console.log(
-      `  ${tool.name.padEnd(26)} ${String(b.wrote).padEnd(6)} ${String(b.changedExisting).padEnd(6)} ` +
-        `${String(b.repeatWrote).padEnd(7)} ${String(b.firstOk).padEnd(4)} ${String(b.secondOk).padEnd(6)} ${b.changedTables.join(",")}`,
+      `  ${tool.name.padEnd(26)} ${String(b.wrote).padEnd(5)} ${String(b.changedExisting).padEnd(5)} ` +
+        `${String(b.fsAdded).padEnd(5)} ${String(b.fsGone.length).padEnd(5)} ` +
+        `${String(b.repeatWrote || b.repeatFsWrote).padEnd(4)} ${foreignGrade(b).padEnd(8)} ` +
+        `${String(b.firstOk).padEnd(4)} ${String(b.secondOk).padEnd(6)} ` +
+        `${b.changedTables.join(",")}${b.fsGone.length > 0 ? ` | gone: ${b.fsGone.slice(0, 3).join(" ")}${b.fsGone.length > 3 ? " …" : ""}` : ""}`,
     );
   }
   const driven = [...observed.values()].filter((b) => b.firstOk).length;
   assert.equal(driven, observed.size, "every tool must reach SUCCESS on its first call, or its hints are untested");
 
-  // THE SPLIT MUST BE A REAL SPLIT in all three dimensions — a table whose
-  // every tool answered the same way would pass the comparison by never
-  // exercising one side of it.
-  const writes = [...observed.values()].filter((b) => b.wrote).length;
-  const destructive = [...observed.values()].filter((b) => b.changedExisting).length;
-  const repeats = [...observed.values()].filter((b) => b.repeatWrote).length;
-  console.log(
-    `[I-8] observed: ${writes} write, ${observed.size - writes} do not; ${destructive} change an existing row, ` +
-      `${observed.size - destructive} are additive; ${repeats} write again on a repeat, ${observed.size - repeats} do not`,
-  );
-  for (const [what, n] of [["writing", writes], ["destructive", destructive], ["non-idempotent", repeats]] as const) {
-    assert.ok(n > 0 && n < observed.size, `every tool answered the same way for ${what}: the check distinguishes nothing`);
+  // THE SPLIT MUST BE A REAL SPLIT in every dimension — a table whose every tool
+  // answered the same way would pass the comparison by never exercising one
+  // side of it. A dimension nobody is on either side of is a dimension the
+  // sweep is not measuring at all.
+  const all = [...observed.values()];
+  const dims = [
+    ["writing a row", all.filter((b) => b.wrote).length],
+    ["changing a row that existed", all.filter((b) => b.changedExisting).length],
+    ["adding a path", all.filter((b) => b.fsAdded > 0).length],
+    ["removing or overwriting a path", all.filter((b) => b.fsDestroyed).length],
+    ["writing again on a repeat", all.filter((b) => b.repeatWrote || b.repeatFsWrote).length],
+    ["reaching a foreign filesystem", all.filter((b) => foreignGrade(b) !== "none").length],
+  ] as const;
+  for (const [what, n] of dims) console.log(`[I-8] observed ${String(n).padStart(2)}/${observed.size} tools ${what}`);
+  for (const [what, n] of dims) {
+    assert.ok(n > 0 && n < observed.size, `every tool answered the same way for "${what}": the check distinguishes nothing`);
   }
+  // …and the foreign half was really watched: the sweep must have SEEN a file
+  // die, or its destructive measure over the filesystem proved nothing.
+  const gone = all.reduce((n, b) => n + b.fsGone.length, 0);
+  console.log(`[I-8] paths removed or overwritten by the tools themselves during the sweep: ${gone}`);
+  assert.ok(gone > 0, "not one path was taken away: the filesystem half of the measure was never exercised");
+
+  // BOTH CORROBORATIONS MUST FIRE SOMEWHERE. `ASKED` on its own is the weakest
+  // grade the sweep accepts, and it would become the only grade — and the
+  // openWorld check would become a check of nothing — if either instrument
+  // silently stopped working.
+  const grades = new Map<ForeignGrade, string[]>([["MOVED", []], ["ANSWERED", []], ["ASKED", []], ["none", []]]);
+  for (const tool of MCP_TOOLS as ReadonlyArray<any>) grades.get(foreignGrade(observed.get(tool.name)!))!.push(tool.name);
+  for (const [grade, names] of grades) console.log(`[I-8] foreign reach ${grade.padEnd(8)} ${String(names.length).padStart(2)}: ${names.join(", ")}`);
+  assert.ok(grades.get("MOVED")!.length > 0, "no tool was seen to move anything on a foreign disk: that instrument is dead");
+  assert.ok(grades.get("ANSWERED")!.length > 0, "no tool answered differently when its root went away: that instrument is dead");
 
   assert.deepEqual(hintViolations(MCP_TOOLS as ReadonlyArray<any>, observed), [], "hints that are not true of the tool they are on [I-8]");
+  fx.db.close();
+});
+
+test("[I-8] the measure that watches only the database is shown to MISS what the deployment tools do", () => {
+  // THE DISCRIMINATION THIS ROUND TURNS ON, run as an experiment rather than
+  // argued. The same observations are passed to the same comparison twice: once
+  // whole, once with the filesystem half blanked out — which is exactly the
+  // measure round 3 used. If the shipped table is clean under both, the new
+  // half is decoration. It is not: the hints the full measure justifies are
+  // hints the narrow one calls lies, and the tools it names are the ones that
+  // remove and rewrite files.
+  const { fx, observed } = observeEveryTool();
+  assert.deepEqual(hintViolations(MCP_TOOLS as ReadonlyArray<any>, observed), [], "the shipped table must be clean under the full measure first");
+
+  const databaseOnly = new Map(
+    [...observed].map(([name, b]) => [
+      name,
+      { ...b, fsWrote: false, fsDestroyed: false, fsGone: [], fsAdded: 0, repeatFsWrote: false, consulted: false, answerDependsOnTheDisk: null },
+    ]),
+  );
+  const missed = hintViolations(MCP_TOOLS as ReadonlyArray<any>, databaseOnly);
+  console.log(`[I-8] hints the DATABASE-ONLY measure cannot justify: ${missed.length}`);
+  for (const m of missed) console.log(`    ${m}`);
+  killed("the database-only measure was enough — the filesystem half changes no verdict", () => {
+    assert.deepEqual(missed, [], "the narrow measure agreed with the full one");
+  });
+  // and it is the deployment tools it loses, named rather than counted
+  const lostTools = [...new Set(missed.map((m) => m.split(":")[0]!))].sort();
+  console.log(`[I-8] tools whose hints only the FULL measure can justify: ${lostTools.join(", ")}`);
+  assert.ok(lostTools.length > 0, "the two measures did not differ on any tool");
   fx.db.close();
 });
 
@@ -1262,7 +1836,7 @@ test("[I-8] the guard is proved by breaking EVERY member of the table in turn, h
   const { fx, observed } = observeEveryTool();
   assert.deepEqual(hintViolations(MCP_TOOLS as ReadonlyArray<any>, observed), [], "the shipped table must be clean first");
 
-  const HINTS = ["readOnlyHint", "destructiveHint", "idempotentHint"] as const;
+  const HINTS = ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] as const;
   const survived: string[] = [];
   let mutations = 0;
   for (const tool of MCP_TOOLS as ReadonlyArray<any>) {
@@ -1294,18 +1868,20 @@ test("[I-8] the mutation that removes ONE tool's annotations, and the one that l
   // is caught wherever it is removed from.
   const stripped = await mutantTree("mcp.ts", [
     [
-      `    // [I-8]: a READ. Every view is a rendering of surfaces the caller may
-    // already read, under the SAME access rules, and none of them writes: a
-    // dashboard that widened visibility or recorded a visit would be a second
-    // source of truth rather than a view.
-    annotations: {
+      `    annotations: {
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
-      openWorldHint: false,
+      openWorldHint: true,
     },
-`,
-      ``,
+    inputSchema: {
+      type: "object",
+      properties: {
+        view: { type: "string" },`,
+      `    inputSchema: {
+      type: "object",
+      properties: {
+        view: { type: "string" },`,
     ],
   ]);
   killed("a tool with no annotations at all passed the [I-8] sweep", () => {
@@ -1356,8 +1932,8 @@ test("[I-8] the mutation that removes ONE tool's annotations, and the one that l
     },`,
     ],
   ]);
-  const { fx, args } = toolDrive();
-  const drive = args.get("skill.create")!;
+  const { fx, drives } = toolDrive();
+  const drive = drives.get("skill.create")![0]!;
   const before = dbSnapshot(fx);
   const out = lying["mcp.ts"]!.handleMcpMessage(fx.registry, fx.author, {
     jsonrpc: "2.0",
