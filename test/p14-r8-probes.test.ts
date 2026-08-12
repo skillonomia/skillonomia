@@ -291,7 +291,11 @@ test("[8.1] a transcript and a secret encoded as NESTED BYTE ARRAYS are refused,
   for (const [label, evidence] of [
     ["a transcript as nested bytes under the base name `exit_code`", { exit_code: asNestedBytes(TRANSCRIPT_VALUE) }],
     ["a secret as nested bytes under `exit_code`", { exit_code: asNestedBytes(SECRET_VALUE) }],
+    // …and under a name the CONTRACT declared, which since round 9b is refused
+    // for the name as well as for the tree — both refusals are the point, and a
+    // report that gets past one meets the other.
     ["a secret as nested bytes under the contract's own name", { exit_code: 0, suite_digest: asNestedBytes(SECRET_VALUE) }],
+    ["a secret as nested bytes under another base name", { artifacts: asNestedBytes(SECRET_VALUE) }],
     ["a transcript nested three deep", { exit_code: [asNestedBytes(TRANSCRIPT_VALUE, 4)] }],
   ] as Array<[string, Record<string, unknown>]>) {
     const { fx, marker, report } = fixture();
@@ -323,6 +327,10 @@ test("[8.1] a transcript and a secret encoded as NESTED BYTE ARRAYS are refused,
 
 test("[8.1] a scalar, a digest and a FLAT list of scalars still pass, and are stored", () => {
   const { fx, marker, report } = fixture();
+  // THE CARRIER IS A BASE NAME AND NO LONGER THE CONTRACT'S OWN `suite_digest`.
+  // Round 9b removed the widening of the name set by a signed declaration, so a
+  // declared name is refused HERE — which would make this positive control pass
+  // for a reason that has nothing to do with the value grammar it is about.
   const accepted = report([
     { role: "call", call_id: "r8-ok", marker, at_ms: 1 },
     {
@@ -331,7 +339,7 @@ test("[8.1] a scalar, a digest and a FLAT list of scalars still pass, and are st
       marker,
       at_ms: 2,
       result: "success",
-      evidence: { exit_code: 0, suite_digest: [DIGEST, DIGEST] },
+      evidence: { exit_code: 0, artifacts: [DIGEST, DIGEST] },
     },
   ]);
   console.log(`  an integer and a flat list of digests → ${accepted.status} ${accepted.raw.slice(0, 70)}`);

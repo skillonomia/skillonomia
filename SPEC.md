@@ -3104,7 +3104,8 @@ before this migration presents no evidence, so its `outcome` is `unknown` with a
 reason and never `no` [I-1], [A-0]. `PRAGMA user_version` = `10`.
 
 EVERY CHANNEL INTO THIS COLUMN IS CLOSED, and none of them is closed in SQL. A
-report may present only names the signed `outcome_contract` asked for, and under
+report may present only the names THE REGISTRY'S OWN CHECKS READ — the union of
+the `evidence` inputs of the check kinds, four names in this version — and under
 those names only a boolean, a safe integer or a digest of the form
 `sha256:<64 lowercase hex>` — or a FLAT list of at most 32 of those, with NO
 NESTING at any depth, because a bound applied to each level of a tree is a bound
@@ -3114,20 +3115,28 @@ however the field is called and however it is spread across fields [I-7]. Where
 the signed `check` names a `command` or an `artifact_path`, a run presents THE
 DIGEST of it and the registry compares that against the digest it computes from
 the signed parameter itself: the check decides what it always decided, and no
-string an author wrote is a VALUE. AND A NAME IS AN IDENTIFIER, which is
-the rule that closes the last of the three: a name the signed contract declares
-is itself a string the author wrote and is stored in this column as a KEY, so a
-conforming registry MUST constrain its FORM — a lowercase letter, then lowercase
-letters, digits and underscores, at most 40 characters — in the SCHEMA, so that
-a contract naming a sentence cannot be packed, and again on the report path, so
-that one arriving by another route declares nothing. A name is deliberately NOT
-reduced to a digest: a reader of the journal must see WHICH quantity was
-presented, and the form keeps a name readable while taking away its capacity to
-be text. What it does not take away, stated rather than glossed: a name is still
-an identifier an author CHOSE, and an identifier alphabet can be made to carry
-an encoding exactly as a flat list of integers can — what is closed is that no
-text arrives as itself. Where no contract can be read the names are the derived
-base list and nothing else: the boundary fails closed. A consequence, stated because
+string an author wrote is a VALUE. AND NO STRING AN AUTHOR WROTE IS A NAME
+EITHER, which is the rule that closes the last of the three and took two attempts.
+A name a signed contract declares is a string the author wrote, and while a
+declaration WIDENED the admissible names it was stored in this column as a KEY:
+the first answer was to constrain its FORM to an identifier, and a form is not a
+subject — a hex string of 33 characters is an identifier, and one went into this
+column through the shipped route. A conforming registry MUST therefore admit ONLY
+the names its own checks read, and MUST NOT let a version's signed
+`outcome_contract.evidence` add to them: that field states what the AUTHOR wants a
+run to present and IS NOT A SOURCE OF ADMISSIBLE NAMES for this journal. It stays
+in the signed manifest with the standing the substring form of `stdout_match` has
+— [I-7] bounds the journal and not a document under a signature — and the form
+required of it (a lowercase letter, then lowercase letters, digits and
+underscores, at most 40 characters, in the SCHEMA and again wherever a contract
+is read) is a rule about a MANIFEST being machine-readable, not the rule that
+protects this column. A name is deliberately NOT reduced to a digest: a reader of
+the journal must see WHICH quantity was presented, which is affordable exactly
+because the names are the registry's own. What is NOT promised, stated rather
+than glossed: an author still chooses the strings inside its own manifest, and any
+bounded alphabet can be made to carry an encoding as a flat list of integers can
+— what is delivered is that the registry puts no text in this column and the
+names it accepts there are its own. A consequence, stated because
 it changes what a contract can do rather than merely how it is checked: a
 `stdout_match` whose pattern is a SUBSTRING is not executable by a registry that
 receives `stdout_sha256` as a digest, and such a contract yields `unknown` with a
@@ -3190,7 +3199,7 @@ equality and still runs.
 --
 --   AND THEN THE NAME ITSELF, which every correction above was about what a
 --   name CARRIES and never about what a name IS. A name the signed contract
---   declares is a string the AUTHOR wrote and it is stored here AS A JSON KEY,
+--   declares is a string the AUTHOR wrote and it was stored here AS A JSON KEY,
 --   word for word; the schema bounded it at 20 names of 80 characters and put
 --   no FORM on it at all, so spaces, punctuation, upper case and the whole of
 --   unicode were admissible. A contract declaring `the operator pasted the
@@ -3198,27 +3207,47 @@ equality and still runs.
 --   went through the same shipped surface and the material came back out of
 --   this column byte for byte.
 --
+--   THE FIRST ANSWER TO THAT WAS A FORM, AND A FORM IS NOT A SUBJECT. A
+--   declared name was narrowed to an identifier — and the alphabet of an
+--   identifier is the alphabet secrets are already written in. A reviewer
+--   declared `a0123456789abcdef0123456789abcdef`, an ordinary hex string of 33
+--   characters that is inside that pattern without any effort being made to fit
+--   it, as an evidence NAME: packed, 201, and the material back out of this
+--   column word for word again. Every alphabet fit for readable names is fit
+--   for part of the secrets, so there is no next pattern to try.
+--
 -- SO ALL THREE CHANNELS ARE CLOSED, AND NONE OF THEM IS CLOSED IN SQL.
 --
 --   NAMES, WHICH SET: `EVIDENCE_NAMES` (`src/outcome.ts`, derived from the
---   check table) plus the names the SIGNED `outcome_contract.evidence` of the
---   version a record's marker identifies declares.
+--   check table) AND NOTHING ELSE. No route widens it. A version's signed
+--   `outcome_contract.evidence` used to, and that widening is deleted rather
+--   than filtered: the field is the AUTHOR's declaration of what its run ought
+--   to present, it stays in the signed manifest with the standing the substring
+--   form of `stdout_match` has, and it is NOT A SOURCE OF ADMISSIBLE NAMES for
+--   this column. [I-7] bounds this journal; it does not bound a document under
+--   a signature. So a key of this column is one of four strings this registry
+--   chose, and no string an author wrote is a key at all.
 --
---   NAMES, WHICH FORM: an IDENTIFIER — a lowercase letter, then lowercase
---   letters, digits and underscores, at most 40 characters. `EVIDENCE_NAME`
---   (`src/outcome.ts`) is the rule and the schema carries the same pattern, so
---   a contract that names a sentence cannot be PACKED, and `outcomeContractOf`
---   (`src/manifest.ts`) refuses one that reaches the report path by any other
---   route — the names then fall back to the derived set and that contract
---   declares nothing. A name is NOT stored as a digest, deliberately: a reader
---   of this journal has to see WHICH quantity a run presented, and a column of
---   digests would record evidence while showing nobody what kind. What the form
---   takes away is text — there is no space, no punctuation, no case and no
---   unicode in that alphabet, so prose and a pasted credential are outside it.
---   What it leaves, and this is stated rather than glossed: a name is still a
---   string an author CHOSE, and an identifier alphabet can be made to carry an
---   encoding, exactly as the flat list of integers a value may be can. No text
---   arrives here as itself; that is the property, and it is the whole of it.
+--   NAMES, WHICH FORM: the declaration in the manifest is still bounded — an
+--   IDENTIFIER, a lowercase letter then lowercase letters, digits and
+--   underscores, at most 40 characters (`EVIDENCE_NAME`, `src/outcome.ts`, and
+--   the schema carries the same pattern). That rule is about the MANIFEST being
+--   machine-readable, not about this column: a contract naming a sentence is
+--   not a definition of success this registry reads, from the packer or from
+--   anywhere else. It is stated here so that nobody reads the form as the thing
+--   that protects this column — it is not, and when it was, it failed.
+--
+--   A name in this column is NOT a digest, deliberately: a reader has to see
+--   WHICH quantity a run presented, and a column of digests would record
+--   evidence while showing nobody what kind. That is affordable precisely
+--   because the four names are the registry's own.
+--
+--   AND WHAT IS NOT PROMISED, stated rather than glossed. An author still
+--   chooses the strings inside its own manifest, and any bounded alphabet — an
+--   identifier, like the flat list of integers a value may be — can be made to
+--   carry an encoding by an author who sets out to build one. What is
+--   delivered is that this registry does not put text into this column and the
+--   forms it accepts here are its own.
 --
 --   VALUES: a boolean, a safe integer or a digest of the form
 --   `sha256:<64 lowercase hex>` — or a FLAT list of at most 32 of those, with
@@ -3234,10 +3263,11 @@ equality and still runs.
 --   no enumeration of admissible strings any more — a permitting set nobody
 --   consults is a hole that has merely not been walked through yet.
 --
--- Where no contract can be read — an unknown marker, a manifest that no longer
--- hashes to what was signed, a contract whose declared names are not
--- identifiers — the names are the derived list and nothing else: the boundary
--- fails closed on every channel.
+-- THE CASES THAT USED TO NEED A FAIL-CLOSED DECISION NO LONGER ARISE. An
+-- unknown marker, a stored manifest that no longer hashes to what was signed, a
+-- contract with no usable shape: each of those had to be turned into "the
+-- derived list and nothing else" on purpose, and each was a way for the answer
+-- to come out wider by accident. The derived list is now the only list.
 --
 -- SQLite cannot express any of these rules, so this comment does not claim
 -- SQLite does. What the constraint below enforces is a bound on SIZE, which is
@@ -3257,11 +3287,13 @@ equality and still runs.
 -- markers at the boundary and no column of this schema stores it.
 --
 -- AND WHAT AN AUTHOR SIGNS DOES NOT REACH IT EITHER, which used to be the
--- exception this paragraph had to make. A REPORTER's text is refused as a
--- value; an AUTHOR's text is refused as a name, because a name is an identifier
--- and a sentence is not one. Both are agents of the same fleet, so the
--- distinction was one of route and not of trust — and the route is now shut at
--- both ends, which is why this file no longer has an exception to declare.
+-- exception this paragraph had to make and then twice made badly. A REPORTER's
+-- text is refused as a value. An AUTHOR's text is not refused as a NAME — it
+-- never becomes one: the keys of this column are the four names this registry's
+-- own checks read, and there is no expression anywhere that adds a declared name
+-- to them. Both parties are agents of the same fleet, so the distinction was one
+-- of route and not of trust, and the second route is closed by construction
+-- rather than by a pattern that has to be right about what a secret looks like.
 
 ALTER TABLE observed_records ADD COLUMN evidence TEXT
   CHECK(evidence IS NULL OR (length(evidence) BETWEEN 2 AND 4000));
@@ -3280,7 +3312,7 @@ T-1 invalid enum event → CHECK reject · T-2 second terminal event (`failed` a
 
 Ships in the public schema repo as `skill-package-v1.schema.json`. `additionalProperties: false` at every object level; the ONLY extension point is `x_ext`, a free-form object. Two of its members carry normative meaning and are read by the §7.3 human-approval matrix: `x_ext.destructive`, a boolean, where the value `true` and no other declares destructive operations; and `x_ext.blast_radius`, a string, where the values `large`, `fleet` and `org` declare a large blast radius and any other value or absence does not. Neither is required, and neither is constrained by the schema beyond `x_ext` being an object; the schema does not enforce their types, so a `destructive` that is not exactly `true` and a `blast_radius` outside those three strings simply fail to hold their §7.3 condition. All other content of `x_ext` is ignored by verifier and linter except the secret scan of gate 2, which covers the whole manifest. Sub-schemas for adopter-side payloads (`environment_descriptor`, `failure_report`, `rollback_report`, `evidence`) are separate documents in the same repo with the same strictness.
 
-`outcome_contract` is OPTIONAL in the schema and REQUIRED by surface 14: a package produced by `skill.create_from_dir` MUST carry one, and `skill.create` — which accepts a package an author signed elsewhere, including packages signed before this section existed — MUST NOT demand one. It states what SUCCESS is for this skill, in one machine-readable form and skill-specific content: `check` names the deterministic test (`exit_code`, `stdout_match`, `artifact_exists` or `command`, the last being a check command that itself returns 0 or 1) TOGETHER WITH THE PARAMETER ITS KIND REQUIRES — a `stdout_match` with no pattern, an `artifact_exists` with no `artifact_path`, a `command` with no `command` and an `exit_code` with no `exit_code` name a method and withhold its subject, cannot be executed, and are `INVALID_SCHEMA`; `evidence` names the values that MUST be presented, and `unknown` says what the ABSENCE of evidence means — always rendered as `unknown` and never as a failure [I-1], [A-0]. It sits inside the SIGNED manifest, so the definition of success is covered by `manifest_hash` and by the signature over it: changing what counts as success requires issuing a NEW VERSION, and a registry MUST NOT accept a changed contract under a version already published. A package that carries no contract is reported with `outcome` = `unknown` and the reason `no_outcome_contract` — never `no`, because a task that finished is not a task that succeeded and a task nobody evaluated is not a task that failed. THE EVIDENCE A RUN PRESENTS IS BOUNDED IN SHAPE AS WELL AS IN NAME: a named value is a boolean, a safe integer or a digest of the form `sha256:<64 lowercase hex>`, or a FLAT list of at most 32 of those with NO NESTING at any depth, and free text is `INVALID_SCHEMA` under EVERY name including the contract's own, as is a tree of it — a journal that accepts arbitrary text holds transcripts however its fields are named and however the text is spread across them, and a bound applied to each level of a tree is a bound on no value at all [I-7]. WHERE THE SIGNED `check` NAMES A `command` OR AN `artifact_path`, A RUN PRESENTS THE DIGEST OF IT: the registry compares that against the digest it computes from the signed parameter itself, so the check decides what it always decided while no string the author wrote is admissible as a value — the author of a skill is a fleet agent too, and a parameter it may fill with prose and echo back is a text channel with a signature on it. THE DECLARED NAMES THEMSELVES ARE CONSTRAINED IN FORM, and a conforming registry MUST NOT let `free text is refused under every name` be read as covering them by accident: a name in `outcome_contract.evidence` is a string the author wrote and it is stored as a KEY of the evidence object, so it MUST be an IDENTIFIER — `^[a-z][a-z0-9_]{0,39}$`, at most 40 characters — enforced in the SCHEMA, so that a contract naming a sentence is not packable, and again when the contract is read on the report path, so that one signed elsewhere or signed before this rule declares nothing and the names fall back to the derived base list. A name is not stored as a digest because a reader has to see which quantity was presented; the form keeps it readable and takes away its capacity to be prose, and what remains — an identifier an author chose, which like any bounded alphabet can be made to carry an encoding — is stated here rather than covered by a sentence that would promise more. The channel a `stdout_match` reads is therefore named `stdout_sha256` and not `stdout`: a digest is all it can hold, and a field named for the text it cannot carry would assert more than the registry delivers. The PATTERN inside the signed manifest may still be a substring — it is author content under a signature, and this bound is on what a RUN writes into the journal. It follows that a `stdout_match` naming a SUBSTRING is not executable by a registry that receives `stdout_sha256` as a digest: such a contract is still valid, still signed and still published, and its `outcome` is `unknown` with a machine-readable reason — never `no` on the strength of a comparison nothing performed — while a `stdout_match` naming a digest of the same form is an equality and is executed. THE CONTRACT IS EXECUTED, and only an executed `check` moves the column. The evaluator receives the signed contract itself and runs its `check` against the `evidence` a run PRESENTED; `observation.report` accepts a stated `result` only together with that evidence. A principal holding the §6.2 `report_outcome` grant therefore states what it OBSERVED and never what the outcome WAS: without an executed check `outcome` is `unknown` with a machine-readable reason, never `yes` and never `no` on the strength of a reporter's word [M-6].
+`outcome_contract` is OPTIONAL in the schema and REQUIRED by surface 14: a package produced by `skill.create_from_dir` MUST carry one, and `skill.create` — which accepts a package an author signed elsewhere, including packages signed before this section existed — MUST NOT demand one. It states what SUCCESS is for this skill, in one machine-readable form and skill-specific content: `check` names the deterministic test (`exit_code`, `stdout_match`, `artifact_exists` or `command`, the last being a check command that itself returns 0 or 1) TOGETHER WITH THE PARAMETER ITS KIND REQUIRES — a `stdout_match` with no pattern, an `artifact_exists` with no `artifact_path`, a `command` with no `command` and an `exit_code` with no `exit_code` name a method and withhold its subject, cannot be executed, and are `INVALID_SCHEMA`; `evidence` names the values that MUST be presented, and `unknown` says what the ABSENCE of evidence means — always rendered as `unknown` and never as a failure [I-1], [A-0]. It sits inside the SIGNED manifest, so the definition of success is covered by `manifest_hash` and by the signature over it: changing what counts as success requires issuing a NEW VERSION, and a registry MUST NOT accept a changed contract under a version already published. A package that carries no contract is reported with `outcome` = `unknown` and the reason `no_outcome_contract` — never `no`, because a task that finished is not a task that succeeded and a task nobody evaluated is not a task that failed. THE EVIDENCE A RUN PRESENTS IS BOUNDED IN SHAPE AS WELL AS IN NAME: a named value is a boolean, a safe integer or a digest of the form `sha256:<64 lowercase hex>`, or a FLAT list of at most 32 of those with NO NESTING at any depth, and free text is `INVALID_SCHEMA` under EVERY name including the contract's own, as is a tree of it — a journal that accepts arbitrary text holds transcripts however its fields are named and however the text is spread across them, and a bound applied to each level of a tree is a bound on no value at all [I-7]. WHERE THE SIGNED `check` NAMES A `command` OR AN `artifact_path`, A RUN PRESENTS THE DIGEST OF IT: the registry compares that against the digest it computes from the signed parameter itself, so the check decides what it always decided while no string the author wrote is admissible as a value — the author of a skill is a fleet agent too, and a parameter it may fill with prose and echo back is a text channel with a signature on it. `evidence` IS THE AUTHOR'S DECLARATION AND IS NOT A SOURCE OF ADMISSIBLE NAMES, and a conforming registry MUST NOT let `free text is refused under every name` be read as covering the NAMES by accident. A name in `outcome_contract.evidence` is a string the author wrote. While such a name WIDENED what a run could present it was stored as a KEY of the evidence object, so it had to be constrained in FORM — and a form is not a subject: `^[a-z][a-z0-9_]{0,39}$` admits `a0123456789abcdef0123456789abcdef`, which is an ordinary hex string of 33 characters, and one went into the journal through the shipped surface. Every alphabet fit for readable names is fit for part of the secrets, so a conforming registry MUST instead admit ONLY the names its own checks read and MUST NOT add a declared name to them; the declaration keeps its place inside the signature — like the substring form of a `stdout_match` pattern, it is author content that [I-7] does not bound because a manifest is not the journal — and states what a run OUGHT to present without deciding what the journal will hold. The FORM is still required of it, in the SCHEMA so that a contract naming a sentence is not packable and again wherever a contract is read so that one signed elsewhere is not read as a definition of success, and that rule is about this document being machine-readable rather than about protecting the journal. A name in the journal is not stored as a digest because a reader has to see which quantity was presented, which is affordable exactly because those names are the registry's own; and what is NOT promised is stated rather than covered over — an author chooses the strings in its own manifest, and any bounded alphabet can be made to carry an encoding, so what is delivered is that the registry puts no text into the journal and the names it accepts there are its own. The channel a `stdout_match` reads is therefore named `stdout_sha256` and not `stdout`: a digest is all it can hold, and a field named for the text it cannot carry would assert more than the registry delivers. The PATTERN inside the signed manifest may still be a substring — it is author content under a signature, and this bound is on what a RUN writes into the journal. It follows that a `stdout_match` naming a SUBSTRING is not executable by a registry that receives `stdout_sha256` as a digest: such a contract is still valid, still signed and still published, and its `outcome` is `unknown` with a machine-readable reason — never `no` on the strength of a comparison nothing performed — while a `stdout_match` naming a digest of the same form is an equality and is executed. THE CONTRACT IS EXECUTED, and only an executed `check` moves the column. The evaluator receives the signed contract itself and runs its `check` against the `evidence` a run PRESENTED; `observation.report` accepts a stated `result` only together with that evidence. A principal holding the §6.2 `report_outcome` grant therefore states what it OBSERVED and never what the outcome WAS: without an executed check `outcome` is `unknown` with a machine-readable reason, never `yes` and never `no` on the strength of a reporter's word [M-6].
 
 ```json
 {
@@ -3387,6 +3419,7 @@ Ships in the public schema repo as `skill-package-v1.schema.json`. `additionalPr
             {"if": {"properties": {"kind": {"const": "command"}}, "required": ["kind"]}, "then": {"required": ["command"]}}
           ]},
         "evidence": {"type": "array", "minItems": 1, "maxItems": 20,
+          "description": "DECLARATIVE, AND THE AUTHOR'S: the named values a run of this skill ought to present. A registry MUST NOT read it as a source of admissible names for its observation journal — the names a report may present are the ones the registry's own checks read, and a name declared here is never a key of a record. The identifier form is required so that a signed manifest stays machine-readable, and it is not a guarantee about the journal: an identifier is a string the author chose, and any bounded alphabet can be made to carry an encoding.",
           "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$", "maxLength": 40}},
         "unknown": {"type": "string", "minLength": 10, "maxLength": 400}}},
     "x_ext": {"type": "object"}

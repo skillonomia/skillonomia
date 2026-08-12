@@ -405,19 +405,42 @@ test("[9.4] a contract whose names are prose declares NOTHING at the report boun
   fx.db.close();
 });
 
-test("[9.4] a planted contract of IDENTIFIERS still declares its names — the boundary narrows the form, not the mechanism", () => {
-  // WITHOUT THIS the refusals above are satisfied by a boundary that stopped
-  // reading signed contracts altogether, which would close the channel by
-  // breaking D-2.
+test("[9.4] a contract of IDENTIFIERS declares nothing here either, and D-2's own mechanism is untouched", () => {
+  // WHAT THIS ASSERTED AND WHY IT INVERTED. It was the positive control of round
+  // 9: a planted contract of identifiers had to keep declaring its names, or the
+  // refusals above would have been satisfied by a boundary that stopped reading
+  // signed contracts altogether — closing the channel by breaking D-2.
+  //
+  // Round 9b took the honest way out of that trade: the channel is removed, so
+  // there is nothing to keep working. A declared identifier is refused exactly
+  // like a declared sentence, which is the point — no form of a declared name is
+  // admissible, so no form of it has to be judged.
   const { fx, versionId, marker, report } = fixture(DECLARED_CONTRACT, "r9-still-works");
   plantContract(fx, versionId, contractWith(["exit_code", "coverage_ratio"]));
-  const accepted = report([
+  const declared = report([
     { role: "call", call_id: "r9-ok", marker, at_ms: 1 },
     { role: "output", call_id: "r9-ok", marker, at_ms: 2, result: "success", evidence: { exit_code: 0, coverage_ratio: 97 } },
   ]);
-  console.log(`  a declared identifier through /v1/observations → ${accepted.status} ${accepted.raw.slice(0, 60)}`);
-  assert.equal(accepted.status, 201, "a name a signed contract declares is no longer admissible, so D-2's mechanism is gone");
-  assert.ok(stored(fx).includes("coverage_ratio"), "the declared name was not stored");
+  console.log(`  a declared identifier through /v1/observations → ${declared.status} ${declared.raw.slice(0, 60)}`);
+  assert.equal(declared.status, 400, "a name a signed contract declares is still admissible: the widening survived");
+  assert.equal(stored(fx).includes("coverage_ratio"), false, "the declared name was stored despite the refusal");
+
+  // AND THE POSITIVE CONTROL MOVES TO WHERE THE MECHANISM ACTUALLY LIVES. D-2 is
+  // that the registry EXECUTES the signed contract's own `check` — the boundary
+  // narrowing was never that mechanism. The same planted contract still decides a
+  // verdict from the values the check reads, so `nothing is admissible` has not
+  // been achieved by making the contract unreadable.
+  const accepted = report([
+    { role: "call", call_id: "r9-ok2", marker, at_ms: 3 },
+    { role: "output", call_id: "r9-ok2", marker, at_ms: 4, result: "success", evidence: { exit_code: 0 } },
+  ]);
+  console.log(`  the check's own \`exit_code\`                    → ${accepted.status} ${accepted.raw.slice(0, 60)}`);
+  assert.equal(accepted.status, 201, "the value the contract's own check reads was refused, so every refusal here is vacuous");
+  assert.ok(stored(fx).includes("exit_code"), "the check's own input was not stored");
+  const verdict = outcomeContractOf(JSON.parse(
+    (fx.db.prepare("SELECT manifest_json FROM skill_versions WHERE id=?").get(versionId) as { manifest_json: string }).manifest_json,
+  ));
+  assert.equal(verdict.valid, true, "the planted contract stopped being readable, so D-2's mechanism was broken instead of the channel");
   fx.db.close();
 });
 

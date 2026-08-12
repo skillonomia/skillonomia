@@ -88,6 +88,13 @@ export const OUTCOME_CHECK_SHAPE: Readonly<
  * exactly this set, so a kind that starts reading a fifth value fails a test
  * rather than silently narrowing what a report may present.
  *
+ * AND THIS SET IS THE WHOLE OF IT — round 9b's fix, stated where the set is
+ * defined. It used to be a FLOOR that a version's signed `outcome_contract`
+ * raised, and an author declaring a hex string as a name put that string in the
+ * journal as a key. A form cannot separate a key from a secret written as one,
+ * so the widening is gone rather than filtered: no route adds to this set, and
+ * `outcome_contract.evidence` is NOT A SOURCE OF ADMISSIBLE NAMES.
+ *
  * WHAT IS NOT HERE, deliberately: `stdout_match`, `artifact_path` and the
  * `exit_code` of a `check` are the CONTRACT's parameters — what the author
  * demanded — and not values a run produces. A report presents the second kind.
@@ -97,53 +104,57 @@ export const EVIDENCE_NAMES: readonly string[] = [
 ].sort();
 
 // ===========================================================================
-// WHAT A NAME MAY LOOK LIKE — the third channel, closed by its FORM.
+// WHAT A NAME MAY LOOK LIKE — the form of an AUTHOR'S DECLARATION.
 // ===========================================================================
 
 /**
- * THE DEFECT THIS SECTION EXISTS TO REMOVE, found by round 8 while executing
- * its own claim rather than reading it, and left open there because closing it
- * was outside that round.
+ * THE HISTORY OF THIS SECTION, kept because each correction is what made the
+ * one before it true, and because the last of them is a correction OF A FIX.
  *
- * Round 6 closed the SET of admissible names: a report may present only names
- * this registry's checks read plus the names the SIGNED `outcome_contract`
- * declared. Round 8 closed the VALUES to a boolean, a safe integer or a digest,
- * and removed the echo of signed literals. Both of those are about what a name
- * CARRIES. Neither is about what a name IS.
+ * Round 6 closed the SET of admissible names: the names this registry's checks
+ * read, plus the names the SIGNED `outcome_contract` declared. Round 8 closed
+ * the VALUES to a boolean, a safe integer or a digest and removed the echo of
+ * signed literals — both about what a name CARRIES, neither about what a name
+ * IS. Round 9 closed the FORM: a declared name became an identifier, because
+ * under D-21 the author of a skill is a fleet agent like any other and a
+ * declared name was landing in `observed_records.evidence` as a JSON KEY, word
+ * for word — 1600 characters of author text by the shipped route.
  *
- * A DECLARED NAME IS A STRING THE AUTHOR WROTE, and it is stored in
- * `observed_records.evidence` as a JSON KEY, word for word. The schema bounded
- * it at 20 names of 80 characters and bounded nothing else about it — spaces,
- * punctuation, upper case and the whole of unicode were inside the form. Under
- * D-21 the author of a skill is a fleet agent like any other, so 1600
- * characters of its own text went into that column by the shipped route: a
- * contract declaring `the operator pasted the key ` and `sk-live-…` as names,
- * a run of its own presenting them, 201, and the material read back out of the
- * database byte for byte.
+ * ROUND 9b FOUND THAT A FORM IS NOT A SUBJECT. Every alphabet fit for readable
+ * names is fit for part of the secrets: a reviewer declared
+ * `a0123456789abcdef0123456789abcdef` — an ordinary hex string of 33
+ * characters, inside this pattern without any effort being made to squeeze it
+ * in — as an evidence NAME, and the material came back out of the column word
+ * for word. No regular expression separates a key from a credential written as
+ * one, so the CHANNEL was removed instead of narrowed again: the journal's
+ * admissible names are `EVIDENCE_NAMES` and a signed declaration adds none.
  *
- * WHY NOT A DIGEST, WHICH IS HOW THE VALUES WERE CLOSED. Because the journal is
- * read by people. A value may become a digest without loss — the reader wants to
- * know that an output matched, not what it was — but a NAME is what tells a
- * reader WHICH quantity was presented, and a column of digests would be a
- * journal that records evidence and shows nobody what kind. The legitimate
- * purpose of a name is to be read, so the fix keeps it readable and takes away
- * its capacity to be text.
+ * SO WHAT IS THIS FORM STILL FOR. It bounds the AUTHOR'S DECLARATION in the
+ * SIGNED MANIFEST, which is a different object from the journal.
+ * `outcome_contract.evidence` states what a run ought to present; it is
+ * machine-readable content of a document, and a document whose field may be a
+ * paragraph is not machine-readable. The form is enforced by the schema, so a
+ * contract naming a sentence cannot be packed, and by `outcomeContractOf`, so a
+ * contract signed elsewhere is not read as a definition of success — and in
+ * neither place does it decide what the journal accepts. The field is NOT A
+ * SOURCE OF ADMISSIBLE NAMES; [I-7] bounds the journal, not the manifest, and
+ * an author's text under a signature never becomes a key of a record.
  *
- * SO A NAME IS AN IDENTIFIER: a lowercase letter, then lowercase letters,
- * digits and underscores, up to `EVIDENCE_NAME_MAX` characters. A sentence
- * cannot be written in that alphabet — there is no space, no punctuation, no
- * case and no unicode in it — and `exit_code`, `suite_digest` and
- * `integration_suite_exit_code` all are.
+ * WHY THE JOURNAL'S NAMES ARE NOT DIGESTS, since that is how the values were
+ * closed. Because the journal is read by people: a value may become a digest
+ * without loss — the reader wants to know that an output matched, not what it
+ * was — but a NAME is what tells a reader WHICH quantity was presented, and a
+ * column of digests would record evidence and show nobody what kind.
  *
- * WHAT THIS DOES NOT CLAIM, because a comment that claims an impossibility it
- * does not deliver is the class of defect this file carries warnings about. A
- * name is still a string an author CHOSE; an identifier alphabet, like the flat
- * list of thirty-two integers a value may be, can be made to carry an ENCODING
- * of something if an author sets out to build one. What is closed is that no
- * text arrives here AS TEXT: prose, a pasted credential and a slice of a
- * transcript are outside the form, refused at packing and refused again at the
- * report boundary, and what is left is a bounded identifier — which is what a
- * key has to be for the journal to be readable at all.
+ * WHAT NONE OF THIS CLAIMS, because a comment that claims an impossibility it
+ * does not deliver is the class of defect this file carries warnings about.
+ * `EVIDENCE_NAMES` is four names of this registry's own choosing, so no author
+ * string is a key at all; but an author still chooses the strings inside its
+ * own manifest, and a bounded alphabet — this one, like the flat list of
+ * thirty-two integers a value may be — can be made to carry an ENCODING of
+ * something by an author who sets out to build one. The achievable property is
+ * the one enforced: this registry does not put text into the journal, and the
+ * forms it accepts there are its own.
  */
 export const EVIDENCE_NAME_MAX = 40;
 
@@ -689,14 +700,30 @@ export function evaluateOutcome(contract: unknown, evidence: unknown): OutcomeVe
   }
   const values = evidence as Record<string, unknown>;
 
-  // EVERY VALUE THE CONTRACT NAMED, and then the one the check needs. The
-  // contract's `evidence` list is the author's statement of what a run must
-  // present; the check's own input is what this function cannot proceed
-  // without. Both are required, and a missing one is `unknown` with the NAME of
-  // what was missing — never a `no`.
-  for (const named of c.evidence ?? []) {
-    if (!(named in values)) return { value: "unknown", reason: `evidence_missing:${named}` };
-  }
+  // THE ONE VALUE THIS CHECK CANNOT PROCEED WITHOUT — and nothing else is
+  // required, which is a change of requirement and not a relaxation of one.
+  //
+  // WHAT WAS HERE AND WHY IT HAD TO GO. A loop demanded the PRESENCE of every
+  // name `outcome_contract.evidence` declared. That was coherent only while a
+  // declaration WIDENED what a report could present; round 9b removed that
+  // widening — the journal's names are `EVIDENCE_NAMES` and a declaration adds
+  // none — so a contract naming a quantity of its own would have become
+  // unevaluable for ever: the name cannot be presented, the boundary refuses
+  // it, and its absence read `unknown evidence_missing:<name>` for the life of
+  // the version. A dead branch and a reason that blames the run for the
+  // author's document.
+  //
+  // AND IT IS NOT NARROWED TO THE DERIVED SET EITHER. The line below already
+  // requires exactly what the check reads; a loop restricted to the base set
+  // would be a SECOND statement of the same rule, and two statements of one
+  // rule is the mechanism by which they come apart — the reasoning that put the
+  // value grammar and the form of a name in one place each.
+  //
+  // `outcome_contract.evidence` remains what D-2 made it: the AUTHOR's
+  // declaration of what a run ought to present, inside the signature, on the
+  // same footing as the substring form of `stdout_match`. It is NOT A SOURCE OF
+  // ADMISSIBLE NAMES for the journal and it is not read by this evaluator; [I-7]
+  // bounds the journal, not the signed document.
   if (!(shape.evidence in values)) {
     return { value: "unknown", reason: `evidence_missing:${shape.evidence}_so_the_check_was_never_executed` };
   }

@@ -53,7 +53,7 @@
 --
 --   AND THEN THE NAME ITSELF, which every correction above was about what a
 --   name CARRIES and never about what a name IS. A name the signed contract
---   declares is a string the AUTHOR wrote and it is stored here AS A JSON KEY,
+--   declares is a string the AUTHOR wrote and it was stored here AS A JSON KEY,
 --   word for word; the schema bounded it at 20 names of 80 characters and put
 --   no FORM on it at all, so spaces, punctuation, upper case and the whole of
 --   unicode were admissible. A contract declaring `the operator pasted the
@@ -61,27 +61,47 @@
 --   went through the same shipped surface and the material came back out of
 --   this column byte for byte.
 --
+--   THE FIRST ANSWER TO THAT WAS A FORM, AND A FORM IS NOT A SUBJECT. A
+--   declared name was narrowed to an identifier — and the alphabet of an
+--   identifier is the alphabet secrets are already written in. A reviewer
+--   declared `a0123456789abcdef0123456789abcdef`, an ordinary hex string of 33
+--   characters that is inside that pattern without any effort being made to fit
+--   it, as an evidence NAME: packed, 201, and the material back out of this
+--   column word for word again. Every alphabet fit for readable names is fit
+--   for part of the secrets, so there is no next pattern to try.
+--
 -- SO ALL THREE CHANNELS ARE CLOSED, AND NONE OF THEM IS CLOSED IN SQL.
 --
 --   NAMES, WHICH SET: `EVIDENCE_NAMES` (`src/outcome.ts`, derived from the
---   check table) plus the names the SIGNED `outcome_contract.evidence` of the
---   version a record's marker identifies declares.
+--   check table) AND NOTHING ELSE. No route widens it. A version's signed
+--   `outcome_contract.evidence` used to, and that widening is deleted rather
+--   than filtered: the field is the AUTHOR's declaration of what its run ought
+--   to present, it stays in the signed manifest with the standing the substring
+--   form of `stdout_match` has, and it is NOT A SOURCE OF ADMISSIBLE NAMES for
+--   this column. [I-7] bounds this journal; it does not bound a document under
+--   a signature. So a key of this column is one of four strings this registry
+--   chose, and no string an author wrote is a key at all.
 --
---   NAMES, WHICH FORM: an IDENTIFIER — a lowercase letter, then lowercase
---   letters, digits and underscores, at most 40 characters. `EVIDENCE_NAME`
---   (`src/outcome.ts`) is the rule and the schema carries the same pattern, so
---   a contract that names a sentence cannot be PACKED, and `outcomeContractOf`
---   (`src/manifest.ts`) refuses one that reaches the report path by any other
---   route — the names then fall back to the derived set and that contract
---   declares nothing. A name is NOT stored as a digest, deliberately: a reader
---   of this journal has to see WHICH quantity a run presented, and a column of
---   digests would record evidence while showing nobody what kind. What the form
---   takes away is text — there is no space, no punctuation, no case and no
---   unicode in that alphabet, so prose and a pasted credential are outside it.
---   What it leaves, and this is stated rather than glossed: a name is still a
---   string an author CHOSE, and an identifier alphabet can be made to carry an
---   encoding, exactly as the flat list of integers a value may be can. No text
---   arrives here as itself; that is the property, and it is the whole of it.
+--   NAMES, WHICH FORM: the declaration in the manifest is still bounded — an
+--   IDENTIFIER, a lowercase letter then lowercase letters, digits and
+--   underscores, at most 40 characters (`EVIDENCE_NAME`, `src/outcome.ts`, and
+--   the schema carries the same pattern). That rule is about the MANIFEST being
+--   machine-readable, not about this column: a contract naming a sentence is
+--   not a definition of success this registry reads, from the packer or from
+--   anywhere else. It is stated here so that nobody reads the form as the thing
+--   that protects this column — it is not, and when it was, it failed.
+--
+--   A name in this column is NOT a digest, deliberately: a reader has to see
+--   WHICH quantity a run presented, and a column of digests would record
+--   evidence while showing nobody what kind. That is affordable precisely
+--   because the four names are the registry's own.
+--
+--   AND WHAT IS NOT PROMISED, stated rather than glossed. An author still
+--   chooses the strings inside its own manifest, and any bounded alphabet — an
+--   identifier, like the flat list of integers a value may be — can be made to
+--   carry an encoding by an author who sets out to build one. What is
+--   delivered is that this registry does not put text into this column and the
+--   forms it accepts here are its own.
 --
 --   VALUES: a boolean, a safe integer or a digest of the form
 --   `sha256:<64 lowercase hex>` — or a FLAT list of at most 32 of those, with
@@ -97,10 +117,11 @@
 --   no enumeration of admissible strings any more — a permitting set nobody
 --   consults is a hole that has merely not been walked through yet.
 --
--- Where no contract can be read — an unknown marker, a manifest that no longer
--- hashes to what was signed, a contract whose declared names are not
--- identifiers — the names are the derived list and nothing else: the boundary
--- fails closed on every channel.
+-- THE CASES THAT USED TO NEED A FAIL-CLOSED DECISION NO LONGER ARISE. An
+-- unknown marker, a stored manifest that no longer hashes to what was signed, a
+-- contract with no usable shape: each of those had to be turned into "the
+-- derived list and nothing else" on purpose, and each was a way for the answer
+-- to come out wider by accident. The derived list is now the only list.
 --
 -- SQLite cannot express any of these rules, so this comment does not claim
 -- SQLite does. What the constraint below enforces is a bound on SIZE, which is
@@ -120,11 +141,13 @@
 -- markers at the boundary and no column of this schema stores it.
 --
 -- AND WHAT AN AUTHOR SIGNS DOES NOT REACH IT EITHER, which used to be the
--- exception this paragraph had to make. A REPORTER's text is refused as a
--- value; an AUTHOR's text is refused as a name, because a name is an identifier
--- and a sentence is not one. Both are agents of the same fleet, so the
--- distinction was one of route and not of trust — and the route is now shut at
--- both ends, which is why this file no longer has an exception to declare.
+-- exception this paragraph had to make and then twice made badly. A REPORTER's
+-- text is refused as a value. An AUTHOR's text is not refused as a NAME — it
+-- never becomes one: the keys of this column are the four names this registry's
+-- own checks read, and there is no expression anywhere that adds a declared name
+-- to them. Both parties are agents of the same fleet, so the distinction was one
+-- of route and not of trust, and the second route is closed by construction
+-- rather than by a pattern that has to be right about what a secret looks like.
 
 ALTER TABLE observed_records ADD COLUMN evidence TEXT
   CHECK(evidence IS NULL OR (length(evidence) BETWEEN 2 AND 4000));

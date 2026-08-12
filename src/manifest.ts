@@ -85,18 +85,21 @@ export function outcomeContractOf(manifest: unknown): { valid: boolean; reason: 
   if (!Array.isArray(c.evidence) || c.evidence.length === 0 || !c.evidence.every((e: unknown) => typeof e === "string" && e.length > 0)) {
     return no("outcome_contract_names_no_evidence");
   }
-  // THE FORM OF A NAME, ENFORCED HERE AS WELL AS IN THE SCHEMA, and the second
-  // point is the one that matters for [I-7].
+  // THE FORM OF A NAME, ENFORCED HERE AS WELL AS IN THE SCHEMA — and it is a
+  // rule about THIS DOCUMENT, not about the journal.
   //
-  // A declared name is stored in `observed_records.evidence` as a JSON KEY, word
-  // for word, so it is author text landing in the journal. The schema refuses a
-  // contract that names a sentence at PACKING, which closes the channel at its
-  // source; this refuses one that reaches the REPORT path by any other route —
-  // a package signed elsewhere through surface 1, a package signed before this
-  // rule existed. `signedEvidenceNames` (`src/service.ts`) turns an unreadable
-  // contract into the derived base set and nothing more, so a contract whose
-  // names are prose declares NOTHING and the boundary refuses those names like
-  // any others [I-7], [D-21].
+  // WHAT IT USED TO BE, because the change matters. A declared name was stored
+  // in `observed_records.evidence` as a JSON KEY, word for word, so the form was
+  // [I-7]'s last line of defence; round 9b found that no form is one — a hex
+  // string of 33 characters is an identifier — and removed the channel instead.
+  // The journal's names are `EVIDENCE_NAMES` alone and this field is NOT A
+  // SOURCE OF ADMISSIBLE NAMES.
+  //
+  // WHAT IT IS FOR NOW. `outcome_contract` is machine-readable content of a
+  // SIGNED manifest, and a field whose items may be paragraphs is not
+  // machine-readable. So a contract naming a sentence is not a definition of
+  // success this registry reads — from the packer (the schema refuses it) or
+  // from anywhere else (this does).
   //
   // A contract is refused WHOLE rather than filtered down to its usable names:
   // a filter would be a second, quieter definition of what a contract is, and

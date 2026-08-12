@@ -571,12 +571,19 @@ function stored(fx: P4Fixture): string {
 
 const DIGEST = "sha256:9f2c4d0e1a2b3c4d5e6f70819293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5";
 
-test("[2.3] a secret-shaped value and a whole transcript under a CONTRACT-DECLARED name are refused, and nothing is written", () => {
+test("[2.3] a secret-shaped value and a whole transcript are refused under EVERY name, and nothing is written", () => {
+  // THE TITLE USED TO SAY `under a CONTRACT-DECLARED name`, and since round 9b
+  // there is no such name at this boundary: a declaration does not widen the set.
+  // The value grammar is what this probe is about, so the carriers are base names
+  // — the two declared cases are kept because a report presenting one meets the
+  // name rule first and the value rule behind it, and both must refuse.
   for (const [label, evidence] of [
-    ["a secret-shaped value under `suite_digest`", { exit_code: 0, suite_digest: SECRET_VALUE }],
-    ["a transcript under `suite_digest`", { exit_code: 0, suite_digest: TRANSCRIPT_VALUE }],
+    ["a secret-shaped value under the base name `exit_code`", { exit_code: SECRET_VALUE }],
+    ["a transcript under the base name `command`", { exit_code: 0, command: TRANSCRIPT_VALUE }],
     ["a transcript under the base name `stdout_sha256`", { exit_code: 0, stdout_sha256: TRANSCRIPT_VALUE }],
-    ["a transcript one element at a time", { exit_code: 0, suite_digest: TRANSCRIPT_VALUE.split(" ") }],
+    ["a transcript one element at a time under `artifacts`", { exit_code: 0, artifacts: TRANSCRIPT_VALUE.split(" ") }],
+    ["a secret-shaped value under the contract's own `suite_digest`", { exit_code: 0, suite_digest: SECRET_VALUE }],
+    ["a transcript under the contract's own `suite_digest`", { exit_code: 0, suite_digest: TRANSCRIPT_VALUE }],
   ] as Array<[string, Record<string, unknown>]>) {
     const { fx, marker, report } = fixture();
     const planted = report([
@@ -600,9 +607,14 @@ test("[2.3] a secret-shaped value and a whole transcript under a CONTRACT-DECLAR
 
 test("[2.3] an integer, a boolean and a digest of fixed form are admitted, and are stored", () => {
   const { fx, marker, report } = fixture();
+  // THE DIGEST RIDES ON A BASE NAME, not on the contract's own `suite_digest`.
+  // Round 9b removed the widening of the name set by a signed declaration — the
+  // journal's names are the ones the registry's checks read — so a declared name
+  // is refused here, and this positive control would then be passing for a reason
+  // that has nothing to do with the VALUE grammar it exists to exercise.
   const accepted = report([
     { role: "call", call_id: "r7-2", marker, at_ms: 3 },
-    { role: "output", call_id: "r7-2", marker, at_ms: 4, result: "success", evidence: { exit_code: 0, suite_digest: DIGEST } },
+    { role: "output", call_id: "r7-2", marker, at_ms: 4, result: "success", evidence: { exit_code: 0, stdout_sha256: DIGEST } },
   ]);
   console.log(`  integer + digest → ${accepted.status} ${accepted.raw.slice(0, 90)}`);
   assert.equal(accepted.status, 201, "a legitimate integer and a digest were refused, so the refusals above are vacuous");

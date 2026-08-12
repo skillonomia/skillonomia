@@ -102,6 +102,7 @@
             {"if": {"properties": {"kind": {"const": "command"}}, "required": ["kind"]}, "then": {"required": ["command"]}}
           ]},
         "evidence": {"type": "array", "minItems": 1, "maxItems": 20,
+          "description": "DECLARATIVE, AND THE AUTHOR'S: the named values a run of this skill ought to present. A registry MUST NOT read it as a source of admissible names for its observation journal — the names a report may present are the ones the registry's own checks read, and a name declared here is never a key of a record. The identifier form is required so that a signed manifest stays machine-readable, and it is not a guarantee about the journal: an identifier is a string the author chose, and any bounded alphabet can be made to carry an encoding.",
           "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$", "maxLength": 40}},
         "unknown": {"type": "string", "minLength": 10, "maxLength": 400}}},
     "x_ext": {"type": "object"}

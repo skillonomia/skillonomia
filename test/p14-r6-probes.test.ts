@@ -169,24 +169,42 @@ test("[I-7] a name the contract never declared is refused, and NOTHING of it rea
   fx.db.close();
 });
 
-test("[I-7] the names the SIGNED contract declares are admitted, and are stored", () => {
+test("[I-7] the names the REGISTRY'S OWN CHECKS read are admitted and stored — and a contract's own declaration is not", () => {
+  // WHAT THIS PROBE ASSERTED IN ROUND 6, AND WHY IT IS THE OTHER WAY ROUND NOW.
+  //
+  // Round 6 closed the name SET to "the base names plus whatever the signed
+  // contract declared", and this test was its positive control: the contract's
+  // own `suite_name` had to be admitted, or the refusal above would have been
+  // satisfied by a boundary that admitted nothing at all.
+  //
+  // Round 9b removed the second half of that set. A declared name is a string
+  // the AUTHOR wrote and it was stored as a KEY, and no form separates a key
+  // from a secret written in the same alphabet — a hex string of 33 characters
+  // is an identifier. So the positive control moves to the names this registry
+  // derives from its own check table, and the declaration joins the refusals.
   const { fx, marker, report } = i7Fixture();
   const accepted = report([
     { role: "call", call_id: "i7-2", marker, at_ms: 3 },
-    {
-      role: "output",
-      call_id: "i7-2",
-      marker,
-      at_ms: 4,
-      result: "success",
-      evidence: { stdout_sha256: R6_DIGEST, suite_name: R6_SUITE_DIGEST },
-    },
+    { role: "output", call_id: "i7-2", marker, at_ms: 4, result: "success", evidence: { stdout_sha256: R6_DIGEST } },
   ]);
-  console.log(`  the contract's own \`suite_name\` → ${accepted.status} ${accepted.raw.slice(0, 100)}`);
-  assert.equal(accepted.status, 201, "a name the signed contract declares was refused, so the refusal above is vacuous");
+  console.log(`  the registry's own \`stdout_sha256\` → ${accepted.status} ${accepted.raw.slice(0, 100)}`);
+  assert.equal(accepted.status, 201, "a name this registry's own checks read was refused, so the refusal above is vacuous");
   const kept = storedEvidence(fx);
-  assert.ok(kept.includes("suite_name"), "an admitted named value was not stored");
-  assert.ok(kept.includes(R6_SUITE_DIGEST), "an admitted value was not stored");
+  assert.ok(kept.includes("stdout_sha256"), "an admitted named value was not stored");
+  assert.ok(kept.includes(R6_DIGEST), "an admitted value was not stored");
+
+  // …AND THE CONTRACT'S OWN `suite_name`, WHICH THIS VERY FIXTURE DECLARES IN A
+  // SIGNED MANIFEST, IS REFUSED. `outcome_contract.evidence` is the author's
+  // declaration of what a run ought to present and is not a source of admissible
+  // names for this journal [9b].
+  const declared = report([
+    { role: "call", call_id: "i7-2b", marker, at_ms: 5 },
+    { role: "output", call_id: "i7-2b", marker, at_ms: 6, result: "success", evidence: { suite_name: R6_SUITE_DIGEST } },
+  ]);
+  console.log(`  the contract's own \`suite_name\`   → ${declared.status} ${declared.raw.slice(0, 100)}`);
+  assert.equal(declared.status, 400, "a name the signed contract declared was admitted: the widening is still there");
+  assert.match(declared.raw, /INVALID_SCHEMA/, "the refusal must be a schema refusal");
+  assert.equal(storedEvidence(fx).includes("suite_name"), false, "the refused declaration was written anyway");
   fx.db.close();
 });
 

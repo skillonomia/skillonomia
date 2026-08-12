@@ -203,12 +203,21 @@ pattern, an `artifact_exists` with no path, a `command` with no command and an
 of them can be executed. THE NAMES IN `evidence` ARE IDENTIFIERS: a lowercase
 letter, then lowercase letters, digits and underscores, at most 40 characters
 (`^[a-z][a-z0-9_]{0,39}$`). `exit_code` and `suite_digest` are names; a sentence
-is not one, and a contract declaring one is `INVALID_SCHEMA` here and declares
-nothing if it reaches the report path from somewhere else. The reason is not
-tidiness: a declared name is stored in the observation journal as a KEY, word
-for word, so a name that may be prose is a text channel into that journal — and
-a name is kept readable rather than hashed because whoever reads a record has to
-see WHICH quantity a run presented. The contract is inside the manifest that gets signed, so
+is not one, and a contract declaring one is `INVALID_SCHEMA` here and is not read
+as a definition of success if it reaches the registry from somewhere else. The
+reason is that a contract is machine-readable content of a signed document, and a
+field whose items may be paragraphs is not machine-readable. WHAT THE NAMES YOU
+DECLARE DO NOT DO is widen the observation journal: `/v1/observations` accepts
+only the names the registry's own checks read (`exit_code`, `stdout_sha256`,
+`artifacts`, `command`), and a name you declare here is never a key of a record.
+It used to be — that is why the form exists — and a form was not enough, because
+`a0123456789abcdef0123456789abcdef` is an ordinary hex string of 33 characters and
+is a perfectly good identifier. So a caveat, stated rather than left implied: an
+identifier is still a string YOU choose, and any bounded alphabet can be made to
+carry an encoding, exactly as the flat list of integers an evidence value may be
+can. What the registry delivers is that it puts no text of yours into the journal
+and the names it accepts there are its own — not that nothing you write can be
+made to encode something. The contract is inside the manifest that gets signed, so
 redefining what success means requires issuing a new version — a receipt cannot
 come to certify something other than what it certified when it was approved.
 Surface 1 does not require a contract: it accepts packages signed elsewhere, and
