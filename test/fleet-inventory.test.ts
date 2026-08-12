@@ -38,7 +38,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { p4Fixture, reviewedVersion, rest, mcp, type P4Fixture } from "./p6-helpers.ts";
-import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, registryObserved, selfReported } from "../src/outcome.ts";
+import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, evidenceDigestOf, registryObserved, selfReported } from "../src/outcome.ts";
 import { MCP_TOOLS } from "../src/mcp.ts";
 import { serve } from "../src/server.ts";
 import { TRANSFER_ACTION } from "../src/transfer.ts";
@@ -776,7 +776,7 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
     unknown: "no evaluated run of this skill was reported, which is not a failure of it",
   } as const;
   const seen = cellOf(
-    capabilityColumns(evidence({ snapshot: snapshot([]), outcome_contract: artifact as never, observed_evidence: registryObserved({ artifacts: ["out/report.json"] }) })),
+    capabilityColumns(evidence({ snapshot: snapshot([]), outcome_contract: artifact as never, observed_evidence: registryObserved({ artifacts: [evidenceDigestOf("out/report.json")] }) })),
     "outcome",
   );
   const unseen = cellOf(
@@ -1819,14 +1819,16 @@ const CHECK_CASES: ReadonlyArray<{
   {
     kind: "artifact_exists",
     contract: { check: { kind: "artifact_exists", artifact_path: "out/report.json" }, evidence: ["artifacts"], unknown: "nothing was evaluated, which is not a failure" },
-    satisfying: { artifacts: ["out/report.json", "out/log.txt"] },
-    refuting: { artifacts: ["out/log.txt"] },
+    // THE DIGESTS OF THE PATHS, not the paths: an `artifact_path` is a string
+    // an author signed, and round 8 stopped admitting one as a value.
+    satisfying: { artifacts: [evidenceDigestOf("out/report.json"), evidenceDigestOf("out/log.txt")] },
+    refuting: { artifacts: [evidenceDigestOf("out/log.txt")] },
   },
   {
     kind: "command",
     contract: { check: { kind: "command", command: "./verify.sh" }, evidence: ["command", "exit_code"], unknown: "nothing was evaluated, which is not a failure" },
-    satisfying: { command: "./verify.sh", exit_code: 0 },
-    refuting: { command: "./verify.sh", exit_code: 1 },
+    satisfying: { command: evidenceDigestOf("./verify.sh"), exit_code: 0 },
+    refuting: { command: evidenceDigestOf("./verify.sh"), exit_code: 1 },
   },
 ];
 

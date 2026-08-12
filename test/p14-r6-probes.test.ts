@@ -40,7 +40,7 @@ import { fileURLToPath } from "node:url";
 
 import * as outcomeNamespace from "../src/outcome.ts";
 import * as activationNamespace from "../src/activation.ts";
-import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, evaluateOutcome, registryObserved, selfReported } from "../src/outcome.ts";
+import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, evaluateOutcome, evidenceDigestOf, registryObserved, selfReported } from "../src/outcome.ts";
 import { capabilityColumns } from "../src/fleet.ts";
 import { arrivalMarker } from "../src/marker.ts";
 import { p4Fixture, reviewedVersion, rest, type P4Fixture } from "./p6-helpers.ts";
@@ -232,7 +232,7 @@ test("[I-7] the base set is DERIVED FROM THE CODE — every name the checks read
   // later that reads a fifth name fails here rather than silently widening what
   // the boundary accepts.
   const touched = new Set<string>();
-  const full: Record<string, unknown> = { exit_code: 0, stdout_sha256: R6_DIGEST, artifacts: ["out/report.json"], command: "true" };
+  const full: Record<string, unknown> = { exit_code: 0, stdout_sha256: R6_DIGEST, artifacts: [evidenceDigestOf("out/report.json")], command: evidenceDigestOf("true") };
   for (const kind of OUTCOME_CHECK_KINDS) {
     const shape = OUTCOME_CHECK_SHAPE[kind]!;
     const contract = {
@@ -445,11 +445,14 @@ test("[D-18] a pair of values reported about somebody else's machine is a SELF-R
     // ROUND 7: values carry the mark of whoever produced them, set where they
     // are accepted. The verdict's authority is read off that mark and is no
     // longer inferred from which branch of the assessor happened to run.
-    claimed: selfReported({ command: "false", exit_code: 0 }),
+    // ROUND 8: the value presented for a `command` check is the DIGEST of the
+    // command the signed contract names — the command itself is an author's
+    // string and is no longer admissible as evidence.
+    claimed: selfReported({ command: evidenceDigestOf("false"), exit_code: 0 }),
     observed: null,
     principal: { type: "agent" },
   });
-  console.log(`  {"command":"false","exit_code":0} claimed by an agent → ${got.value} (${got.reason})`);
+  console.log(`  the digest of \`false\` with exit 0, claimed by an agent → ${got.value} (${got.reason})`);
   console.log(`      assessed_by=${got.assessed_by} principal_type=${got.principal_type} basis=${got.basis} claim=${got.claim}`);
 
   // THE REGISTRY RAN NOTHING. `false` exits 1 on every machine there is, and the
@@ -560,7 +563,13 @@ function excitableKinds(): Array<{ kind: string; contract: any; satisfying: Reco
     // refuted by. Under 2.3 a value that is not a digest is not of a shape the
     // check can read at all, which is `unknown` and not `no` — without this the
     // search space could excite `yes` for `stdout_match` and never `no`.
-    const candidates: unknown[] = [parameter, [parameter], 0, 1, "skln-probe-matches-nothing", [], R6_SUITE_DIGEST];
+    // ROUND 8: where the table says a kind compares the DIGEST of its signed
+    // parameter, the value a run PRESENTS is that digest and not the parameter.
+    // Read off `digest_of` rather than listed, so a kind that starts comparing
+    // one is excited the day it is added.
+    const presented: unknown[] =
+      typeof shape.digest_of === "string" ? [evidenceDigestOf(String(parameter)), [evidenceDigestOf(String(parameter))]] : [];
+    const candidates: unknown[] = [parameter, [parameter], ...presented, 0, 1, "skln-probe-matches-nothing", [], R6_SUITE_DIGEST];
     const names = [...shape.reads];
     const combinations: Array<Record<string, unknown>> = [];
     const build = (i: number, acc: Record<string, unknown>): void => {
@@ -725,7 +734,7 @@ test("[D-18] every `outcome` column carries its basis — the attribute is a MET
     ["a contract and nothing observed", base({ outcome_contract: CONTRACT })],
     ["a run that presented no evidence", base({ outcome_contract: CONTRACT, snapshot: snap([rec({ role: "call", call_id: "p" }), rec({ call_id: "p" })], { agent_id: "a", type: "agent" }) })],
     ["a self-report that satisfies", base({ outcome_contract: CONTRACT, snapshot: snap([rec({ role: "call", call_id: "q" }), rec({ call_id: "q", evidence: selfReported({ stdout_sha256: R6_DIGEST }) })], { agent_id: "a", type: "service" }) })],
-    ["the registry's own reading", base({ outcome_contract: { check: { kind: "artifact_exists", artifact_path: "out/x" }, evidence: ["artifacts"], unknown: "nothing was evaluated" }, observed_evidence: registryObserved({ artifacts: ["out/x"] }) })],
+    ["the registry's own reading", base({ outcome_contract: { check: { kind: "artifact_exists", artifact_path: "out/x" }, evidence: ["artifacts"], unknown: "nothing was evaluated" }, observed_evidence: registryObserved({ artifacts: [evidenceDigestOf("out/x")] }) })],
     ["the registry's own reading, negative", base({ outcome_contract: { check: { kind: "artifact_exists", artifact_path: "out/x" }, evidence: ["artifacts"], unknown: "nothing was evaluated" }, observed_evidence: registryObserved({ artifacts: [] }) })],
   ];
   const naked: string[] = [];
@@ -824,7 +833,7 @@ test("[D-18] the §4 `outcome` column, end to end, publishes the provenance of i
     window_detail: "the probe's own records, all time",
     records: [
       { role: "call", call_id: "d18-1", marker, at_ms: 1 },
-      { role: "output", call_id: "d18-1", marker, at_ms: 2, result: "success", evidence: { command: "false", exit_code: 0 } },
+      { role: "output", call_id: "d18-1", marker, at_ms: 2, result: "success", evidence: { command: evidenceDigestOf("false"), exit_code: 0 } },
     ],
   });
   assert.equal(filed.status, 201, `the probe could not file its observation: ${filed.raw.slice(0, 200)}`);

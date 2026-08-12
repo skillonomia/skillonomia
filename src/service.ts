@@ -29,7 +29,7 @@ import { RateLimiter, DEFAULT_RATE_LIMIT, type RateLimitOptions } from "./rateli
 import { ArchiveError, readPackage, computeIntegrity, writeTar, type PackageFiles } from "./archive.ts";
 import { parseJsonStrict, utf8Decode, jcsBytes } from "./jcs.ts";
 import { outcomeContractOf, validateManifest, type OutcomeContract } from "./manifest.ts";
-import { EVIDENCE_LIST_MAX, EVIDENCE_NAMES, contractLiterals, isAdmissibleEvidenceValue, selfReported } from "./outcome.ts";
+import { EVIDENCE_LIST_MAX, EVIDENCE_NAMES, isAdmissibleEvidenceValue, selfReported } from "./outcome.ts";
 import { decodeCursor, encodeCursor as encodeCursorToken, type Cursor } from "./cursor.ts";
 import { manifestHash, contentHash, signManifest } from "./signing.ts";
 import {
@@ -4469,8 +4469,8 @@ export class Registry {
   private signedEvidenceNames(
     index: MarkerIndex,
     marker: string,
-    memo: Map<string, SignedEvidenceTerms | null>,
-  ): SignedEvidenceTerms | null {
+    memo: Map<string, ReadonlySet<string> | null>,
+  ): ReadonlySet<string> | null {
     // ONE ANSWER PER MARKER PER REPORT. A report carries up to 5000 records and
     // a manifest hash is a canonicalisation plus a SHA-256; recomputing it per
     // record would make the size of a report quadratic in the work it costs.
@@ -4483,7 +4483,7 @@ export class Registry {
     return answer;
   }
 
-  private readSignedEvidenceNames(index: MarkerIndex, marker: string): SignedEvidenceTerms | null {
+  private readSignedEvidenceNames(index: MarkerIndex, marker: string): ReadonlySet<string> | null {
     const known = index.get(marker);
     if (!known) return null;
     let manifest: unknown;
@@ -4499,11 +4499,11 @@ export class Registry {
     }
     const read = outcomeContractOf(manifest);
     if (!read.valid || read.contract === null) return null;
-    // THE NAMES AND THE LITERALS COME OUT OF THE SAME SIGNED DOCUMENT, in one
-    // read. `evidence` says which values a run must present; the `check`'s own
-    // parameters are the only strings a reporter may echo back (2.3). Reading
-    // them apart would be two answers about one manifest, free to disagree.
-    return { names: new Set(read.contract.evidence), literals: contractLiterals(read.contract) };
+    // THE NAMES, AND ONLY THE NAMES. A signed contract used to widen the value
+    // grammar as well, by naming literals a reporter could echo; round 8
+    // removed that channel — a check compares the DIGEST of its parameter, so
+    // no string but a digest is a value and there is nothing here to read.
+    return new Set(read.contract.evidence);
   }
 
   /**
@@ -4520,24 +4520,18 @@ export class Registry {
   private admissibleEvidenceNames(
     index: MarkerIndex,
     markers: readonly string[],
-    memo: Map<string, SignedEvidenceTerms | null>,
-  ): SignedEvidenceTerms {
+    memo: Map<string, ReadonlySet<string> | null>,
+  ): ReadonlySet<string> {
     const admissible = new Set(EVIDENCE_NAMES);
-    // THE LITERALS ARE INTERSECTED FOR THE SAME REASON THE NAMES ARE. One
-    // record with two markers is written as two rows, and a word one version's
-    // contract happens to name is not a word the other version ever asked for.
-    if (markers.length === 0) return { names: admissible, literals: new Set() };
-    let sharedNames: string[] | null = null;
-    let sharedLiterals: string[] | null = null;
+    if (markers.length === 0) return admissible;
+    let shared: string[] | null = null;
     for (const marker of markers) {
       const declared = this.signedEvidenceNames(index, marker, memo);
-      if (declared === null) return { names: admissible, literals: new Set() };
-      sharedNames = sharedNames === null ? [...declared.names] : sharedNames.filter((n) => declared.names.has(n));
-      sharedLiterals =
-        sharedLiterals === null ? [...declared.literals] : sharedLiterals.filter((l) => declared.literals.has(l));
+      if (declared === null) return admissible;
+      shared = shared === null ? [...declared] : shared.filter((n) => declared.has(n));
     }
-    for (const name of sharedNames ?? []) admissible.add(name);
-    return { names: admissible, literals: new Set(sharedLiterals ?? []) };
+    for (const name of shared ?? []) admissible.add(name);
+    return admissible;
   }
 
   /** D-2: whether this version declares what success is. Without a WHOLE
@@ -4965,11 +4959,13 @@ export class Registry {
    *     stop at the paragraph above while `evidenceOf` accepted any string of
    *     any content under any admitted name, so a reviewer stored a secret under
    *     the contract's own `stdout` and a transcript goes the same way. A value
-   *     is now a boolean, a safe integer, a digest of fixed form, or a literal
-   *     the SIGNED check itself names — free text is refused under every name,
-   *     the contract's own included. That is WHY the text does not reach the
-   *     journal, and it is enforced in `isAdmissibleEvidenceValue` rather than
-   *     asserted here.
+   *     is a boolean, a safe integer or a digest of fixed form — or a FLAT list
+   *     of those, with no nesting at any depth, because a bound that applies to
+   *     each level of a tree applies to no value. Free text is refused under
+   *     every name, the contract's own included, and where a signed check names
+   *     a `command` or an `artifact_path` a run presents the DIGEST of it. That
+   *     is WHY the text does not reach the journal, and it is enforced in
+   *     `isAdmissibleEvidenceValue` rather than asserted here.
    */
   reportObservation(
     auth: AuthContext,
@@ -5017,7 +5013,7 @@ export class Registry {
     // admissible set of evidence names is the SIGNED contract's and a record
     // names its version by nothing but its marker.
     const index = this.markerIndex(auth.workspace_id);
-    const declaredNames = new Map<string, SignedEvidenceTerms | null>();
+    const declaredNames = new Map<string, ReadonlySet<string> | null>();
 
     const reduced: Array<Omit<ObservedRecord, "agent_id" | "runtime">> = [];
     for (const item of rawRecords) {
@@ -5495,17 +5491,26 @@ function parseMinAdopted(v: SearchParams["min_adopted"]): number | undefined {
  * names and leaving the values as "any scalar" was a key-value store with a
  * vocabulary: a reviewer stored `sk-live-…` under the contract's own `stdout`,
  * word for word, and a whole transcript goes the same way under any name at
- * all. A value is now a BOOLEAN, a SAFE INTEGER, a DIGEST of fixed form, or one
- * of the literals THE SIGNED CHECK ITSELF NAMES — or a bounded list of those.
- * The rule lives in `isAdmissibleEvidenceValue` (`src/outcome.ts`), in one
- * place, so this boundary and the checks that read a value cannot disagree.
+ * all. A value is a BOOLEAN, a SAFE INTEGER or a DIGEST of fixed form — or a
+ * FLAT list of those. The rule lives in `isAdmissibleEvidenceValue`
+ * (`src/outcome.ts`), in one place, so this boundary and the checks that read a
+ * value cannot disagree.
+ *
+ * ROUND 7 LEFT TWO WAYS THROUGH IT AND ROUND 8 CLOSED THEM. The grammar
+ * RECURSED, so its bound applied to each level of a list and to no value: a
+ * transcript went through this surface as nested arrays of bytes under
+ * `exit_code` and came back out of the column byte for byte. And a value was
+ * allowed to be a LITERAL THE SIGNED CHECK NAMED, which made the AUTHOR — a
+ * fleet agent like any other — able to sign its own text into `check.command`
+ * and echo it here. Lists are flat, the bound counts the whole value, and a
+ * check compares the DIGEST of its parameter rather than the parameter, so
+ * there is no enumeration of admissible strings left to widen.
  *
  * FAIL CLOSED WHERE THE CONTRACT CANNOT BE READ. A marker of no version this
  * workspace holds, a stored manifest that does not hash to what was signed, a
  * manifest with no usable contract: in every one of those the names are
- * `EVIDENCE_NAMES` and the enumeration of literals is EMPTY, so only booleans,
- * integers and digests pass. The alternative — admit it and sort it out later —
- * is how the reviewer's field got in.
+ * `EVIDENCE_NAMES` and nothing else. The alternative — admit it and sort it out
+ * later — is how the reviewer's field got in.
  *
  * A value outside the grammar is REFUSED rather than truncated, and an oversized
  * object is refused rather than trimmed: evidence this registry edited would not
@@ -5517,21 +5522,14 @@ function parseMinAdopted(v: SearchParams["min_adopted"]): number | undefined {
  */
 const EVIDENCE_LIMIT = 4000;
 
-/** What one version's SIGNED contract permits: the names a run may present, and
- *  the literals a run may echo. Read together, from one manifest, in one pass. */
-interface SignedEvidenceTerms {
-  names: ReadonlySet<string>;
-  literals: ReadonlySet<string>;
-}
-
-function evidenceOf(raw: unknown, terms: SignedEvidenceTerms): Record<string, unknown> | null {
+function evidenceOf(raw: unknown, names: ReadonlySet<string>): Record<string, unknown> | null {
   if (raw === undefined || raw === null) return null;
   if (typeof raw !== "object" || Array.isArray(raw)) {
     throw new ApiError("INVALID_SCHEMA", "records[].evidence must be an object of named values");
   }
   const out: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!terms.names.has(name)) {
+    if (!names.has(name)) {
       throw new ApiError(
         "INVALID_SCHEMA",
         "records[].evidence names a value no contract asked for. The admissible names are the ones this registry's checks read " +
@@ -5540,13 +5538,15 @@ function evidenceOf(raw: unknown, terms: SignedEvidenceTerms): Record<string, un
           "here: a name a caller chose is not a thing this registry writes to its own output [I-7]",
       );
     }
-    if (!isAdmissibleEvidenceValue(value, terms.literals)) {
+    if (!isAdmissibleEvidenceValue(value)) {
       throw new ApiError(
         "INVALID_SCHEMA",
-        `records[].evidence.${name} is not a value this journal carries. A named value is a boolean, a safe integer, a digest of ` +
-          `the form sha256:<64 lowercase hex>, or one of the literals the SIGNED \`outcome_contract.check\` itself names — or a ` +
-          `list of at most ${EVIDENCE_LIST_MAX} of those. Free text is refused under EVERY name, the contract's own included: text ` +
-          "in this journal is a transcript however the field is called [I-7]. The rejected value is not repeated here",
+        `records[].evidence.${name} is not a value this journal carries. A named value is a boolean, a safe integer or a digest of ` +
+          `the form sha256:<64 lowercase hex> — or a FLAT list of at most ${EVIDENCE_LIST_MAX} of those, with no nesting at any ` +
+          "depth. Free text is refused under EVERY name, the contract's own included, and so is a tree: text in this journal is a " +
+          "transcript however the field is called and however it is spread out [I-7]. Where a signed `check` names a `command` or " +
+          "an `artifact_path`, present the DIGEST of it — that is what the check compares against. The rejected value is not " +
+          "repeated here",
       );
     }
     out[name] = value;

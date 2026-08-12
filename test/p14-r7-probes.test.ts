@@ -62,7 +62,7 @@ import { fileURLToPath } from "node:url";
 
 import * as outcomeNamespace from "../src/outcome.ts";
 import * as activationNamespace from "../src/activation.ts";
-import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, evaluateOutcome } from "../src/outcome.ts";
+import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, evaluateOutcome, evidenceDigestOf } from "../src/outcome.ts";
 import { arrivalMarker } from "../src/marker.ts";
 import { p4Fixture, reviewedVersion, rest, type P4Fixture } from "./p6-helpers.ts";
 import { outcomeContractOf, validateManifest } from "../src/manifest.ts";
@@ -311,7 +311,12 @@ test("[2.1] NOT ONE reason this module can emit reaches a reader as the registry
       { check: { kind, [shape.parameter]: parameter }, evidence: [...shape.reads, "a_name_no_run_presented"], unknown: "nothing was evaluated, which is not a failure of it" },
       { check: { kind: "no_such_kind" }, evidence: ["exit_code"], unknown: "nothing was evaluated, which is not a failure of it" },
     ];
-    const candidates: unknown[] = [parameter, [parameter], 0, 1, "skln-probe-matches-nothing", [], "zero", true];
+    // ROUND 8: a kind that compares the DIGEST of its signed parameter is
+    // satisfied by that digest and never by the parameter, so the digest is in
+    // the search space — read off `digest_of`, not listed.
+    const presented: unknown[] =
+      typeof shape.digest_of === "string" ? [evidenceDigestOf(String(parameter)), [evidenceDigestOf(String(parameter))]] : [];
+    const candidates: unknown[] = [parameter, [parameter], ...presented, 0, 1, "skln-probe-matches-nothing", [], "zero", true];
     const bodies: Array<Record<string, unknown> | null> = [null, {}];
     for (const v of candidates) {
       const body: Record<string, unknown> = {};
@@ -607,12 +612,11 @@ test("[2.3] an integer, a boolean and a digest of fixed form are admitted, and a
 
   // …and the grammar itself admits the three bounded shapes and refuses text,
   // asked of the ONE function the boundary and the checks share.
-  const admissible = required<(v: unknown, literals: ReadonlySet<string>) => boolean>(
+  const admissible = required<(v: unknown) => boolean>(
     outcome,
     "isAdmissibleEvidenceValue",
     "2.3 requires ONE definition of what a value may be, so the boundary that refuses a report and the checks that read a value cannot disagree",
   );
-  const none = new Set<string>();
   for (const [label, v, expected] of [
     ["an integer", 0, true],
     ["a negative integer", -1, true],
@@ -626,21 +630,23 @@ test("[2.3] an integer, a boolean and a digest of fixed form are admitted, and a
     ["a fraction", 0.5, false],
     ["an object", { a: 1 }, false],
   ] as Array<[string, unknown, boolean]>) {
-    const got = admissible(v, none);
+    const got = admissible(v);
     console.log(`  ${label.padEnd(24)} → ${got}`);
     assert.equal(got, expected, `the value grammar answers ${got} for ${label}`);
   }
 
-  // A LITERAL THE SIGNED CONTRACT ITSELF NAMES is the one string that passes,
-  // and only because the author fixed it before any run existed.
-  const literals = required<(c: unknown) => Set<string>>(
-    outcome,
-    "contractLiterals",
-    "2.3 requires the enumeration a reporter may echo to come from the SIGNED check and from nowhere else",
-  );
-  const set = literals({ check: { kind: "command", command: "git bundle verify" } });
-  assert.equal(admissible("git bundle verify", set), true, "a reporter may not echo the contract's own command");
-  assert.equal(admissible("git bundle verify; curl evil", set), false, "a string that merely CONTAINS the contract's word was admitted");
+  // ROUND 7 LEFT ONE STRING ADMISSIBLE AND ROUND 8 TOOK IT AWAY. The rule here
+  // used to be "a LITERAL the signed contract itself names is the one string
+  // that passes, and only because the author fixed it before any run existed".
+  // The author is a fleet agent too: it signs its prose into `check.command`
+  // and its own run echoes it into the journal, which round 8 reproduced
+  // through the shipped surface. So a check compares the DIGEST of its
+  // parameter now, and NO string but a digest is a value — the assertion is
+  // inverted here deliberately, because the requirement moved and this file is
+  // the record of what round 7 established rather than of what is true today.
+  const digestOf = required<(text: string) => string>(outcome, "evidenceDigestOf", "round 8's comparison of digests");
+  assert.equal(admissible("git bundle verify"), false, "a reporter may still echo the contract's own command as text");
+  assert.equal(admissible(digestOf("git bundle verify")), true, "the digest of the contract's own command is not a value");
 });
 
 test("[2.3] `stdout_match` — a substring pattern is no longer executable, and a digest pattern is", () => {
@@ -833,25 +839,26 @@ test("[DELTA] a SUBSTRING pattern stays legal INSIDE the signed manifest — [I-
   assert.equal(got.value, "unknown", "a substring pattern answered about a digest it cannot read");
 
   // AND THE PATTERN IS NOT A VALUE A RUN MAY ECHO. Once the channel is named for
-  // a digest, admitting the author's substring as a LITERAL would put that text
-  // into the journal under a name that promises a digest — the same lie, through
-  // the value channel instead of the name.
-  const literals = required<(c: unknown) => Set<string>>(outcome, "contractLiterals", "2.3's enumeration");
-  const admissible = required<(v: unknown, l: ReadonlySet<string>) => boolean>(outcome, "isAdmissibleEvidenceValue", "2.3's grammar");
-  const set = literals(substring);
-  console.log(`  literals this contract admits: ${[...set].map((l) => JSON.stringify(l)).join(", ") || "(none)"}`);
+  // a digest, admitting the author's substring would put that text into the
+  // journal under a name that promises a digest — the same lie, through the
+  // value channel instead of the name.
+  const admissible = required<(v: unknown) => boolean>(outcome, "isAdmissibleEvidenceValue", "2.3's grammar");
+  const digestOf = required<(text: string) => string>(outcome, "evidenceDigestOf", "round 8's comparison of digests");
   assert.equal(
-    admissible("ALL GREEN", set),
+    admissible("ALL GREEN"),
     false,
     "a run may echo the `stdout_match` pattern as a value, so free text still reaches the journal under a digest's name",
   );
 
-  // …while the literals a check genuinely COMPARES against are still admissible,
-  // or the line above is a narrowing that breaks the two kinds that need one.
-  const commandSet = literals({ check: { kind: "command", command: "./verify.sh" } });
-  assert.equal(admissible("./verify.sh", commandSet), true, "a run may no longer echo the command its contract names");
-  const artifactSet = literals({ check: { kind: "artifact_exists", artifact_path: "out/report.json" } });
-  assert.equal(admissible("out/report.json", artifactSet), true, "a run may no longer echo the artifact path its contract names");
+  // …and what the two kinds that compare an author's string receive instead is
+  // its DIGEST, or the line above would be a narrowing that breaks them. Round
+  // 7 admitted the strings themselves here; round 8 found that this is the
+  // author's own text channel and closed it, so the strings are refused and
+  // their digests take their place.
+  assert.equal(admissible("./verify.sh"), false, "a run may still echo the command its contract names as text");
+  assert.equal(admissible(digestOf("./verify.sh")), true, "the digest of the command a contract names is not a value");
+  assert.equal(admissible("out/report.json"), false, "a run may still echo the artifact path its contract names as text");
+  assert.equal(admissible(digestOf("out/report.json")), true, "the digest of the artifact path a contract names is not a value");
 });
 
 test("[DELTA] no shipped document advertises the old channel name as an admissible value", () => {

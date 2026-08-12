@@ -42,6 +42,7 @@ import * as dashboard from "../src/dashboard.ts";
 import * as fleetDashboard from "../src/fleet-dashboard.ts";
 import { p4Fixture, reviewedVersion, rest, type P4Fixture } from "./p6-helpers.ts";
 import { makeManifest } from "./p2-helpers.ts";
+import { evidenceDigestOf } from "../src/outcome.ts";
 
 // ---------------------------------------------------------------------------
 // The one thing a probe written before its fix has to do carefully: name the
@@ -460,7 +461,9 @@ test("[D-2] the evaluator receives the CONTRACT and executes its `check` against
     [
       "artifact_exists, satisfied",
       { check: { kind: "artifact_exists", artifact_path: "out/report.json" }, evidence: ["artifacts"], unknown: "nothing was evaluated, which is not a failure" },
-      { artifacts: ["out/report.json"] },
+      // ROUND 8: a run presents the DIGEST of the path, and the registry
+      // compares it with the digest of the path its signed contract names.
+      { artifacts: [evidenceDigestOf("out/report.json")] },
       "yes",
     ],
   ];

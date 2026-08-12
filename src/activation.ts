@@ -43,7 +43,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { PackageFiles } from "./archive.ts";
-import { registryObserved, type Evidence } from "./outcome.ts";
+import { evidenceDigestOf, registryObserved, type Evidence } from "./outcome.ts";
 
 // ------------------------------------------------------------- the targets
 
@@ -455,7 +455,12 @@ export function registryObservedEvidence(
   // registry wrote is no longer there. An empty list is what makes an honest
   // `no` possible; `null` above is what keeps "nothing was looked at" from
   // being read as one.
-  return registryObserved({ artifacts: present ? [check.artifact_path] : [] });
+  //
+  // AND THE LIST HOLDS DIGESTS, not paths, because the registry's own evidence
+  // obeys the grammar the registry imposes on everybody else's. A path is a
+  // string an author wrote; `evidenceDigestOf` is the same function the check
+  // compares against, so there is one form of this value and not two.
+  return registryObserved({ artifacts: present ? [evidenceDigestOf(check.artifact_path)] : [] });
 }
 
 /** What became of a managed copy at one step. Four values, and never blank. */

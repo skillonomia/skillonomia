@@ -27,8 +27,8 @@
 -- The column is NULLable and bounded. It carries a JSON object of named values.
 --
 -- WHAT THIS COLUMN IS ALLOWED TO HOLD, AND WHERE THAT IS DECIDED. This comment
--- has been wrong twice, in the same direction, and both corrections are worth
--- keeping because the second is the one that made the first true.
+-- has been wrong three times, in the same direction, and every correction is
+-- kept because each one is what made the one before it true.
 --
 --   IT SAID THE COLUMN "is never a transcript" while `evidenceOf` in
 --   `src/service.ts` accepted ANY name of 1 to 80 characters. A reviewer put a
@@ -42,36 +42,72 @@
 --   all. A CHECK on length is not a CHECK on subject, and this file asserted
 --   the second while enforcing the first.
 --
+--   THE VALUES WERE THEN CLOSED AND THE SENTENCE WAS STILL WRONG, twice over.
+--   The value rule was written RECURSIVELY, so its bound of 32 applied to each
+--   LEVEL of a list and therefore to no value: a reviewer put a transcript
+--   through the same shipped surface as NESTED ARRAYS OF BYTES under the base
+--   name `exit_code`, and read it back out of this column byte for byte. And
+--   the rule admitted, as a string, any LITERAL THE SIGNED CHECK NAMED — which
+--   made the AUTHOR of a skill, who is a fleet agent like any other, able to
+--   sign its own prose into `check.command` and echo it in here.
+--
 -- SO BOTH CHANNELS ARE CLOSED, AND NEITHER IS CLOSED IN SQL.
 --
 --   NAMES: `EVIDENCE_NAMES` (`src/outcome.ts`, derived from the check table)
 --   plus the names the SIGNED `outcome_contract.evidence` of the version a
 --   record's marker identifies declares.
 --
---   VALUES: a boolean, a safe integer, a digest of the form
---   `sha256:<64 lowercase hex>`, or one of the literals THE SIGNED CHECK ITSELF
---   NAMES — or a bounded list of those. The rule is
---   `isAdmissibleEvidenceValue` (`src/outcome.ts`), in one place, so the
---   boundary that refuses a report and the checks that read a value cannot
---   disagree about what a value is.
+--   AND THAT SECOND HALF IS BOUNDED RATHER THAN CLOSED, which is stated here
+--   because a sentence about a security property that omits the way through it
+--   is worse than no sentence. A declared name is a string the AUTHOR wrote,
+--   and it is stored in this column AS A JSON KEY, word for word. The schema
+--   bounds it at 20 names of 80 characters, so an author — a fleet agent like
+--   any other — can place up to 1600 characters of its own text here by
+--   declaring it as names and having its own run present them. Closing that
+--   means changing what a declared name may LOOK like, or storing names as
+--   digests and comparing them the way the checks now compare parameters;
+--   neither is done here, and until one is, this is the channel that is open.
+--
+--   VALUES: a boolean, a safe integer or a digest of the form
+--   `sha256:<64 lowercase hex>` — or a FLAT list of at most 32 of those, with
+--   NO NESTING at any depth, so the bound counts the whole value and not one
+--   level of it. The rule is `isAdmissibleEvidenceValue` (`src/outcome.ts`),
+--   in one place, so the boundary that refuses a report and the checks that
+--   read a value cannot disagree about what a value is.
+--
+--   AND WHERE A SIGNED `check` NAMES A `command` OR AN `artifact_path`, a run
+--   presents THE DIGEST of it: the registry compares that against the digest
+--   it computes from the signed parameter itself, so the check decides exactly
+--   what it decided before and no string an author wrote is a value. There is
+--   no enumeration of admissible strings any more — a permitting set nobody
+--   consults is a hole that has merely not been walked through yet.
 --
 -- Where no contract can be read — an unknown marker, a manifest that no longer
--- hashes to what was signed — the names are the derived list and the
--- enumeration of literals is EMPTY, so only booleans, integers and digests
--- pass: the boundary fails closed on both channels.
+-- hashes to what was signed — the names are the derived list and nothing else:
+-- the boundary fails closed on both channels.
 --
 -- SQLite cannot express either rule, so this comment does not claim SQLite
 -- does. What the constraint below enforces is a bound on SIZE, which is what a
 -- bound on size is. Both rules are enforced in one function each, and a probe
--- reads THIS TABLE after a refused report to show nothing of it was written.
+-- reads THIS TABLE after a refused report — decoding the numbers it holds, not
+-- only searching it for letters — to show nothing of the attack was written.
 --
 -- SO THE TEXT OF A RECORD DOES NOT REACH THIS SCHEMA, AND HERE IS WHY IT
 -- CANNOT. Not because a field is named `evidence` rather than `transcript`, and
 -- not because anybody promised: because a value that is free text is refused at
--- the boundary under EVERY name, the contract's own included. Text is a
--- transcript however the field is called. [I-7]'s other half is untouched and
--- always was: a record's text is reduced to §5 markers at the boundary and no
--- column of this schema stores it.
+-- the boundary under EVERY name, the contract's own included; because a value
+-- may not be a tree, so text cannot arrive spread across one; and because the
+-- author's own strings are compared as digests rather than carried. Text is a
+-- transcript however the field is called and however it is broken up. [I-7]'s
+-- other half is untouched and always was: a record's text is reduced to §5
+-- markers at the boundary and no column of this schema stores it.
+--
+-- AND THE SENTENCE ABOVE IS ABOUT A RECORD'S TEXT, WHICH IS WHAT IT SAYS AND
+-- NOT MORE. What a REPORTER sends does not reach this column. What an AUTHOR
+-- signed into `outcome_contract.evidence` reaches it as a key, bounded at the
+-- 1600 characters described above. Both are agents of the same fleet, so the
+-- distinction is one of route and not of trust, and it is written down here
+-- rather than left to the next review to rediscover.
 
 ALTER TABLE observed_records ADD COLUMN evidence TEXT
   CHECK(evidence IS NULL OR (length(evidence) BETWEEN 2 AND 4000));

@@ -8,12 +8,21 @@
 // [M-6] exists to forbid: the end of a task is the end of its execution, not
 // success on the merits.
 //
-// WHY THIS IS ITS OWN MODULE, with no imports at all. `src/fleet.ts` holds a
-// discipline — nothing in it may reach a filesystem, because a V-2 addressee is
-// an agent on somebody else's machine and there is no disk of theirs to open
-// [M-7]. `src/manifest.ts` reads Appendix E's schema files off disk through
-// `ajv`. Putting the contract's shape and its evaluator here lets both import
-// them and keeps that discipline exactly where it was.
+// WHY THIS IS ITS OWN MODULE, and what it is allowed to import. `src/fleet.ts`
+// holds a discipline — nothing in it may reach a filesystem, because a V-2
+// addressee is an agent on somebody else's machine and there is no disk of
+// theirs to open [M-7]. `src/manifest.ts` reads Appendix E's schema files off
+// disk through `ajv`. Putting the contract's shape and its evaluator here lets
+// both import them and keeps that discipline exactly where it was.
+//
+// The rule this module keeps is therefore stated as what it IS and not as a
+// round number: NO MODULE OF THIS PROJECT is imported here, and nothing here
+// reaches a filesystem, a database or a clock. One Node builtin is imported —
+// `node:crypto`, for the digest a check compares against — and a digest is a
+// pure function of its bytes. It used to say "no imports at all", which was
+// true and is not any more, and a comment that keeps a number it has stopped
+// earning is the class of defect this file is full of warnings about.
+import { createHash } from "node:crypto";
 
 export const OUTCOME_CHECK_KINDS: readonly string[] = ["exit_code", "stdout_match", "artifact_exists", "command"];
 
@@ -40,17 +49,30 @@ export const OUTCOME_CHECK_KINDS: readonly string[] = ["exit_code", "stdout_matc
  * registry did not run it and cannot [M-7], so no amount of evidence about them
  * is its own to answer for. A kind added later is `observable: false` until
  * somebody writes down why it is not, which is the direction that fails safe.
+ *
+ * `digest_of` IS THE OTHER NARROWING, and it names a PARAMETER whose DIGEST is
+ * compared — never the parameter itself. Two of the four kinds are defined
+ * against a string the author wrote inside the signature: the `command` a run
+ * must have executed, the `artifact_path` a run must have produced. Comparing a
+ * PRESENTED string with a SIGNED one meant admitting that string as an evidence
+ * value, and an author is a fleet agent too — it writes its transcript into
+ * `check.command`, signs it, and echoes it back into the journal. So a run
+ * presents the DIGEST of the parameter and this registry computes the digest of
+ * the signed parameter itself: the comparison decides exactly what it decided
+ * before, and no arrangement of author text is a value any more. `null` is for
+ * the kinds that compare something else — an integer, and a digest the author
+ * wrote as a digest.
  */
 export const OUTCOME_CHECK_SHAPE: Readonly<
   Record<
     string,
-    { parameter: string; evidence: string; reads: readonly string[]; observable: boolean; echoes: string | null }
+    { parameter: string; evidence: string; reads: readonly string[]; observable: boolean; digest_of: string | null }
   >
 > = {
-  exit_code: { parameter: "exit_code", evidence: "exit_code", reads: ["exit_code"], observable: false, echoes: null },
-  stdout_match: { parameter: "stdout_match", evidence: "stdout_sha256", reads: ["stdout_sha256"], observable: false, echoes: null },
-  artifact_exists: { parameter: "artifact_path", evidence: "artifacts", reads: ["artifacts"], observable: true, echoes: "artifact_path" },
-  command: { parameter: "command", evidence: "exit_code", reads: ["command", "exit_code"], observable: false, echoes: "command" },
+  exit_code: { parameter: "exit_code", evidence: "exit_code", reads: ["exit_code"], observable: false, digest_of: null },
+  stdout_match: { parameter: "stdout_match", evidence: "stdout_sha256", reads: ["stdout_sha256"], observable: false, digest_of: null },
+  artifact_exists: { parameter: "artifact_path", evidence: "artifacts", reads: ["artifacts"], observable: true, digest_of: "artifact_path" },
+  command: { parameter: "command", evidence: "exit_code", reads: ["command", "exit_code"], observable: false, digest_of: "command" },
 };
 
 /**
@@ -99,20 +121,36 @@ export interface OutcomeCheck {
  * same way. A closed set of names over an open set of values is not a closed
  * channel: it is a key-value store with a vocabulary.
  *
- * SO A VALUE IS ONE OF FOUR THINGS, and never "a string":
+ * SO A VALUE IS ONE OF THREE THINGS, and never "a string":
  *
  *   * a BOOLEAN — one bit, nothing can be hidden in it;
  *   * a SAFE INTEGER — an exit code, a count, a duration;
  *   * a DIGEST OF FIXED FORM — `sha256:` and sixty-four lowercase hex digits,
  *     and nothing else may wear that shape. A digest carries no text: it is the
- *     way to present "the output was exactly this" without presenting output;
- *   * a LITERAL THE SIGNED CONTRACT ITSELF NAMES — the `command` it demands, the
- *     `artifact_path` it demands. This is an enumeration whose members were
- *     fixed when the version was signed, which is what makes it not a channel:
- *     a reporter can only echo back one of the author's own words.
+ *     way to present "the output was exactly this" without presenting output.
  *
- * …or a list of those. Everything else is refused at the boundary and never
+ * …or a FLAT LIST of those. Everything else is refused at the boundary and never
  * reaches the database.
+ *
+ * THERE WAS A FOURTH, AND IT WAS A CHANNEL. A value used to be allowed to be a
+ * LITERAL THE SIGNED CONTRACT NAMED — the `command` it demands, the
+ * `artifact_path` it demands — on the reasoning that an enumeration fixed at
+ * signing time is not a channel because a reporter can only echo the author's
+ * own words. THE AUTHOR IS A FLEET AGENT TOO. It put its transcript in
+ * `check.command`, signed it, and echoed it back: 201, stored word for word.
+ * The enumeration is gone, and with it the function that computed one — a
+ * permitting set nobody consults is a hole that has merely not been walked
+ * through yet. What replaces it is `digest_of` in the check table above: a run
+ * presents the DIGEST of the parameter and the registry compares it against the
+ * digest of the signed parameter. The check decides what it always decided.
+ *
+ * AND THE LIST IS FLAT, WHICH IS THE OTHER HALF. The rule used to be written
+ * recursively, so `EVIDENCE_LIST_MAX` bounded each LEVEL of a tree and nothing
+ * bounded the tree: a reviewer put a whole transcript through the shipped
+ * `/v1/observations` surface as NESTED ARRAYS OF BYTES under the base name
+ * `exit_code` — 201, stored, recoverable byte for byte, and the only ceiling
+ * was 4000 bytes of JSON. A list is now a list of SCALARS, at no depth, and the
+ * bound is therefore on the whole value rather than on one level of it.
  *
  * WHAT THIS COSTS, STATED. Free text can no longer be presented under ANY name,
  * including a name the contract declared. An author who wants a run's output
@@ -131,55 +169,54 @@ export interface OutcomeCheck {
  */
 export const EVIDENCE_DIGEST = /^sha256:[0-9a-f]{64}$/;
 
-/** How many elements a list-valued evidence may carry. A list is a value, not
- *  a place to put a transcript one element at a time. */
+/** How many SCALARS a list-valued evidence may carry — and, because a list may
+ *  not hold a list, how many the whole value may carry. A list is a value, not
+ *  a place to put a transcript one element at a time, and not a place to put
+ *  one thirty-two elements at a time either. */
 export const EVIDENCE_LIST_MAX = 32;
 
 /**
- * The literals ONE SIGNED CONTRACT names — the enumeration a reporter may echo.
+ * THE DIGEST OF A SIGNED PARAMETER — the one arithmetic this module performs.
  *
- * They are read off the `check` and nowhere else: what the AUTHOR wrote, inside
- * the signature, before any run existed. `evidence` (the list of NAMES) is not a
- * source of literals, and neither is anything a caller sent.
+ * `sha256:` and the SHA-256 of the parameter's UTF-8 bytes, which is exactly
+ * `EVIDENCE_DIGEST`'s shape, so what a check compares against is a value the
+ * grammar already admits and no special case is needed anywhere for it.
+ *
+ * It is exported because `registryObservedEvidence` (`src/activation.ts`) must
+ * produce the SAME form when it reports what it found under an activation root.
+ * Two implementations of "the digest of a path" would be a registry whose own
+ * evidence its own boundary refuses — which is what round 8 found it to be.
  */
-export function contractLiterals(contract: unknown): Set<string> {
-  const out = new Set<string>();
-  const check = (contract as { check?: Record<string, unknown> } | null | undefined)?.check;
-  if (check === null || check === undefined || typeof check !== "object") return out;
-  // THE PARAMETER THIS KIND COMPARES AGAINST A PRESENTED VALUE, and no other.
-  // `echoes` is that parameter, read off the check table, so the enumeration
-  // cannot drift from what the checks actually do.
-  //
-  // `stdout_match` IS DELIBERATELY NOT ONE OF THEM, and the reason is the whole
-  // of the rename. Its pattern may be a SUBSTRING — it is author content under
-  // a signature, and narrowing the journal must not narrow the manifest. But
-  // admitting that substring as a VALUE would put the author's text into the
-  // journal under `stdout_sha256`, a name that promises a digest. The check
-  // compares digests, and a digest is admitted by the digest rule without any
-  // enumeration, so nothing is lost by leaving the pattern out.
-  const shape = OUTCOME_CHECK_SHAPE[(check as { kind?: unknown }).kind as string];
-  const field = shape?.echoes;
-  if (typeof field !== "string") return out;
-  const v = (check as Record<string, unknown>)[field];
-  if (typeof v === "string" && v.length > 0) out.add(v);
-  return out;
+export function evidenceDigestOf(text: string): string {
+  return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
 }
 
 /**
- * Whether ONE value may be carried, given the enumeration this contract fixed.
+ * Whether ONE value may be carried. A value and nothing else: there is no
+ * enumeration to pass, because there is no enumeration.
  *
  * ONE implementation, here, because the boundary that refuses a report and the
  * checks that read a value must not be able to disagree about what a value is —
  * that disagreement is how the name rule was widened in round 5 and how the
  * value rule would be widened next.
+ *
+ * IT DOES NOT CALL ITSELF, AND THAT IS THE WHOLE OF THE SECOND FIX. A recursive
+ * grammar applies its bound at every level and therefore to no value: thirty-two
+ * lists of thirty-two lists is a tree with a million leaves and each level is
+ * within the limit. A scalar, or a flat list of scalars — the bound counts the
+ * leaves because the leaves are all there is.
  */
-export function isAdmissibleEvidenceValue(value: unknown, literals: ReadonlySet<string>): boolean {
+export function isAdmissibleEvidenceValue(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length <= EVIDENCE_LIST_MAX && value.every(isAdmissibleEvidenceScalar);
+  return isAdmissibleEvidenceScalar(value);
+}
+
+/** The three things a leaf may be. Not exported: a caller that wanted only this
+ *  would be a caller admitting a value the boundary never saw. */
+function isAdmissibleEvidenceScalar(value: unknown): boolean {
   if (typeof value === "boolean") return true;
   if (typeof value === "number") return Number.isSafeInteger(value);
-  if (typeof value === "string") return EVIDENCE_DIGEST.test(value) || literals.has(value);
-  if (Array.isArray(value)) {
-    return value.length <= EVIDENCE_LIST_MAX && value.every((v) => isAdmissibleEvidenceValue(v, literals));
-  }
+  if (typeof value === "string") return EVIDENCE_DIGEST.test(value);
   return false;
 }
 
@@ -350,10 +387,11 @@ function describeEvidence(value: unknown): string {
  * WHAT "EXECUTES" MEANS HERE, precisely, because the word could be read as
  * running a shell and this registry runs nothing. The check is executed AGAINST
  * THE EVIDENCE: `exit_code` compares the code the run reported to the code the
- * contract requires; `stdout_match` tests the contract's pattern against the
- * output the run produced; `artifact_exists` looks for the contract's path in
- * the artifact list the run presented; `command` requires the evidence to name
- * the very command the contract names and that command to have exited 0. The
+ * contract requires; `stdout_match` compares the digest the run presented with
+ * the digest the contract requires; `artifact_exists` looks for the DIGEST of
+ * the contract's path in the digests of the artifacts the run presented;
+ * `command` requires the evidence to carry the DIGEST of the very command the
+ * contract names and that command to have exited 0. The
  * registry never opens a path a caller named and never spawns anything [M-7] —
  * a V-2 addressee is on somebody else's machine and there is nothing to spawn.
  * What it does is decide, deterministically, from values it was given, and
@@ -595,13 +633,30 @@ export function evaluateOutcome(contract: unknown, evidence: unknown): OutcomeVe
  * Only `stdout_match` has a constraint, and it is a consequence of 2.3 rather
  * than a new rule: the pattern is compared against `stdout_sha256`, which is a
  * digest, so a pattern that is not a digest of the same form names a
- * comparison nothing can perform. The other three compare against an integer,
- * a path the contract itself declares, and a command the contract itself
- * declares — all of which a run may present under the value grammar.
+ * comparison nothing can perform. The other three compare against an integer
+ * and against DIGESTS THIS REGISTRY COMPUTES ITSELF from the signed
+ * `artifact_path` and the signed `command` — every one of which a run may
+ * present under the value grammar, whatever the author wrote.
  */
 function checkParameterIsReadable(check: OutcomeContract["check"]): boolean {
   if (check.kind !== "stdout_match") return true;
   return typeof check.stdout_match === "string" && EVIDENCE_DIGEST.test(check.stdout_match);
+}
+
+/**
+ * The digest THIS KIND compares a presented value against, or `null` where the
+ * kind compares something that is not a digest of a signed string.
+ *
+ * The parameter is read off `digest_of` in the check table, so the comparison
+ * and the table cannot drift: a kind that starts comparing an author's string
+ * declares it there or it is not compared at all.
+ */
+function comparedDigest(check: OutcomeContract["check"]): string | null {
+  const field = OUTCOME_CHECK_SHAPE[check.kind]?.digest_of;
+  if (typeof field !== "string") return null;
+  const literal = (check as unknown as Record<string, unknown>)[field];
+  if (typeof literal !== "string" || literal.length === 0) return null;
+  return evidenceDigestOf(literal);
 }
 
 /** The four checks, executed against evidence. `null` = the evidence is not of
@@ -624,15 +679,26 @@ function executeCheck(check: OutcomeContract["check"], values: Record<string, un
       return observed === check.stdout_match;
     }
     case "artifact_exists": {
+      // THE PATH THE CONTRACT NAMES, AS A DIGEST. A run presents the digest of
+      // each artifact path it produced; the registry compares the digest of the
+      // path the SIGNED contract demands. Comparing the paths themselves would
+      // require admitting an author-written string as an evidence value, and an
+      // author is a fleet agent — that string is its text channel.
+      const want = comparedDigest(check);
+      if (want === null) return null;
       const observed = values.artifacts;
-      if (!Array.isArray(observed) || !observed.every((a) => typeof a === "string")) return null;
-      return (observed as string[]).includes(String(check.artifact_path));
+      if (!Array.isArray(observed) || !observed.every((a) => typeof a === "string" && EVIDENCE_DIGEST.test(a))) return null;
+      return (observed as string[]).includes(want);
     }
     case "command": {
-      // THE COMMAND THE CONTRACT NAMES, AND NO OTHER. Accepting an exit code
-      // without checking WHICH command produced it would let a run present the
-      // status of something else entirely.
-      if (values.command !== check.command) return null;
+      // THE COMMAND THE CONTRACT NAMES, AND NO OTHER — and as a digest, for the
+      // same reason. Accepting an exit code without checking WHICH command
+      // produced it would let a run present the status of something else
+      // entirely; accepting the command as TEXT would let the author present
+      // anything at all under the name of a check.
+      const want = comparedDigest(check);
+      if (want === null) return null;
+      if (values.command !== want) return null;
       const observed = values.exit_code;
       if (!Number.isInteger(observed)) return null;
       return observed === 0;
