@@ -24,6 +24,8 @@
 // test can compare the code space against the one §6 and Appendix H publish.
 // A type alone cannot be enumerated at run time, and an error space that only
 // the compiler knows about is exactly what drifted from the specification.
+import { isRefusedText } from "./outcome.ts";
+
 export const ERROR_CODES = [
   "UNAUTHORIZED",
   "FORBIDDEN",
@@ -112,4 +114,28 @@ export function converged(state: string): Converged {
 
 export function isApiError(e: unknown): e is ApiError {
   return e instanceof ApiError;
+}
+
+/**
+ * THE ONE PLACE A SURFACE TURNS A FAILURE INTO AN ANSWER — and why there is one
+ * rather than a translation at each place a rule is asked.
+ *
+ * Every adapter used to end with `if (isApiError(e)) return errorResponse(e);
+ * throw e;`. Anything else — including a `RefusedText`, which is a plain
+ * statement that the CALLER sent a string this registry cannot carry — left the
+ * router and reached the client as `500 INTERNAL`. That happened with a
+ * revocation `reason` holding an unpaired surrogate: the request satisfied every
+ * rule the surface publishes, `jcsCanonicalize` refused it deep inside the
+ * transaction, and the answer was "internal error".
+ *
+ * The boundaries still translate — `createPrincipal` and `validateIdempotencyKey`
+ * name the FIELD, which is what a caller needs. This is the backstop under them,
+ * so that a path nobody has annotated answers `INVALID_SCHEMA` rather than 500:
+ * the property is a fact about the class of failure and about the single exit of
+ * each adapter, not about anyone having remembered.
+ */
+export function asApiError(e: unknown): ApiError | undefined {
+  if (e instanceof ApiError) return e;
+  if (isRefusedText(e)) return new ApiError("INVALID_SCHEMA", e.message);
+  return undefined;
 }

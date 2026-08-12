@@ -73,6 +73,7 @@ import type { Db } from "./sqlite.ts";
 import { ApiError } from "./errors.ts";
 import { mintApiKey, type AuthContext, type Role } from "./auth.ts";
 import { appendTlogInTx, type TlogRow } from "./tlog.ts";
+import { assertIdentityText, isRefusedText } from "./outcome.ts";
 import { ulid } from "./ulid.ts";
 
 export const TLOG_KEY_REGISTERED = "signing_key_registered";
@@ -184,6 +185,31 @@ function str(value: unknown, field: string, min: number, max: number): string {
   return value;
 }
 
+/**
+ * A STRING THAT IS GOING INTO A COLUMN THAT DECIDES WHETHER TWO ROWS ARE ONE.
+ *
+ * `str` answers a type and a length, and for `agents.name` — under
+ * `UNIQUE(workspace_id, name)` since work 1 — those were the only questions
+ * anybody asked. So `"\ud800"` was created as U+FFFD and `"\ud801"`, a
+ * DIFFERENT name, came back `409 CONFLICT` as a duplicate of it; on bun both
+ * rows were written and SQLite handed both names back as the empty string. The
+ * rule is not restated here: `assertIdentityText` (`src/outcome.ts`) holds it
+ * and this boundary translates its refusal into the code the surface publishes.
+ *
+ * It runs BEFORE the conflict lookup on purpose. Asked afterwards it would
+ * decide the name is unacceptable only after the registry had already used it to
+ * accuse the caller of duplicating somebody.
+ */
+function identityStr(value: unknown, field: string, min: number, max: number): string {
+  const text = str(value, field, min, max);
+  try {
+    return assertIdentityText(text, field);
+  } catch (e) {
+    if (!isRefusedText(e)) throw e;
+    throw new ApiError("INVALID_SCHEMA", `${field}: ${e.message}`);
+  }
+}
+
 function requireAdmin(auth: AuthContext, what: string): void {
   if (auth.role !== "admin" && auth.role !== "owner") {
     throw new ApiError("FORBIDDEN", `${what} requires workspace role admin or owner (§6 manage-memberships row)`);
@@ -289,7 +315,7 @@ export function createPrincipal(
   nowMs: number,
 ): CreatedPrincipal {
   requireAdmin(auth, "creating a principal");
-  const name = str(input.name, "name", 1, 120);
+  const name = identityStr(input.name, "name", 1, 120);
   const type = str(input.type, "type", 1, 20) as PrincipalType;
   if (!PRINCIPAL_TYPES.includes(type)) {
     throw new ApiError("INVALID_SCHEMA", `type must be one of ${PRINCIPAL_TYPES.join(", ")}`);

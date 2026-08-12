@@ -333,7 +333,20 @@ export function evidenceDigestOf(text: string): string {
  * throws a TypeError — which is this function's answer for such a string
  * anyway.
  */
-export class NotWellFormedText extends Error {
+/**
+ * A STRING THIS REGISTRY REFUSES TO CARRY — the kind of refusal, not the reason.
+ *
+ * There are two reasons and they are different facts about Unicode, so each has
+ * its own subclass and its own sentence. What they share is what a caller can do
+ * about it and what an adapter must do with it: the request is refused with
+ * `INVALID_SCHEMA`, never answered with a 500 and never stored. `errors.ts` maps
+ * THIS class, so a reason added later is mapped the day it is added instead of
+ * escaping as an untyped exception through whichever surface forgot it — which
+ * is exactly how `src/jcs.ts`'s bare `Error` reached a client as 500 INTERNAL.
+ */
+export class RefusedText extends Error {}
+
+export class NotWellFormedText extends RefusedText {
   constructor(what: string) {
     super(
       `${what} is not well-formed UTF-16: it holds an unpaired surrogate, which has no UTF-8 encoding of its own. ` +
@@ -342,6 +355,33 @@ export class NotWellFormedText extends Error {
     );
     this.name = "NotWellFormedText";
   }
+}
+
+/**
+ * THE SECOND REASON, and it is not a variant of the first: `"a\u0000b"` IS
+ * well-formed UTF-16, and its UTF-8 encoding is faithful, so nothing above
+ * refuses it. What it does not survive is SQLITE. `length()` counts to the NUL
+ * and stops, so a name of one such character measures 0 and fails a CHECK the
+ * request satisfied; and node's `node:sqlite` decodes the column up to the NUL,
+ * so `"a\u0000b"` and `"a\u0000c"` — two rows of a UNIQUE column — are read back
+ * as one name. bun keeps both, which is worse rather than better: the same
+ * request means different things on the two runtimes this project ships on.
+ */
+export class NulInText extends RefusedText {
+  constructor(what: string) {
+    super(
+      `${what} holds U+0000, which SQLite treats as the end of a TEXT value: its length is measured up to that point ` +
+        `and node reads the column back truncated there, so two values this registry must tell apart would be read ` +
+        `as one`,
+    );
+    this.name = "NulInText";
+  }
+}
+
+/** Whether a failure is one of these — for the adapters, which map it, and for
+ *  a boundary that translates it rather than restating the condition. */
+export function isRefusedText(e: unknown): e is RefusedText {
+  return e instanceof RefusedText;
 }
 
 /**
@@ -357,6 +397,32 @@ export class NotWellFormedText extends Error {
  */
 export function assertWellFormedText(text: string, what: string): string {
   if (!text.isWellFormed()) throw new NotWellFormedText(what);
+  return text;
+}
+
+/**
+ * THE ONE DEFINITION of what may go into a column that CARRIES IDENTITY —
+ * a primary key, a member of a UNIQUE key, or a column the code finds a row by.
+ * `src/identity.ts` names every one of them, out of the schema.
+ *
+ * IT IS A ROUND-TRIP RULE AND NOT A LIST OF TWO CHARACTERS. Two different
+ * strings of a caller may not become one, and they become one whenever what
+ * SQLite gives back is not what it was given. So this admits exactly the strings
+ * that survive being stored and read again, on both runtimes — which
+ * `test/p14-r14-probes` [14.7] establishes by SWEEPING the whole BMP and every
+ * astral plane and comparing what survives against what this function refuses,
+ * rather than by taking anybody's word for the set. Today that is U+0000 and the
+ * surrogate range and nothing else: emoji, correct surrogate pairs, CJK, RTL
+ * marks, NFC and NFD, ZWJ sequences and combining marks all pass, and the same
+ * probe is what stops this rule from being widened into them.
+ *
+ * IT IS BUILT ON `assertWellFormedText` RATHER THAN REPEATING IT. One of the two
+ * reasons is round 13's rule exactly, and asking it twice in two spellings is
+ * how the two would come apart.
+ */
+export function assertIdentityText(text: string, what: string): string {
+  assertWellFormedText(text, what);
+  if (text.includes("\u0000")) throw new NulInText(what);
   return text;
 }
 

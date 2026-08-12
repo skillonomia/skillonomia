@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jcsCanonicalize, utf8Decode } from "../src/jcs.ts";
+import { NotWellFormedText } from "../src/outcome.ts";
 import { validateManifest } from "../src/manifest.ts";
 import { verifyJws, signManifest, keyFromSeedHex, manifestHash } from "../src/signing.ts";
 import { readTar, readDirectory, writeTar, ArchiveError, checkPath, type PackageFiles } from "../src/archive.ts";
@@ -32,8 +33,15 @@ function expectArchiveError(fn: () => unknown, code: "MALFORMED_ARCHIVE" | "LIMI
 // ---- B-1: canonicalization completeness over the schema-valid domain ----
 
 test("B-1: lone surrogate in a MEMBER NAME is rejected (not only in values)", () => {
-  assert.throws(() => jcsCanonicalize({ ["bad\ud800name"]: 1 }), /lone surrogate in member name/);
-  assert.throws(() => jcsCanonicalize({ x_ext: { ["\udfff"]: true } }), /lone surrogate in member name/);
+  // Round 14 moved the RULE out of this file's subject: `jcsCanonicalize` asks
+  // `assertWellFormedText` (src/outcome.ts), which is the one definition, and
+  // throws its typed `NotWellFormedText`. What this probe asserts is unchanged —
+  // a member name holding an unpaired surrogate is refused — and the type is
+  // asserted alongside the message, because the type is what stops the refusal
+  // reaching a client as 500 INTERNAL.
+  const isRefusal = (e: unknown) => e instanceof NotWellFormedText && /member name/.test((e as Error).message);
+  assert.throws(() => jcsCanonicalize({ ["bad\ud800name"]: 1 }), isRefusal);
+  assert.throws(() => jcsCanonicalize({ x_ext: { ["\udfff"]: true } }), isRefusal);
 });
 
 test("B-1: finite non-integer numbers canonicalize (x_ext may legitimately carry them)", () => {

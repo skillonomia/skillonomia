@@ -1,6 +1,18 @@
 // RFC 8785 (JCS) canonicalization — subset sufficient for registry payloads.
 // Numbers: only safe integers are accepted (all chain fields are epoch-ms / seq
 // integers); anything else would need full ES-number serialization and is a bug.
+//
+// THE WELL-FORMEDNESS RULE IS NOT STATED HERE. It used to be — twice, as
+// `!value.isWellFormed()` and `!k.isWellFormed()`, each throwing a BARE `Error`.
+// Two consequences, and the second is the one that reached a client. First, a
+// second spelling of a rule that lives in `src/outcome.ts` is how two spellings
+// of one rule come apart (round 5, round 9b, D-12). Second, `handleRest` and the
+// MCP adapter map an `ApiError` and re-raise everything else, so a revocation
+// `reason` holding an unpaired surrogate — a request the declared schema accepts
+// — was answered `500 INTERNAL`. `assertWellFormedText` throws a `RefusedText`,
+// which `src/errors.ts` maps for every surface at once.
+import { assertWellFormedText } from "./outcome.ts";
+
 export type JcsValue =
   | string
   | number
@@ -22,8 +34,7 @@ export function jcsCanonicalize(value: JcsValue): string {
       return JSON.stringify(value);
     case "string":
       // RFC 8785 input must be well-formed Unicode: reject lone surrogates
-      if (!value.isWellFormed()) throw new Error("JCS: lone surrogate in string");
-      return JSON.stringify(value);
+      return JSON.stringify(assertWellFormedText(value, "a string in a canonicalized payload"));
     case "object": {
       if (Array.isArray(value)) {
         return "[" + value.map(jcsCanonicalize).join(",") + "]";
@@ -31,9 +42,7 @@ export function jcsCanonicalize(value: JcsValue): string {
       // RFC 8785 section 3.2.3: sort property names by UTF-16 code units.
       // Member NAMES are subject to the same well-formed-Unicode rule as values.
       const keys = Object.keys(value).sort();
-      for (const k of keys) {
-        if (!k.isWellFormed()) throw new Error("JCS: lone surrogate in member name");
-      }
+      for (const k of keys) assertWellFormedText(k, "a member name in a canonicalized payload");
       const parts = keys.map((k) => JSON.stringify(k) + ":" + jcsCanonicalize(value[k]));
       return "{" + parts.join(",") + "}";
     }

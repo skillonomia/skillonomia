@@ -6,7 +6,7 @@
 import { createServer, type Server } from "node:http";
 import type { Registry, SearchParams } from "./service.ts";
 import { SEARCH_FILTERS } from "./service.ts";
-import { ApiError, isApiError } from "./errors.ts";
+import { ApiError, asApiError, isApiError } from "./errors.ts";
 import { handleMcpMessage, type JsonRpcRequest } from "./mcp.ts";
 import { DASHBOARD_VIEWS, renderDashboard, serializeDashboard, parseDashboardFormat } from "./dashboard.ts";
 import { VERSION } from "./version.ts";
@@ -463,7 +463,12 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
 
     throw new ApiError("NOT_FOUND", `no route ${method} ${path}`);
   } catch (e) {
-    if (isApiError(e)) return errorResponse(e);
+    // `asApiError` and not `isApiError`: a refusal of a string this registry
+    // cannot carry is a statement about the REQUEST, and re-raising it here made
+    // the listener below answer 500 INTERNAL for a request the published schema
+    // accepts. One exit, one mapping, every route (`src/errors.ts`).
+    const api = asApiError(e);
+    if (api) return errorResponse(api);
     throw e;
   }
 }

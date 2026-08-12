@@ -4,7 +4,7 @@
 // duplicate replays it byte-identically with no side effect.
 import type { Db } from "./sqlite.ts";
 import { ApiError } from "./errors.ts";
-import { NotWellFormedText, assertWellFormedText } from "./outcome.ts";
+import { assertIdentityText, isRefusedText } from "./outcome.ts";
 import { ulid } from "./ulid.ts";
 
 export interface IdempotentOutcome<T> {
@@ -24,24 +24,27 @@ export function validateIdempotencyKey(key: unknown): string {
     throw new ApiError("INVALID_SCHEMA", "idempotency_key must be a string of 1..128 characters");
   }
   // A KEY THIS PROCESS CANNOT KEY BY, and the column here holds the key ITSELF
-  // rather than a digest of it — which is why the rule is asked of
-  // `assertWellFormedText` and not of the digest function: one definition of
-  // "a string this registry can reduce to bytes", two columns that need it.
+  // rather than a digest of it — so the question is not "can this be reduced to
+  // bytes" but "does this survive being stored and read again", which is
+  // `assertIdentityText`. `idempotency_keys.key` is an identity column of
+  // `src/identity.ts` and this is the boundary that entry names.
   //
-  // What it prevents, stated as what each runtime does with an unpaired
-  // surrogate on the way into SQLite: NODE encodes it to UTF-8 and replaces the
-  // code unit with U+FFFD, so two different keys become one row and the second
-  // call — a DIFFERENT request — is answered with the first call's stored
-  // response and runs nothing; BUN writes the surrogate's raw bytes and reads
-  // them back as the empty string, so the key a reader sees is not the key that
-  // was sent. Neither is a key, and the caller is told so.
+  // What it prevents, stated as what each runtime does on the way into SQLite.
+  // An UNPAIRED SURROGATE: node encodes it to UTF-8 and replaces the code unit
+  // with U+FFFD, so two different keys become one row and the second call — a
+  // DIFFERENT request — is answered with the first call's stored response and
+  // runs nothing; bun writes the surrogate's raw bytes and reads them back as
+  // the empty string, so the key a reader sees is not the key that was sent.
+  // U+0000: node reads the column back truncated at it, so a key is not the key
+  // it was, and the two runtimes disagree about one request. Neither is a key,
+  // and the caller is told so.
   try {
-    assertWellFormedText(key, "idempotency_key");
+    assertIdentityText(key, "idempotency_key");
   } catch (e) {
-    if (!(e instanceof NotWellFormedText)) throw e;
+    if (!isRefusedText(e)) throw e;
     throw new ApiError(
       "INVALID_SCHEMA",
-      `idempotency_key: ${(e as Error).message}. A key is stored and compared as sent, so one that does not survive ` +
+      `idempotency_key: ${e.message}. A key is stored and compared as sent, so one that does not survive ` +
         "being stored would replay another call's response",
     );
   }

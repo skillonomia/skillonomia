@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { readTar, ArchiveError, writeTar, type PackageFiles } from "../src/archive.ts";
 import { verifyJws, signManifest, keyFromSeedHex } from "../src/signing.ts";
 import { jcsCanonicalize, parseJsonStrict } from "../src/jcs.ts";
+import { NotWellFormedText } from "../src/outcome.ts";
 import { verifyPackage } from "../src/verify.ts";
 import { publishVersion } from "../src/countersign.ts";
 import { insertVersion } from "./helpers.ts";
@@ -140,7 +141,11 @@ test("B-4: packer enforces the size profile", () => {
 // ---- B-5: JCS input requirements ----
 
 test("B-5: lone surrogate in string → JCS throws", () => {
-  assert.throws(() => jcsCanonicalize({ a: "\ud800" }), /lone surrogate/);
+  // Round 14: the refusal is `assertWellFormedText`'s (src/outcome.ts), the one
+  // definition of the rule, and it is TYPED — which is what lets every adapter
+  // answer INVALID_SCHEMA instead of 500. The subject of the probe is unchanged.
+  assert.throws(() => jcsCanonicalize({ a: "\ud800" }), NotWellFormedText);
+  assert.throws(() => jcsCanonicalize({ a: "\ud800" }), /unpaired surrogate/);
 });
 
 test("B-5: duplicate JSON keys rejected (top-level and nested)", () => {

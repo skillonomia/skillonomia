@@ -183,7 +183,8 @@ test("M-2: escaped lone surrogates in skill.json yield INVALID_SCHEMA, never an 
   files.set("skill.json", Buffer.from(raw, "utf8"));
   const out = verifyPackage(files, db); // must not throw
   assert.equal(out.verdict, "INVALID_SCHEMA");
-  assert.throws(() => jcsCanonicalize(JSON.parse(raw)), /lone surrogate/);
+  // Round 14: the same refusal, from the one definition and typed (src/outcome.ts).
+  assert.throws(() => jcsCanonicalize(JSON.parse(raw)), /unpaired surrogate/);
 });
 
 // ---- M-3: directory-form packages with ill-formed names ----

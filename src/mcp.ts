@@ -4,7 +4,7 @@
 // POST one JSON-RPC message, receive one JSON response (mounted in http.ts).
 import type { Registry, SearchParams } from "./service.ts";
 import type { AuthContext } from "./auth.ts";
-import { ApiError, isApiError } from "./errors.ts";
+import { ApiError, asApiError } from "./errors.ts";
 import { renderDashboard, serializeDashboard, parseDashboardFormat } from "./dashboard.ts";
 import { VERSION } from "./version.ts";
 
@@ -1132,12 +1132,16 @@ export function handleMcpMessage(registry: Registry, auth: AuthContext, msg: Jso
         if (replayed) result._meta = { "skillonomia/idempotency-replayed": true };
         return { jsonrpc: "2.0", id, result };
       } catch (e) {
-        if (isApiError(e)) {
+        // `asApiError`, for the reason `handleRest` uses it: a refusal of a
+        // string this registry cannot carry is a statement about the CALL, and
+        // re-raising it left this adapter as an untyped exception (`src/errors.ts`).
+        const api = asApiError(e);
+        if (api) {
           // Tool-level failure: same typed envelope as REST, inside the result
           return {
             jsonrpc: "2.0",
             id,
-            result: { content: [{ type: "text", text: JSON.stringify(e.toEnvelope()) }], isError: true },
+            result: { content: [{ type: "text", text: JSON.stringify(api.toEnvelope()) }], isError: true },
           };
         }
         throw e;

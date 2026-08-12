@@ -6,6 +6,7 @@ import { gunzipSync } from "node:zlib";
 import { readFileSync, readdirSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { isNFC, foldKey } from "./unicode.ts";
+import { NotWellFormedText, assertWellFormedText } from "./outcome.ts";
 
 /** The two §4.1b refusals, as a runtime constant so a guard test can compare
  *  them against §4.4.8's verdict vocabulary. §4.1b: every rule fails with
@@ -54,7 +55,16 @@ export const LIMITS = {
 /** §4.1b path rules; violation → MALFORMED_ARCHIVE. */
 export function checkPath(path: string): void {
   if (path.length === 0) throw new ArchiveError("MALFORMED_ARCHIVE", "empty path");
-  if (!path.isWellFormed()) throw new ArchiveError("MALFORMED_ARCHIVE", "ill-formed Unicode in path");
+  // The rule is asked, not restated: `src/outcome.ts` holds the one definition
+  // of "well-formed UTF-16" and this boundary translates its refusal into the
+  // code an archive fault carries. Written here as `!path.isWellFormed()` it was
+  // a second spelling of the same rule, free to drift from the first.
+  try {
+    assertWellFormedText(path, "an archive path");
+  } catch (e) {
+    if (!(e instanceof NotWellFormedText)) throw e;
+    throw new ArchiveError("MALFORMED_ARCHIVE", `ill-formed Unicode in path: ${e.message}`);
+  }
   // NUL and other C0/C1 controls are never legitimate path content and are the
   // classic way to make one path read differently to two consumers.
   if (/[\x00-\x1f\x7f-\u009f]/.test(path)) {

@@ -33,7 +33,15 @@ import { outcomeContractOf, validateManifest, type OutcomeContract } from "./man
 // boundary that read a version's signed declaration to decide what a report
 // could present; the journal's names are `EVIDENCE_NAMES` and the form is a rule
 // about the MANIFEST, enforced in the schema and in `src/manifest.ts` (9b).
-import { EVIDENCE_LIST_MAX, EVIDENCE_NAMES, NotWellFormedText, isAdmissibleEvidenceValue, selfReported } from "./outcome.ts";
+import {
+  EVIDENCE_LIST_MAX,
+  EVIDENCE_NAMES,
+  NotWellFormedText,
+  assertIdentityText,
+  isAdmissibleEvidenceValue,
+  isRefusedText,
+  selfReported,
+} from "./outcome.ts";
 import { MODEL_NAME, correlationDigest } from "./journal.ts";
 import { decodeCursor, encodeCursor as encodeCursorToken, type Cursor } from "./cursor.ts";
 import { manifestHash, contentHash, signManifest } from "./signing.ts";
@@ -2257,6 +2265,22 @@ export class Registry {
     const reason = (input ?? {}).reason;
     if (typeof reason !== "string" || reason.trim().length === 0 || reason.length > 2000) {
       throw new ApiError("INVALID_SCHEMA", "reason (non-empty string ≤2000 chars) required — §6 surface 11");
+    }
+    // THE REASON IS WRITTEN TWICE — into `skill_versions.revocation_reason` and
+    // into the transparency-log payload this transaction signs — and the two
+    // have to be the same string. So it is asked the round-trip rule at the
+    // BOUNDARY, in the surface's own vocabulary, rather than meeting it deep
+    // inside `jcsCanonicalize` as an exception about canonicalization. Both
+    // members of the class matter here: an unpaired surrogate is what JCS
+    // refuses, and a U+0000 is what node reads the COLUMN back truncated at,
+    // which would leave a revocation whose signed reason and stored reason
+    // differ. `assertIdentityText` (`src/outcome.ts`) is the one definition;
+    // this translates it.
+    try {
+      assertIdentityText(reason, "reason");
+    } catch (e) {
+      if (!isRefusedText(e)) throw e;
+      throw new ApiError("INVALID_SCHEMA", `reason: ${e.message}`);
     }
 
     if (row.state === "revoked") {

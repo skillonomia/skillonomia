@@ -505,24 +505,71 @@ test("[14.7] the strings a TEXT column cannot carry are exactly the ones the reg
     }
   };
 
-  const disagree: string[] = [];
+  /** SQLite's OWN measure of a value, which is what a `CHECK(length(...))` sees.
+   *  It is asked of the engine, so it is the same question in both runtimes. */
+  const measured = db.prepare("SELECT length(?) AS l");
+
+  const admitted: string[] = [];
+  const refusedButSurvives: string[] = [];
+  const refused: number[] = [];
   let key = 0;
-  for (let cu = 0; cu <= 0xffff; cu++) {
-    const s = `x${String.fromCharCode(cu)}y`;
+  const sweep = (cp: number, s: string): void => {
     const ok = survives(key++, s);
-    if (ok === refuses(s)) disagree.push(`U+${cu.toString(16).toUpperCase().padStart(4, "0")} survives=${ok}`);
-  }
+    const no = refuses(s);
+    if (no) refused.push(cp);
+    // DIRECTION ONE, and it is the one correctness depends on: nothing that
+    // fails to come back out as itself may be admitted.
+    if (!ok && !no) admitted.push(`U+${cp.toString(16).toUpperCase().padStart(4, "0")}`);
+    if (ok && no) refusedButSurvives.push(`U+${cp.toString(16).toUpperCase().padStart(4, "0")}`);
+  };
+  for (let cu = 0; cu <= 0xffff; cu++) sweep(cu, `x${String.fromCharCode(cu)}y`);
   for (let plane = 1; plane <= 16; plane++) {
-    for (const cp of [plane * 0x10000, plane * 0x10000 + 0xfffd]) {
-      const s = `x${String.fromCodePoint(cp)}y`;
-      const ok = survives(key++, s);
-      if (ok === refuses(s)) disagree.push(`U+${cp.toString(16).toUpperCase()} survives=${ok}`);
-    }
+    for (const cp of [plane * 0x10000, plane * 0x10000 + 0xfffd]) sweep(cp, `x${String.fromCodePoint(cp)}y`);
   }
+
   assert.deepEqual(
-    disagree.slice(0, 20),
+    admitted.slice(0, 20),
     [],
-    `${RUNTIME}: the registry's rule and what a TEXT column can carry disagree for ${disagree.length} code points`,
+    `${RUNTIME}: ${admitted.length} code points do not survive a TEXT column here and are admitted anyway`,
+  );
+
+  // DIRECTION TWO — the anti-widening half. The refused set is exactly the two
+  // ranges this round names, over the whole domain swept above, so a rule
+  // quietly widened to (say) every C0 control or to NFD spellings fails here.
+  const ranges = (xs: number[]): string[] => {
+    const out: string[] = [];
+    for (let i = 0; i < xs.length; ) {
+      let j = i;
+      while (j + 1 < xs.length && xs[j + 1] === xs[j]! + 1) j++;
+      const hex = (n: number) => `U+${n.toString(16).toUpperCase().padStart(4, "0")}`;
+      out.push(i === j ? hex(xs[i]!) : `${hex(xs[i]!)}..${hex(xs[j]!)}`);
+      i = j + 1;
+    }
+    return out;
+  };
+  assert.deepEqual(ranges(refused.sort((a, b) => a - b)), ["U+0000", "U+D800..U+DFFF"], `${RUNTIME}: the refused set`);
+
+  // AND THE DIFFERENCE BETWEEN THE TWO DIRECTIONS IS MEASURED, NOT ASSUMED.
+  // A code point may be refused although it survives HERE — the rule is that a
+  // string must survive on every runtime this project ships on, and this process
+  // is one of them. bun round-trips U+0000 and node does not. So each such code
+  // point must carry a reason SQLITE ITSELF gives, in this runtime: the engine
+  // measures the value SHORTER than it is, which is what makes
+  // `CHECK(length(name) BETWEEN 1 AND 120)` fail for a name the request
+  // satisfied, on bun exactly as on node.
+  for (const name of refusedButSurvives) {
+    const s = `x${String.fromCodePoint(Number.parseInt(name.slice(2), 16))}y`;
+    const l = (measured.get(s) as { l: number }).l;
+    assert.notEqual(
+      l,
+      [...s].length,
+      `${RUNTIME}: ${name} is refused, survives the round trip here, and SQLite measures it faithfully — nothing ` +
+        `in this runtime justifies refusing it`,
+    );
+  }
+  console.log(
+    `[14.7] ${RUNTIME}: swept ${key} code points · refused ${ranges(refused).join(" ")} · ` +
+      `refused-but-round-trips-here ${refusedButSurvives.join(",") || "none"}`,
   );
 });
 
@@ -700,6 +747,40 @@ test("[14.8] no MCP tool answers a string like this with an untyped exception", 
   }
   assert.ok(tested >= 100, `only ${tested} tool/argument pairs were driven — the derivation from MCP_TOOLS is broken`);
   assert.deepEqual(failures.slice(0, 12), [], `${RUNTIME}: ${failures.length} tool/argument/string triples are not typed refusals`);
+});
+
+/**
+ * [14.10] — THE BACKSTOP, PROVED SEPARATELY BECAUSE NOTHING ELSE PROVES IT.
+ *
+ * Written AFTER the fix, and it says so. Every path that reaches
+ * `jcsCanonicalize` with a caller's string today is ALSO closed at its own
+ * boundary — the sweep above found exactly one, `skill.revoke{reason}`, and that
+ * boundary now refuses it by name. So removing the adapter mapping breaks no
+ * probe above, which means the sweep alone would let the structural half of this
+ * fix be deleted silently.
+ *
+ * What the mapping is for is the path NOBODY HAS ANNOTATED — the next surface to
+ * canonicalize a field, the reason class to gain a third member. This asserts
+ * the adapter contract directly: a surface that raises a `RefusedText` is
+ * answered with a typed `INVALID_SCHEMA` on both adapters, never re-raised into
+ * the listener's `500 INTERNAL`.
+ */
+test("[14.10] a surface that raises a refusal is answered, on either adapter, never re-raised", async () => {
+  const { NotWellFormedText } = await import("../src/outcome.ts");
+  const fx = p4Fixture(NO_LIMIT);
+  const boom = () => {
+    throw new NotWellFormedText("a value some future surface canonicalizes");
+  };
+
+  (fx.registry as any).listPrincipals = boom;
+  const viaRest = rest(fx, "GET", "/v1/principals", fx.keys.admin);
+  assert.equal(viaRest.status, 400, `REST: ${viaRest.raw.slice(0, 200)}`);
+  assert.equal(viaRest.body.error.code, "INVALID_SCHEMA");
+
+  (fx.registry as any).createPrincipal = boom;
+  const viaMcp = mcp(fx, fx.keys.admin, "principal.create", { name: "ok", type: "agent", role: "member" });
+  assert.equal(viaMcp.isError, true);
+  assert.equal(viaMcp.data.error.code, "INVALID_SCHEMA", JSON.stringify(viaMcp.data));
 });
 
 // ---------------------------------------------------------------------------
