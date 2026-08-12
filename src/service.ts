@@ -29,7 +29,14 @@ import { RateLimiter, DEFAULT_RATE_LIMIT, type RateLimitOptions } from "./rateli
 import { ArchiveError, readPackage, computeIntegrity, writeTar, type PackageFiles } from "./archive.ts";
 import { parseJsonStrict, utf8Decode, jcsBytes } from "./jcs.ts";
 import { outcomeContractOf, validateManifest, type OutcomeContract } from "./manifest.ts";
-import { EVIDENCE_LIST_MAX, EVIDENCE_NAMES, isAdmissibleEvidenceValue, selfReported } from "./outcome.ts";
+import {
+  EVIDENCE_LIST_MAX,
+  EVIDENCE_NAME,
+  EVIDENCE_NAME_MAX,
+  EVIDENCE_NAMES,
+  isAdmissibleEvidenceValue,
+  selfReported,
+} from "./outcome.ts";
 import { decodeCursor, encodeCursor as encodeCursorToken, type Cursor } from "./cursor.ts";
 import { manifestHash, contentHash, signManifest } from "./signing.ts";
 import {
@@ -4503,6 +4510,14 @@ export class Registry {
     // grammar as well, by naming literals a reporter could echo; round 8
     // removed that channel — a check compares the DIGEST of its parameter, so
     // no string but a digest is a value and there is nothing here to read.
+    //
+    // AND EVERY NAME HERE IS AN IDENTIFIER, which `outcomeContractOf` has
+    // already established: a declared name lands in `observed_records.evidence`
+    // as a KEY, word for word, so a contract declaring a sentence is not a
+    // contract this path reads — it returns `null` above and the caller falls
+    // back to the derived set. The form is checked THERE and not again here,
+    // because a second copy of the rule is a second answer to the question
+    // "what is a name", which is how the name SET was widened once already.
     return new Set(read.contract.evidence);
   }
 
@@ -4966,6 +4981,12 @@ export class Registry {
    *     a `command` or an `artifact_path` a run presents the DIGEST of it. That
    *     is WHY the text does not reach the journal, and it is enforced in
    *     `isAdmissibleEvidenceValue` rather than asserted here.
+   *
+   *   * AND NEITHER IS THE NAME. A name a signed contract declares is stored
+   *     here as a KEY, so it is author text on the same column; it is an
+   *     IDENTIFIER (`EVIDENCE_NAME`), refused by the packing schema and by
+   *     `outcomeContractOf`, and a contract whose names are prose declares
+   *     nothing at all.
    */
   reportObservation(
     auth: AuthContext,
@@ -5506,11 +5527,23 @@ function parseMinAdopted(v: SearchParams["min_adopted"]): number | undefined {
  * check compares the DIGEST of its parameter rather than the parameter, so
  * there is no enumeration of admissible strings left to widen.
  *
+ * AND ROUND 9 CLOSED THE THIRD CHANNEL, WHICH WAS THE NAME ITSELF. Both rules
+ * above are about what a name CARRIES; neither was about what a name IS. A
+ * declared name is a string the AUTHOR wrote and it is stored in this column as
+ * a JSON KEY, word for word, so a contract declaring `the operator pasted the
+ * key ` and a credential as NAMES put that text in the journal through this
+ * surface. A declared name is now an IDENTIFIER — `EVIDENCE_NAME`
+ * (`src/outcome.ts`), at most `EVIDENCE_NAME_MAX` characters — refused by the
+ * SCHEMA at packing and by `outcomeContractOf` when a contract is read here.
+ * Not a digest: a reader of this journal has to see WHICH quantity was
+ * presented, so the name stays readable and stops being able to be text.
+ *
  * FAIL CLOSED WHERE THE CONTRACT CANNOT BE READ. A marker of no version this
  * workspace holds, a stored manifest that does not hash to what was signed, a
- * manifest with no usable contract: in every one of those the names are
- * `EVIDENCE_NAMES` and nothing else. The alternative — admit it and sort it out
- * later — is how the reviewer's field got in.
+ * manifest with no usable contract, a contract whose declared names are not
+ * identifiers: in every one of those the names are `EVIDENCE_NAMES` and nothing
+ * else. The alternative — admit it and sort it out later — is how the
+ * reviewer's field got in.
  *
  * A value outside the grammar is REFUSED rather than truncated, and an oversized
  * object is refused rather than trimmed: evidence this registry edited would not
@@ -5534,8 +5567,9 @@ function evidenceOf(raw: unknown, names: ReadonlySet<string>): Record<string, un
         "INVALID_SCHEMA",
         "records[].evidence names a value no contract asked for. The admissible names are the ones this registry's checks read " +
           `(${[...EVIDENCE_NAMES].join(", ")}) plus the names the signed \`outcome_contract.evidence\` of the version this record's ` +
-          "marker identifies declares; where no contract can be read, only the first list applies. The rejected name is not repeated " +
-          "here: a name a caller chose is not a thing this registry writes to its own output [I-7]",
+          "marker identifies declares; where no contract can be read, or where its declared names are not identifiers " +
+          `(${EVIDENCE_NAME.source}, at most ${EVIDENCE_NAME_MAX} characters), only the first list applies. The rejected name is not ` +
+          "repeated here: a name a caller chose is not a thing this registry writes to its own output [I-7]",
       );
     }
     if (!isAdmissibleEvidenceValue(value)) {

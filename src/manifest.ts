@@ -4,7 +4,7 @@ import { join } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { assetRoot } from "./assets.ts";
-import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, type OutcomeContract } from "./outcome.ts";
+import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, isEvidenceName, type OutcomeContract } from "./outcome.ts";
 
 // Appendix E's schema files ship with the code; `assetRoot()` is what knows
 // where that is in each packaging layout (checkout, npm, compiled binary).
@@ -84,6 +84,27 @@ export function outcomeContractOf(manifest: unknown): { valid: boolean; reason: 
   if (!present) return no(`outcome_contract_check_has_no_${shape.parameter}`);
   if (!Array.isArray(c.evidence) || c.evidence.length === 0 || !c.evidence.every((e: unknown) => typeof e === "string" && e.length > 0)) {
     return no("outcome_contract_names_no_evidence");
+  }
+  // THE FORM OF A NAME, ENFORCED HERE AS WELL AS IN THE SCHEMA, and the second
+  // point is the one that matters for [I-7].
+  //
+  // A declared name is stored in `observed_records.evidence` as a JSON KEY, word
+  // for word, so it is author text landing in the journal. The schema refuses a
+  // contract that names a sentence at PACKING, which closes the channel at its
+  // source; this refuses one that reaches the REPORT path by any other route —
+  // a package signed elsewhere through surface 1, a package signed before this
+  // rule existed. `signedEvidenceNames` (`src/service.ts`) turns an unreadable
+  // contract into the derived base set and nothing more, so a contract whose
+  // names are prose declares NOTHING and the boundary refuses those names like
+  // any others [I-7], [D-21].
+  //
+  // A contract is refused WHOLE rather than filtered down to its usable names:
+  // a filter would be a second, quieter definition of what a contract is, and
+  // the `outcome` this version reports is then `unknown` WITH THIS REASON —
+  // never `no`, because a task nobody could evaluate is not a task that failed
+  // [I-1], [A-0].
+  if (!c.evidence.every((e: unknown) => isEvidenceName(e))) {
+    return no("outcome_contract_declares_a_name_that_is_not_an_identifier");
   }
   if (typeof c.unknown !== "string" || c.unknown.length === 0) {
     return no("outcome_contract_does_not_say_what_absent_evidence_means");

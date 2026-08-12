@@ -200,7 +200,15 @@ is `INVALID_SCHEMA` before anything is written: no version, no key, no
 transparency-log row. Truncated means what it says: a `stdout_match` with no
 pattern, an `artifact_exists` with no path, a `command` with no command and an
 `exit_code` with no code each name a method and withhold its subject, and none
-of them can be executed. The contract is inside the manifest that gets signed, so
+of them can be executed. THE NAMES IN `evidence` ARE IDENTIFIERS: a lowercase
+letter, then lowercase letters, digits and underscores, at most 40 characters
+(`^[a-z][a-z0-9_]{0,39}$`). `exit_code` and `suite_digest` are names; a sentence
+is not one, and a contract declaring one is `INVALID_SCHEMA` here and declares
+nothing if it reaches the report path from somewhere else. The reason is not
+tidiness: a declared name is stored in the observation journal as a KEY, word
+for word, so a name that may be prose is a text channel into that journal — and
+a name is kept readable rather than hashed because whoever reads a record has to
+see WHICH quantity a run presented. The contract is inside the manifest that gets signed, so
 redefining what success means requires issuing a new version — a receipt cannot
 come to certify something other than what it certified when it was approved.
 Surface 1 does not require a contract: it accepts packages signed elsewhere, and

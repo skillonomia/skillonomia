@@ -431,17 +431,34 @@ test("[9.5] no shape of author text reaches the journal as a KEY or as a VALUE �
 
   const escaped: string[] = [];
   for (const [label, text] of texts) {
-    // AS A NAME: declared by the contract, presented by the run.
-    const { fx, versionId, marker, report } = fixture(DECLARED_CONTRACT, "r9-sweep");
-    plantContract(fx, versionId, contractWith([...names, text.slice(0, 80)]));
-    const asName = report([
-      { role: "call", call_id: "r9-5", marker, at_ms: 1 },
-      { role: "output", call_id: "r9-5", marker, at_ms: 2, result: "success", evidence: { [text.slice(0, 80)]: 1 } },
-    ]);
-    const back = `${stored(fx)}\n${decoded(fx)}`;
-    if (asName.status === 201) escaped.push(`${label} as a KEY (accepted)`);
-    else if (back.includes(text.slice(0, 24))) escaped.push(`${label} as a KEY (stored anyway)`);
-    fx.db.close();
+    // AS A NAME: declared by the contract, presented by the run — in every
+    // deformation of the form, because "a sentence is refused" is a fix for one
+    // shape and the requirement is about the form.
+    const asNames: Array<[string, string]> = [
+      ["as written", text.slice(0, 80)],
+      ["with the spaces removed", text.replace(/\s+/g, "_").slice(0, 80)],
+      ["upper case", text.slice(0, 80).toUpperCase()],
+      ["punctuation only", text.slice(0, 80).replace(/[a-z0-9]/gi, ".")],
+      ["with a leading digit", `0${text.slice(0, 60)}`],
+      ["as unicode", `т${text.slice(0, 60)}`],
+    ];
+    for (const [shape, name] of asNames) {
+      const { fx, versionId, marker, report } = fixture(DECLARED_CONTRACT, "r9-sweep");
+      plantContract(fx, versionId, contractWith([...names, name]));
+      const asName = report([
+        { role: "call", call_id: "r9-5", marker, at_ms: 1 },
+        { role: "output", call_id: "r9-5", marker, at_ms: 2, result: "success", evidence: { [name]: 1 } },
+      ]);
+      const back = `${stored(fx)}\n${decoded(fx)}`;
+      // A NAME THAT SURVIVES THE FORM IS NOT AN ESCAPE — `with the spaces
+      // removed` is an identifier and the journal is allowed to hold it. What
+      // is asked here is whether the TEXT came through: the material, in the
+      // shape an author wrote it, is what [I-7] is about.
+      const isText = /[^a-z0-9_]/.test(name) || name.length > 40 || /^[^a-z]/.test(name);
+      if (isText && asName.status === 201) escaped.push(`${label} ${shape}, as a KEY (accepted)`);
+      else if (isText && back.includes(name.slice(0, 24))) escaped.push(`${label} ${shape}, as a KEY (stored anyway)`);
+      fx.db.close();
+    }
 
     // AS A VALUE, under every admissible name: round 8's property, re-executed
     // here because a fix to the key rule that reopened the value rule would

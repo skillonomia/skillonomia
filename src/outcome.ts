@@ -96,6 +96,88 @@ export const EVIDENCE_NAMES: readonly string[] = [
   ...new Set(Object.values(OUTCOME_CHECK_SHAPE).flatMap((s) => s.reads)),
 ].sort();
 
+// ===========================================================================
+// WHAT A NAME MAY LOOK LIKE — the third channel, closed by its FORM.
+// ===========================================================================
+
+/**
+ * THE DEFECT THIS SECTION EXISTS TO REMOVE, found by round 8 while executing
+ * its own claim rather than reading it, and left open there because closing it
+ * was outside that round.
+ *
+ * Round 6 closed the SET of admissible names: a report may present only names
+ * this registry's checks read plus the names the SIGNED `outcome_contract`
+ * declared. Round 8 closed the VALUES to a boolean, a safe integer or a digest,
+ * and removed the echo of signed literals. Both of those are about what a name
+ * CARRIES. Neither is about what a name IS.
+ *
+ * A DECLARED NAME IS A STRING THE AUTHOR WROTE, and it is stored in
+ * `observed_records.evidence` as a JSON KEY, word for word. The schema bounded
+ * it at 20 names of 80 characters and bounded nothing else about it — spaces,
+ * punctuation, upper case and the whole of unicode were inside the form. Under
+ * D-21 the author of a skill is a fleet agent like any other, so 1600
+ * characters of its own text went into that column by the shipped route: a
+ * contract declaring `the operator pasted the key ` and `sk-live-…` as names,
+ * a run of its own presenting them, 201, and the material read back out of the
+ * database byte for byte.
+ *
+ * WHY NOT A DIGEST, WHICH IS HOW THE VALUES WERE CLOSED. Because the journal is
+ * read by people. A value may become a digest without loss — the reader wants to
+ * know that an output matched, not what it was — but a NAME is what tells a
+ * reader WHICH quantity was presented, and a column of digests would be a
+ * journal that records evidence and shows nobody what kind. The legitimate
+ * purpose of a name is to be read, so the fix keeps it readable and takes away
+ * its capacity to be text.
+ *
+ * SO A NAME IS AN IDENTIFIER: a lowercase letter, then lowercase letters,
+ * digits and underscores, up to `EVIDENCE_NAME_MAX` characters. A sentence
+ * cannot be written in that alphabet — there is no space, no punctuation, no
+ * case and no unicode in it — and `exit_code`, `suite_digest` and
+ * `integration_suite_exit_code` all are.
+ *
+ * WHAT THIS DOES NOT CLAIM, because a comment that claims an impossibility it
+ * does not deliver is the class of defect this file carries warnings about. A
+ * name is still a string an author CHOSE; an identifier alphabet, like the flat
+ * list of thirty-two integers a value may be, can be made to carry an ENCODING
+ * of something if an author sets out to build one. What is closed is that no
+ * text arrives here AS TEXT: prose, a pasted credential and a slice of a
+ * transcript are outside the form, refused at packing and refused again at the
+ * report boundary, and what is left is a bounded identifier — which is what a
+ * key has to be for the journal to be readable at all.
+ */
+export const EVIDENCE_NAME_MAX = 40;
+
+/**
+ * THE FORM, IN ONE PLACE, and derived from the bound above so the two cannot
+ * drift. `schema/skill-package-v1.schema.json` carries this pattern as its
+ * `outcome_contract.evidence` item pattern, and a probe compares the two
+ * sources character for character: a rule written out twice is a rule that gets
+ * widened in one copy.
+ *
+ * WHY 40 AND NOT 80, ARGUED RATHER THAN ROUNDED. The longest name this registry
+ * itself reads is `stdout_sha256`, thirteen characters; the longest name an
+ * author plausibly needs is a compound of three words —
+ * `integration_suite_exit_code` is twenty-seven. Forty is comfortably above
+ * both, and it is still short enough that a name fits a dashboard cell and
+ * reads as a key rather than as a phrase. The number is not what closes the
+ * channel — the ALPHABET is — so it is set where legitimate names live and not
+ * at the smallest value that would still pass the tests.
+ */
+export const EVIDENCE_NAME = new RegExp(`^[a-z][a-z0-9_]{0,${EVIDENCE_NAME_MAX - 1}}$`);
+
+/**
+ * Whether ONE name may be declared and stored.
+ *
+ * ONE implementation, here, for the same reason `isAdmissibleEvidenceValue` is:
+ * the packing schema refuses a contract that names a sentence, and this refuses
+ * one that arrives at the report boundary by any other route. Two definitions
+ * of "a name" would be two answers to the same question, which is exactly how
+ * the name SET was widened in round 5.
+ */
+export function isEvidenceName(name: unknown): boolean {
+  return typeof name === "string" && EVIDENCE_NAME.test(name);
+}
+
 export interface OutcomeCheck {
   kind: string;
   exit_code?: number;

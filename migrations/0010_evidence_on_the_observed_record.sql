@@ -27,7 +27,7 @@
 -- The column is NULLable and bounded. It carries a JSON object of named values.
 --
 -- WHAT THIS COLUMN IS ALLOWED TO HOLD, AND WHERE THAT IS DECIDED. This comment
--- has been wrong three times, in the same direction, and every correction is
+-- has been wrong four times, in the same direction, and every correction is
 -- kept because each one is what made the one before it true.
 --
 --   IT SAID THE COLUMN "is never a transcript" while `evidenceOf` in
@@ -51,22 +51,37 @@
 --   made the AUTHOR of a skill, who is a fleet agent like any other, able to
 --   sign its own prose into `check.command` and echo it in here.
 --
--- SO BOTH CHANNELS ARE CLOSED, AND NEITHER IS CLOSED IN SQL.
+--   AND THEN THE NAME ITSELF, which every correction above was about what a
+--   name CARRIES and never about what a name IS. A name the signed contract
+--   declares is a string the AUTHOR wrote and it is stored here AS A JSON KEY,
+--   word for word; the schema bounded it at 20 names of 80 characters and put
+--   no FORM on it at all, so spaces, punctuation, upper case and the whole of
+--   unicode were admissible. A contract declaring `the operator pasted the
+--   key ` and a credential as NAMES, with a run of its own presenting them,
+--   went through the same shipped surface and the material came back out of
+--   this column byte for byte.
 --
---   NAMES: `EVIDENCE_NAMES` (`src/outcome.ts`, derived from the check table)
---   plus the names the SIGNED `outcome_contract.evidence` of the version a
---   record's marker identifies declares.
+-- SO ALL THREE CHANNELS ARE CLOSED, AND NONE OF THEM IS CLOSED IN SQL.
 --
---   AND THAT SECOND HALF IS BOUNDED RATHER THAN CLOSED, which is stated here
---   because a sentence about a security property that omits the way through it
---   is worse than no sentence. A declared name is a string the AUTHOR wrote,
---   and it is stored in this column AS A JSON KEY, word for word. The schema
---   bounds it at 20 names of 80 characters, so an author — a fleet agent like
---   any other — can place up to 1600 characters of its own text here by
---   declaring it as names and having its own run present them. Closing that
---   means changing what a declared name may LOOK like, or storing names as
---   digests and comparing them the way the checks now compare parameters;
---   neither is done here, and until one is, this is the channel that is open.
+--   NAMES, WHICH SET: `EVIDENCE_NAMES` (`src/outcome.ts`, derived from the
+--   check table) plus the names the SIGNED `outcome_contract.evidence` of the
+--   version a record's marker identifies declares.
+--
+--   NAMES, WHICH FORM: an IDENTIFIER — a lowercase letter, then lowercase
+--   letters, digits and underscores, at most 40 characters. `EVIDENCE_NAME`
+--   (`src/outcome.ts`) is the rule and the schema carries the same pattern, so
+--   a contract that names a sentence cannot be PACKED, and `outcomeContractOf`
+--   (`src/manifest.ts`) refuses one that reaches the report path by any other
+--   route — the names then fall back to the derived set and that contract
+--   declares nothing. A name is NOT stored as a digest, deliberately: a reader
+--   of this journal has to see WHICH quantity a run presented, and a column of
+--   digests would record evidence while showing nobody what kind. What the form
+--   takes away is text — there is no space, no punctuation, no case and no
+--   unicode in that alphabet, so prose and a pasted credential are outside it.
+--   What it leaves, and this is stated rather than glossed: a name is still a
+--   string an author CHOSE, and an identifier alphabet can be made to carry an
+--   encoding, exactly as the flat list of integers a value may be can. No text
+--   arrives here as itself; that is the property, and it is the whole of it.
 --
 --   VALUES: a boolean, a safe integer or a digest of the form
 --   `sha256:<64 lowercase hex>` — or a FLAT list of at most 32 of those, with
@@ -83,14 +98,16 @@
 --   consults is a hole that has merely not been walked through yet.
 --
 -- Where no contract can be read — an unknown marker, a manifest that no longer
--- hashes to what was signed — the names are the derived list and nothing else:
--- the boundary fails closed on both channels.
+-- hashes to what was signed, a contract whose declared names are not
+-- identifiers — the names are the derived list and nothing else: the boundary
+-- fails closed on every channel.
 --
--- SQLite cannot express either rule, so this comment does not claim SQLite
--- does. What the constraint below enforces is a bound on SIZE, which is what a
--- bound on size is. Both rules are enforced in one function each, and a probe
+-- SQLite cannot express any of these rules, so this comment does not claim
+-- SQLite does. What the constraint below enforces is a bound on SIZE, which is
+-- what a bound on size is. Each rule is enforced in one function, and a probe
 -- reads THIS TABLE after a refused report — decoding the numbers it holds, not
--- only searching it for letters — to show nothing of the attack was written.
+-- only searching it for letters, and reading the KEYS as well as the values —
+-- to show nothing of the attack was written.
 --
 -- SO THE TEXT OF A RECORD DOES NOT REACH THIS SCHEMA, AND HERE IS WHY IT
 -- CANNOT. Not because a field is named `evidence` rather than `transcript`, and
@@ -102,12 +119,12 @@
 -- other half is untouched and always was: a record's text is reduced to §5
 -- markers at the boundary and no column of this schema stores it.
 --
--- AND THE SENTENCE ABOVE IS ABOUT A RECORD'S TEXT, WHICH IS WHAT IT SAYS AND
--- NOT MORE. What a REPORTER sends does not reach this column. What an AUTHOR
--- signed into `outcome_contract.evidence` reaches it as a key, bounded at the
--- 1600 characters described above. Both are agents of the same fleet, so the
--- distinction is one of route and not of trust, and it is written down here
--- rather than left to the next review to rediscover.
+-- AND WHAT AN AUTHOR SIGNS DOES NOT REACH IT EITHER, which used to be the
+-- exception this paragraph had to make. A REPORTER's text is refused as a
+-- value; an AUTHOR's text is refused as a name, because a name is an identifier
+-- and a sentence is not one. Both are agents of the same fleet, so the
+-- distinction was one of route and not of trust — and the route is now shut at
+-- both ends, which is why this file no longer has an exception to declare.
 
 ALTER TABLE observed_records ADD COLUMN evidence TEXT
   CHECK(evidence IS NULL OR (length(evidence) BETWEEN 2 AND 4000));
