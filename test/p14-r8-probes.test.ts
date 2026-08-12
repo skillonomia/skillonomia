@@ -597,34 +597,34 @@ test("[8.3] no shipped file describes a value grammar the code does not have", (
   assert.deepEqual(wrong, [], "a passage states a bound on a list that is not the bound the code enforces");
 });
 
-test("[8.3] the ONE channel this round did NOT close is stated, with the bound the schema actually enforces", () => {
-  // FOUND WHILE EXECUTING THE CLAIM OF 8.3 RATHER THAN READING IT, and stated
-  // here because the instruction for this round is to write the truth and not
-  // the intention where something promised is not delivered.
+test("[8.3→9] NO channel into this column is described as open, and the FORM of a name is stated with the bound the schema enforces", () => {
+  // THIS PROBE USED TO REQUIRE THE OPPOSITE, and the reversal is the point.
   //
-  // The VALUES are closed. The NAMES are the base set plus whatever the SIGNED
-  // `outcome_contract.evidence` declares — and a declared name is a string the
-  // AUTHOR wrote, stored in `observed_records.evidence` as a JSON KEY, word for
-  // word. An author is a fleet agent under D-21 like any other: it declares its
-  // text as a list of names, its own run presents them, and the column holds
-  // them. So `free text is refused under EVERY name` is true of what a name
-  // CARRIES and is not true of what a name IS, and no shipped file may say
-  // otherwise until the channel is closed.
+  // Round 8 found a third channel and did not close it: a declared name is a
+  // string the AUTHOR wrote, stored in `observed_records.evidence` as a JSON
+  // KEY, and the schema bounded it at 20 names of 80 characters — 1600
+  // characters of author text by the shipped route. While that was true, a
+  // shipped file that described this column's channels and omitted that one was
+  // making a false statement about a security property, so this probe DEMANDED
+  // the sentence.
   //
-  // WHAT IS PINNED HERE IS THE BOUND, taken from the schema rather than typed
-  // out: how many names a contract may declare and how long each may be. A
-  // shipped file that states this channel must state that number, so widening
-  // the schema breaks the sentence instead of quietly enlarging the channel.
+  // Round 9 narrowed the FORM: a declared name is an identifier. The sentence
+  // this probe used to require is now false in the other direction — it would
+  // advertise a way through that no longer exists — so the requirement inverts:
+  // no shipped file may describe a channel into this column as open, and every
+  // one of them must state the form that closed it, with the bound taken from
+  // the schema rather than typed into prose.
   const schema = JSON.parse(readFileSync(join(REPO_ROOT, "schema/skill-package-v1.schema.json"), "utf8"));
   const declared = schema.properties?.outcome_contract?.properties?.evidence;
   assert.ok(declared, "the schema no longer shapes `outcome_contract.evidence`, so this bound has no source");
   const maxNames: number = declared.maxItems;
   const maxLength: number = declared.items.maxLength;
-  const capacity = maxNames * maxLength;
-  console.log(`[8.3] a signed contract may declare ${maxNames} names of up to ${maxLength} characters: ${capacity} characters`);
+  const pattern: string = declared.items.pattern;
+  console.log(`[8.3→9] a signed contract may declare ${maxNames} names of up to ${maxLength} characters, each matching ${pattern}`);
+  assert.ok(typeof pattern === "string" && pattern.length > 0, "the schema puts no FORM on a declared name, so the channel is open");
 
-  // THE BOUND IS REAL AND NOT ASPIRATIONAL — the packing schema refuses both
-  // ways past it, so the number above is what an author can actually spend.
+  // THE BOUND IS REAL AND NOT ASPIRATIONAL — the packing schema refuses every
+  // way past it, so what a shipped file states is what an author can spend.
   const contractWith = (evidence: string[]) => ({
     check: { kind: "exit_code", exit_code: 0 },
     evidence,
@@ -633,24 +633,49 @@ test("[8.3] the ONE channel this round did NOT close is stated, with the bound t
   const ok = validateManifest(makeManifest({ outcome_contract: contractWith(["exit_code"]) }));
   const tooMany = validateManifest(makeManifest({ outcome_contract: contractWith(Array.from({ length: maxNames + 1 }, (_, i) => `n${i}`)) }));
   const tooLong = validateManifest(makeManifest({ outcome_contract: contractWith(["exit_code", "n".repeat(maxLength + 1)]) }));
-  console.log(`  one name → ${ok.valid};  ${maxNames + 1} names → ${tooMany.valid};  a name of ${maxLength + 1} → ${tooLong.valid}`);
-  assert.equal(ok.valid, true, "a contract declaring one name was refused, so the two refusals below are vacuous");
+  const prose = validateManifest(makeManifest({ outcome_contract: contractWith(["exit_code", "the operator pasted the key"]) }));
+  console.log(`  one name → ${ok.valid};  ${maxNames + 1} names → ${tooMany.valid};  a name of ${maxLength + 1} → ${tooLong.valid};  a sentence → ${prose.valid}`);
+  assert.equal(ok.valid, true, "a contract declaring one name was refused, so the refusals below are vacuous");
   assert.equal(tooMany.valid, false, "a contract may declare more names than the schema says, so the bound is not a bound");
   assert.equal(tooLong.valid, false, "a declared name may be longer than the schema says, so the bound is not a bound");
+  assert.equal(prose.valid, false, "a declared name may be a sentence, so the name channel is still open");
 
-  // AND EVERY SHIPPED FILE THAT DESCRIBES THIS CHANNEL SAYS SO, with the number.
+  // NO SHIPPED FILE SAYS A CHANNEL INTO THIS COLUMN IS OPEN. The phrases are
+  // the ones the files used while it was, so the sentence that has to go is
+  // found by what it SAYS and not by where it sits.
+  const advertising: string[] = [];
   const silent: string[] = [];
   for (const rel of CLAIM_SURFACES) {
     const text = readFileSync(join(REPO_ROOT, rel), "utf8").replace(/\s+/g, " ");
-    const statesIt = new RegExp(`\\b${capacity}\\b`).test(text) && /\bname\b/i.test(text);
-    console.log(`  ${rel.padEnd(48)} states the ${capacity}-character name channel: ${statesIt}`);
+    for (const re of [
+      /[^.]*\bchannel that is open\b[^.]*\./gi,
+      /[^.]*\bstill open\b[^.]*\./gi,
+      /[^.]*\bbounded (?:rather than|and not) closed\b[^.]*\./gi,
+      /[^.]*\bthis (?:version|registry) does not close\b[^.]*\./gi,
+      /[^.]*\bhas not closed\b[^.]*\./gi,
+      /[^.]*\b1600\b[^.]*\./g,
+    ]) {
+      for (const m of text.matchAll(re)) advertising.push(`${rel}: ${m[0].trim().slice(0, 140)}`);
+    }
+    // …AND EVERY ONE OF THEM STATES THE FORM THAT CLOSED IT, with the schema's
+    // own bound, so widening the schema breaks the sentence rather than quietly
+    // enlarging what an author may write into a key.
+    const statesIt = new RegExp(`\\b${maxLength}\\b`).test(text) && /\bidentifier\b/i.test(text);
+    console.log(`  ${rel.padEnd(48)} states the ${maxLength}-character identifier form: ${statesIt}`);
     if (!statesIt) silent.push(rel);
   }
+  for (const a of advertising) console.log(`  ADVERTISING: ${a}`);
+  assert.deepEqual(
+    advertising,
+    [],
+    "a shipped file still describes a channel into `observed_records.evidence` as open when it is closed: a false statement about " +
+      "a security property is the class of defect [D-20] blocks on, and it is one whichever direction it is false in",
+  );
   assert.deepEqual(
     silent,
     [],
-    "a shipped file describes this column's channels without naming the one that is still open: a statement about a security " +
-      "property that omits the way through it is the class of defect [D-20] blocks on",
+    "a shipped file describes this column's channels without stating the FORM a declared name must take: the rule that closes the " +
+      "name channel is the one a reader most needs stated",
   );
 });
 
