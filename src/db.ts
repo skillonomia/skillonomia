@@ -5,6 +5,7 @@ import { openSqlite, type Db } from "./sqlite.ts";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { migrationsDir } from "./assets.ts";
+import { MIGRATION_STEPS } from "./migration-steps.ts";
 
 export type { Db } from "./sqlite.ts";
 
@@ -61,6 +62,13 @@ export function migrate(db: Db): void {
     if (n <= version) continue;
     db.exec("BEGIN");
     try {
+      // A migration whose SQL needs a value SQLite cannot compute — a SHA-256,
+      // for `0011` — has a step in `src/migration-steps.ts`. It runs inside THIS
+      // transaction and before the file that consumes it, so a step that throws
+      // is rolled back with the migration and never half-applied. It prepares
+      // values; every table, index, trigger and constraint stays in the `.sql`
+      // file, which is what Appendix D of `SPEC.md` embeds verbatim.
+      MIGRATION_STEPS[n]?.(db);
       db.exec(readFileSync(join(MIGRATIONS_DIR, file), "utf8"));
       db.exec(`PRAGMA user_version=${n}`);
       db.exec("COMMIT");

@@ -67,6 +67,7 @@ import { openDb, openMigrated, migrate } from "../src/db.ts";
 import { migrationsDir } from "../src/assets.ts";
 import type { Db } from "../src/sqlite.ts";
 import { JOURNAL_INTAKE, correlationDigest, journalColumnsOf, journalTablesOf, surveyJournalIntake } from "../src/journal.ts";
+import { MIGRATION_STEPS } from "../src/migration-steps.ts";
 import { EVIDENCE_DIGEST } from "../src/outcome.ts";
 import { ulid } from "../src/ulid.ts";
 import { seedGraph, insertReceiptEvent } from "./helpers.ts";
@@ -97,6 +98,10 @@ function databaseAtVersion(through: number): Db {
     const n = parseInt(file.slice(0, 4), 10);
     if (n > through) break;
     db.exec("BEGIN");
+    // The steps of the migrations up to `through` ran in that build too: a step
+    // ships with the numbered file that consumes it, so replaying them is what
+    // makes this an older state rather than a broken one.
+    MIGRATION_STEPS[n]?.(db);
     db.exec(readFileSync(join(MIGRATION_DIR, file), "utf8"));
     db.exec(`PRAGMA user_version=${n}`);
     db.exec("COMMIT");
@@ -366,10 +371,17 @@ test("[11.5] a synthesized `delivered` written by an older build ends where this
   legacyFx.db
     .prepare(
       `INSERT INTO receipt_events(id, adoption_receipt_id, event, event_seq, evidence_json, server_at_ms, idempotency_key)
-       VALUES (?,?, 'delivered', 1, '{"synthesized":true}', ?, ?)`,
+       VALUES (?,?, 'delivered', ?, '{"synthesized":true}', ?, ?)`,
     )
-    .run(ulid(Date.now()), receiptId, Date.now(), `synth-delivered:${receiptId}`);
-  insertReceiptEvent(legacyFx.db, receiptId, "attempted", 2, Date.now(), "an attempt of the older build");
+    .run(ulid(Date.now()), receiptId, nextSeq(legacyFx.db, receiptId), Date.now(), `synth-delivered:${receiptId}`);
+  insertReceiptEvent(
+    legacyFx.db,
+    receiptId,
+    "attempted",
+    nextSeq(legacyFx.db, receiptId),
+    Date.now(),
+    "an attempt of the older build",
+  );
 
   migrate(legacyFx.db);
 
@@ -467,13 +479,22 @@ function digestColumns(db: Db): string[] {
     .sort();
 }
 
+/**
+ * A DIGEST AS THIS SCHEMA WRITES ONE. Two forms are in use and both are hashes:
+ * `sha256:` and 64 lowercase hex for a correlation key, bare 64 lowercase hex
+ * for the hash chain of `transparency_log`. The question the walker asks is not
+ * which prefix a column chose — it is whether a value in a column the code calls
+ * a digest could be a caller's text, and neither form can be.
+ */
+const STORED_DIGEST = /^(sha256:)?[0-9a-f]{64}$/;
+
 /** Every value in those columns that is neither NULL nor a digest. */
 function nonDigests(db: Db): string[] {
   const bad: string[] = [];
   for (const column of digestColumns(db)) {
     const [table, name] = column.split(".");
     const rows = db.prepare(`SELECT ${name} AS v FROM ${table} WHERE ${name} IS NOT NULL`).all() as Array<{ v: unknown }>;
-    for (const r of rows) if (typeof r.v !== "string" || !EVIDENCE_DIGEST.test(r.v)) bad.push(`${column}=${String(r.v)}`);
+    for (const r of rows) if (typeof r.v !== "string" || !STORED_DIGEST.test(r.v)) bad.push(`${column}=${String(r.v)}`);
   }
   return bad;
 }
@@ -540,6 +561,61 @@ test("[11.10] migrating an already-migrated database changes nothing", () => {
   migrate(db);
   assert.deepEqual(keys(db), once, "the second pass hashes nothing, because there is no second pass");
   assert.deepEqual(once, [correlationDigest("a key of an older build")]);
+  db.close();
+});
+
+// ===========================================================================
+// [11.12] THE BOUNDARY OF THIS ROUND, RUN RATHER THAN DESCRIBED.
+//
+//   Round 10 narrowed more than one column. `receipt_events.idempotency_key` is
+//   what `0011` repairs; `observed_records.call_id` became a digest in the same
+//   round, and `runtime_observations.model` and `.window_detail` were narrowed
+//   in it, all three without a migration. The table that holds them was created
+//   by `0008`, so a database older than that carries no row of any of them —
+//   but a database written BETWEEN `0008` and the round-10 build does, and this
+//   round does not repair those rows.
+//
+//   This probe holds those values and requires them to come through the
+//   migration UNCHANGED, which is what the code does. It is not an endorsement:
+//   it is the boundary written where a run can see it, so that the round which
+//   takes those columns starts from a probe that fails instead of from a
+//   sentence somebody has to remember. `[11.8]` is honest for the same reason —
+//   it walks the whole classified set over the legacy states THIS FILE BUILDS,
+//   and this is the state it does not build.
+// ===========================================================================
+
+test("[11.12] the columns round 10 narrowed in `observed_records` and `runtime_observations` are NOT repaired here", () => {
+  const db = databaseAtVersion(10);
+  const seed = seedGraph(db);
+  const RAW_CALL_ID = "call-42 from the runtime's own log";
+  const RAW_MODEL = "a model name of the older build, with spaces";
+  const RAW_WINDOW = "the reporter's own sentence about its boundary";
+
+  const observation = ulid(seed.now);
+  db.prepare(
+    `INSERT INTO runtime_observations(id, agent_id, runtime, model, selection_window, window_detail,
+        proposal_inventory_complete, records_read, reported_by_agent_id, reported_by_type,
+        reported_by_role, server_at_ms, idempotency_key)
+     VALUES (?,?, 'claude_code', ?, 'all_time', ?, 1, 1, ?, 'agent', 'member', ?, ?)`,
+  ).run(observation, seed.adopterA, RAW_MODEL, RAW_WINDOW, seed.adopterA, seed.now, `observation:${observation}`);
+  db.prepare(
+    `INSERT INTO observed_records(id, observation_id, agent_id, runtime, role, call_id, at_ms, marker, result, server_at_ms)
+     VALUES (?,?,?, 'claude_code', 'call', ?, ?, ?, 'unknown', ?)`,
+  ).run(ulid(seed.now), observation, seed.adopterA, RAW_CALL_ID, seed.now, `SKLN1-${"A".repeat(16)}`, seed.now);
+
+  migrate(db);
+
+  assert.equal(
+    (db.prepare("SELECT call_id AS v FROM observed_records").get() as { v: string }).v,
+    RAW_CALL_ID,
+    "0011 answers for one column and says so; this is the one it does not answer for",
+  );
+  const obs = db.prepare("SELECT model AS m, window_detail AS w FROM runtime_observations").get() as {
+    m: string;
+    w: string;
+  };
+  assert.equal(obs.m, RAW_MODEL, "…and the narrowing of `model` reached the intake and no existing row");
+  assert.equal(obs.w, RAW_WINDOW, "…nor did the composition of `window_detail`");
   db.close();
 });
 
