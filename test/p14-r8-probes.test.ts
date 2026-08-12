@@ -62,7 +62,9 @@ import * as outcomeNamespace from "../src/outcome.ts";
 import * as activationNamespace from "../src/activation.ts";
 import { EVIDENCE_LIST_MAX, EVIDENCE_NAMES, OUTCOME_CHECK_SHAPE, evaluateOutcome } from "../src/outcome.ts";
 import { arrivalMarker } from "../src/marker.ts";
+import { validateManifest } from "../src/manifest.ts";
 import { p4Fixture, reviewedVersion, rest, type P4Fixture } from "./p6-helpers.ts";
+import { makeManifest } from "./p2-helpers.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 
@@ -584,6 +586,72 @@ test("[8.3] no shipped file describes a value grammar the code does not have", (
   const silent = found.filter(([, s]) => !/nest/i.test(s)).map(([rel]) => rel);
   console.log(`  passages that do not mention nesting: ${silent.join(", ") || "(none)"}`);
   assert.deepEqual([...new Set(silent)], [], "a passage describing the value grammar does not say that no depth of nesting is admitted");
+
+  // …AND THE NUMBER THEY PRINT IS THE CODE'S. A bound written out in prose is a
+  // second copy of `EVIDENCE_LIST_MAX`, free to drift the day it changes; the
+  // passage is compared with the constant rather than with a number typed here.
+  const wrong = found
+    .filter(([, s]) => /\bat most\b/i.test(s) && !s.includes(String(EVIDENCE_LIST_MAX)))
+    .map(([rel, s]) => `${rel}: ${s.slice(0, 120)}`);
+  for (const w of wrong) console.log(`  DRIFTED: ${w}`);
+  assert.deepEqual(wrong, [], "a passage states a bound on a list that is not the bound the code enforces");
+});
+
+test("[8.3] the ONE channel this round did NOT close is stated, with the bound the schema actually enforces", () => {
+  // FOUND WHILE EXECUTING THE CLAIM OF 8.3 RATHER THAN READING IT, and stated
+  // here because the instruction for this round is to write the truth and not
+  // the intention where something promised is not delivered.
+  //
+  // The VALUES are closed. The NAMES are the base set plus whatever the SIGNED
+  // `outcome_contract.evidence` declares — and a declared name is a string the
+  // AUTHOR wrote, stored in `observed_records.evidence` as a JSON KEY, word for
+  // word. An author is a fleet agent under D-21 like any other: it declares its
+  // text as a list of names, its own run presents them, and the column holds
+  // them. So `free text is refused under EVERY name` is true of what a name
+  // CARRIES and is not true of what a name IS, and no shipped file may say
+  // otherwise until the channel is closed.
+  //
+  // WHAT IS PINNED HERE IS THE BOUND, taken from the schema rather than typed
+  // out: how many names a contract may declare and how long each may be. A
+  // shipped file that states this channel must state that number, so widening
+  // the schema breaks the sentence instead of quietly enlarging the channel.
+  const schema = JSON.parse(readFileSync(join(REPO_ROOT, "schema/skill-package-v1.schema.json"), "utf8"));
+  const declared = schema.properties?.outcome_contract?.properties?.evidence;
+  assert.ok(declared, "the schema no longer shapes `outcome_contract.evidence`, so this bound has no source");
+  const maxNames: number = declared.maxItems;
+  const maxLength: number = declared.items.maxLength;
+  const capacity = maxNames * maxLength;
+  console.log(`[8.3] a signed contract may declare ${maxNames} names of up to ${maxLength} characters: ${capacity} characters`);
+
+  // THE BOUND IS REAL AND NOT ASPIRATIONAL — the packing schema refuses both
+  // ways past it, so the number above is what an author can actually spend.
+  const contractWith = (evidence: string[]) => ({
+    check: { kind: "exit_code", exit_code: 0 },
+    evidence,
+    unknown: "no evaluated run of this skill was reported, which is not a failure of it",
+  });
+  const ok = validateManifest(makeManifest({ outcome_contract: contractWith(["exit_code"]) }));
+  const tooMany = validateManifest(makeManifest({ outcome_contract: contractWith(Array.from({ length: maxNames + 1 }, (_, i) => `n${i}`)) }));
+  const tooLong = validateManifest(makeManifest({ outcome_contract: contractWith(["exit_code", "n".repeat(maxLength + 1)]) }));
+  console.log(`  one name → ${ok.valid};  ${maxNames + 1} names → ${tooMany.valid};  a name of ${maxLength + 1} → ${tooLong.valid}`);
+  assert.equal(ok.valid, true, "a contract declaring one name was refused, so the two refusals below are vacuous");
+  assert.equal(tooMany.valid, false, "a contract may declare more names than the schema says, so the bound is not a bound");
+  assert.equal(tooLong.valid, false, "a declared name may be longer than the schema says, so the bound is not a bound");
+
+  // AND EVERY SHIPPED FILE THAT DESCRIBES THIS CHANNEL SAYS SO, with the number.
+  const silent: string[] = [];
+  for (const rel of CLAIM_SURFACES) {
+    const text = readFileSync(join(REPO_ROOT, rel), "utf8").replace(/\s+/g, " ");
+    const statesIt = new RegExp(`\\b${capacity}\\b`).test(text) && /\bname\b/i.test(text);
+    console.log(`  ${rel.padEnd(48)} states the ${capacity}-character name channel: ${statesIt}`);
+    if (!statesIt) silent.push(rel);
+  }
+  assert.deepEqual(
+    silent,
+    [],
+    "a shipped file describes this column's channels without naming the one that is still open: a statement about a security " +
+      "property that omits the way through it is the class of defect [D-20] blocks on",
+  );
 });
 
 test("[8.3] `the text of a record does not reach this schema` is executed against the schema itself", () => {
