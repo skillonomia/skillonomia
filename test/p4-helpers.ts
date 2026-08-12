@@ -71,9 +71,13 @@ export function p4Fixture(
      *  larger bucket to reach the behaviour it is measuring rather than the
      *  limiter, and says so at its call site. */
     rateLimit?: { capacity: number; refillPerSec: number };
+    /** The database to seed. Absent = a freshly migrated one, which is what
+     *  every suite but the upgrade probe wants; that probe needs a fixture
+     *  built on a database an OLDER build left behind. */
+    db?: Db;
   } = {},
 ): P4Fixture {
-  const seed = seedGraph();
+  const seed = seedGraph(opts.db);
   const registry = new Registry(seed.db, {
     now: () => NOW,
     secrets: opts.secrets,

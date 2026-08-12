@@ -34,8 +34,17 @@ export function insertAgent(
   return id;
 }
 
-export function seedGraph(): Seed {
-  const db = openMigrated();
+/**
+ * The seed graph, on a database the caller may supply.
+ *
+ * The default is what every suite has always got: a freshly migrated in-memory
+ * database. The parameter exists for the UPGRADE probe, which has to seed a
+ * database left at an OLDER `user_version` and then migrate it — a state no
+ * caller of `openMigrated()` can produce, because that function migrates all
+ * the way forward by definition. Every statement below names its columns, so it
+ * runs against an older schema exactly as it runs against this one.
+ */
+export function seedGraph(db: Db = openMigrated()): Seed {
   const now = Date.now();
   const wsA = ulid(now);
   const wsB = ulid(now);
