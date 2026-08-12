@@ -2960,6 +2960,17 @@ test("every file the package SHIPS, and every document git tracks, states the re
   assert.ok(claims > 0, "no document states any of the guarded counts");
   assert.deepEqual(wrong, [], "documentation that does not describe the code");
 
+  // …AND NO DECLARED BINDING BINDS NOTHING. `reviews/BINDINGS.md` exempts an
+  // accepted record's claim from being checked against today's code, keyed by
+  // the digest of the sentence it binds. An entry whose digest matches no
+  // sentence of its document is DEAD — the sentence was reworded, the file was
+  // renamed, or the entry was never right — and skipping it silently is the
+  // same quiet-staleness mechanism this file removed from document DISCOVERY
+  // twice. A dead binding brings the sweep down.
+  const stale = docs.staleBindings(documents);
+  console.log(`[docs] bindings declared: ${docs.reviewBindings().length}; bindings that bind nothing: ${stale.length}`);
+  assert.deepEqual(stale, [], "a declared claim binding matches no sentence of the document it names");
+
   // …and every tool the adapter dispatches is named in the README's tool table,
   // so a tool cannot ship undocumented
   const readme = documents.find(([n]) => n === "README.md")![1];

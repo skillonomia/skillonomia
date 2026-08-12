@@ -730,6 +730,70 @@ export function sentenceDigest(sentence: string): string {
 }
 
 /**
+ * Every sentence of one document that CARRIES A GUARDED CLAIM, by digest.
+ *
+ * A binding is only ever consulted for such a sentence, so this is the set a
+ * binding has to hit to be about anything at all. It is computed with the same
+ * `claimsIn` and the same `sentenceAround` the sweep uses — there is no second
+ * notion of "a sentence" for the staleness check to agree with itself about.
+ */
+function claimSentenceDigests(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const subject of SUBJECTS) {
+    for (const claim of claimsIn(text, subject)) out.add(sentenceDigest(sentenceAround(text, claim.at, claim.length)));
+  }
+  return out;
+}
+
+/**
+ * BINDINGS THAT BIND NOTHING — and why they are a FAILURE and not a skip.
+ *
+ * A binding whose digest matches no sentence of the document it names is dead:
+ * the sentence was reworded, the document was renamed, or the entry was wrong
+ * when it was written. Ignoring it silently is the SAME MECHANISM this project
+ * has already removed twice from document discovery — a list that quietly stops
+ * describing its subject while every run stays green. Round 3 reached 61 of 76
+ * files and reported a clean sweep; round 4 printed sixty "unverifiable" claims
+ * and passed. There is no third bucket here either: a binding either binds a
+ * sentence that exists, or it brings the run down.
+ *
+ * It is also the other half of the promise the sidecar makes. The bindings exist
+ * so that an accepted record need not be rewritten, and they are keyed by the
+ * digest of the bound sentence precisely so that editing the record breaks them.
+ * A broken binding that nobody noticed would turn that from a check into a
+ * decoration.
+ */
+export function staleBindingsOf(bindings: readonly ReviewBinding[], documents: ReadonlyArray<[string, string]>): string[] {
+  const byName = new Map(documents);
+  const digests = new Map<string, Set<string>>();
+  const out: string[] = [];
+  for (const b of bindings) {
+    const text = byName.get(b.document);
+    if (text === undefined) {
+      out.push(`${BINDINGS_FILE}: binds \`${b.document}\`, which is not a document this package ships or this repository tracks`);
+      continue;
+    }
+    let set = digests.get(b.document);
+    if (set === undefined) {
+      set = claimSentenceDigests(text);
+      digests.set(b.document, set);
+    }
+    if (!set.has(b.sentence_sha256)) {
+      out.push(
+        `${BINDINGS_FILE}: binds ${b.sentence_sha256.slice(0, 16)}… in \`${b.document}\`, which matches no sentence of it that ` +
+          "states a guarded count — the sentence was reworded or the entry was never right",
+      );
+    }
+  }
+  return out;
+}
+
+/** The declared bindings, against the shipped set. */
+export function staleBindings(documents: ReadonlyArray<[string, string]>): string[] {
+  return staleBindingsOf(reviewBindings(), documents);
+}
+
+/**
  * The value THIS sentence is bound to from outside, or `null` with the reason
  * it is not. `scope` is publishable either way — a refusal that does not say
  * what it looked for is a refusal a reader cannot act on.

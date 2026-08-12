@@ -207,7 +207,7 @@ const CONTRACT = {
   // journal carries under any name — so a `stdout_match` names the digest it
   // expects and the check is an equality.
   check: { kind: "stdout_match", stdout_match: CONTRACT_DIGEST },
-  evidence: ["stdout"],
+  evidence: ["stdout_sha256"],
   unknown: "no evaluated run of this skill was reported, which is not a failure of it",
 };
 
@@ -733,7 +733,7 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
     evidence({
       snapshot: snapshot([
         record({ role: "call", call_id: "c-3" }),
-        record({ role: "output", call_id: "c-3", result: "unknown", evidence: selfReported({ stdout: CONTRACT_DIGEST }) }),
+        record({ role: "output", call_id: "c-3", result: "unknown", evidence: selfReported({ stdout_sha256: CONTRACT_DIGEST }) }),
       ]),
       outcome_contract: CONTRACT,
       reported_by: { type: "agent" },
@@ -753,7 +753,7 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
     evidence({
       snapshot: snapshot([
         record({ role: "call", call_id: "c-4" }),
-        record({ role: "output", call_id: "c-4", result: "unknown", evidence: selfReported({ stdout: OTHER_DIGEST }) }),
+        record({ role: "output", call_id: "c-4", result: "unknown", evidence: selfReported({ stdout_sha256: OTHER_DIGEST }) }),
       ]),
       outcome_contract: CONTRACT,
       reported_by: { type: "service" },
@@ -1157,7 +1157,7 @@ test("[M-7] the assessment logic imports no filesystem, and the whole pipeline r
   // over records that came from nowhere at all, with no root configured.
   const records = [
     record({ role: "call", call_id: "wire-1" }),
-    record({ role: "output", call_id: "wire-1", result: "success", evidence: selfReported({ stdout: CONTRACT_DIGEST }) }),
+    record({ role: "output", call_id: "wire-1", result: "success", evidence: selfReported({ stdout_sha256: CONTRACT_DIGEST }) }),
   ];
   const columns = capabilityColumns(evidence({ snapshot: snapshot(records), outcome_contract: CONTRACT, reported_by: { type: "agent" } }));
   assert.equal(cellOf(columns, "invoked").value, "yes");
@@ -1812,9 +1812,9 @@ const CHECK_CASES: ReadonlyArray<{
     // of digests. A substring pattern is no longer executable by this registry
     // and is exercised as its own case, below.
     kind: "stdout_match",
-    contract: { check: { kind: "stdout_match", stdout_match: DIGEST_A }, evidence: ["stdout"], unknown: "nothing was evaluated, which is not a failure" },
-    satisfying: { stdout: DIGEST_A },
-    refuting: { stdout: DIGEST_B },
+    contract: { check: { kind: "stdout_match", stdout_match: DIGEST_A }, evidence: ["stdout_sha256"], unknown: "nothing was evaluated, which is not a failure" },
+    satisfying: { stdout_sha256: DIGEST_A },
+    refuting: { stdout_sha256: DIGEST_B },
   },
   {
     kind: "artifact_exists",

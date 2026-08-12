@@ -373,7 +373,7 @@ const R5_OTHER_DIGEST = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210
 
 const CONTRACT = {
   check: { kind: "stdout_match", stdout_match: R5_DIGEST },
-  evidence: ["stdout"],
+  evidence: ["stdout_sha256"],
   unknown: "no evaluated run of this skill was reported, which is not a failure of it",
 };
 
@@ -440,11 +440,11 @@ test("[D-2] the evaluator receives the CONTRACT and executes its `check` against
     "[D-2] requires a deterministic evaluator that takes the contract itself and runs its `check`",
   );
   const cases: Array<[string, unknown, unknown, string]> = [
-    ["no contract", null, { stdout: R5_DIGEST }, "unknown"],
+    ["no contract", null, { stdout_sha256: R5_DIGEST }, "unknown"],
     ["no evidence", CONTRACT, null, "unknown"],
     ["evidence missing the named value", CONTRACT, { exit_code: 0 }, "unknown"],
-    ["the check runs and is satisfied", CONTRACT, { stdout: R5_DIGEST }, "yes"],
-    ["the check runs and is not satisfied", CONTRACT, { stdout: R5_OTHER_DIGEST }, "no"],
+    ["the check runs and is satisfied", CONTRACT, { stdout_sha256: R5_DIGEST }, "yes"],
+    ["the check runs and is not satisfied", CONTRACT, { stdout_sha256: R5_OTHER_DIGEST }, "no"],
     [
       "exit_code, satisfied",
       { check: { kind: "exit_code", exit_code: 0 }, evidence: ["exit_code"], unknown: "nothing was evaluated, which is not a failure" },
@@ -483,7 +483,7 @@ test("[D-2] a `check` with no parameter of its own kind is INVALID, in the schem
   ];
   const escaped: string[] = [];
   for (const [name, check] of truncated) {
-    const contract = { check, evidence: ["stdout"], unknown: "nothing was evaluated, which is not a failure of it" };
+    const contract = { check, evidence: ["stdout_sha256"], unknown: "nothing was evaluated, which is not a failure of it" };
     const read = outcomeContractOf({ outcome_contract: contract });
     const manifest = makeManifest({ outcome_contract: contract });
     const schema = validateManifest(manifest);
@@ -492,7 +492,7 @@ test("[D-2] a `check` with no parameter of its own kind is INVALID, in the schem
     if (schema.valid) escaped.push(`${name}: the schema accepted it`);
   }
   // …and the WHOLE contract is accepted by both, or the refusals are vacuous
-  const whole = { check: { kind: "stdout_match", stdout_match: "ALL GREEN" }, evidence: ["stdout"], unknown: "nothing was evaluated, which is not a failure of it" };
+  const whole = { check: { kind: "stdout_match", stdout_match: "ALL GREEN" }, evidence: ["stdout_sha256"], unknown: "nothing was evaluated, which is not a failure of it" };
   assert.equal(outcomeContractOf({ outcome_contract: whole }).valid, true, "a whole contract must be accepted");
   assert.equal(validateManifest(makeManifest({ outcome_contract: whole })).valid, true, "a whole contract must validate");
   assert.deepEqual(escaped, [], "checks that name a kind and none of its parameters");
@@ -526,7 +526,7 @@ test("[D-2] `observation.report` takes a `result` only with the evidence that es
 
   const withEvidence = report([
     { role: "call", call_id: "p-2", marker, at_ms: 3 },
-    { role: "output", call_id: "p-2", marker, at_ms: 4, result: "success", evidence: { stdout: R5_DIGEST } },
+    { role: "output", call_id: "p-2", marker, at_ms: 4, result: "success", evidence: { stdout_sha256: R5_DIGEST } },
   ]);
   console.log(`  \`result: success\` with evidence    → ${withEvidence.status}`);
   assert.equal(withEvidence.status, 201, "a report carrying its evidence must be accepted, or the refusal above is vacuous");

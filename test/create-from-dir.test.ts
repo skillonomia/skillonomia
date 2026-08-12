@@ -1110,7 +1110,7 @@ const OUTCOME_OTHER_DIGEST = "sha256:8888888888888888888888888888888888888888888
 
 const OUTCOME_CONTRACT_FOR_EVIDENCE = {
   check: { kind: "stdout_match", stdout_match: OUTCOME_DIGEST },
-  evidence: ["stdout"],
+  evidence: ["stdout_sha256"],
   unknown: "no evaluated run of this skill was reported, which is not a failure of it",
 };
 
@@ -1225,7 +1225,7 @@ test("D-2: the contract is inside the signature, so success cannot be redefined 
     semantic_version: "1.0.1",
     outcome_contract: {
       check: { kind: "stdout_match", stdout_match: "anything at all" },
-      evidence: ["stdout"],
+      evidence: ["stdout_sha256"],
       unknown: "no evaluated run of this skill was reported, which is not a failure of it",
     },
   });
@@ -1295,12 +1295,12 @@ test("D-2: the contract is EXECUTED, and a principal's own word is not a verdict
   // against the EVIDENCE a run presented, and `result` is not one of its
   // inputs in either direction.
   const outcome = (e: any) => capabilityColumns(e).find((c) => c.column === "outcome")!;
-  const satisfied = outcome(outcomeEvidence({ contract: true, result: "unknown", evidence: { stdout: OUTCOME_DIGEST } }));
-  const unsatisfied = outcome(outcomeEvidence({ contract: true, result: "unknown", evidence: { stdout: OUTCOME_OTHER_DIGEST } }));
+  const satisfied = outcome(outcomeEvidence({ contract: true, result: "unknown", evidence: { stdout_sha256: OUTCOME_DIGEST } }));
+  const unsatisfied = outcome(outcomeEvidence({ contract: true, result: "unknown", evidence: { stdout_sha256: OUTCOME_OTHER_DIGEST } }));
   const declaredSuccess = outcome(outcomeEvidence({ contract: true, result: "success" }));
   const declaredFailure = outcome(outcomeEvidence({ contract: true, result: "failure" }));
   const finished = outcome(outcomeEvidence({ contract: true, result: "unknown" }));
-  const noContract = outcome(outcomeEvidence({ contract: false, result: "success", evidence: { stdout: OUTCOME_DIGEST } }));
+  const noContract = outcome(outcomeEvidence({ contract: false, result: "success", evidence: { stdout_sha256: OUTCOME_DIGEST } }));
   console.log(`[D-2] contract + evidence that satisfies the check → outcome=${satisfied.value} (${satisfied.reason ?? "—"})`);
   console.log(`[D-2] contract + evidence that does not           → outcome=${unsatisfied.value} (${unsatisfied.reason ?? "—"})`);
   console.log(`[D-2] contract + the reporter's own \`success\`     → outcome=${declaredSuccess.value} (${declaredSuccess.reason ?? "—"})`);

@@ -42,12 +42,15 @@ export const OUTCOME_CHECK_KINDS: readonly string[] = ["exit_code", "stdout_matc
  * somebody writes down why it is not, which is the direction that fails safe.
  */
 export const OUTCOME_CHECK_SHAPE: Readonly<
-  Record<string, { parameter: string; evidence: string; reads: readonly string[]; observable: boolean }>
+  Record<
+    string,
+    { parameter: string; evidence: string; reads: readonly string[]; observable: boolean; echoes: string | null }
+  >
 > = {
-  exit_code: { parameter: "exit_code", evidence: "exit_code", reads: ["exit_code"], observable: false },
-  stdout_match: { parameter: "stdout_match", evidence: "stdout", reads: ["stdout"], observable: false },
-  artifact_exists: { parameter: "artifact_path", evidence: "artifacts", reads: ["artifacts"], observable: true },
-  command: { parameter: "command", evidence: "exit_code", reads: ["command", "exit_code"], observable: false },
+  exit_code: { parameter: "exit_code", evidence: "exit_code", reads: ["exit_code"], observable: false, echoes: null },
+  stdout_match: { parameter: "stdout_match", evidence: "stdout_sha256", reads: ["stdout_sha256"], observable: false, echoes: null },
+  artifact_exists: { parameter: "artifact_path", evidence: "artifacts", reads: ["artifacts"], observable: true, echoes: "artifact_path" },
+  command: { parameter: "command", evidence: "exit_code", reads: ["command", "exit_code"], observable: false, echoes: "command" },
 };
 
 /**
@@ -90,8 +93,9 @@ export interface OutcomeCheck {
  * Round 6 closed the set of evidence NAMES: a report may only present names the
  * signed contract asked for. It left the VALUES open — any string, of any
  * content, up to the size bound. A reviewer put `sk-live-…` through the shipped
- * `/v1/observations` surface under the contract's own `stdout` and it was
- * stored, word for word, in an INSERT-only journal. A whole transcript goes the
+ * `/v1/observations` surface under the contract's own output channel — then
+ * called `stdout`, and renamed for what it can actually hold once this section
+ * existed — and it was stored, word for word, in an INSERT-only journal. A whole transcript goes the
  * same way. A closed set of names over an open set of values is not a closed
  * channel: it is a key-value store with a vocabulary.
  *
@@ -114,8 +118,16 @@ export interface OutcomeCheck {
  * including a name the contract declared. An author who wants a run's output
  * evaluated presents its digest, and the contract states the digest it expects.
  * A `stdout_match` that names a SUBSTRING is therefore no longer executable by
- * this registry — see `checkIsExecutable` below, which says so in a reason
- * rather than answering `no` to a run that may well have printed the pattern.
+ * this registry — see `checkParameterIsReadable` below, which says so in a
+ * reason rather than answering `no` to a run that may well have printed the
+ * pattern. THE PATTERN ITSELF MAY STILL BE A SUBSTRING: it is author content
+ * inside a signature, and [I-7] is about what a run writes into this journal,
+ * not about what an author writes into a manifest.
+ *
+ * AND THE CHANNEL IS NAMED FOR WHAT IT HOLDS. It used to be called `stdout`,
+ * which promised the output of a process; it can hold only a digest, so it is
+ * `stdout_sha256`. A field whose name asserts more than the code delivers is
+ * the same class of defect as a comment that does, one level further in.
  */
 export const EVIDENCE_DIGEST = /^sha256:[0-9a-f]{64}$/;
 
@@ -134,10 +146,22 @@ export function contractLiterals(contract: unknown): Set<string> {
   const out = new Set<string>();
   const check = (contract as { check?: Record<string, unknown> } | null | undefined)?.check;
   if (check === null || check === undefined || typeof check !== "object") return out;
-  for (const field of ["command", "artifact_path", "stdout_match"]) {
-    const v = (check as Record<string, unknown>)[field];
-    if (typeof v === "string" && v.length > 0) out.add(v);
-  }
+  // THE PARAMETER THIS KIND COMPARES AGAINST A PRESENTED VALUE, and no other.
+  // `echoes` is that parameter, read off the check table, so the enumeration
+  // cannot drift from what the checks actually do.
+  //
+  // `stdout_match` IS DELIBERATELY NOT ONE OF THEM, and the reason is the whole
+  // of the rename. Its pattern may be a SUBSTRING — it is author content under
+  // a signature, and narrowing the journal must not narrow the manifest. But
+  // admitting that substring as a VALUE would put the author's text into the
+  // journal under `stdout_sha256`, a name that promises a digest. The check
+  // compares digests, and a digest is admitted by the digest rule without any
+  // enumeration, so nothing is lost by leaving the pattern out.
+  const shape = OUTCOME_CHECK_SHAPE[(check as { kind?: unknown }).kind as string];
+  const field = shape?.echoes;
+  if (typeof field !== "string") return out;
+  const v = (check as Record<string, unknown>)[field];
+  if (typeof v === "string" && v.length > 0) out.add(v);
   return out;
 }
 
@@ -415,7 +439,7 @@ export interface OutcomeInputs {
  * the requirement moved rather than the code. D-14 said the evaluator EXECUTES
  * the `check`. [M-7] says this registry does not assume access to the
  * addressee's machine. For a remote addressee those two are not both
- * satisfiable: `exit_code`, `stdout` and `command` are facts about a process on
+ * satisfiable: `exit_code`, `stdout_sha256` and `command` are facts about a process on
  * somebody else's computer, and nothing this registry can do will make them its
  * own observations. The registry not running processes on other people's
  * machines is a PROPERTY OF THE PRODUCT.
@@ -531,7 +555,7 @@ export function evaluateOutcome(contract: unknown, evidence: unknown): OutcomeVe
   const shape = OUTCOME_CHECK_SHAPE[c?.check?.kind as string];
   if (!shape) return { value: "unknown", reason: "outcome_contract_names_no_deterministic_check" };
   // THE CONTRACT'S OWN PARAMETER MAY BE UNREADABLE, and that is a fact about
-  // the CONTRACT and not about the run. `stdout` is carried as a digest (2.3),
+  // the CONTRACT and not about the run. `stdout_sha256` is carried as a digest,
   // and a substring cannot be tested against a digest — so a `stdout_match`
   // whose pattern is a substring is not executable by this registry, and it
   // says so rather than answering `no` to a run that may well have printed the
@@ -569,7 +593,7 @@ export function evaluateOutcome(contract: unknown, evidence: unknown): OutcomeVe
  * read, given what a run is now allowed to present.
  *
  * Only `stdout_match` has a constraint, and it is a consequence of 2.3 rather
- * than a new rule: the pattern is compared against `stdout`, `stdout` is a
+ * than a new rule: the pattern is compared against `stdout_sha256`, which is a
  * digest, so a pattern that is not a digest of the same form names a
  * comparison nothing can perform. The other three compare against an integer,
  * a path the contract itself declares, and a command the contract itself
@@ -590,12 +614,12 @@ function executeCheck(check: OutcomeContract["check"], values: Record<string, un
       return observed === check.exit_code;
     }
     case "stdout_match": {
-      // AN EQUALITY OF DIGESTS, and no longer a substring test. `stdout` is a
-      // digest of fixed form (2.3) because a channel that takes arbitrary text
-      // is a transcript however the field is named, and `checkParameterIsReadable`
+      // AN EQUALITY OF DIGESTS, and no longer a substring test. `stdout_sha256`
+      // is a digest of fixed form (2.3) because a channel that takes arbitrary
+      // text is a transcript however the field is named, and `checkParameterIsReadable`
       // has already refused a contract whose pattern is not a digest, so both
       // sides of this comparison are digests or this line is not reached.
-      const observed = values.stdout;
+      const observed = values.stdout_sha256;
       if (typeof observed !== "string" || !EVIDENCE_DIGEST.test(observed)) return null;
       return observed === check.stdout_match;
     }

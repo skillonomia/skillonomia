@@ -210,14 +210,14 @@ one without a contract reports `outcome` as `unknown` with the reason
 An executed contract is not the same thing as a VERIFIED one, and the `outcome`
 column says which it is holding. This registry does not run processes on the
 addressee's machine and does not assume it can read that machine's disk [M-7],
-so an `exit_code`, a `stdout` or a `command` that reaches it is something a
-principal REPORTED. The contract is still executed against that report, and what
+so an `exit_code`, a `stdout_sha256` or a `command` that reaches it is something
+a principal REPORTED. The contract is still executed against that report, and what
 the report amounts to is published — as a claim, under its own name, beside the
 principal's type and the words "not verified by the registry". The verdict
 itself stays `unknown`. A `yes` or a `no` in this column means the registry read
 the thing itself, which today means one thing: whether an artifact the contract
-names is present under the activation root this deployment configured and this
-registry writes to. Finishing is not succeeding, and neither is being told that
+names is present under the activation root this deployment configured, AND this
+registry's own activation journal records that it wrote that very copy there. Finishing is not succeeding, and neither is being told that
 you succeeded.
 
 You supply no cryptographic material. There is no `--seed-hex`, no `kid`, no

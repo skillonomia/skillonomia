@@ -84,7 +84,7 @@ const R6_SUITE_DIGEST = "sha256:555555555555555555555555555555555555555555555555
 
 const DECLARED_CONTRACT = {
   check: { kind: "stdout_match", stdout_match: R6_DIGEST },
-  evidence: ["stdout", "suite_name"],
+  evidence: ["stdout_sha256", "suite_name"],
   unknown: "no evaluated run of this skill was reported, which is not a failure of it",
 };
 
@@ -146,7 +146,7 @@ test("[I-7] a name the contract never declared is refused, and NOTHING of it rea
       marker,
       at_ms: 2,
       result: "success",
-      evidence: { stdout: R6_DIGEST, [SECRET_NAME]: SECRET_VALUE, [TRANSCRIPT_NAME]: TRANSCRIPT_VALUE },
+      evidence: { stdout_sha256: R6_DIGEST, [SECRET_NAME]: SECRET_VALUE, [TRANSCRIPT_NAME]: TRANSCRIPT_VALUE },
     },
   ]);
   console.log(`  a secret-shaped name + \`${TRANSCRIPT_NAME}\` → ${planted.status} ${planted.raw.slice(0, 120)}`);
@@ -179,7 +179,7 @@ test("[I-7] the names the SIGNED contract declares are admitted, and are stored"
       marker,
       at_ms: 4,
       result: "success",
-      evidence: { stdout: R6_DIGEST, suite_name: R6_SUITE_DIGEST },
+      evidence: { stdout_sha256: R6_DIGEST, suite_name: R6_SUITE_DIGEST },
     },
   ]);
   console.log(`  the contract's own \`suite_name\` → ${accepted.status} ${accepted.raw.slice(0, 100)}`);
@@ -202,7 +202,7 @@ test("[I-7] where the contract cannot be read, only the base names are admissibl
     // no enumeration of literals, so the base names may still be presented but
     // only as booleans, integers and digests — a path or a command line is a
     // literal, and no signed document here declares one.
-    { role: "output", call_id: "i7-3", marker: stranger, at_ms: 6, result: "success", evidence: { exit_code: 0, stdout: R6_DIGEST, artifacts: [R6_DIGEST] } },
+    { role: "output", call_id: "i7-3", marker: stranger, at_ms: 6, result: "success", evidence: { exit_code: 0, stdout_sha256: R6_DIGEST, artifacts: [R6_DIGEST] } },
   ]);
   console.log(`  base names under an unknown marker → ${base.status}`);
   assert.equal(base.status, 201, "the four base names must always be admissible");
@@ -211,7 +211,7 @@ test("[I-7] where the contract cannot be read, only the base names are admissibl
   // here, because no contract can be read for this marker.
   const borrowed = report([
     { role: "call", call_id: "i7-4", marker: stranger, at_ms: 7 },
-    { role: "output", call_id: "i7-4", marker: stranger, at_ms: 8, result: "success", evidence: { stdout: R6_DIGEST, suite_name: R6_SUITE_DIGEST } },
+    { role: "output", call_id: "i7-4", marker: stranger, at_ms: 8, result: "success", evidence: { stdout_sha256: R6_DIGEST, suite_name: R6_SUITE_DIGEST } },
   ]);
   console.log(`  a contract name under an unknown marker → ${borrowed.status} ${borrowed.raw.slice(0, 100)}`);
   assert.notEqual(borrowed.status, 201, "a name no readable contract declares was accepted under an unknown marker");
@@ -232,7 +232,7 @@ test("[I-7] the base set is DERIVED FROM THE CODE — every name the checks read
   // later that reads a fifth name fails here rather than silently widening what
   // the boundary accepts.
   const touched = new Set<string>();
-  const full: Record<string, unknown> = { exit_code: 0, stdout: R6_DIGEST, artifacts: ["out/report.json"], command: "true" };
+  const full: Record<string, unknown> = { exit_code: 0, stdout_sha256: R6_DIGEST, artifacts: ["out/report.json"], command: "true" };
   for (const kind of OUTCOME_CHECK_KINDS) {
     const shape = OUTCOME_CHECK_SHAPE[kind]!;
     const contract = {
@@ -692,7 +692,7 @@ test("[D-18] every `outcome` column carries its basis — the attribute is a MET
 
   const CONTRACT = {
     check: { kind: "stdout_match", stdout_match: "ALL GREEN" },
-    evidence: ["stdout"],
+    evidence: ["stdout_sha256"],
     unknown: "no evaluated run of this skill was reported, which is not a failure of it",
   };
   const marker = arrivalMarker("01K1M83S80CCCCCCCCCCCCCCCC");
@@ -724,7 +724,7 @@ test("[D-18] every `outcome` column carries its basis — the attribute is a MET
     ["no contract at all", base({})],
     ["a contract and nothing observed", base({ outcome_contract: CONTRACT })],
     ["a run that presented no evidence", base({ outcome_contract: CONTRACT, snapshot: snap([rec({ role: "call", call_id: "p" }), rec({ call_id: "p" })], { agent_id: "a", type: "agent" }) })],
-    ["a self-report that satisfies", base({ outcome_contract: CONTRACT, snapshot: snap([rec({ role: "call", call_id: "q" }), rec({ call_id: "q", evidence: selfReported({ stdout: R6_DIGEST }) })], { agent_id: "a", type: "service" }) })],
+    ["a self-report that satisfies", base({ outcome_contract: CONTRACT, snapshot: snap([rec({ role: "call", call_id: "q" }), rec({ call_id: "q", evidence: selfReported({ stdout_sha256: R6_DIGEST }) })], { agent_id: "a", type: "service" }) })],
     ["the registry's own reading", base({ outcome_contract: { check: { kind: "artifact_exists", artifact_path: "out/x" }, evidence: ["artifacts"], unknown: "nothing was evaluated" }, observed_evidence: registryObserved({ artifacts: ["out/x"] }) })],
     ["the registry's own reading, negative", base({ outcome_contract: { check: { kind: "artifact_exists", artifact_path: "out/x" }, evidence: ["artifacts"], unknown: "nothing was evaluated" }, observed_evidence: registryObserved({ artifacts: [] }) })],
   ];

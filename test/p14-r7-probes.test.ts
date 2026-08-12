@@ -65,6 +65,8 @@ import * as activationNamespace from "../src/activation.ts";
 import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, evaluateOutcome } from "../src/outcome.ts";
 import { arrivalMarker } from "../src/marker.ts";
 import { p4Fixture, reviewedVersion, rest, type P4Fixture } from "./p6-helpers.ts";
+import { outcomeContractOf, validateManifest } from "../src/manifest.ts";
+import { makeManifest } from "./p2-helpers.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const SRC_DIR = new URL("../src/", import.meta.url);
@@ -568,7 +570,7 @@ test("[2.3] a secret-shaped value and a whole transcript under a CONTRACT-DECLAR
   for (const [label, evidence] of [
     ["a secret-shaped value under `suite_digest`", { exit_code: 0, suite_digest: SECRET_VALUE }],
     ["a transcript under `suite_digest`", { exit_code: 0, suite_digest: TRANSCRIPT_VALUE }],
-    ["a transcript under the base name `stdout`", { exit_code: 0, stdout: TRANSCRIPT_VALUE }],
+    ["a transcript under the base name `stdout_sha256`", { exit_code: 0, stdout_sha256: TRANSCRIPT_VALUE }],
     ["a transcript one element at a time", { exit_code: 0, suite_digest: TRANSCRIPT_VALUE.split(" ") }],
   ] as Array<[string, Record<string, unknown>]>) {
     const { fx, marker, report } = fixture();
@@ -649,21 +651,21 @@ test("[2.3] `stdout_match` — a substring pattern is no longer executable, and 
   // The kind stays in the schema, so no manifest, no fixture and no seed moves.
   const substring = {
     check: { kind: "stdout_match", stdout_match: "ALL GREEN" },
-    evidence: ["stdout"],
+    evidence: ["stdout_sha256"],
     unknown: "nothing was evaluated, which is not a failure of it",
   };
-  const notExecutable = evaluateOutcome(substring, { stdout: DIGEST });
+  const notExecutable = evaluateOutcome(substring, { stdout_sha256: DIGEST });
   console.log(`  a substring pattern against a digest → ${notExecutable.value} (${notExecutable.reason})`);
   assert.equal(notExecutable.value, "unknown", "a substring pattern answered about a digest it cannot read");
   assert.notEqual(notExecutable.value, "no", "a run that may well have printed the pattern was reported as a failure");
 
   const digestContract = {
     check: { kind: "stdout_match", stdout_match: DIGEST },
-    evidence: ["stdout"],
+    evidence: ["stdout_sha256"],
     unknown: "nothing was evaluated, which is not a failure of it",
   };
-  const hit = evaluateOutcome(digestContract, { stdout: DIGEST });
-  const miss = evaluateOutcome(digestContract, { stdout: DIGEST.replace(/.$/, "0") });
+  const hit = evaluateOutcome(digestContract, { stdout_sha256: DIGEST });
+  const miss = evaluateOutcome(digestContract, { stdout_sha256: DIGEST.replace(/.$/, "0") });
   console.log(`  a digest pattern, equal → ${hit.value}; differing → ${miss.value}`);
   assert.equal(hit.value, "yes", "a digest contract satisfied by an equal digest did not answer");
   assert.equal(miss.value, "no", "a digest contract is not discriminating: everything satisfies it");
@@ -703,5 +705,170 @@ test("[B-4-2] violations equal plantings across EVERY shipped document — no th
   console.log(`[B-4-2] documents: ${documents.length}; plantings: ${planted}; refused: ${caught}`);
   assert.deepEqual(survived.slice(0, 20), [], "planted lies the guard did not refuse");
   assert.equal(caught, planted, "violations must equal plantings");
+});
+
+// ===========================================================================
+// DELTA — THE NAME OF THE CHANNEL MUST STOP PROMISING TEXT
+// ===========================================================================
+//
+// The owner confirmed the `stdout_match` mechanics of this round and added one
+// thing they could not have been asked for at the same time: the CHANNEL is
+// still called `stdout`, and a field called `stdout` promises the output of a
+// process. It cannot carry one. Under 2.3 the only value it accepts is a digest
+// of fixed form, so the name asserts more than the code delivers — which is the
+// exact class this round exists to remove, one level down from where it was
+// found.
+//
+// [I-7] IS ABOUT THE JOURNAL AND NOT ABOUT THE MANIFEST, and the delta says so:
+// a `stdout_match` PATTERN inside the signed manifest may remain a substring. It
+// is author content under a signature, not something a run sends. What is
+// renamed is the name of the value A RUN PRESENTS.
+
+const DELTA_DIGEST = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
+
+test("[DELTA] a channel that can hold ONLY a digest is NAMED for a digest — derived, not listed", () => {
+  const admissible = required<(v: unknown, literals: ReadonlySet<string>) => boolean>(
+    outcome,
+    "isAdmissibleEvidenceValue",
+    "2.3's value grammar",
+  );
+  const names = required<readonly string[]>(outcome, "EVIDENCE_NAMES", "[I-7]'s base set");
+
+  // THE SET OF CHANNELS IS THE CODE'S. For each one, ask the shipped grammar
+  // whether ANY non-digest string can be carried under it with no contract in
+  // reach — that is the fail-closed case, and it is the honest test of what the
+  // channel is FOR. A channel that takes only digests and is not named for one
+  // is a field whose name is a promise the code does not keep.
+  const none = new Set<string>();
+  const lying: string[] = [];
+  for (const name of names) {
+    const digestOnly =
+      admissible(DELTA_DIGEST, none) &&
+      !admissible("some plain output text", none) &&
+      !admissible("ALL GREEN", none);
+    // a channel is digest-only when the grammar admits a digest and no free
+    // text; the grammar is per-VALUE, so this is the same question for each
+    if (!digestOnly) continue;
+    const carriesText = /^(stdout|stderr|output|log|text|transcript)$/.test(name);
+    console.log(`  ${name.padEnd(16)} digest-only: ${digestOnly}   name promises text: ${carriesText}`);
+    if (carriesText) lying.push(`\`${name}\` can hold only a digest and is named for the text it cannot hold`);
+  }
+  assert.deepEqual(lying, [], "an evidence channel is named for something it cannot carry");
+
+  // …and the channel a `stdout_match` reads is the renamed one, in the CHECK
+  // TABLE, so the boundary and the check cannot disagree about which name it is.
+  assert.equal(OUTCOME_CHECK_SHAPE.stdout_match!.evidence, "stdout_sha256", "the check still reads a channel named for text");
+  assert.deepEqual([...OUTCOME_CHECK_SHAPE.stdout_match!.reads], ["stdout_sha256"], "`reads` still names the old channel");
+  assert.equal(names.includes("stdout_sha256"), true, "the renamed channel is not in the admissible base set");
+  assert.equal(names.includes("stdout"), false, "the old name is still admissible, so both exist and one of them lies");
+});
+
+test("[DELTA] the shipped surface refuses the OLD name and accepts the NEW one, and the check still runs", () => {
+  // THE RENAME AT THE BOUNDARY, not only in a table. A report is the thing a
+  // fleet agent actually sends, and it is where the name is either honoured or
+  // not — the adversary of D-21 controls exactly this.
+  const digestContract = {
+    check: { kind: "stdout_match", stdout_match: DELTA_DIGEST },
+    evidence: ["stdout_sha256"],
+    unknown: "no evaluated run of this skill was reported, which is not a failure of it",
+  };
+  const fx = p4Fixture();
+  const version = reviewedVersion(fx, "delta-probe", { manifest: { outcome_contract: digestContract } });
+  const marker = arrivalMarker(version.versionId);
+  assert.equal(
+    rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
+      agent_id: fx.owner.agent_id,
+      action: "report_outcome",
+      recipient_scope: "local_agent",
+    }).status,
+    201,
+  );
+  const report = (evidence: unknown, id: string) =>
+    rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+      agent_id: fx.owner.agent_id,
+      runtime: "codex",
+      window: "all_time",
+      window_detail: "the probe's own records, all time",
+      records: [
+        { role: "call", call_id: id, marker, at_ms: 1 },
+        { role: "output", call_id: id, marker, at_ms: 2, result: "success", evidence },
+      ],
+    });
+
+  const old = report({ stdout: DELTA_DIGEST }, "delta-1");
+  console.log(`  the OLD name \`stdout\`      → ${old.status} ${old.raw.slice(0, 90)}`);
+  assert.notEqual(old.status, 201, "`stdout` is still an admissible name, so the rename did not reach the boundary");
+
+  const renamed = report({ stdout_sha256: DELTA_DIGEST }, "delta-2");
+  console.log(`  the NEW name \`stdout_sha256\` → ${renamed.status} ${renamed.raw.slice(0, 90)}`);
+  assert.equal(renamed.status, 201, "the renamed channel was refused, so the refusal above is vacuous");
+  fx.db.close();
+
+  // …and the check reads the new channel, in both directions.
+  const hit = evaluateOutcome(digestContract, { stdout_sha256: DELTA_DIGEST });
+  const miss = evaluateOutcome(digestContract, { stdout_sha256: DELTA_DIGEST.replace(/.$/, "0") });
+  console.log(`  equal digests → ${hit.value}; differing → ${miss.value}`);
+  assert.equal(hit.value, "yes", "the check does not read the renamed channel");
+  assert.equal(miss.value, "no", "the check does not discriminate on the renamed channel");
+});
+
+test("[DELTA] a SUBSTRING pattern stays legal INSIDE the signed manifest — [I-7] is about the journal", () => {
+  // THE LINE THE DELTA DRAWS. The manifest is author content under a signature;
+  // the journal is where a fleet agent's bytes land. Narrowing the second must
+  // not narrow the first, and a guard that refused a substring pattern at
+  // packing time would have done exactly that.
+  const substring = {
+    check: { kind: "stdout_match", stdout_match: "ALL GREEN" },
+    evidence: ["stdout_sha256"],
+    unknown: "no evaluated run of this skill was reported, which is not a failure of it",
+  };
+  const read = outcomeContractOf({ outcome_contract: substring });
+  console.log(`  a substring pattern in a manifest → reader=${read.valid ? "ACCEPTED" : read.reason}`);
+  assert.equal(read.valid, true, "a substring pattern was refused inside the manifest: the narrowing reached the wrong side");
+  assert.equal(validateManifest(makeManifest({ outcome_contract: substring })).valid, true, "the schema refused a substring pattern");
+
+  // …and it is still NOT EXECUTABLE, which is this round's decision unchanged.
+  const got = evaluateOutcome(substring, { stdout_sha256: DELTA_DIGEST });
+  console.log(`  the same contract, evaluated      → ${got.value} (${got.reason})`);
+  assert.equal(got.value, "unknown", "a substring pattern answered about a digest it cannot read");
+
+  // AND THE PATTERN IS NOT A VALUE A RUN MAY ECHO. Once the channel is named for
+  // a digest, admitting the author's substring as a LITERAL would put that text
+  // into the journal under a name that promises a digest — the same lie, through
+  // the value channel instead of the name.
+  const literals = required<(c: unknown) => Set<string>>(outcome, "contractLiterals", "2.3's enumeration");
+  const admissible = required<(v: unknown, l: ReadonlySet<string>) => boolean>(outcome, "isAdmissibleEvidenceValue", "2.3's grammar");
+  const set = literals(substring);
+  console.log(`  literals this contract admits: ${[...set].map((l) => JSON.stringify(l)).join(", ") || "(none)"}`);
+  assert.equal(
+    admissible("ALL GREEN", set),
+    false,
+    "a run may echo the `stdout_match` pattern as a value, so free text still reaches the journal under a digest's name",
+  );
+
+  // …while the literals a check genuinely COMPARES against are still admissible,
+  // or the line above is a narrowing that breaks the two kinds that need one.
+  const commandSet = literals({ check: { kind: "command", command: "./verify.sh" } });
+  assert.equal(admissible("./verify.sh", commandSet), true, "a run may no longer echo the command its contract names");
+  const artifactSet = literals({ check: { kind: "artifact_exists", artifact_path: "out/report.json" } });
+  assert.equal(admissible("out/report.json", artifactSet), true, "a run may no longer echo the artifact path its contract names");
+});
+
+test("[DELTA] no shipped document advertises the old channel name as an admissible value", () => {
+  // THE THREE SURFACES THE DELTA NAMES, read as bytes. A rename that reaches the
+  // code and not the documentation leaves a user sending a name the boundary
+  // refuses, which is a false statement in a file `npm pack` ships [D-20].
+  const surfaces = ["SPEC.md", "docs/API.md", "src/mcp.ts"];
+  const lying: string[] = [];
+  for (const rel of surfaces) {
+    const text = readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
+    // the ADMISSIBLE-NAME lists are what matters: `\`stdout\`` standing beside
+    // the other three channel names is the surface claiming a name that is gone
+    for (const m of text.matchAll(/`exit_code`[^.]{0,120}`stdout`|`stdout`[^.]{0,120}`artifacts`/g)) {
+      lying.push(`${rel}: ${JSON.stringify(m[0].slice(0, 100))}`);
+    }
+  }
+  for (const l of lying) console.log(`  ${l}`);
+  assert.deepEqual(lying, [], "a shipped surface still lists `stdout` among the admissible evidence names");
 });
 
