@@ -24,8 +24,34 @@ proven on one holds on the other — the test suite asserts the parity.
   `POST /v1/principals/{id}/api-keys` — because a replay is served from the
   persisted response, and persisting a plaintext secret is exactly what those
   surfaces exist to avoid.
+- **One key you cannot use**: a key matching `^sha256:[0-9a-f]{64}$` is refused
+  with `INVALID_SCHEMA` on every surface. That is the form the registry writes
+  into its own journals, and a key of it could not be told apart from a digest
+  of one — a distinction a migration once tried to make and could not. Any other
+  string of 1..128 characters is fine, including upper-case hex, 64 hex digits
+  with no prefix, or the same digits under another prefix. A key of the refused
+  form that REPEATS a record written before this rule is still answered as the
+  repeat it is: a repeat writes nothing.
 - **Pagination**: `?limit=` (1–100, default 20) and `?cursor=` (opaque);
   responses carry `next_cursor`.
+
+## Upgrading an existing database
+
+The schema version is `PRAGMA user_version` and nothing else. On start the
+registry applies every migration above that number, each in its own transaction,
+so a half-migrated database is not reachable.
+
+**The supported upgrade path is a database at `user_version` 9 or below, or one
+this build itself left behind.** A database at `user_version` **10** is REFUSED,
+with a message naming the version and this path, and nothing in it is touched.
+Version 10 is the one state whose stored repeat-keys may already be digests —
+the build that introduced that rule shipped no migration — and it cannot be told
+apart from a version-10 database whose keys are the caller's own strings, so
+migration `0012`, which transforms every key unconditionally, would transform
+some of them twice. Version 10 was an intermediate development commit and was
+never released or deployed. Version 11 is not refused: a process that dies
+between two migrations of one pass leaves a database there, and it finishes
+normally on the next start.
 
 ## Auth
 
@@ -170,7 +196,8 @@ encoding, and the four columns above keep what you write.
 
 `idempotency_key` is stored as a digest of itself. It is compared and never
 read, so a repeat of the same key still replays, and the key you chose is not
-kept.
+kept. Because the stored value is `sha256:<64 lowercase hex>`, a key of that
+exact form is refused on the way in — see **One key you cannot use** above.
 
 ### 9. `skill.rate` — `POST /v1/versions/{id}/ratings`
 

@@ -1,6 +1,6 @@
 // THE PART OF A MIGRATION SQLITE CANNOT EXPRESS.
 //
-// WHY THIS FILE EXISTS. `0011` has to replace a stored string with the SHA-256
+// WHY THIS FILE EXISTS. `0012` has to replace a stored string with the SHA-256
 // of it, row by row. SQLite has no hash function, and this repository opens its
 // databases through `node:sqlite` and `bun:sqlite` behind one minimal interface
 // (`src/sqlite.ts`) that deliberately exposes `exec`, `prepare` and `close` and
@@ -21,42 +21,56 @@
 // exists and the migration did not run.
 import type { Db } from "./sqlite.ts";
 import { correlationDigest } from "./journal.ts";
-import { EVIDENCE_DIGEST } from "./outcome.ts";
 
 /**
- * `0011` — the key of a repeat, on the rows an older build wrote.
+ * `0012` — the key of a repeat, on the rows an older build wrote.
  *
  * Round 10 replaced the adopter's `idempotency_key` with `correlationDigest` of
  * it, on both sides of the one comparison the column serves, and shipped no
  * migration. This computes the value each existing row should hold; the SQL file
  * is what moves them.
  *
- * WHAT IS HASHED AND WHAT IS NOT — the whole of the rule, in one place.
+ * WHAT IS HASHED: EVERY NON-EMPTY VALUE, WITH NOTHING DECIDING WHICH.
  *
- *   A value ALREADY OF THE STORED FORM (`sha256:` and 64 lowercase hex digits,
- *   `EVIDENCE_DIGEST`, the same constant every reader of a digest uses) is
- *   carried across UNCHANGED. Any database raised on the round-10 build already
- *   holds those, and hashing them again would give `sha256(sha256(k))` — a
- *   well-formed value of the right shape and the wrong one, which would break
- *   every repeat on every such database silently. Anything else is hashed.
+ *   `0011` carried a value across when it LOOKED like a digest already —
+ *   `sha256:` and 64 lowercase hex — and hashed everything else. The intent was
+ *   to protect a database raised on the round-10 build, whose keys are digests
+ *   and would otherwise be hashed a second time.
  *
- *   THE COST OF DECIDING BY FORM, which is real and is not hidden. An adopter's
- *   own key that IS, letter for letter, `sha256:<64 lowercase hex>` cannot be
- *   told from the digest of a key by any inspection of the value — nothing in
- *   the row records which build wrote it — so it is left as it stands, and the
- *   replay of that ONE key stops matching after the upgrade. The alternative
- *   loses every repeat on every database created since round 10, so this is the
- *   narrow failure chosen over the wide one, and `[11.11]` runs it.
+ *   THAT RULE WAS UNSOUND AND IS GONE. Nothing in a row records which build
+ *   wrote it, so the form of a value cannot answer the question the rule asked,
+ *   and an adopter may send a key that IS of that form. A reviewer sent exactly
+ *   two through the base build's own REST surface, onto one receipt: a key `K`,
+ *   and the literal string `correlationDigest(K)`. Both were stored verbatim,
+ *   both were accepted. The rule then hashed the first — making it equal to the
+ *   second — carried the second across, and the rebuild died on
+ *   `UNIQUE(adoption_receipt_id, idempotency_key)`. The transaction rolls back,
+ *   `PRAGMA user_version` stays where it was, and the upgrade can never be
+ *   completed by any run of any build. `[12.1]` is that run.
  *
- *   ABSENCE IS NOT HASHED, for the reason `correlationDigest` gives: a digest of
- *   nothing would give every row without a value ONE SHARED value and
- *   manufacture matches out of absence. It is unreachable in this column —
- *   `idempotency_key` has been `NOT NULL` since D.1 — and it is written down
- *   rather than relied upon: a value that is not a non-empty string is carried
- *   across as it is, and the destination column's own `NOT NULL` then refuses
- *   it. A row this step somehow failed to map is refused by the same rule, so a
- *   mapping that missed a row aborts the migration instead of quietly leaving
- *   that row's key in the clear.
+ *   One unconditional rule has no such state: two different strings have two
+ *   different digests, whatever either of them looks like. The protection the
+ *   form check was reaching for is provided instead by `UNSUPPORTED_UPGRADE_FROM`
+ *   in `src/db.ts`, which REFUSES a database left at the one `user_version`
+ *   whose values may already be digests, and by the refusal of an incoming key
+ *   of that form (`STORED_KEY_FORM`, `src/idempotency.ts`), which stops any
+ *   further row from being ambiguous in the first place.
+ *
+ * ABSENCE IS NOT HASHED, for the reason `correlationDigest` gives: a digest of
+ * nothing would give every row without a value ONE SHARED value and manufacture
+ * matches out of absence. A value that is not a non-empty string is carried
+ * across as it is, and this is what that means, exactly:
+ *
+ *   - NULL, and a row this step somehow failed to map at all, are refused by the
+ *     destination column's `NOT NULL` and abort the whole migration, rather than
+ *     leaving one receipt's key in the clear;
+ *   - THE EMPTY STRING IS NOT REFUSED. An empty string is not NULL and SQLite
+ *     admits it, so a row holding one comes through unchanged. No shipped writer
+ *     can produce such a row — every one of them refuses a key shorter than one
+ *     character — so reaching this needs a statement issued against the database
+ *     file directly, which is outside the V-1 threat model [D-21]. It is written
+ *     down because the previous version of this comment claimed `NOT NULL` would
+ *     refuse it, and that was false.
  */
 function keysOfRepeatsBecomeDigests(db: Db): void {
   // The scratch table is this step's working area and the SQL file drops it in
@@ -69,12 +83,7 @@ function keysOfRepeatsBecomeDigests(db: Db): void {
   const insert = db.prepare("INSERT INTO receipt_events_keymap(id, idempotency_key) VALUES (?,?)");
   for (const row of rows) {
     const stored = row.key;
-    const mapped =
-      typeof stored === "string" && stored.length > 0
-        ? EVIDENCE_DIGEST.test(stored)
-          ? stored
-          : correlationDigest(stored)
-        : stored;
+    const mapped = typeof stored === "string" && stored.length > 0 ? correlationDigest(stored) : stored;
     insert.run(row.id, mapped as never);
   }
 }
@@ -84,5 +93,5 @@ function keysOfRepeatsBecomeDigests(db: Db): void {
  * entry here is SQL and nothing else, which is all of them but one.
  */
 export const MIGRATION_STEPS: Readonly<Record<number, (db: Db) => void>> = {
-  11: keysOfRepeatsBecomeDigests,
+  12: keysOfRepeatsBecomeDigests,
 };

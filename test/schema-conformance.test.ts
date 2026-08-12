@@ -327,18 +327,20 @@ test("object counts: 26 tables, 20 triggers, 13 indexes; no bookkeeping table", 
   // `receipt_events` triggers and the partial terminal index are the ORIGINALS
   // re-created verbatim by the D.1f and D.1i rebuilds, not additions — which is
   // why those counts move by exactly the new objects, and why a SECOND rebuild
-  // moves them by nothing at all — nor a THIRD, which is what D.1k is.
+  // moves them by nothing at all — nor a THIRD, which is what D.1k is, nor a
+  // FOURTH, which is what D.1l is.
   // D.1j adds a COLUMN and no object, so none of these three move.
-  // D.1k adds neither: it rebuilds `receipt_events` and re-creates every object
-  // of it verbatim, which `[11.7]` asserts object for object.
+  // D.1k and D.1l add neither: each rebuilds `receipt_events` and re-creates
+  // every object of it verbatim, which `[11.7]` and `[12.5]` assert object for
+  // object.
   assert.equal(count("table"), 26);
   assert.equal(count("trigger"), 20);
   assert.equal(count("index"), 13);
   const uv = db.prepare("PRAGMA user_version").get() as { user_version: number };
   assert.equal(
     uv.user_version,
-    11,
-    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k the key of a repeat, made a digest on the rows an older build wrote; tracked in user_version",
+    12,
+    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote; tracked in user_version",
   );
 });
 

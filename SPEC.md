@@ -1936,15 +1936,23 @@ installs none is conforming.
 
 ## Appendix D. NORMATIVE SQLite DDL
 
-The normative schema is given in **eleven** migrations, applied in ascending file
+The normative schema is given in **twelve** migrations, applied in ascending file
 order, and the live schema of a conforming registry is their sum. Each is
 embedded below verbatim and is byte-identical to the file this repository ships;
-a test asserts that for all eleven. Schema version is tracked in
+a test asserts that for all twelve. Schema version is tracked in
 `PRAGMA user_version` and nowhere else — there is no bookkeeping table, because
 the live schema is compared object for object against D.1 plus the deltas below,
 and a table this specification does not name would fail that comparison. A
 migration and the `PRAGMA user_version=<n>` that records it are applied in one
 transaction, so a half-migrated database is not reachable.
+
+**The supported upgrade path is a database at `PRAGMA user_version` 9 or below,
+or one this build itself left behind.** Version `10` is REFUSED and D.1l states
+why: it is the one version whose stored `receipt_events.idempotency_key` values
+may already be digests, it cannot be told apart from a version-`10` database
+whose values are not, and D.1l's rule transforms unconditionally. A conforming
+registry MUST refuse that upgrade with a message naming the version and this
+path, and MUST NOT attempt it.
 
 - **D.1 is the initial migration**, shipped as `migrations/0001_init.sql`.
   20 tables; six INSERT-only triggers; a partial unique terminal-event index;
@@ -2033,9 +2041,12 @@ transaction, so a half-migrated database is not reachable.
   rebuilds `receipt_events` a third time and re-creates every column, constraint,
   index and trigger of it verbatim, so the live schema after it is the live
   schema before it — what it changes is VALUES, and a test compares the
-  definition object for object to say so. After all eleven migrations
+  definition object for object to say so. D.1l moves none of them either: it
+  rebuilds `receipt_events` a fourth time and re-creates every column,
+  constraint, index and trigger of it verbatim, changing VALUES and no part of
+  the shape. After all twelve migrations
   `PRAGMA user_version`
-  MUST report `11`. A test in this repository asserts the live schema equals D.1
+  MUST report `12`. A test in this repository asserts the live schema equals D.1
   plus exactly those twelve edits and the new objects of D.1f, D.1g and D.1h —
   the five of D.1b, the one of D.1c, the one of D.1d, the two of D.1e, the one
   rebuilt table of D.1f, the one further edit of D.1i to that same rebuilt table
@@ -3377,133 +3388,96 @@ a database written by an earlier build therefore held the adopter's key in the
 clear, in an INSERT-only journal, while the code that looks a retry up hashed
 before it looked — so a repeat that had been answered as a repeat became a
 refused transition, and the text the classification was about was still in the
-table. THIS MIGRATION IS THAT REPAIR, and the requirement it makes normative is
+table. THIS MIGRATION WAS THAT REPAIR, and the requirement it makes normative is
 larger than the column: A CONFORMING REGISTRY MUST MIGRATE THE ROWS AN OLDER
 BUILD WROTE WHENEVER IT CHANGES THE WAY A VALUE IS STORED, and MUST demonstrate
 it by building a database from the earlier migrations, filling it through its
 own surfaces, upgrading it, and requiring the same answers as before.
 
+ITS RULE WAS WITHDRAWN BY D.1l AND THIS MIGRATION NOW CHANGES NO VALUE. It chose
+which rows to convert BY THE FORM OF THE VALUE — a string of `sha256:` and 64
+lowercase hex was taken to be a digest already and carried across. Nothing in a
+row records which build wrote it, so that question cannot be answered by looking
+at a value, and two rows of one receipt — one keyed `K`, one keyed with the
+literal digest of `K`, both accepted through the standard surfaces — became the
+same value under it and collided on
+`UNIQUE(adoption_receipt_id, idempotency_key)`, leaving an upgrade that could
+never complete. A CONFORMING REGISTRY MUST NOT DECIDE WHETHER A STORED VALUE HAS
+ALREADY BEEN TRANSFORMED BY INSPECTING ITS FORM.
+
 `receipt_events` is rebuilt a third time — SQLite cannot rewrite a column under
 an INSERT-only trigger — with every column, constraint, index and trigger
 re-created verbatim, so the live schema after this migration is the live schema
-before it. No row is added or removed and no other column is touched.
-
-WHICH VALUES CHANGE. A value ALREADY of the stored form (`sha256:` and 64
-lowercase hex) MUST be carried across unchanged: any database raised on the build
-that introduced the rule already holds digests, and hashing one a second time
-yields a well-formed value that no reader computes, which would break every
-repeat on every such database in silence. Everything else, the registry's own
-synthesized `delivered` key included, is replaced by its digest. An absence MUST
-NOT be hashed, for the reason D.1j gives for `call_id`. A conforming registry
-MUST NOT claim more than that: a key that is ITSELF of the stored form is
-indistinguishable from a digest and is left as it stands, so the replay of that
-one key stops matching — the narrow loss taken in place of the wide one, and
-stated rather than discovered. `PRAGMA user_version` = `11`.
+before it. No row is added or removed, no value is changed and no other column is
+touched. `PRAGMA user_version` = `11`.
 
 ```sql
--- 0011 — THE KEY OF A REPEAT IS A DIGEST ON EVERY ROW, INCLUDING THE ONES AN
--- OLDER BUILD WROTE.
+-- 0011 — A REBUILD THAT WAS WRITTEN TO CONVERT A COLUMN, AND CONVERTS NOTHING.
+-- ITS RULE WAS WITHDRAWN BY `0012`, AND THIS FILE RECORDS THAT RATHER THAN
+-- PRETENDING IT NEVER HELD ONE.
 --
--- WHAT WAS LEFT UNDONE. Round 10 surveyed every column of every journal and
--- moved `receipt_events.idempotency_key` to a digest: the column is compared and
--- never read, equality survives a hash exactly, and an adopter's string of up to
--- 128 characters had no business sitting in an INSERT-only journal. The writer
--- and the reader were both changed and NO MIGRATION WAS WRITTEN. A row an older
--- build wrote still held the adopter's string word for word, and the reader now
--- hashes before it looks — so a retry that had been answered `200 noop` was
--- answered `412` after the upgrade, and the text the round was about was still
--- in the table. A reviewer drove it through the shipped REST surface with the
--- key `legacy retry key with spaces`.
+-- WHAT IT HELD. Round 10 moved `receipt_events.idempotency_key` to a digest in
+-- the writer and in the reader and shipped no migration, so a row an older build
+-- wrote still held the adopter's string word for word while the reader hashed
+-- before it looked: a retry that had been answered `200 noop` was answered `412`
+-- after the upgrade. This file was that repair, and it decided WHICH ROWS TO
+-- CONVERT BY THE FORM OF THE VALUE — a string of `sha256:` and 64 lowercase hex
+-- was taken to be a digest already and carried across, everything else was
+-- hashed — so that a database raised on the round-10 build would not have its
+-- digests hashed a second time.
 --
--- This is not an attack and needs no adversary: it is an UPGRADE OF A SUPPORTED
--- DATABASE, which is a thing this repository ships and had never once tested.
--- `test/p14-r11-probes.test.ts` is the standing probe for that class, and the
--- rule it carries is the owner's: every round that changes the schema or the way
--- a value is stored builds a database from the migrations that came before it,
--- fills it through the standard surfaces, migrates it with the shipped runner,
--- and requires the standard scenario to answer exactly as it answered before.
+-- WHY THAT COULD NOT STAND. Nothing in a row records which build wrote it, so
+-- the form of a value cannot answer the question the rule asked. A reviewer sent
+-- two keys through the base build's own REST surface onto ONE receipt: a key
+-- `K`, and the literal string that is the digest of `K`. Both were accepted and
+-- both were stored verbatim. This rule then hashed the first — making it equal
+-- to the second — carried the second across, and the rebuild below died on
+-- `UNIQUE(adoption_receipt_id, idempotency_key)`. The transaction rolls back,
+-- `PRAGMA user_version` stays at 10, and the upgrade can never be completed by
+-- any run of any build. Everything in that sentence is inside the V-1 threat
+-- model [D-21]: an agent controls its own requests through the standard API and
+-- nothing else. `test/p14-r12-probes.test.ts` `[12.1]` is that run.
 --
--- HOW THE TABLE IS REBUILT. SQLite cannot rewrite a column in place under an
--- INSERT-only trigger, so the table is rebuilt exactly as `0006` and `0009`
--- rebuilt it — the same columns in the same order, the same three UNIQUE
+-- WHAT REPLACED IT. `0012` hashes EVERY non-empty key with no test of form —
+-- two different strings have two different digests, whatever either of them
+-- looks like — and the state the form check was protecting is withdrawn from the
+-- supported set instead of guessed at: `migrate()` REFUSES a database left at
+-- `PRAGMA user_version` = 10, which is the one state whose values may already be
+-- digests. Round 10 was an intermediate development commit of this tree and was
+-- never released or deployed. The supported upgrade path is `user_version` 9 or
+-- below, and `SPEC.md` and `docs/API.md` say so in the shipped text.
+--
+-- WHY THIS FILE STILL EXISTS AND STILL REBUILDS. A migration number is consumed
+-- once. A process that dies between two migrations of one pass leaves a database
+-- at exactly this version, and that database must be able to finish — so `0011`
+-- is not renumbered, not removed and not emptied. What it is, now, is the third
+-- rebuild of `receipt_events`, carrying every row AND EVERY VALUE across
+-- unchanged: the same columns in the same order, the same three UNIQUE
 -- constraints, the same partial terminal index and the same two triggers,
--- re-created verbatim after the rename. This is the THIRD rebuild of this table,
--- and each one is a chance to drop a constraint in silence, so the difference
--- between what `0009` + `0010` leave and what this leaves is asserted OBJECT FOR
--- OBJECT — statements, columns, indexes with their columns and their partiality,
--- foreign keys, triggers — by `[11.7]`, and the intended difference is NONE.
--- This migration changes VALUES and no part of the shape.
+-- re-created verbatim after the rename, exactly as `0006` and `0009` did it.
+-- `[11.7]` compares the definition it leaves against the definition `0009` +
+-- `0010` leave, object for object, and `[12.5]` does the same across `0012`.
 --
--- WHERE THE NEW VALUES COME FROM. SQLite has no SHA-256, and the two runtimes
--- this registry runs on are reached through one minimal interface that exposes
--- no way to register one. So `src/migration-steps.ts` computes the mapping into
--- `receipt_events_keymap` INSIDE THIS TRANSACTION and immediately before this
--- file, which reads it, and the last statement here drops it: the scratch table
--- is never part of a schema anybody sees, and a step that throws is rolled back
--- with the migration. Every shape this registry has stays in a numbered file
--- like this one, which is what Appendix D embeds verbatim.
---
--- WHICH ROWS ARE HASHED — the rule is in ONE function (`src/migration-steps.ts`)
--- and this is what it does, not a second statement of it that could drift.
---
---   A VALUE ALREADY OF THE STORED FORM IS CARRIED ACROSS UNCHANGED. `sha256:`
---   and 64 lowercase hex digits — `EVIDENCE_DIGEST`, the constant every reader
---   of a digest in this repository uses. Round 10's writer shipped before this
---   migration existed, so EVERY database raised on it already holds digests;
---   hashing those again would store `sha256(sha256(k))`, which is well-formed,
---   of exactly the right shape, and not what the reader computes. Every repeat
---   on every database created since round 10 would stop repeating, quietly,
---   with nothing in any log. `[11.3]` requires those values to come through
---   byte for byte and `[11.3b]` runs the double hash to show what it costs.
---
---   EVERYTHING ELSE IS HASHED, the registry's own synthesized key included
---   (`synth-delivered:<receipt>`), so the column holds one kind of value and a
---   reader is never asked which build wrote a row. `[11.5]` requires the
---   migrated value to equal what this build's synthesizer writes today, read off
---   a live run rather than off the same expression twice.
---
---   AND THE COST OF DECIDING BY FORM, WHICH IS NOT HIDDEN. An adopter's own key
---   that IS, letter for letter, `sha256:<64 lowercase hex>` cannot be
---   distinguished from the digest of a key: nothing in the row records which
---   build wrote it, and no further inspection of a value can supply what the
---   value does not contain. Such a key is left as it stands, so the replay of
---   THAT ONE KEY stops matching after the upgrade — one adopter, one key, a
---   `412` where it expected a `200 noop`, no row lost and no value of another
---   form introduced. The alternative loses every repeat on every database
---   created since round 10. The narrow failure is chosen over the wide one
---   deliberately, and `[11.11]` runs it so that it is a recorded decision.
---
---   ABSENCE IS NOT HASHED, for the reason `correlationDigest` gives: one shared
---   digest for every row without a value would manufacture matches out of
---   absence. It is unreachable in this column, which has been `NOT NULL` since
---   D.1, and the rule is written down rather than assumed — a value that is not
---   a non-empty string is carried across as it is, and the `NOT NULL` below
---   refuses it. The same rule catches a row the step failed to map at all: the
---   subquery yields NULL, the column refuses it and the whole migration rolls
---   back, rather than one receipt's key surviving in the clear.
---
--- NOTHING ELSE MOVES. No row is added or removed, no other column is touched,
--- and `UNIQUE(adoption_receipt_id, idempotency_key)` still separates two
--- different keys — two different strings have two different digests, and the
--- constraint is demonstrated by a refused duplicate in `[11.6]` rather than read
--- off this text. `PRAGMA user_version` = `11`.
+-- THE STANDING RULE THIS ROUND ESTABLISHED IS UNCHANGED, and it is the owner's:
+-- every round that changes the schema or the way a value is stored builds a
+-- database from the migrations that came before it, fills it through the
+-- standard surfaces, migrates it with the shipped runner, and requires the
+-- standard scenario to answer exactly as it answered before.
+-- `test/p14-r11-probes.test.ts` is the standing probe for that class.
 --
 -- WHAT THIS MIGRATION DOES NOT COVER, NAMED RATHER THAN LEFT TO BE FOUND. Round
 -- 10 narrowed more than one column, and a narrowing that ships without a
--- migration leaves old values behind wherever it lands. This file answers for
--- `receipt_events.idempotency_key` AND FOR NOTHING ELSE. `observed_records`
+-- migration leaves old values behind wherever it lands. `observed_records`
 -- (`call_id`, converted in the same round) and `runtime_observations` (`model`
 -- and `window_detail`, narrowed in the same round) were created by `0008`, so a
 -- database older than that holds no row of either; a database written BETWEEN
--- `0008` and the round-10 build does hold the reporter's strings there, and this
--- migration does not repair them. `[11.12]` runs that boundary rather than
--- describing it, so the next round starts from a failing probe and not from
--- somebody's memory of this paragraph.
+-- `0008` and the round-10 build does hold the reporter's strings there, and
+-- neither this migration nor `0012` repairs them. `[11.12]` runs that boundary
+-- rather than describing it, so the next round starts from a failing probe and
+-- not from somebody's memory of this paragraph.
 --
--- `[11.8]` is the guard that generalizes what IS covered: it walks EVERY journal
--- column the shipped code classifies as a digest — the set from `JOURNAL_INTAKE`
--- and not a list in a test — over the legacy databases the upgrade probe builds,
--- and requires every value in every one of them to be a digest.
+-- NOTHING ELSE MOVES. No row is added or removed, no value is changed, no column
+-- is touched and no constraint is relaxed. `PRAGMA user_version` = `11`.
 
 PRAGMA defer_foreign_keys=ON;
 PRAGMA legacy_alter_table=ON;
@@ -3532,7 +3506,7 @@ INSERT INTO receipt_events_p14c(id, adoption_receipt_id, event, event_seq, evide
        failure_report_json, rollback_report_json, server_at_ms, idempotency_key, environment_json, recipient_json)
   SELECT e.id, e.adoption_receipt_id, e.event, e.event_seq, e.evidence_json,
          e.failure_report_json, e.rollback_report_json, e.server_at_ms,
-         (SELECT m.idempotency_key FROM receipt_events_keymap m WHERE m.id = e.id),
+         e.idempotency_key,
          e.environment_json, e.recipient_json
     FROM receipt_events e;
 
@@ -3543,9 +3517,199 @@ PRAGMA legacy_alter_table=OFF;
 CREATE UNIQUE INDEX uq_receipt_terminal ON receipt_events(adoption_receipt_id) WHERE event IN ('adopted','failed');
 CREATE TRIGGER tg_revents_no_upd BEFORE UPDATE ON receipt_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 CREATE TRIGGER tg_revents_no_del BEFORE DELETE ON receipt_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+```
+
+### D.1l NORMATIVE DELTA — twelfth migration (verbatim)
+
+THIS IS THE CONVERSION D.1k WAS WRITTEN FOR. EVERY NON-EMPTY
+`receipt_events.idempotency_key` MUST be replaced by its digest, WITH NO TEST OF
+THE VALUE'S FORM ANYWHERE — two different strings have two different digests,
+whatever either of them looks like, so there is nothing left to collide and
+nothing left to guess. The registry's own synthesized key goes through the same
+rule as an adopter's. An absence MUST NOT be hashed, for the reason D.1j gives
+for `call_id`; `NOT NULL` refuses a NULL and rolls the migration back, and an
+EMPTY STRING is not NULL and is therefore carried across — a state no writer of a
+conforming registry can produce, and named here rather than claimed away.
+
+THE SET OF SUPPORTED UPGRADES IS NARROWED, AND THIS IS NORMATIVE. Hashing
+unconditionally is wrong for a database whose keys ARE already digests: it would
+store the digest of a digest, a well-formed value no reader computes, and every
+repeat on that database would stop repeating in silence. Exactly one schema
+version can be in that state — `PRAGMA user_version` = `10`, left by the build
+that introduced the rule of D.1j and shipped no migration — and it cannot be told
+apart from a database an older build left at the same version, because D.1j
+shipped before that writer did. A CONFORMING REGISTRY MUST REFUSE TO UPGRADE A
+DATABASE AT `PRAGMA user_version` = `10`, with a message that names the version
+and the supported path. THE SUPPORTED UPGRADE PATH IS A DATABASE AT
+`PRAGMA user_version` 9 OR BELOW. Version 11 is NOT refused: a process that dies
+between two migrations of one pass leaves a database there with its keys
+untransformed, and that database MUST be able to finish.
+
+AND NO FURTHER ROW MAY BE AMBIGUOUS. An incoming `idempotency_key` matching
+`^sha256:[0-9a-f]{64}$` — the form this registry writes into its own journals —
+MUST be refused as the key of a NEW record, on every surface of §6 that accepts
+one, with `INVALID_SCHEMA`. It MUST NOT be refused when it REPEATS a record that
+already exists: a repeat writes nothing, introduces no value of any form, and is
+the answer an adopter of an earlier build was already given.
+
+`receipt_events` is rebuilt a fourth time, with every column, constraint, index
+and trigger re-created verbatim, so the live schema after this migration is the
+live schema before it. What it changes is VALUES, and a test compares the
+definition object for object to say so. `PRAGMA user_version` = `12`.
+
+```sql
+-- 0012 — THE KEY OF A REPEAT IS A DIGEST ON EVERY ROW, WITH NOTHING DECIDING
+-- WHICH ROWS. THIS IS THE CONVERSION `0011` WAS WRITTEN FOR AND COULD NOT
+-- COMPLETE.
+--
+-- WHAT WAS LEFT UNDONE, TWICE. Round 10 surveyed every column of every journal
+-- and moved `receipt_events.idempotency_key` to a digest: the column is compared
+-- and never read, equality survives a hash exactly, and an adopter's string of up
+-- to 128 characters had no business sitting in an INSERT-only journal. The
+-- writer and the reader were both changed and NO MIGRATION WAS WRITTEN, so a
+-- retry that had been answered `200 noop` was answered `412` after the upgrade
+-- and the text the round was about was still in the table. `0011` was that
+-- repair — and it decided WHICH ROWS TO CONVERT BY THE FORM OF THE VALUE, which
+-- is a question no value can answer.
+--
+-- THE RUN THAT ENDED THAT RULE. A reviewer sent two keys through the base
+-- build's own REST surface onto ONE receipt: an `attempted` keyed
+-- `collision-pair-key`, and a `failed` keyed with the LITERAL DIGEST OF THAT
+-- STRING. Both were accepted, both stored verbatim, both answered 200. `0011`
+-- then hashed the first — making it exactly equal to the second — carried the
+-- second across as "already a digest", and the rebuild died on
+-- `UNIQUE(adoption_receipt_id, idempotency_key)`. The transaction rolls back,
+-- `PRAGMA user_version` stays at 10, and no run of any build can ever finish the
+-- upgrade. Nothing in that needs an adversary with more than its own API keys,
+-- which is the whole of what the V-1 threat model grants one [D-21].
+--
+-- THE RULE HERE, AND IT IS THE WHOLE RULE. EVERY NON-EMPTY VALUE IS REPLACED BY
+-- ITS DIGEST. There is no test of form anywhere — not in this file, not in
+-- `src/migration-steps.ts`, which is the one place the mapping is computed. Two
+-- different strings have two different digests, whatever either of them looks
+-- like, so there is nothing left to collide and nothing left to guess. The
+-- registry's own synthesized key (`synth-delivered:<receipt>`) goes through it
+-- like any other, and `[12.4]` requires the migrated value to equal what this
+-- build's synthesizer writes today, read off a live run rather than off the same
+-- expression twice.
+--
+-- WHAT AN UNCONDITIONAL RULE COSTS, AND WHERE THAT COST IS PAID. Hashing
+-- unconditionally is wrong for a database whose keys ARE already digests — it
+-- would store `sha256(sha256(k))`, a well-formed value of exactly the right
+-- shape that no reader computes, and every repeat on such a database would stop
+-- repeating in silence (`[11.3b]`). Exactly one `user_version` can be in that
+-- state: 10, the round-10 build's, which hashed on the way in and shipped no
+-- migration. That state is not guessed at — IT IS REFUSED. `migrate()`
+-- (`src/db.ts`, `UNSUPPORTED_UPGRADE_FROM`) declines to upgrade a database left
+-- at 10 and says why. Round 10 was an intermediate development commit of this
+-- tree and was never released or deployed, so the supported upgrade path is
+-- `PRAGMA user_version` 9 or below — the last state whose every key is the
+-- adopter's own string, because no build stopping at `0009` had the writer that
+-- hashes. `SPEC.md` and `docs/API.md` carry that boundary in the shipped text,
+-- and `[12.3]` runs the refusal against a real round-10 database.
+--
+-- AND NO FUTURE ROW IS AMBIGUOUS EITHER. An incoming `idempotency_key` of the
+-- stored form — `sha256:` and 64 lowercase hex — is REFUSED as the key of a new
+-- record, on every surface that accepts one (`STORED_KEY_FORM`,
+-- `src/idempotency.ts`; `[12.7]`). A key of that form may still REPEAT a record
+-- an older build wrote, because a repeat creates nothing and an adopter that
+-- chose such a key is owed the answer it always got (`[12.8]`).
+--
+-- ABSENCE IS NOT HASHED, for the reason `correlationDigest` gives: one shared
+-- digest for every row without a value would manufacture matches out of absence.
+-- A value that is not a non-empty string is carried across as it is, and that
+-- splits in two, exactly:
+--
+--   NULL — and a row the step failed to map at all, whose subquery yields NULL —
+--   is refused by the `NOT NULL` below and rolls the whole migration back,
+--   rather than leaving one receipt's key in the clear.
+--
+--   THE EMPTY STRING IS NOT REFUSED. An empty string is not NULL and SQLite
+--   admits it, so a row holding one comes through unchanged. No shipped writer
+--   can produce such a row — every one of them refuses a key shorter than one
+--   character — so reaching it needs a statement issued against the database
+--   file directly, which is outside the V-1 threat model [D-21]. It is written
+--   here because `0011` claimed `NOT NULL` would refuse it and that was false,
+--   and `[12.6]` runs both halves: the row that survives, and this text.
+--
+-- HOW THE TABLE IS REBUILT. SQLite cannot rewrite a column in place under an
+-- INSERT-only trigger, so the table is rebuilt exactly as `0006`, `0009` and
+-- `0011` rebuilt it — the same columns in the same order, the same three UNIQUE
+-- constraints, the same partial terminal index and the same two triggers,
+-- re-created verbatim after the rename. This is the FOURTH rebuild of this
+-- table, and each one is a chance to drop a constraint in silence, so the
+-- difference between what `0011` leaves and what this leaves is asserted OBJECT
+-- FOR OBJECT — statements, columns, indexes with their columns and their
+-- partiality, foreign keys, triggers — by `[12.5]`, and the intended difference
+-- is NONE. This migration changes VALUES and no part of the shape.
+--
+-- WHERE THE NEW VALUES COME FROM. SQLite has no SHA-256, and the two runtimes
+-- this registry runs on are reached through one minimal interface that exposes
+-- no way to register one. So `src/migration-steps.ts` computes the mapping into
+-- `receipt_events_keymap` INSIDE THIS TRANSACTION and immediately before this
+-- file, which reads it, and the last statement here drops it: the scratch table
+-- is never part of a schema anybody sees, and a step that throws is rolled back
+-- with the migration. Every shape this registry has stays in a numbered file
+-- like this one, which is what Appendix D embeds verbatim.
+--
+-- NOTHING ELSE MOVES. No row is added or removed, no other column is touched,
+-- and `UNIQUE(adoption_receipt_id, idempotency_key)` still separates two
+-- different keys — demonstrated by a refused duplicate in `[11.6]` rather than
+-- read off this text. `PRAGMA user_version` = `12`.
+--
+-- WHAT THIS MIGRATION DOES NOT COVER, NAMED RATHER THAN LEFT TO BE FOUND. It
+-- answers for `receipt_events.idempotency_key` AND FOR NOTHING ELSE.
+-- `observed_records.call_id` and `runtime_observations.model` /
+-- `.window_detail`, narrowed in the same round and created by `0008`, are not
+-- repaired here; `[11.12]` runs that boundary so the round which takes those
+-- columns starts from a failing probe. `[11.8]` is the guard that generalizes
+-- what IS covered: it walks EVERY journal column the shipped code classifies as
+-- a digest — the set from `JOURNAL_INTAKE` and not a list in a test — over the
+-- legacy databases the upgrade probe builds, and requires every value in every
+-- one of them to be a digest.
+
+PRAGMA defer_foreign_keys=ON;
+PRAGMA legacy_alter_table=ON;
+
+DROP TRIGGER tg_revents_no_upd;
+DROP TRIGGER tg_revents_no_del;
+
+CREATE TABLE receipt_events_p14d(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  adoption_receipt_id TEXT NOT NULL REFERENCES adoption_receipts(id) ON DELETE RESTRICT,
+  event TEXT NOT NULL CHECK(event IN ('delivered','attempted','adopted','failed','rolled_back','transferred','requested')),
+  event_seq INTEGER NOT NULL CHECK(event_seq>=1),
+  evidence_json TEXT,
+  failure_report_json TEXT,
+  rollback_report_json TEXT,
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0),
+  idempotency_key TEXT NOT NULL,
+  environment_json TEXT,
+  recipient_json TEXT,
+  UNIQUE(adoption_receipt_id,idempotency_key),
+  UNIQUE(adoption_receipt_id,event_seq),
+  UNIQUE(adoption_receipt_id,event)
+);
+
+INSERT INTO receipt_events_p14d(id, adoption_receipt_id, event, event_seq, evidence_json,
+       failure_report_json, rollback_report_json, server_at_ms, idempotency_key, environment_json, recipient_json)
+  SELECT e.id, e.adoption_receipt_id, e.event, e.event_seq, e.evidence_json,
+         e.failure_report_json, e.rollback_report_json, e.server_at_ms,
+         (SELECT m.idempotency_key FROM receipt_events_keymap m WHERE m.id = e.id),
+         e.environment_json, e.recipient_json
+    FROM receipt_events e;
+
+DROP TABLE receipt_events;
+ALTER TABLE receipt_events_p14d RENAME TO receipt_events;
+PRAGMA legacy_alter_table=OFF;
+
+CREATE UNIQUE INDEX uq_receipt_terminal ON receipt_events(adoption_receipt_id) WHERE event IN ('adopted','failed');
+CREATE TRIGGER tg_revents_no_upd BEFORE UPDATE ON receipt_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_revents_no_del BEFORE DELETE ON receipt_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 
 DROP TABLE receipt_events_keymap;
 ```
+
 
 ### D.2 SQL negative probes
 

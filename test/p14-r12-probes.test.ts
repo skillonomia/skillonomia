@@ -51,26 +51,18 @@ import { join } from "node:path";
 
 import { fileURLToPath } from "node:url";
 
-import * as dbApi from "../src/db.ts";
-import { openDb, openMigrated, migrate } from "../src/db.ts";
+import { openDb, openMigrated, migrate, UNSUPPORTED_UPGRADE_FROM } from "../src/db.ts";
 import { migrationsDir } from "../src/assets.ts";
 import type { Db } from "../src/sqlite.ts";
 import { correlationDigest, surveyJournalIntake } from "../src/journal.ts";
 import { MIGRATION_STEPS } from "../src/migration-steps.ts";
-import * as idempotencyApi from "../src/idempotency.ts";
+import { STORED_KEY_FORM } from "../src/idempotency.ts";
 import { EVIDENCE_DIGEST } from "../src/outcome.ts";
 import { MCP_TOOLS } from "../src/mcp.ts";
 import { mintApiKey } from "../src/auth.ts";
 import { ulid } from "../src/ulid.ts";
 import { seedGraph, insertReceiptEvent } from "./helpers.ts";
 import { p4Fixture, reviewedVersion, rest, mcp, adoptThroughSurfaces, NOW, type P4Fixture } from "./p6-helpers.ts";
-
-// Written BEFORE the code they name, which is what a red commit is: until the
-// fix lands these two are `undefined`, the probes that use them fail on their
-// own assertions, and the file still loads so that every OTHER probe of this
-// round reports its own verdict rather than being hidden behind an import.
-const UNSUPPORTED_UPGRADE_FROM = (dbApi as any).UNSUPPORTED_UPGRADE_FROM as readonly number[];
-const STORED_KEY_FORM = (idempotencyApi as any).STORED_KEY_FORM as RegExp;
 
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const MIGRATION_DIR = migrationsDir();
@@ -162,6 +154,18 @@ function receiptEventsDefinition(db: Db): unknown {
  * request is served, and a probe that manufactured one would be measuring its
  * own scaffolding.
  */
+function anotherReceipt(db: Db, seed: ReturnType<typeof seedGraph>, nth: number): string {
+  const request = ulid(seed.now + nth);
+  db.prepare(
+    "INSERT INTO adoption_requests(id, skill_version_id, adopter_agent_id, state, attempt_count, next_attempt_at_ms, created_at_ms) VALUES (?,?,?, 'pending', 0, 0, ?)",
+  ).run(request, seed.version, seed.adopterA, seed.now);
+  const receipt = ulid(seed.now + nth);
+  db.prepare(
+    "INSERT INTO adoption_receipts(id, adoption_request_id, skill_version_id, adopter_agent_id, created_at_ms) VALUES (?,?,?,?,?)",
+  ).run(receipt, request, seed.version, seed.adopterA, seed.now);
+  return receipt;
+}
+
 function restOverMigrated(db: Db, adopterAgentId: string): { fx: P4Fixture; key: string } {
   const fx = p4Fixture({ db, rateLimit: { capacity: 10_000, refillPerSec: 10_000 } });
   return { fx, key: mintApiKey(db, adopterAgentId, NOW).api_key };
@@ -229,10 +233,7 @@ test("[12.2] every shape a key can have is hashed, and nothing is carried across
   // Every shape on its own receipt: this probe is about the RULE, and putting
   // them on one receipt would be asking about `UNIQUE` instead.
   const receipts = SHAPES.map((s, i) => {
-    const receipt = ulid(seed.now + i);
-    db.prepare(
-      "INSERT INTO adoption_receipts(id, adoption_request_id, skill_version_id, adopter_agent_id, created_at_ms) VALUES (?,?,?,?,?)",
-    ).run(receipt, seed.request, seed.version, seed.adopterA, seed.now);
+    const receipt = anotherReceipt(db, seed, i + 1);
     insertReceiptEvent(db, receipt, "delivered", 1, seed.now, s.value);
     return receipt;
   });
@@ -248,15 +249,42 @@ test("[12.2] every shape a key can have is hashed, and nothing is carried across
   db.close();
 });
 
-test("[12.2b] the step that maps the column contains no test of the value's form", () => {
+test("[12.2b] nothing on the upgrade path tests the form of a stored key", () => {
+  // (a) THE MAPPING ITSELF. It is code, so the claim "there is no test of form"
+  // is checked on the code and not on a run that happens to agree with it today.
   const source = readFileSync(join(REPO_ROOT, "src/migration-steps.ts"), "utf8");
-  // The mapping is code, so the claim "there is no test of form" is checked on
-  // the code and not on a run that happens to agree with it today.
   const body = source.slice(source.indexOf("function keysOfRepeats"));
   assert.equal(body.includes("EVIDENCE_DIGEST"), false, "the digest pattern is not consulted");
   assert.equal(/sha256/i.test(body), false, "nor is the prefix, under any spelling");
-  assert.equal(/\/\^|test\(/.test(body), false, "and no regular expression is applied to a stored value");
+  assert.equal(/\/\^|\.test\(/.test(body), false, "and no regular expression is applied to a stored value");
   assert.equal(source.includes("EVIDENCE_DIGEST"), false, "the file does not import the pattern at all");
+  assert.deepEqual(
+    Object.keys(MIGRATION_STEPS),
+    ["12"],
+    "and it is the ONLY step: a second one is a second place a rule could live",
+  );
+
+  // (b) EVERY MIGRATION, not the newest one. The set is the shipped directory,
+  // so a file added later is in this guard the moment it exists, and comments
+  // are stripped first — this round's files DESCRIBE the form at length, and a
+  // guard that could not tell a description from a statement would have to be
+  // turned off, which is the failure this file is written against.
+  //
+  // WHAT IT LOOKS AT, stated rather than implied: a LINE of SQL that names the
+  // column and applies a pattern operator to something. An expression split
+  // across lines would slip past it — this is a guard against a rule written
+  // back in, not a proof that SQLite cannot express one, and it is written the
+  // narrow way on purpose because the wide way (a whole statement) reads
+  // `CREATE TABLE assignment_events` as an offender for a `GLOB` on a different
+  // column entirely.
+  const offenders: string[] = [];
+  for (const file of MIGRATION_FILES) {
+    for (const line of readFileSync(join(MIGRATION_DIR, file), "utf8").split("\n")) {
+      if (line.trimStart().startsWith("--") || !/idempotency_key/.test(line)) continue;
+      if (/\b(LIKE|GLOB|REGEXP|substr)\b/i.test(line)) offenders.push(`${file}: ${line.trim()}`);
+    }
+  }
+  assert.deepEqual(offenders, [], "no migration inspects the shape of a key it is moving");
 });
 
 // ===========================================================================
@@ -483,8 +511,8 @@ function restSurfaces(): Array<{ method: string; path: string }> {
  * in by the caller; everything else may be nonsense, because the refusal comes
  * before the surface looks anything up.
  */
-function fillerFor(receiptId: string, versionId: string): Record<string, unknown> {
-  return {
+function fillerFor(receiptId: string, versionId: string, surface = ""): Record<string, unknown> {
+  const args: Record<string, unknown> = {
     idempotency_key: DIGEST_SHAPED,
     slug: "filler-slug",
     skill_id: ulid(NOW),
@@ -507,6 +535,13 @@ function fillerFor(receiptId: string, versionId: string): Record<string, unknown
     reason: "filler",
     public_key: "AA==",
   };
+  // `skill.verify` is the one surface whose OWN parsing refuses a COMBINATION —
+  // a version id and an archive together are two different calls — so the
+  // scaffolding drops the field it does not need. This is an argument, not a
+  // member of the set: the set is still read from the code, and a surface that
+  // needs scaffolding nobody wrote shows up in `missed` rather than in silence.
+  if (surface === "skill.verify") delete args.archive_base64;
+  return args;
 }
 
 test("[12.7] every MCP tool that accepts an idempotency key refuses one of the stored form", () => {
@@ -518,7 +553,7 @@ test("[12.7] every MCP tool that accepts an idempotency key refuses one of the s
 
   const missed: string[] = [];
   for (const name of surfaces) {
-    const res = mcp(fx, fx.keys.member!, name, fillerFor(run.receiptId, v.versionId));
+    const res = mcp(fx, fx.keys.member!, name, fillerFor(run.receiptId, v.versionId, name));
     if (!res.isError || res.data?.error?.code !== "INVALID_SCHEMA" || !/stored digest form/.test(String(res.data?.error?.message))) {
       missed.push(`${name} → ${JSON.stringify(res.data)}`);
     }
@@ -600,10 +635,7 @@ test("[12.8] a legacy key of the stored form is hashed like every other, and its
 
   // …and the same key, on a receipt where it would have to CREATE one, is
   // refused. The rule is about new records, and it says so in the same run.
-  const fresh = ulid(Date.now());
-  db.prepare(
-    "INSERT INTO adoption_receipts(id, adoption_request_id, skill_version_id, adopter_agent_id, created_at_ms) VALUES (?,?,?,?,?)",
-  ).run(fresh, seed.request, seed.version, seed.adopterA, seed.now);
+  const fresh = anotherReceipt(db, seed, 1);
   const refused = rest(fx, "POST", `/v1/receipts/${fresh}/events`, key, {
     event: "attempted",
     idempotency_key: SHAPED,

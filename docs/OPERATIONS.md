@@ -409,6 +409,18 @@ Migrations are applied automatically at start, tracked with
 `PRAGMA user_version`, and are additive by policy. Take a backup first, start
 the new version, and confirm `GET /health` reports the version you expect.
 
+**One version is refused.** A database at `PRAGMA user_version` **10** will not
+be upgraded: the start fails with a message naming the version, and nothing in
+the database is touched. Version 10 is the one state whose stored repeat-keys
+may already have been transformed, it cannot be told apart from a version-10
+database whose keys were not, and the migration that transforms them does so
+unconditionally. It was an intermediate development commit and was never
+released, so no deployed database is at it. If you reach 10 because an upgrade
+from 9 or below was interrupted after that migration committed, this build
+cannot tell that apart either — restore the backup you took and start again.
+Every other version, 9 and below or 11 and above, upgrades normally; see
+`docs/API.md`, **Upgrading an existing database**.
+
 ## Removing the built-in seed package
 
 See the README. In short: delete the seed skill, its versions and the seed
