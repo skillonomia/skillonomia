@@ -87,6 +87,16 @@ import { evidenceDigestOf } from "./outcome.ts";
  * `isAdmissibleEvidenceValue` is in one place: two implementations of "the
  * digest of a string" are two answers to one question.
  *
+ * AND THE SENTENCE ABOVE HAS A CONDITION, which round 13 had to add because it
+ * was false without one. Equality survives a hash exactly; INEQUALITY does not,
+ * for a string JavaScript admits and UTF-8 cannot carry. `"\ud800"` and
+ * `"\ud801"` are two strings with ONE digest, because encoding replaces an
+ * unpaired surrogate with U+FFFD — so two ids that never matched were read as a
+ * pair [M-5] and two different keys replayed one another. `evidenceDigestOf`
+ * now REFUSES such a string rather than returning a value that means two
+ * things, and the promise this comment makes holds for every string it returns
+ * a digest for. The refusal is stated once, in the primitive.
+ *
  * NULL IS NOT HASHED, and that is load-bearing. `migrations/0008` records that a
  * record with no `call_id` can never form a pair — a runtime that gave no id
  * established nothing. Hashing the empty string would give every such record

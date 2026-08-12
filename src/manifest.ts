@@ -4,7 +4,14 @@ import { join } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { assetRoot } from "./assets.ts";
-import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, isEvidenceName, type OutcomeContract } from "./outcome.ts";
+import {
+  NotWellFormedText,
+  OUTCOME_CHECK_KINDS,
+  OUTCOME_CHECK_SHAPE,
+  assertWellFormedText,
+  isEvidenceName,
+  type OutcomeContract,
+} from "./outcome.ts";
 
 // Appendix E's schema files ship with the code; `assetRoot()` is what knows
 // where that is in each packaging layout (checkout, npm, compiled binary).
@@ -82,6 +89,22 @@ export function outcomeContractOf(manifest: unknown): { valid: boolean; reason: 
       ? Number.isInteger(parameter)
       : typeof parameter === "string" && parameter.length > 0;
   if (!present) return no(`outcome_contract_check_has_no_${shape.parameter}`);
+  // …AND IT MUST BE A STRING THIS REGISTRY CAN REDUCE TO BYTES. Two of the four
+  // kinds are executed by comparing the DIGEST of this signed literal with a
+  // digest a run presents, and a literal that is not well-formed UTF-16 has no
+  // UTF-8 encoding of its own: its digest is shared with other strings, so the
+  // comparison would answer for a parameter nobody wrote. The question goes to
+  // `assertWellFormedText`, which is where the rule lives; the answer here is a
+  // REFUSAL OF THE WHOLE CONTRACT, so §4's `outcome` reads `unknown` with this
+  // reason and never `no` [I-1], [A-0].
+  if (typeof parameter === "string") {
+    try {
+      assertWellFormedText(parameter, `outcome_contract.check.${shape.parameter}`);
+    } catch (e) {
+      if (!(e instanceof NotWellFormedText)) throw e;
+      return no("outcome_contract_check_parameter_is_not_well_formed_text");
+    }
+  }
   if (!Array.isArray(c.evidence) || c.evidence.length === 0 || !c.evidence.every((e: unknown) => typeof e === "string" && e.length > 0)) {
     return no("outcome_contract_names_no_evidence");
   }

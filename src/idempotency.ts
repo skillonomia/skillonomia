@@ -4,6 +4,7 @@
 // duplicate replays it byte-identically with no side effect.
 import type { Db } from "./sqlite.ts";
 import { ApiError } from "./errors.ts";
+import { NotWellFormedText, assertWellFormedText } from "./outcome.ts";
 import { ulid } from "./ulid.ts";
 
 export interface IdempotentOutcome<T> {
@@ -21,6 +22,28 @@ export interface IdempotentOutcome<T> {
 export function validateIdempotencyKey(key: unknown): string {
   if (typeof key !== "string" || key.length < 1 || key.length > 128) {
     throw new ApiError("INVALID_SCHEMA", "idempotency_key must be a string of 1..128 characters");
+  }
+  // A KEY THIS PROCESS CANNOT KEY BY, and the column here holds the key ITSELF
+  // rather than a digest of it — which is why the rule is asked of
+  // `assertWellFormedText` and not of the digest function: one definition of
+  // "a string this registry can reduce to bytes", two columns that need it.
+  //
+  // What it prevents, stated as what each runtime does with an unpaired
+  // surrogate on the way into SQLite: NODE encodes it to UTF-8 and replaces the
+  // code unit with U+FFFD, so two different keys become one row and the second
+  // call — a DIFFERENT request — is answered with the first call's stored
+  // response and runs nothing; BUN writes the surrogate's raw bytes and reads
+  // them back as the empty string, so the key a reader sees is not the key that
+  // was sent. Neither is a key, and the caller is told so.
+  try {
+    assertWellFormedText(key, "idempotency_key");
+  } catch (e) {
+    if (!(e instanceof NotWellFormedText)) throw e;
+    throw new ApiError(
+      "INVALID_SCHEMA",
+      `idempotency_key: ${(e as Error).message}. A key is stored and compared as sent, so one that does not survive ` +
+        "being stored would replay another call's response",
+    );
   }
   return key;
 }

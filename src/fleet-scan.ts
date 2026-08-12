@@ -35,6 +35,7 @@ import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { markerInSkillMd, markersIn } from "./marker.ts";
 import { correlationDigest } from "./journal.ts";
+import { NotWellFormedText } from "./outcome.ts";
 import {
   CAPABILITY_KINDS,
   NO_SNAPSHOT_WINDOW,
@@ -456,6 +457,23 @@ export function recordsUnder(site: TranscriptSite, agentId: string): ObservedRec
         if (markers.length === 0) continue;
         const result =
           line.result === "success" || line.result === "failure" ? (line.result as "success" | "failure") : "unknown";
+        // THE ID IS REDUCED HERE, BEFORE ANY RECORD IS BUILT, and a line whose
+        // id this registry cannot reduce is DROPPED like a line that would not
+        // parse. There is no reporter to answer with a schema error — this is a
+        // file on a disk — and the two alternatives are both worse: carrying it
+        // as NULL would say "the runtime gave no id", and storing a digest it
+        // shares with other ids would let two lines that never matched be read
+        // as a pair [M-5]. A dropped line makes an arrival `unknown`, which is
+        // the direction that fails safe [I-1], [A-0].
+        let callId: string | null = null;
+        if (typeof line.call_id === "string" && line.call_id.length > 0) {
+          try {
+            callId = correlationDigest(line.call_id);
+          } catch (e) {
+            if (!(e instanceof NotWellFormedText)) throw e;
+            continue;
+          }
+        }
         for (const marker of markers) {
           out.push({
             agent_id: agentId,
@@ -466,9 +484,9 @@ export function recordsUnder(site: TranscriptSite, agentId: string): ObservedRec
             // survives a hash exactly; the runtime's own string does not leave
             // this function. A record whose runtime gave no id stays NULL —
             // hashing an absence would make every such record pair with every
-            // other [M-5], [I-1].
-            call_id:
-              typeof line.call_id === "string" && line.call_id.length > 0 ? correlationDigest(line.call_id) : null,
+            // other [M-5], [I-1]. Computed above, so that a line this registry
+            // cannot key by never becomes a record at all.
+            call_id: callId,
             at_ms: Number.isInteger(line.at_ms) ? (line.at_ms as number) : null,
             marker,
             result,

@@ -66,6 +66,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
@@ -82,6 +83,7 @@ import { openSqlite } from "../src/sqlite.ts";
 import { TRANSFER_ACTION } from "../src/transfer.ts";
 import { ulid } from "../src/ulid.ts";
 
+const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const SRC_DIR = fileURLToPath(new URL("../src/", import.meta.url));
 
 const temps: string[] = [];
@@ -564,9 +566,22 @@ function tsFiles(dir: string, base = dir, out: string[] = []): string[] {
 function callSites(dir: string): Map<string, CallSite> {
   const found = new Map<string, CallSite>();
   for (const file of tsFiles(dir)) {
-    const code = withoutComments(readFileSync(join(dir, file), "utf8")).split("\n");
+    const source = withoutComments(readFileSync(join(dir, file), "utf8"));
+    const code = source.split("\n");
     for (const symbol of PRIMITIVES) {
-      const re = new RegExp(`(^|[^A-Za-z0-9_$.])${symbol}\\s*\\(`);
+      // A CALL UNDER ANOTHER NAME IS STILL A CALL, and this guard would not see
+      // one: `import { correlationDigest as cd }` and then `cd(x)` is a caller
+      // no search for the word can find. The alias is refused instead — the
+      // narrow rule this guard can actually keep, said out loud rather than
+      // left as a hole the next reader assumes is covered. A call through a
+      // NAMESPACE (`outcome.evidenceDigestOf(x)`) IS found: the pattern below
+      // admits a qualifier before the name.
+      assert.equal(
+        new RegExp(`\\b${symbol}\\s+as\\s+`).test(source),
+        false,
+        `${file} imports ${symbol} under another name, and this guard finds callers by name`,
+      );
+      const re = new RegExp(`(^|[^A-Za-z0-9_$])${symbol}\\s*\\(`);
       const lines: number[] = [];
       code.forEach((line, n) => {
         if (new RegExp(`function\\s+${symbol}\\s*\\(`).test(line)) return; // the definition
@@ -778,6 +793,38 @@ function complaints(found: Map<string, CallSite>): string[] {
 }
 
 test("[13.4] EVERY caller of the digest primitives is found by walking `src/`, and every one of them is proved", () => {
+  // THE WALK AND THE TREE MUST AGREE FIRST. A guard that walks a directory
+  // proves nothing about a file the directory does not hold, so the set it
+  // walked is compared against the set GIT holds — the rule D-13 set for B-4 —
+  // and a source file nobody committed fails here rather than passing unseen.
+  const tracked = execFileSync("git", ["ls-files", "*.ts", "*.js"], { cwd: REPO_ROOT, encoding: "utf8" })
+    .split("\n")
+    .filter((f) => f.length > 0);
+  assert.deepEqual(
+    tsFiles(SRC_DIR)
+      .map((f) => `src/${f}`)
+      .sort(),
+    tracked.filter((f) => f.startsWith("src/")).sort(),
+    "the directory this guard walked is not the `src/` the tree holds",
+  );
+
+  // …AND NOTHING OUTSIDE `src/` CALLS THEM. `tools/` and `bin/` are shipped by
+  // `npm pack` too, so "we only looked in src/" would be a place the guard
+  // silently does not look. Today the answer is none; a call added there
+  // tomorrow fails this line instead of going unproved.
+  const outside = tracked.filter((f) => !f.startsWith("src/") && !f.startsWith("test/"));
+  for (const file of outside) {
+    const code = withoutComments(readFileSync(join(REPO_ROOT, file), "utf8"));
+    for (const symbol of PRIMITIVES) {
+      assert.equal(
+        new RegExp(`(^|[^A-Za-z0-9_$])${symbol}\\s*\\(`).test(code),
+        false,
+        `${file} calls ${symbol} and is outside the set this guard proves`,
+      );
+    }
+  }
+  console.log(`  ${outside.length} tracked .ts/.js files outside src/ and test/, none of which calls a digest primitive`);
+
   const found = callSites(SRC_DIR);
   const total = [...found.values()].reduce((n, s) => n + s.lines.length, 0);
   console.log(`  ${found.size} (file, primitive) pairs, ${total} calls, taken from ${tsFiles(SRC_DIR).length} files under src/`);
@@ -799,13 +846,14 @@ test("[13.4] the guard can FAIL: a caller added tomorrow lands in it by itself",
   cpSync(SRC_DIR, copy, { recursive: true });
   assert.deepEqual(complaints(callSites(copy)), [], "the untouched copy does not reproduce the baseline");
 
-  // (a) a NEW FILE that calls one of the primitives
+  // (a) a NEW FILE that calls one of the primitives — through a NAMESPACE,
+  // which is the form a search for the bare word would miss
   const planted = join(copy, "planted.ts");
-  writeFileSync(planted, 'import { correlationDigest } from "./journal.ts";\nexport const x = correlationDigest("anything at all");\n');
+  writeFileSync(planted, 'import * as outcome from "./outcome.ts";\nexport const x = outcome.evidenceDigestOf("anything at all");\n');
   const newFile = complaints(callSites(copy));
-  console.log(`  a new file calling the primitive → ${JSON.stringify(newFile)}`);
+  console.log(`  a new file calling the primitive through a namespace → ${JSON.stringify(newFile)}`);
   assert.deepEqual(
-    newFile.filter((c) => c.startsWith("planted.ts::correlationDigest")).length,
+    newFile.filter((c) => c.startsWith("planted.ts::evidenceDigestOf")).length,
     1,
     "a brand-new caller did not land in the guard",
   );
@@ -825,6 +873,15 @@ test("[13.4] the guard can FAIL: a caller added tomorrow lands in it by itself",
   writeFileSync(service, readFileSync(join(SRC_DIR, "service.ts"), "utf8"));
   writeFileSync(planted, '// export const x = correlationDigest("in a comment");\n/* and correlationDigest( here too */\nexport const y = 1;\n');
   assert.deepEqual(complaints(callSites(copy)), [], "prose that names the primitive was counted as a caller");
+
+  // (d) and a caller hidden behind an ALIAS is refused outright, because this
+  // guard finds callers BY NAME and cannot follow a rename
+  writeFileSync(planted, 'import { correlationDigest as cd } from "./journal.ts";\nexport const z = cd("hidden");\n');
+  assert.throws(
+    () => callSites(copy),
+    /imports correlationDigest under another name/,
+    "an aliased import slipped past the guard, which is a caller it cannot see",
+  );
 });
 
 // ===========================================================================

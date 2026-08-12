@@ -21,6 +21,7 @@ import { validatePayload } from "./manifest.ts";
 import { validateEvidenceForVersion } from "./verified-gate.ts";
 import { ulid } from "./ulid.ts";
 import { correlationDigest } from "./journal.ts";
+import { NotWellFormedText } from "./outcome.ts";
 
 export type ReceiptEvent =
   | "delivered"
@@ -318,7 +319,25 @@ export function appendReceiptEventInTx(db: Db, input: AppendInput): AppendResult
   // exactly, so the string is replaced by `sha256:<hex>` on both sides of that
   // comparison. `UNIQUE(adoption_receipt_id, idempotency_key)` still separates
   // two different keys; a reader still sees which rows a retry produced.
-  const storedKey = correlationDigest(input.idempotencyKey);
+  //
+  // AND THE LINE ABOVE HOLDS FOR THE KEYS THIS REGISTRY ADMITS, WHICH IS WHY
+  // THE NEXT ONE EXISTS. Two keys that differ only in an unpaired surrogate had
+  // one digest, so `UNIQUE(adoption_receipt_id, idempotency_key)` stopped
+  // separating them and a SECOND, DIFFERENT append was answered `noop: true` —
+  // the adopter told a fact was recorded when nothing was. `correlationDigest`
+  // refuses such a string; this translates the refusal into the schema error
+  // the caller can act on, and does not restate the rule.
+  let storedKey: string;
+  try {
+    storedKey = correlationDigest(input.idempotencyKey);
+  } catch (e) {
+    if (!(e instanceof NotWellFormedText)) throw e;
+    throw new ApiError(
+      "INVALID_SCHEMA",
+      `idempotency_key: ${(e as Error).message}. It is stored as a digest of itself and only ever compared, so two ` +
+        "keys sharing one digest would replay one append as the other (§5.3)",
+    );
+  }
   // §5.3: the declared environment is a property of the handover, so it rides
   // on `delivered` and on nothing else. Guarded here rather than trusted,
   // because a descriptor attached to a later event would be a second, mutable

@@ -33,7 +33,7 @@ import { outcomeContractOf, validateManifest, type OutcomeContract } from "./man
 // boundary that read a version's signed declaration to decide what a report
 // could present; the journal's names are `EVIDENCE_NAMES` and the form is a rule
 // about the MANIFEST, enforced in the schema and in `src/manifest.ts` (9b).
-import { EVIDENCE_LIST_MAX, EVIDENCE_NAMES, isAdmissibleEvidenceValue, selfReported } from "./outcome.ts";
+import { EVIDENCE_LIST_MAX, EVIDENCE_NAMES, NotWellFormedText, isAdmissibleEvidenceValue, selfReported } from "./outcome.ts";
 import { MODEL_NAME, correlationDigest } from "./journal.ts";
 import { decodeCursor, encodeCursor as encodeCursorToken, type Cursor } from "./cursor.ts";
 import { manifestHash, contentHash, signManifest } from "./signing.ts";
@@ -5076,7 +5076,27 @@ export class Registry {
             "turned into the NULL that means `the runtime gave no id` [M-5], [I-1]",
         );
       }
-      const callId = typeof r.call_id === "string" && r.call_id.length > 0 ? correlationDigest(r.call_id) : null;
+      // AND AN ID THAT CANNOT BE REDUCED TO A DIGEST IS REFUSED HERE, in the
+      // same voice and for the same reason as the length bound above. The rule
+      // is not restated: `correlationDigest` refuses the string and this line
+      // TRANSLATES that refusal into the schema error the reporter can act on.
+      // Folding it into NULL would say "the runtime gave no id", which is a
+      // different fact; storing its digest would give it an id it shares with
+      // other ids, and a call and an output that never matched would be read as
+      // a pair [M-5], [I-1].
+      let callId: string | null = null;
+      if (typeof r.call_id === "string" && r.call_id.length > 0) {
+        try {
+          callId = correlationDigest(r.call_id);
+        } catch (e) {
+          if (!(e instanceof NotWellFormedText)) throw e;
+          throw new ApiError(
+            "INVALID_SCHEMA",
+            `records[].call_id: ${(e as Error).message}. It is stored as a digest of itself, so an id whose digest is ` +
+              "not its own would bind a call to an output that never carried it [M-5]",
+          );
+        }
+      }
       const atMs = Number.isInteger(r.at_ms) && (r.at_ms as number) > 0 ? (r.at_ms as number) : null;
 
       // A VERDICT IS NOT A THING A PRINCIPAL MAY STATE ON ITS OWN [M-6], [D-2].

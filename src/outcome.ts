@@ -287,7 +287,77 @@ export const EVIDENCE_LIST_MAX = 32;
  * evidence its own boundary refuses — which is what round 8 found it to be.
  */
 export function evidenceDigestOf(text: string): string {
+  assertWellFormedText(text, "the string to be digested");
   return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
+}
+
+/**
+ * WHAT THIS REGISTRY REFUSES TO HASH, AND WHY THE REFUSAL IS IN THE PRIMITIVE.
+ *
+ * A JavaScript string is a sequence of UTF-16 code units, and JavaScript admits
+ * sequences that are not text: a surrogate with no partner. `update(text,
+ * "utf8")` replaces EVERY such code unit with U+FFFD before it hashes, so
+ *
+ *     "\ud800" !== "\ud801"                    — two strings
+ *     digest("\ud800") === digest("\ud801")    — ONE digest
+ *
+ * and a column reduced to a digest on the promise that "equality survives a
+ * hash exactly" (`src/journal.ts`) stops separating two values it exists to
+ * separate. EQUALITY survives; INEQUALITY does not. A reviewer drove it through
+ * the shipped `/v1/observations`: a `call` with `call_id: "\ud800"` and an
+ * `output` with `call_id: "\ud801"` — ids that do not match — were stored as
+ * one digest, read as a pair, and published as `observed_arrival: yes` [M-5].
+ *
+ * THE FORMULA DOES NOT MOVE, and that is the reason this is a refusal rather
+ * than a better encoding. `utf16le` tells those two strings apart and is not
+ * available: the digests of `observed_records.call_id` and
+ * `receipt_events.idempotency_key` are already written, the originals are gone,
+ * and no migration can recompute them. Changing the encoding would invalidate
+ * every digest this registry has ever stored — a reader hashing the id it holds
+ * would stop finding its own row. So the arithmetic stays and what changes is
+ * WHAT IS ADMITTED INTO IT.
+ *
+ * AND THE REFUSAL IS HERE, at the one line every caller passes through, rather
+ * than at the surfaces that read a string from a request. A rule stated at the
+ * four places that take an id today is a rule the fifth place forgets tomorrow;
+ * this is the same shape as B-2's minting rule, which made a violation
+ * unexpressible at the point everything goes through instead of checking for it
+ * at every point of entry. A BOUNDARY TRANSLATES this refusal into
+ * `INVALID_SCHEMA` with a reason — it does not restate the rule, because two
+ * statements of one rule are how they come apart (round 5, round 9b, D-12).
+ *
+ * `isWellFormed` is ES2024, and `test/p14-r13-probes` asks each runtime it runs
+ * on whether it has it and whether it agrees. There is no hand-written
+ * fallback: a second definition of "well-formed UTF-16" is precisely what this
+ * comment says not to write, and on a runtime without the method the call
+ * throws a TypeError — which is this function's answer for such a string
+ * anyway.
+ */
+export class NotWellFormedText extends Error {
+  constructor(what: string) {
+    super(
+      `${what} is not well-formed UTF-16: it holds an unpaired surrogate, which has no UTF-8 encoding of its own. ` +
+        `Encoding it replaces that code unit with U+FFFD, so its digest is shared with other strings and two values ` +
+        `this registry must tell apart would become one`,
+    );
+    this.name = "NotWellFormedText";
+  }
+}
+
+/**
+ * THE ONE DEFINITION of what this registry may reduce to bytes.
+ *
+ * `evidenceDigestOf` calls it, so no digest is computed without it. It is also
+ * exported, because a column that stores a caller's string VERBATIM and
+ * compares it later — `idempotency_keys.key` — asks the very same question and
+ * must not answer it for itself: node folds an unpaired surrogate to U+FFFD on
+ * the way into SQLite (two keys become one) and bun stores its raw bytes and
+ * reads them back as the empty string. Both are a string this registry cannot
+ * key by, and one function decides that for every asker.
+ */
+export function assertWellFormedText(text: string, what: string): string {
+  if (!text.isWellFormed()) throw new NotWellFormedText(what);
+  return text;
 }
 
 /**
@@ -764,8 +834,32 @@ export function evaluateOutcome(contract: unknown, evidence: unknown): OutcomeVe
  * present under the value grammar, whatever the author wrote.
  */
 function checkParameterIsReadable(check: OutcomeContract["check"]): boolean {
+  // A PARAMETER THIS REGISTRY CANNOT DIGEST IS ONE IT CANNOT READ, and the
+  // question is put to the function that decides it rather than answered again
+  // here. `comparedDigest` below hashes this same literal; without this line a
+  // signed contract naming a string that is not well-formed UTF-16 would reach
+  // that hash and the refusal would leave the evaluator by way of an exception,
+  // where the honest answer is `unknown` with a reason — a contract nobody can
+  // execute is not a run that failed [I-1], [A-0].
+  const field = OUTCOME_CHECK_SHAPE[check.kind]?.digest_of;
+  if (typeof field === "string") {
+    const literal = (check as unknown as Record<string, unknown>)[field];
+    if (typeof literal === "string" && !isWellFormedText(literal)) return false;
+  }
   if (check.kind !== "stdout_match") return true;
   return typeof check.stdout_match === "string" && EVIDENCE_DIGEST.test(check.stdout_match);
+}
+
+/** The refusal above, asked as a question. The rule is `assertWellFormedText`
+ *  and lives in one place; this only chooses between throwing and answering. */
+function isWellFormedText(text: string): boolean {
+  try {
+    assertWellFormedText(text, "a signed check parameter");
+    return true;
+  } catch (e) {
+    if (e instanceof NotWellFormedText) return false;
+    throw e;
+  }
 }
 
 /**
