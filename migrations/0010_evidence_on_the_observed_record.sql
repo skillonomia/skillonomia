@@ -27,29 +27,51 @@
 -- The column is NULLable and bounded. It carries a JSON object of named values.
 --
 -- WHAT THIS COLUMN IS ALLOWED TO HOLD, AND WHERE THAT IS DECIDED. This comment
--- used to say the column "is never a transcript" and that "[I-7] is unchanged".
--- Neither was true of the code that shipped with it: `evidenceOf` in
--- `src/service.ts` accepted ANY name of 1 to 80 characters, so a reviewer put a
--- secret-shaped name and a field called `extra_transcript` through the shipped
--- `/v1/observations` surface and both were stored verbatim. A CHECK on length
--- is not a CHECK on subject, and this file asserted the second while enforcing
--- the first.
+-- has been wrong twice, in the same direction, and both corrections are worth
+-- keeping because the second is the one that made the first true.
 --
--- The set of admissible names now has ONE source, and it is not SQL: it is
--- `EVIDENCE_NAMES` (`src/outcome.ts`, derived from the check table) plus the
--- names the SIGNED `outcome_contract.evidence` of the version a record's marker
--- identifies declares. Everything else is refused at the boundary and never
--- reaches this column. Where no contract can be read — an unknown marker, a
--- manifest that no longer hashes to what was signed — only the derived list
--- applies: the boundary fails closed.
+--   IT SAID THE COLUMN "is never a transcript" while `evidenceOf` in
+--   `src/service.ts` accepted ANY name of 1 to 80 characters. A reviewer put a
+--   secret-shaped NAME and a field called `extra_transcript` through the
+--   shipped `/v1/observations` surface and both were stored verbatim.
 --
--- SQLite cannot express that rule, so this comment does not claim SQLite does.
--- What the constraint below enforces is a bound on SIZE, which is what a bound
--- on size is. The rule about NAMES is enforced in one function, and a probe
+--   THE NAMES WERE THEN CLOSED and the sentence was still wrong, because a
+--   closed set of names over an open set of VALUES is a key-value store with a
+--   vocabulary. A reviewer stored a secret under the contract's own `stdout`,
+--   word for word, and a whole transcript goes the same way under any name at
+--   all. A CHECK on length is not a CHECK on subject, and this file asserted
+--   the second while enforcing the first.
+--
+-- SO BOTH CHANNELS ARE CLOSED, AND NEITHER IS CLOSED IN SQL.
+--
+--   NAMES: `EVIDENCE_NAMES` (`src/outcome.ts`, derived from the check table)
+--   plus the names the SIGNED `outcome_contract.evidence` of the version a
+--   record's marker identifies declares.
+--
+--   VALUES: a boolean, a safe integer, a digest of the form
+--   `sha256:<64 lowercase hex>`, or one of the literals THE SIGNED CHECK ITSELF
+--   NAMES — or a bounded list of those. The rule is
+--   `isAdmissibleEvidenceValue` (`src/outcome.ts`), in one place, so the
+--   boundary that refuses a report and the checks that read a value cannot
+--   disagree about what a value is.
+--
+-- Where no contract can be read — an unknown marker, a manifest that no longer
+-- hashes to what was signed — the names are the derived list and the
+-- enumeration of literals is EMPTY, so only booleans, integers and digests
+-- pass: the boundary fails closed on both channels.
+--
+-- SQLite cannot express either rule, so this comment does not claim SQLite
+-- does. What the constraint below enforces is a bound on SIZE, which is what a
+-- bound on size is. Both rules are enforced in one function each, and a probe
 -- reads THIS TABLE after a refused report to show nothing of it was written.
 --
--- [I-7]'s other half is untouched and always was: the TEXT of a record is
--- reduced to §5 markers at the boundary and no column of this schema stores it.
+-- SO THE TEXT OF A RECORD DOES NOT REACH THIS SCHEMA, AND HERE IS WHY IT
+-- CANNOT. Not because a field is named `evidence` rather than `transcript`, and
+-- not because anybody promised: because a value that is free text is refused at
+-- the boundary under EVERY name, the contract's own included. Text is a
+-- transcript however the field is called. [I-7]'s other half is untouched and
+-- always was: a record's text is reduced to §5 markers at the boundary and no
+-- column of this schema stores it.
 
 ALTER TABLE observed_records ADD COLUMN evidence TEXT
   CHECK(evidence IS NULL OR (length(evidence) BETWEEN 2 AND 4000));

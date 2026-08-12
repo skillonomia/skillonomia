@@ -106,6 +106,7 @@
 //   constant. The true value still has exactly one source.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -656,11 +657,115 @@ function isCodeDefinedSet(named: readonly string[]): boolean {
   return [DASHBOARD_VIEWS, PHASE_PLAN_VIEWS, FLEET_SCREENS].some((set) => [...set].sort().join(",") === key);
 }
 
-/** Every size a set of this subject has in the code, so a historical claim can
- *  be answered without reading a constant that did not exist yet. */
-function codeDefinedSizes(subject: string, rules: DocumentRules): number[] {
-  const all = subject === "tools" ? [rules.tools] : [rules.views, PHASE_PLAN_VIEWS.length, FLEET_SCREENS.length];
-  return [...new Set(all)].sort((a, b) => a - b);
+// ------------------------------------------------- the anchor outside a record
+
+/**
+ * `reviews/BINDINGS.md` — WHERE A CLAIM IS ANCHORED WHEN THE RECORD MAY NOT BE
+ * TOUCHED.
+ *
+ * THE PROBLEM THIS SOLVES, EXACTLY. B-4-2 requires that a review record's claim
+ * be anchored to a CONCRETE COMMIT or be checked against today's code. Three of
+ * this repository's accepted records make claims about a constant that existed
+ * at NO commit they name — a P5 verdict speaking of a dashboard the phase plan
+ * had not built yet. Round 6 admitted them by a coincidence of sizes. Removing
+ * that coincidence refuses them, and the two obvious answers are both forbidden:
+ * weakening the rule is forbidden, and writing an anchor INTO an accepted record
+ * is rewriting the record.
+ *
+ * So the anchor lives outside, and it is keyed BY THE DIGEST OF THE SENTENCE it
+ * binds. That key is what makes the arrangement honest rather than a second
+ * exemption:
+ *
+ *   * it binds ONE claim, not a document. A blanket "trust this file" would be
+ *     the round-4 heading defect with a table instead of a heading.
+ *   * it names ONE commit or ONE code constant. Never a list — "agreeing with
+ *     one of several" is the defect the whole rule exists to remove, and a
+ *     binding table is precisely where it would come back.
+ *   * IT BREAKS IF THE RECORD IS EDITED. Change a character of the bound
+ *     sentence and its digest no longer matches, the binding no longer applies,
+ *     and the claim falls through to today's code. "The accepted records were
+ *     not rewritten" therefore stops being a promise and becomes a thing this
+ *     guard notices.
+ *
+ * WHAT IT IS NOT: a place to make an unverifiable claim pass. Every entry
+ * resolves to a NUMBER read out of code — the constant at the named commit, or
+ * the named constant today — and the claim is compared against that number. An
+ * entry that resolves to nothing exempts nothing.
+ */
+export interface ReviewBinding {
+  document: string;
+  sentence_sha256: string;
+  /** ONE commit this repository resolves, or `skln:count=<code constant>` */
+  bound_to: string;
+}
+
+const BINDINGS_FILE = "reviews/BINDINGS.md";
+const BINDING_ROW = /^\|\s*([^|\s]+)\s*\|\s*([0-9a-f]{64})\s*\|\s*([^|\s]+)\s*\|\s*$/gm;
+
+let bindingCache: ReviewBinding[] | null = null;
+
+/** The bindings, as declared. Read once; a missing file is NO bindings, which
+ *  exempts nothing — it is never read as "everything is bound". */
+export function reviewBindings(): ReviewBinding[] {
+  if (bindingCache !== null) return bindingCache;
+  let text: string;
+  try {
+    text = readFileSync(join(REPO_ROOT, BINDINGS_FILE), "utf8");
+  } catch {
+    bindingCache = [];
+    return bindingCache;
+  }
+  const out: ReviewBinding[] = [];
+  for (const m of text.matchAll(BINDING_ROW)) {
+    if (m[1] === "document" || m[1]!.startsWith("-")) continue;
+    out.push({ document: m[1]!, sentence_sha256: m[2]!, bound_to: m[3]! });
+  }
+  bindingCache = out;
+  return out;
+}
+
+/** The digest a binding is keyed by: the sentence, trimmed, and nothing else. */
+export function sentenceDigest(sentence: string): string {
+  return createHash("sha256").update(sentence.trim(), "utf8").digest("hex");
+}
+
+/**
+ * The value THIS sentence is bound to from outside, or `null` with the reason
+ * it is not. `scope` is publishable either way — a refusal that does not say
+ * what it looked for is a refusal a reader cannot act on.
+ */
+function boundBySidecar(
+  name: string,
+  sentence: string,
+  subject: Subject,
+  rules: DocumentRules,
+): { value: number | null; scope: string } {
+  const digest = sentenceDigest(sentence);
+  const entries = reviewBindings().filter((b) => b.document === name && b.sentence_sha256 === digest);
+  if (entries.length === 0) {
+    // THE REFUSAL NAMES THE KEY. A guard that says "unbound" and withholds the
+    // digest leaves the operator to compute it, and an operator computing a
+    // digest by hand is an operator binding the wrong sentence.
+    return { value: null, scope: `no entry of \`${BINDINGS_FILE}\` binds this sentence, whose digest is ${digest}` };
+  }
+  if (entries.length > 1) {
+    return { value: null, scope: `\`${BINDINGS_FILE}\` binds this sentence more than once, so it binds it to nothing` };
+  }
+  const bound = entries[0]!.bound_to;
+  const anchor = /^skln:count=([a-z_]+)$/.exec(bound);
+  if (anchor !== null) {
+    const value = rules.anchors[anchor[1]!];
+    return value === undefined
+      ? { value: null, scope: `\`${BINDINGS_FILE}\` names \`${anchor[1]}\`, which is no code constant` }
+      : { value, scope: `the code constant \`${anchor[1]}\`` };
+  }
+  if (!/^[0-9a-f]{7,40}$/.test(bound) || !resolvesToCommit(bound)) {
+    return { value: null, scope: `\`${BINDINGS_FILE}\` names \`${bound}\`, which is neither a commit here nor a code constant` };
+  }
+  const value = subject.atCommit(bound);
+  return value === null
+    ? { value: null, scope: `\`${BINDINGS_FILE}\` names \`${bound}\`, where this constant cannot be read` }
+    : { value, scope: `the commit \`${bound}\`` };
 }
 
 function namedViews(sentence: string): string[] {
@@ -678,22 +783,36 @@ function namedViews(sentence: string): string[] {
 const NOT_A_CURRENT_CLAIM = /\b(never|not|no longer|used to|would|cannot|must not|before|was|were|had been|already)\b/i;
 
 /**
- * A SENTENCE THAT SPEAKS OF NOW, and therefore of TODAY'S code.
+ * THE ADVERB LIST IS GONE, and its absence is the fix.
  *
- * A review record's exemption exists so that an accepted verdict about a past
- * build is not rewritten to agree with the present. It does not extend to a
- * sentence that says the present: "the dashboard CURRENTLY has five views" is a
- * claim about this build, and a baseline SHA further up the page does not make
- * it true.
+ * Round 6 decided whether a record's sentence spoke of NOW from a closed list of
+ * present-time adverbials. A reviewer walked past it in four words: "The
+ * dashboard has five views." is a present-tense claim with no adverbial in it,
+ * so the list did not fire, the record's exemption applied, and a false
+ * statement about this build passed.
  *
- * WHAT THIS DOES AND DOES NOT CATCH, stated rather than implied. It is a closed
- * list of present-TIME adverbials, not a tense parser: an English present-tense
- * verb with no adverbial ("the dashboard has five views") is NOT caught here,
- * and is left to the binding rule below, which is what actually carries the
- * weight. The adverbials are here because they are the phrasings under which a
- * record's exemption is plainly not being claimed at all.
+ * NO LIST OF WORDS CAN CARRY THIS. English marks the present in ways an
+ * enumeration does not close, and a rule that turns on a vocabulary is one
+ * phrasing away from silence. What replaces it is not a longer list but a
+ * different question, and the question does not involve tense at all:
+ *
+ *     IS THIS CLAIM ANCHORED TO A CONCRETE COMMIT?
+ *
+ * A claim is anchored when its own sentence names a commit this repository
+ * resolves; failing that, when the record names commits that AGREE about the
+ * constant; failing that, when an anchor names the code constant it counts; and
+ * failing that, when `reviews/BINDINGS.md` binds this exact sentence to ONE
+ * commit or ONE constant. Anchored, it is checked against what it is anchored
+ * to. Unanchored, it is checked against TODAY'S CODE — whatever its tense,
+ * whatever its adverbs, record or no record.
+ *
+ * AND THERE IS NO LONGER A FALLBACK ON SIZE. Round 6 admitted an unanchorable
+ * claim if its number happened to equal the size of SOME set this code defines.
+ * `five` is the size of `PHASE_PLAN_VIEWS` and of `FLEET_SCREENS`, so "the
+ * dashboard had five views" was admitted at a commit where `DASHBOARD_VIEWS` did
+ * not exist — admitted by a coincidence with a set the sentence was not about.
+ * A number agreeing with a foreign set is not an argument.
  */
-const PRESENT_TIME = /\b(currently|right now|as of today|as of now|at present|presently|as it stands|today's)\b/i;
 
 function provenanceLies(text: string, permitted: ReadonlySet<string>, tables: readonly string[]): string[] {
   const out: string[] = [];
@@ -786,14 +905,14 @@ export function readDocument(name: string, text: string, rules: DocumentRules): 
       //     commit that makes the sentence true, run by the guard, on the
       //     document's behalf.
       //
-      //     So: a sentence in the PRESENT TENSE is about the present and is
-      //     checked against today's code, record or no record (that is the `if`
-      //     below refusing to take this branch at all). Otherwise the claim is
-      //     bound to the commits ITS OWN SENTENCE names; where the sentence
-      //     names none, to the document's — and those must AGREE about the
-      //     constant. Two different answers among them is a refusal that says so
-      //     and asks the sentence to name which build it means.
-      if (record && !PRESENT_TIME.test(sentence)) {
+      //     So: the claim is bound to the commits ITS OWN SENTENCE names;
+      //     where the sentence names none, to the document's — and those must
+      //     AGREE about the constant. Two different answers among them is a
+      //     refusal that says so and asks the sentence to name which build it
+      //     means. TENSE PLAYS NO PART, and neither does any adverb: a claim
+      //     this rule cannot bind falls through to TODAY'S code whatever its
+      //     wording.
+      if (record) {
         const inSentence = commitsNamedBy(sentence);
         const bound = inSentence.length > 0 ? inSentence : commits;
         const scope = inSentence.length > 0 ? "the commit its sentence names" : "the commits the record names";
@@ -812,18 +931,32 @@ export function readDocument(name: string, text: string, rules: DocumentRules): 
         }
         // THE CONSTANT DID NOT EXIST AT ANY COMMIT THE RECORD NAMES — a P5
         // verdict speaking of the dashboard the phase plan had not built yet.
-        // There is still NO BUCKET FOR "cannot be checked": the claim is
-        // admitted only if it is the size of SOME code-defined set of this
-        // subject, and refused otherwise. That is weaker than reading the
-        // constant back and it is stated as weaker — its purpose is that an
-        // accepted verdict is not rewritten to agree with the present, and its
-        // limit is that a record could name a size that belongs to a different
-        // set of the same kind.
-        const sizes = codeDefinedSizes(subject.key, rules);
-        if (sizes.includes(claim.value)) continue;
+        //
+        // ROUND 6 ADMITTED THESE ON SIZE: if the number equalled the size of
+        // SOME set of the same subject this code defines today, it passed. That
+        // is a coincidence and not a binding, and it is gone.
+        //
+        // What is left is the SIDECAR. An accepted review record may not be
+        // rewritten — its bytes ARE the record — so a claim of one that no
+        // commit can answer for is anchored from OUTSIDE, in
+        // `reviews/BINDINGS.md`, by the digest of the very sentence it binds.
+        // The binding names ONE commit or ONE code constant, never a list:
+        // agreeing with one of several is the defect this whole rule exists to
+        // remove, and a table is exactly where it would come back. Editing the
+        // record breaks its own binding, which is what makes "the record was not
+        // touched" something this guard checks rather than something it is told.
+        const outside = boundBySidecar(name, sentence, subject, rules);
+        if (outside.value !== null) {
+          if (outside.value === claim.value) continue;
+          wrong.push(
+            `${where} — a review record claims ${claim.value} ${subject.key}; \`reviews/BINDINGS.md\` binds this sentence to ` +
+              `${outside.scope}, which has ${outside.value}`,
+          );
+          continue;
+        }
         wrong.push(
-          `${where} — a review record claims ${claim.value} ${subject.key}; the constant cannot be read at any commit it names, ` +
-            `and ${claim.value} is not the size of any ${subject.key} set this code defines (${sizes.join(", ")})`,
+          `${where} — a review record claims ${claim.value} ${subject.key}; the constant cannot be read at any commit the record ` +
+            `names, and ${outside.scope}`,
         );
         continue;
       }

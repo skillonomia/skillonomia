@@ -364,8 +364,15 @@ const AGENT = "01K1M83S80AAAAAAAAAAAAAAAA";
 const VERSION = "01K1M83S80BBBBBBBBBBBBBBBB";
 const MARKER = arrivalMarker(VERSION);
 
+// 2.3: `stdout` is carried as a DIGEST — free text is not a value this journal
+// holds under any name — so a `stdout_match` names the digest it expects and
+// the check is an equality. A substring pattern is not executable by this
+// registry at all, which the round-7 probes exercise directly.
+const R5_DIGEST = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const R5_OTHER_DIGEST = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
 const CONTRACT = {
-  check: { kind: "stdout_match", stdout_match: "ALL GREEN" },
+  check: { kind: "stdout_match", stdout_match: R5_DIGEST },
   evidence: ["stdout"],
   unknown: "no evaluated run of this skill was reported, which is not a failure of it",
 };
@@ -433,11 +440,11 @@ test("[D-2] the evaluator receives the CONTRACT and executes its `check` against
     "[D-2] requires a deterministic evaluator that takes the contract itself and runs its `check`",
   );
   const cases: Array<[string, unknown, unknown, string]> = [
-    ["no contract", null, { stdout: "ALL GREEN" }, "unknown"],
+    ["no contract", null, { stdout: R5_DIGEST }, "unknown"],
     ["no evidence", CONTRACT, null, "unknown"],
     ["evidence missing the named value", CONTRACT, { exit_code: 0 }, "unknown"],
-    ["the check runs and is satisfied", CONTRACT, { stdout: "the suite says ALL GREEN today" }, "yes"],
-    ["the check runs and is not satisfied", CONTRACT, { stdout: "3 failures" }, "no"],
+    ["the check runs and is satisfied", CONTRACT, { stdout: R5_DIGEST }, "yes"],
+    ["the check runs and is not satisfied", CONTRACT, { stdout: R5_OTHER_DIGEST }, "no"],
     [
       "exit_code, satisfied",
       { check: { kind: "exit_code", exit_code: 0 }, evidence: ["exit_code"], unknown: "nothing was evaluated, which is not a failure" },
@@ -519,7 +526,7 @@ test("[D-2] `observation.report` takes a `result` only with the evidence that es
 
   const withEvidence = report([
     { role: "call", call_id: "p-2", marker, at_ms: 3 },
-    { role: "output", call_id: "p-2", marker, at_ms: 4, result: "success", evidence: { stdout: "ALL GREEN" } },
+    { role: "output", call_id: "p-2", marker, at_ms: 4, result: "success", evidence: { stdout: R5_DIGEST } },
   ]);
   console.log(`  \`result: success\` with evidence    → ${withEvidence.status}`);
   assert.equal(withEvidence.status, 201, "a report carrying its evidence must be accepted, or the refusal above is vacuous");

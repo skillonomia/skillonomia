@@ -46,6 +46,7 @@ import { readFileSync } from "node:fs";
 import { manifestHash, verifyJws } from "../src/signing.ts";
 import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, outcomeContractOf, validateManifest } from "../src/manifest.ts";
 import { capabilityColumns } from "../src/fleet.ts";
+import { selfReported } from "../src/outcome.ts";
 
 // --------------------------------------------------------------- source trees
 
@@ -1101,8 +1102,14 @@ test("skill.create still takes a locally packed, locally signed archive", async 
  *  test turns: whether the version declares a contract, and what the last
  *  PAIRED call/output record reported. */
 /** The contract these tests mean when they say "a package with a contract". */
+// 2.3: `stdout` is presented as a DIGEST, so a `stdout_match` names the digest
+// it expects and the check is an equality. Free text is not a value this
+// journal carries under any name, the contract's own included.
+const OUTCOME_DIGEST = "sha256:7777777777777777777777777777777777777777777777777777777777777777";
+const OUTCOME_OTHER_DIGEST = "sha256:8888888888888888888888888888888888888888888888888888888888888888";
+
 const OUTCOME_CONTRACT_FOR_EVIDENCE = {
-  check: { kind: "stdout_match", stdout_match: "ALL GREEN" },
+  check: { kind: "stdout_match", stdout_match: OUTCOME_DIGEST },
   evidence: ["stdout"],
   unknown: "no evaluated run of this skill was reported, which is not a failure of it",
 };
@@ -1130,7 +1137,10 @@ function outcomeEvidence(input: {
       records_read: 2,
       records: [
         { role: "call", call_id: "c-1", at_ms: at, marker, result: "unknown", evidence: null },
-        { role: "output", call_id: "c-1", at_ms: at, marker, result: input.result, evidence: input.evidence ?? null },
+        // 2.1: the values are marked as a PRINCIPAL'S where they are accepted.
+        // These are a report about a machine this registry cannot reach, and the
+        // mark travels with them to the column that publishes the verdict.
+        { role: "output", call_id: "c-1", at_ms: at, marker, result: input.result, evidence: selfReported(input.evidence ?? null) },
       ],
     },
     outcome_contract: input.contract ? OUTCOME_CONTRACT_FOR_EVIDENCE : null,
@@ -1285,12 +1295,12 @@ test("D-2: the contract is EXECUTED, and a principal's own word is not a verdict
   // against the EVIDENCE a run presented, and `result` is not one of its
   // inputs in either direction.
   const outcome = (e: any) => capabilityColumns(e).find((c) => c.column === "outcome")!;
-  const satisfied = outcome(outcomeEvidence({ contract: true, result: "unknown", evidence: { stdout: "the suite says ALL GREEN" } }));
-  const unsatisfied = outcome(outcomeEvidence({ contract: true, result: "unknown", evidence: { stdout: "3 failures" } }));
+  const satisfied = outcome(outcomeEvidence({ contract: true, result: "unknown", evidence: { stdout: OUTCOME_DIGEST } }));
+  const unsatisfied = outcome(outcomeEvidence({ contract: true, result: "unknown", evidence: { stdout: OUTCOME_OTHER_DIGEST } }));
   const declaredSuccess = outcome(outcomeEvidence({ contract: true, result: "success" }));
   const declaredFailure = outcome(outcomeEvidence({ contract: true, result: "failure" }));
   const finished = outcome(outcomeEvidence({ contract: true, result: "unknown" }));
-  const noContract = outcome(outcomeEvidence({ contract: false, result: "success", evidence: { stdout: "ALL GREEN" } }));
+  const noContract = outcome(outcomeEvidence({ contract: false, result: "success", evidence: { stdout: OUTCOME_DIGEST } }));
   console.log(`[D-2] contract + evidence that satisfies the check → outcome=${satisfied.value} (${satisfied.reason ?? "—"})`);
   console.log(`[D-2] contract + evidence that does not           → outcome=${unsatisfied.value} (${unsatisfied.reason ?? "—"})`);
   console.log(`[D-2] contract + the reporter's own \`success\`     → outcome=${declaredSuccess.value} (${declaredSuccess.reason ?? "—"})`);

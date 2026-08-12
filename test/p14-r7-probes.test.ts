@@ -290,6 +290,7 @@ function reasonsInSource(): string[] {
 test("[2.1] NOT ONE reason this module can emit reaches a reader as the registry's, when the data was a principal's", () => {
   const assess = assessor();
   const mark = selfReported();
+  const mintRegistry = registryObserved();
   const reasons = reasonsInSource();
   assert.ok(reasons.length >= 6, `the reason set was scraped as ${reasons.length} entries: the scrape is broken, not the code`);
   console.log(`[2.1] reasons declared in src/outcome.ts: ${reasons.join(", ")}`);
@@ -329,6 +330,14 @@ test("[2.1] NOT ONE reason this module can emit reaches a reader as the registry
           escaped.push(`${kind} · ${JSON.stringify(body).slice(0, 60)} → assessed_by=registry (${got.reason})`);
         }
         if (body !== null && got.value === "yes") escaped.push(`${kind} · a principal's values produced \`yes\``);
+        // …and the SAME combination read by the registry, so that the reason
+        // set below is excited in full. The universal above does not apply to
+        // these — they ARE the registry's — but a reason only ever produced on
+        // this axis would otherwise sit unswept and unremarked.
+        if (body !== null) {
+          swept += 1;
+          seen.add(assess({ contract, claimed: null, observed: mintRegistry(body), principal: { type: "service" } }).reason);
+        }
       }
     }
   }
@@ -362,17 +371,24 @@ test("[2.1] `registry(claimed)` is INEXPRESSIBLE — the attribution has one sou
     "`src/outcome.ts` still holds a helper that stamps the registry's authority onto a verdict handed to it",
   );
 
-  // (b) EVERY `assessed_by` IN THE MODULE IS INSIDE THE ONE CONSTRUCTOR, and
-  //     that constructor derives it from the mark. Two occurrences — one per
-  //     origin — and no third.
-  const stamps = [...src.matchAll(/assessed_by:\s*"(registry|principal)"/g)].map((m) => m[1]!);
-  console.log(`  \`assessed_by: "…"\` literals in src/outcome.ts: ${stamps.join(", ") || "(none)"}`);
-  assert.deepEqual(
-    stamps.sort(),
-    ["principal", "registry"],
-    "the attribution is written in more than one place, so a second branch can choose it",
-  );
-  assert.match(src, /originOf\(/, "nothing in the module reads the mark: the attribution cannot be coming from the data");
+  // (b) THE ATTRIBUTION IS NEVER WRITTEN AS A LITERAL AT ALL — not once, in the
+  //     whole of the executable module. A branch that could name an authority
+  //     is a branch that could name the wrong one; the field is the origin read
+  //     off the data, and `basis` is computed from that same value, so the two
+  //     names of one fact cannot come apart. Type declarations are removed
+  //     first: `assessed_by: "registry" | "principal"` is the SHAPE of the
+  //     answer and not a choice of one.
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/^\s*\/\/.*$/gm, " ")
+    .replace(/export (?:interface|type)[\s\S]*?\n}/g, " ")
+    .replace(/export type [A-Za-z]+ =[^;]*;/g, " ");
+  const stamps = [...code.matchAll(/assessed_by:\s*"(registry|principal)"/g)].map((m) => m[1]!);
+  console.log(`  \`assessed_by: "…"\` literals in the executable part of src/outcome.ts: ${stamps.join(", ") || "(none)"}`);
+  assert.deepEqual(stamps, [], "the attribution is CHOSEN somewhere, so a branch can choose it wrongly");
+  assert.match(code, /assessed_by,/, "the attribution is not published as the value that was read off the data");
+  assert.match(code, /basis:\s*basisOf\(assessed_by\)/, "`basis` is not computed from the same value as `assessed_by`: two names of one fact can disagree");
+  assert.match(code, /originOf\(/, "nothing in the module reads the mark: the attribution cannot be coming from the data");
 
   // (c) THE REGISTRY'S MARK HAS EXACTLY ONE CALLER IN THE WHOLE OF `src/`, and
   //     the set of files is READ OFF THE DIRECTORY — not a list kept here, so a
@@ -382,7 +398,13 @@ test("[2.1] `registry(claimed)` is INEXPRESSIBLE — the attribution has one sou
     .map((e) => e.name)
     .sort();
   assert.ok(files.length > 20, `only ${files.length} source files were discovered: the sweep is broken, not the code`);
-  const callers = files.filter((f) => /(?<![A-Za-z])registryObserved\s*\(/.test(readFileSync(new URL(f, SRC_DIR), "utf8")));
+  // the DECLARATION is not a call, so the module that defines the constructor
+  // is not counted as a user of it
+  const callers = files.filter((f) =>
+    /(?<![A-Za-z])registryObserved\s*\(/.test(
+      readFileSync(new URL(f, SRC_DIR), "utf8").replace(/export function registryObserved\s*\(/g, " "),
+    ),
+  );
   console.log(`  files of src/ swept: ${files.length}; callers of \`registryObserved(\`: ${callers.join(", ") || "(none)"}`);
   assert.deepEqual(
     callers,

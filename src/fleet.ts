@@ -48,12 +48,13 @@
 import {
   assessOutcome,
   evaluateOutcome,
+  type Evidence,
   type OutcomeAssessment,
   type OutcomeContract,
   type OutcomeVerdict,
   type PrincipalType,
 } from "./outcome.ts";
-export { assessOutcome, evaluateOutcome, type OutcomeAssessment, type OutcomeContract, type OutcomeVerdict };
+export { assessOutcome, evaluateOutcome, type Evidence, type OutcomeAssessment, type OutcomeContract, type OutcomeVerdict };
 import {
   MARKER_RE,
   assessArrival,
@@ -407,8 +408,13 @@ export interface ObservedRecord {
    * THE NAMED VALUES THE RUN PRODUCED — what the contract's `check` is executed
    * against. `null` where the reporter presented none, which is the ordinary
    * case and yields `unknown`, never `no`.
+   *
+   * IT IS `Evidence` AND NOT A BARE OBJECT, and that is 2.1's whole mechanism:
+   * the values were marked as a PRINCIPAL's where they were accepted, and the
+   * mark rides here so the column that publishes a verdict reads the
+   * attribution off the data instead of inferring it from its own control flow.
    */
-  evidence: Record<string, unknown> | null;
+  evidence: Evidence | null;
 }
 
 /**
@@ -521,8 +527,9 @@ export interface ArrivalScanRow {
   /** what the reporter CLAIMED. Never an input to `outcome` — see below. */
   result: "success" | "failure" | "unknown";
   /** the named values the run produced, which is what a contract is executed
-   *  against. `null` where none was presented. */
-  evidence: Record<string, unknown> | null;
+   *  against, carrying the mark that says whose they are. `null` where none was
+   *  presented. */
+  evidence: Evidence | null;
 }
 
 /**
@@ -675,7 +682,7 @@ export interface CapabilityEvidence {
    * It is a bag of NAMED VALUES and not a path, a root or a handle — [M-7] is
    * unchanged: nothing in this file can look at anything.
    */
-  observed_evidence?: Record<string, unknown> | null;
+  observed_evidence?: Evidence | null;
   /** WHO reported, for the verdict's `principal_type` [I-5]. `null` where
    *  nothing was reported at all. */
   reported_by?: { type: PrincipalType } | null;

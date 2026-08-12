@@ -43,6 +43,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { PackageFiles } from "./archive.ts";
+import { registryObserved, type Evidence } from "./outcome.ts";
 
 // ------------------------------------------------------------- the targets
 
@@ -338,7 +339,26 @@ export function readBack(site: ActivationSite, name: string): Buffer | null {
 }
 
 /**
- * THE ONE THING THIS REGISTRY CAN CHECK FOR ITSELF — D-18, part 2.
+ * WHAT THIS REGISTRY'S OWN JOURNAL SAYS IT PLACED — the record `registryObserved
+ * Evidence` will not answer without.
+ *
+ * Its three fields are the three the journal writes (`assignment_events`:
+ * `activation_target`, `native_relpath`, `managed_copy`). It is a PARAMETER and
+ * not something this module reads, for the reason `observedArrival` is a
+ * parameter in `src/assignments.ts`: a function that could reach the journal
+ * itself is a function that could start answering from it, and the two columns
+ * are kept apart by not being in one scope.
+ */
+export interface ActivationPlacement {
+  target: ActivationTarget;
+  /** the entry path, RELATIVE TO THE ROOT, the journal recorded */
+  native_relpath: string;
+  /** the journal's last word on the managed copy */
+  managed_copy: ManagedCopy;
+}
+
+/**
+ * THE ONE THING THIS REGISTRY CAN CHECK FOR ITSELF — D-18 part 2, narrowed.
  *
  * §4's `outcome` is decided by a contract, and a contract's `check` is executed
  * against NAMED VALUES a run produced. Almost all of those values are facts
@@ -346,34 +366,58 @@ export function readBack(site: ActivationSite, name: string): Buffer | null {
  * command line. This registry did not run that process and cannot, so what it
  * receives about them is a self-report and is published as one [M-7], [M-6].
  *
- * There is exactly one exception, and it is this function. The activation root
- * is a directory THIS REGISTRY WRITES TO (`materialize`) and reads back from
- * (`readBack`); it is configured by a deployment, it belongs to the deployment,
- * and looking in it is not reaching into an addressee's machine. So for a
- * contract whose check is `artifact_exists` and whose path lands INSIDE that
- * root, the registry produces the `artifacts` list ITSELF, and the verdict built
- * from it is its own.
+ * There is exactly one exception, and it is this function. But the exception is
+ * NARROWER than "a file under a root this registry manages", and the two defects
+ * a review found in the earlier version are both the difference between the two:
  *
- * `null` is "this registry observed nothing", which is not "the artifact is
- * absent". No root configured, a root that will not resolve, a check of another
- * kind, a path that leaves the root: all of them are `null`, and `null` sends
- * the caller back to the self-report. A path that leaves the root is refused for
- * the same reason a WRITE through one is — `within` is the same containment test
- * both use — and refusing it is what keeps "the registry only reads what it
- * manages" a property of the code.
+ *   THE PATH WAS CHECKED LEXICALLY AND THEN OPENED PHYSICALLY. `resolve` plus
+ *   `within` answers about the STRING; `existsSync` follows symbolic links. A
+ *   link planted inside the root and pointing out of it passed the first and was
+ *   read through by the second, so a file on the other side of the disk was
+ *   published as this registry's own `yes`.
+ *
+ *   AND NOTHING TIED THE ARTIFACT TO A MATERIALIZATION. Any file anybody dropped
+ *   under the root produced a `yes`. "The registry can read this directory" is
+ *   not "the registry put this file here", and only the second is a thing the
+ *   registry has standing to certify.
+ *
+ * SO A `yes` REQUIRES ALL OF:
+ *
+ *   * a root this deployment configured, which resolves and is a directory;
+ *   * a JOURNAL RECORD of this registry's own — `managed_copy: "written"`, under
+ *     THIS site's target — naming a native relative path;
+ *   * a contract whose `artifact_path` IS THAT PATH, character for character;
+ *   * a path that, RESOLVED THROUGH EVERY LINK, is still inside the root.
+ *
+ * Drop any one and the answer is `null`: "this registry observed nothing",
+ * which is not "the artifact is absent" and which sends the caller back to the
+ * self-report. What remains is a genuine `no` — the journal says a copy was
+ * written at this path, the registry looked at that path, and nothing of its own
+ * is there. That is the drift a fleet operator needs to see, and it is the only
+ * `no` this registry is entitled to.
  *
  * WHAT IT DOES NOT DO: it never opens a path a REPORTER named. The only path it
- * joins is the one the SIGNED contract declares.
+ * joins is the one the SIGNED contract declares AND the journal already wrote.
  */
 export function registryObservedEvidence(
   site: ActivationSite | null,
   contract: unknown,
-): Record<string, unknown> | null {
+  placed: ActivationPlacement | null,
+): Evidence | null {
   if (site === null || site === undefined) return null;
+  // THE JOURNAL FIRST, before a path is even formed. A registry with no record
+  // of having placed anything has nothing to look for and no standing to look.
+  if (placed === null || placed === undefined) return null;
+  if (placed.managed_copy !== "written") return null;
+  if (placed.target !== site.target) return null;
   const check = (contract as { check?: { kind?: unknown; artifact_path?: unknown } } | null)?.check;
   if (check?.kind !== "artifact_exists" || typeof check.artifact_path !== "string" || check.artifact_path.length === 0) {
     return null;
   }
+  // THE CONTRACT MUST BE ASKING ABOUT THE VERY THING THE JOURNAL RECORDED. A
+  // contract naming any other path is asking about something this registry did
+  // not place, whether or not that path happens to be under the root.
+  if (check.artifact_path !== placed.native_relpath) return null;
   let realRoot: string;
   try {
     realRoot = resolveRoot(site.root);
@@ -382,10 +426,36 @@ export function registryObservedEvidence(
   }
   const target = resolve(realRoot, check.artifact_path);
   if (!within(realRoot, target)) return null;
-  // THE WALK HAPPENED, so the answer is a list — empty when the artifact is not
-  // there. An empty list is what makes an honest `no` possible; `null` above is
-  // what keeps "nothing was looked at" from being read as one.
-  return { artifacts: existsSync(target) ? [check.artifact_path] : [] };
+
+  // NOW THE FILESYSTEM. `lstat` first, because it follows nothing: a name that
+  // holds nothing is an honest absence, and the walk did happen.
+  let present: boolean;
+  try {
+    lstatSync(target);
+    present = true;
+  } catch {
+    present = false;
+  }
+  if (present) {
+    // …AND THE BYTES MUST REALLY BE UNDER THE ROOT. A symbolic link is the
+    // ordinary way a fleet shares one skill library, so the name resolving
+    // elsewhere is expected and is not an error — it is a place this registry
+    // has no standing to answer about, so it answers about nothing at all
+    // rather than reporting somebody else's file as its own.
+    let real: string;
+    try {
+      real = realpathSync(target);
+    } catch {
+      return null; // a dangling link: something is there and it is not a file
+    }
+    if (!within(realRoot, real)) return null;
+    if (!lstatSync(real).isFile()) return null;
+  }
+  // THE WALK HAPPENED, so the answer is a list — empty when the copy this
+  // registry wrote is no longer there. An empty list is what makes an honest
+  // `no` possible; `null` above is what keeps "nothing was looked at" from
+  // being read as one.
+  return registryObserved({ artifacts: present ? [check.artifact_path] : [] });
 }
 
 /** What became of a managed copy at one step. Four values, and never blank. */

@@ -38,7 +38,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { p4Fixture, reviewedVersion, rest, mcp, type P4Fixture } from "./p6-helpers.ts";
-import { OUTCOME_CHECK_KINDS } from "../src/outcome.ts";
+import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, registryObserved, selfReported } from "../src/outcome.ts";
 import { MCP_TOOLS } from "../src/mcp.ts";
 import { serve } from "../src/server.ts";
 import { TRANSFER_ACTION } from "../src/transfer.ts";
@@ -197,10 +197,16 @@ function record(over: Partial<ObservedRecord> = {}): ObservedRecord {
   };
 }
 
+const CONTRACT_DIGEST = "sha256:aaaa111122223333444455556666777788889999aaaabbbbccccddddeeeeffff";
+const OTHER_DIGEST = "sha256:bbbb111122223333444455556666777788889999aaaabbbbccccddddeeeeffff";
+
 /** A whole contract, so a test that means "this version defines success" says
  *  WHAT success is instead of passing a boolean. */
 const CONTRACT = {
-  check: { kind: "stdout_match", stdout_match: "ALL GREEN" },
+  // 2.3: `stdout` is presented as a DIGEST — free text is not a value this
+  // journal carries under any name — so a `stdout_match` names the digest it
+  // expects and the check is an equality.
+  check: { kind: "stdout_match", stdout_match: CONTRACT_DIGEST },
   evidence: ["stdout"],
   unknown: "no evaluated run of this skill was reported, which is not a failure of it",
 };
@@ -727,7 +733,7 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
     evidence({
       snapshot: snapshot([
         record({ role: "call", call_id: "c-3" }),
-        record({ role: "output", call_id: "c-3", result: "unknown", evidence: { stdout: "the suite says ALL GREEN" } }),
+        record({ role: "output", call_id: "c-3", result: "unknown", evidence: selfReported({ stdout: CONTRACT_DIGEST }) }),
       ]),
       outcome_contract: CONTRACT,
       reported_by: { type: "agent" },
@@ -747,7 +753,7 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
     evidence({
       snapshot: snapshot([
         record({ role: "call", call_id: "c-4" }),
-        record({ role: "output", call_id: "c-4", result: "unknown", evidence: { stdout: "3 failures" } }),
+        record({ role: "output", call_id: "c-4", result: "unknown", evidence: selfReported({ stdout: OTHER_DIGEST }) }),
       ]),
       outcome_contract: CONTRACT,
       reported_by: { type: "service" },
@@ -770,11 +776,11 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
     unknown: "no evaluated run of this skill was reported, which is not a failure of it",
   } as const;
   const seen = cellOf(
-    capabilityColumns(evidence({ snapshot: snapshot([]), outcome_contract: artifact as never, observed_evidence: { artifacts: ["out/report.json"] } })),
+    capabilityColumns(evidence({ snapshot: snapshot([]), outcome_contract: artifact as never, observed_evidence: registryObserved({ artifacts: ["out/report.json"] }) })),
     "outcome",
   );
   const unseen = cellOf(
-    capabilityColumns(evidence({ snapshot: snapshot([]), outcome_contract: artifact as never, observed_evidence: { artifacts: [] } })),
+    capabilityColumns(evidence({ snapshot: snapshot([]), outcome_contract: artifact as never, observed_evidence: registryObserved({ artifacts: [] }) })),
     "outcome",
   );
   assert.equal(seen.value, "yes", "the registry read its own root and would not answer for it");
@@ -1151,7 +1157,7 @@ test("[M-7] the assessment logic imports no filesystem, and the whole pipeline r
   // over records that came from nowhere at all, with no root configured.
   const records = [
     record({ role: "call", call_id: "wire-1" }),
-    record({ role: "output", call_id: "wire-1", result: "success", evidence: { stdout: "ALL GREEN" } }),
+    record({ role: "output", call_id: "wire-1", result: "success", evidence: selfReported({ stdout: CONTRACT_DIGEST }) }),
   ];
   const columns = capabilityColumns(evidence({ snapshot: snapshot(records), outcome_contract: CONTRACT, reported_by: { type: "agent" } }));
   assert.equal(cellOf(columns, "invoked").value, "yes");
@@ -1786,6 +1792,9 @@ test("every capability kind is answered for an agent with no configured root —
  *  requires and the evidence that satisfies or refutes it. Derived from
  *  `OUTCOME_CHECK_SHAPE`, so a kind added tomorrow fails this test until its
  *  row is written. */
+const DIGEST_A = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+const DIGEST_B = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+
 const CHECK_CASES: ReadonlyArray<{
   kind: string;
   contract: any;
@@ -1799,10 +1808,13 @@ const CHECK_CASES: ReadonlyArray<{
     refuting: { exit_code: 3 },
   },
   {
+    // 2.3: `stdout` is carried as a DIGEST, so a `stdout_match` is an equality
+    // of digests. A substring pattern is no longer executable by this registry
+    // and is exercised as its own case, below.
     kind: "stdout_match",
-    contract: { check: { kind: "stdout_match", stdout_match: "ALL GREEN" }, evidence: ["stdout"], unknown: "nothing was evaluated, which is not a failure" },
-    satisfying: { stdout: "the suite says ALL GREEN" },
-    refuting: { stdout: "3 failures" },
+    contract: { check: { kind: "stdout_match", stdout_match: DIGEST_A }, evidence: ["stdout"], unknown: "nothing was evaluated, which is not a failure" },
+    satisfying: { stdout: DIGEST_A },
+    refuting: { stdout: DIGEST_B },
   },
   {
     kind: "artifact_exists",
@@ -1862,7 +1874,7 @@ test("[D-2] over the WHOLE cross product, `outcome` moves only where a check was
             evidence({
               snapshot: snapshot([
                 record({ role: "call", call_id: `x-${swept}` }),
-                record({ role: "output", call_id: `x-${swept}`, result: word, evidence: presented }),
+                record({ role: "output", call_id: `x-${swept}`, result: word, evidence: selfReported(presented) }),
               ]),
               outcome_contract: c.contract,
               reported_by: { type: "agent" },
@@ -1894,13 +1906,18 @@ test("[D-2] over the WHOLE cross product, `outcome` moves only where a check was
                 record({ role: "output", call_id: `o-${swept}`, result: word, evidence: null }),
               ]),
               outcome_contract: c.contract,
-              observed_evidence: presented,
+              observed_evidence: presented === null ? null : registryObserved(presented),
               reported_by: { type: "agent" },
             }),
           ),
           "outcome",
         );
-        const expected = conclusion ?? "unknown";
+        // THE NARROWING. Even values this registry produced ITSELF decide
+        // nothing for a check whose subject is a process on somebody else's
+        // machine. `observable` is read off `OUTCOME_CHECK_SHAPE`, so the set of
+        // kinds that may answer is the CODE's and not a list kept here.
+        const observable = OUTCOME_CHECK_SHAPE[c.kind]!.observable;
+        const expected = observable ? (conclusion ?? "unknown") : "unknown";
         if (asObservation.value !== expected) {
           wrong.push(`${c.kind} · reporter said \`${word}\` · evidence ${label} · OBSERVATION → ${asObservation.value} (${asObservation.reason}), expected ${expected}`);
         }
@@ -1935,7 +1952,13 @@ test("[D-2] over the WHOLE cross product, `outcome` moves only where a check was
   console.log(`[D-2] verdicts the registry established by its own reading: ${observed}`);
   assert.deepEqual(wrong, [], "the reporter's word, the absence of evidence, or a claim dressed as an observation moved the outcome column");
   assert.equal(claimed, CHECK_CASES.length * WORDS.length * 2, "a self-report's conclusion must be published for the two evidence states that run the check, and only those");
-  assert.equal(observed, CHECK_CASES.length * WORDS.length * 2, "the registry's own reading must move the column for those two states, and only those");
+  const observableKinds = CHECK_CASES.filter((c) => OUTCOME_CHECK_SHAPE[c.kind]!.observable).length;
+  console.log(`[D-2] check kinds this registry may observe at all: ${observableKinds} of ${CHECK_CASES.length} — the narrowing`);
+  assert.equal(
+    observed,
+    observableKinds * WORDS.length * 2,
+    "the registry's own reading must move the column for the OBSERVABLE kinds' two executed states, and for nothing else",
+  );
 });
 
 test("[D-2] the evaluator that trusts the reporter is killed on the same records", async () => {
@@ -2004,5 +2027,18 @@ test("[D-2] the outcome path does not READ the field a reporter fills in", () =>
   // …and the assessor does not invent a verdict of its own: it executes the
   // contract, exactly as D-14 required, and then says who the evidence came
   // from — which is the whole of the change D-18 made.
-  assert.match(code, /evaluateOutcome\(input\.contract/, "`assessOutcome` reaches a verdict without executing the contract");
+  //
+  // SINCE 2.1 THE TWO ARE ONE EXPRESSION, and that is what is asserted here.
+  // `assessOutcome` no longer computes a verdict and then decides how to label
+  // it: it hands the CONTRACT and the MARKED VALUES to the one publisher, and
+  // the publisher executes the contract against the very object it reads the
+  // attribution off. A verdict computed from one party's data and published on
+  // the other's authority is not refused by a check — it cannot be written.
+  assert.match(
+    code,
+    /function publish\(evidence[\s\S]{0,900}?evaluateOutcome\(contract, evidence\)/,
+    "the one publisher does not execute the contract against the values it was handed",
+  );
+  assert.match(code, /publish\(input\.claimed/, "`assessOutcome` publishes a principal's values by some route other than the one publisher");
+  assert.match(code, /publish\(input\.observed/, "`assessOutcome` publishes the registry's own values by some route other than the one publisher");
 });

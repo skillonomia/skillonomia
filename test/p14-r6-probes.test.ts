@@ -40,7 +40,7 @@ import { fileURLToPath } from "node:url";
 
 import * as outcomeNamespace from "../src/outcome.ts";
 import * as activationNamespace from "../src/activation.ts";
-import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, evaluateOutcome } from "../src/outcome.ts";
+import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, evaluateOutcome, registryObserved, selfReported } from "../src/outcome.ts";
 import { capabilityColumns } from "../src/fleet.ts";
 import { arrivalMarker } from "../src/marker.ts";
 import { p4Fixture, reviewedVersion, rest, type P4Fixture } from "./p6-helpers.ts";
@@ -73,8 +73,17 @@ test.after(() => {
 /** The contract a version declares, with two names of its OWN beside the
  *  base ones — so "the contract's names pass" is not the same statement as
  *  "the base names pass". */
+// ROUND 7 NARROWED THE VALUES, NOT THE NAMES. [I-7]'s subject here is the set of
+// admissible NAMES, and it is unchanged. What changed underneath is what a name
+// may CARRY: a boolean, a safe integer, a digest of fixed form, or a literal the
+// signed check itself declares. So this contract's own extra name carries a
+// digest, and `stdout_match` names the digest it expects — the check is an
+// equality, because a substring cannot be tested against a digest.
+const R6_DIGEST = "sha256:4444444444444444444444444444444444444444444444444444444444444444";
+const R6_SUITE_DIGEST = "sha256:5555555555555555555555555555555555555555555555555555555555555555";
+
 const DECLARED_CONTRACT = {
-  check: { kind: "stdout_match", stdout_match: "ALL GREEN" },
+  check: { kind: "stdout_match", stdout_match: R6_DIGEST },
   evidence: ["stdout", "suite_name"],
   unknown: "no evaluated run of this skill was reported, which is not a failure of it",
 };
@@ -137,7 +146,7 @@ test("[I-7] a name the contract never declared is refused, and NOTHING of it rea
       marker,
       at_ms: 2,
       result: "success",
-      evidence: { stdout: "ALL GREEN", [SECRET_NAME]: SECRET_VALUE, [TRANSCRIPT_NAME]: TRANSCRIPT_VALUE },
+      evidence: { stdout: R6_DIGEST, [SECRET_NAME]: SECRET_VALUE, [TRANSCRIPT_NAME]: TRANSCRIPT_VALUE },
     },
   ]);
   console.log(`  a secret-shaped name + \`${TRANSCRIPT_NAME}\` → ${planted.status} ${planted.raw.slice(0, 120)}`);
@@ -170,14 +179,14 @@ test("[I-7] the names the SIGNED contract declares are admitted, and are stored"
       marker,
       at_ms: 4,
       result: "success",
-      evidence: { stdout: "the suite says ALL GREEN", suite_name: "unit" },
+      evidence: { stdout: R6_DIGEST, suite_name: R6_SUITE_DIGEST },
     },
   ]);
   console.log(`  the contract's own \`suite_name\` → ${accepted.status} ${accepted.raw.slice(0, 100)}`);
   assert.equal(accepted.status, 201, "a name the signed contract declares was refused, so the refusal above is vacuous");
   const kept = storedEvidence(fx);
   assert.ok(kept.includes("suite_name"), "an admitted named value was not stored");
-  assert.ok(kept.includes("ALL GREEN"), "an admitted value was not stored");
+  assert.ok(kept.includes(R6_SUITE_DIGEST), "an admitted value was not stored");
   fx.db.close();
 });
 
@@ -189,7 +198,11 @@ test("[I-7] where the contract cannot be read, only the base names are admissibl
   const stranger = arrivalMarker("01K1M83S80ZZZZZZZZZZZZZZZZ");
   const base = report([
     { role: "call", call_id: "i7-3", marker: stranger, at_ms: 5 },
-    { role: "output", call_id: "i7-3", marker: stranger, at_ms: 6, result: "success", evidence: { exit_code: 0, stdout: "x", artifacts: ["a"], command: "true" } },
+    // FAIL CLOSED APPLIES TO THE VALUES TOO. With no contract to read there is
+    // no enumeration of literals, so the base names may still be presented but
+    // only as booleans, integers and digests — a path or a command line is a
+    // literal, and no signed document here declares one.
+    { role: "output", call_id: "i7-3", marker: stranger, at_ms: 6, result: "success", evidence: { exit_code: 0, stdout: R6_DIGEST, artifacts: [R6_DIGEST] } },
   ]);
   console.log(`  base names under an unknown marker → ${base.status}`);
   assert.equal(base.status, 201, "the four base names must always be admissible");
@@ -198,7 +211,7 @@ test("[I-7] where the contract cannot be read, only the base names are admissibl
   // here, because no contract can be read for this marker.
   const borrowed = report([
     { role: "call", call_id: "i7-4", marker: stranger, at_ms: 7 },
-    { role: "output", call_id: "i7-4", marker: stranger, at_ms: 8, result: "success", evidence: { stdout: "ALL GREEN", suite_name: "unit" } },
+    { role: "output", call_id: "i7-4", marker: stranger, at_ms: 8, result: "success", evidence: { stdout: R6_DIGEST, suite_name: R6_SUITE_DIGEST } },
   ]);
   console.log(`  a contract name under an unknown marker → ${borrowed.status} ${borrowed.raw.slice(0, 100)}`);
   assert.notEqual(borrowed.status, 201, "a name no readable contract declares was accepted under an unknown marker");
@@ -219,14 +232,18 @@ test("[I-7] the base set is DERIVED FROM THE CODE — every name the checks read
   // later that reads a fifth name fails here rather than silently widening what
   // the boundary accepts.
   const touched = new Set<string>();
-  const full: Record<string, unknown> = { exit_code: 0, stdout: "ALL GREEN", artifacts: ["out/report.json"], command: "true" };
+  const full: Record<string, unknown> = { exit_code: 0, stdout: R6_DIGEST, artifacts: ["out/report.json"], command: "true" };
   for (const kind of OUTCOME_CHECK_KINDS) {
     const shape = OUTCOME_CHECK_SHAPE[kind]!;
     const contract = {
       check: {
         kind,
         exit_code: 0,
-        stdout_match: "ALL GREEN",
+        // a digest, because a `stdout_match` whose pattern is a substring is
+        // no longer executable and would read nothing at all — a check that
+        // refuses to run touches no name, and this probe is about the names the
+        // checks DO read
+        stdout_match: R6_DIGEST,
         artifact_path: "out/report.json",
         command: "true",
       },
@@ -425,7 +442,10 @@ test("[D-18] a pair of values reported about somebody else's machine is a SELF-R
   const assess = assessor();
   const got = assess({
     contract: REMOTE_CONTRACT,
-    claimed: { command: "false", exit_code: 0 },
+    // ROUND 7: values carry the mark of whoever produced them, set where they
+    // are accepted. The verdict's authority is read off that mark and is no
+    // longer inferred from which branch of the assessor happened to run.
+    claimed: selfReported({ command: "false", exit_code: 0 }),
     observed: null,
     principal: { type: "agent" },
   });
@@ -448,7 +468,7 @@ test("[D-18] a pair of values reported about somebody else's machine is a SELF-R
 
 test("[D-18] an artifact under the root THIS REGISTRY manages is the registry's own `yes` or `no`", () => {
   const assess = assessor();
-  const observe = required<(site: unknown, contract: unknown) => Record<string, unknown> | null>(
+  const observe = required<(site: unknown, contract: unknown, placed: unknown) => Record<string, unknown> | null>(
     activationNamespace as unknown as Record<string, unknown>,
     "registryObservedEvidence",
     "[D-18] requires the registry to produce evidence of its OWN for the one thing it can check: an artifact under the activation root it manages",
@@ -461,10 +481,16 @@ test("[D-18] an artifact under the root THIS REGISTRY manages is the registry's 
     evidence: ["artifacts"],
     unknown: "no evaluated run of this skill was reported, which is not a failure of it",
   };
+  // ROUND 7 NARROWED THIS. "A file under a root the registry manages" is not
+  // "a file the registry put there", and only the second is something it has
+  // standing to certify. So its own reading now requires its OWN JOURNAL's
+  // record of the placement, and the round-7 probes exercise what happens when
+  // that record is missing, names another path, or the copy was removed.
+  const placed = { target: "codex", native_relpath: ".agents/skills/probe/SKILL.md", managed_copy: "written" };
 
   // NOTHING IS THERE — and the registry LOOKED, so this is a `no` and not an
   // `unknown`: the difference between a walk that found nothing and no walk.
-  const absent = assess({ contract, claimed: null, observed: observe(site, contract), principal: { type: "agent" } });
+  const absent = assess({ contract, claimed: null, observed: observe(site, contract, placed), principal: { type: "agent" } });
   console.log(`  the artifact absent under the registry's root → ${absent.value} (${absent.reason}) by ${absent.assessed_by}/${absent.basis}`);
   assert.equal(absent.value, "no", "the registry read its own root and would not say what it found");
   assert.equal(absent.assessed_by, "registry");
@@ -473,7 +499,7 @@ test("[D-18] an artifact under the root THIS REGISTRY manages is the registry's 
   // …and now it IS there.
   mkdirSync(join(root, ".agents", "skills", "probe"), { recursive: true });
   writeFileSync(join(root, ".agents", "skills", "probe", "SKILL.md"), "# probe\n");
-  const present = assess({ contract, claimed: null, observed: observe(site, contract), principal: { type: "agent" } });
+  const present = assess({ contract, claimed: null, observed: observe(site, contract, placed), principal: { type: "agent" } });
   console.log(`  the artifact present under the same root     → ${present.value} (${present.reason}) by ${present.assessed_by}/${present.basis}`);
   assert.equal(present.value, "yes", "the registry read the file it manages and did not answer for it");
   assert.equal(present.assessed_by, "registry", "a verdict the registry established was attributed to a principal");
@@ -486,8 +512,12 @@ test("[D-18] an artifact under the root THIS REGISTRY manages is the registry's 
     evidence: ["artifacts"],
     unknown: "no evaluated run of this skill was reported, which is not a failure of it",
   };
-  assert.equal(observe(site, outside), null, "the registry observed a path outside the root it manages");
-  assert.equal(observe(null, contract), null, "the registry observed something with no root configured at all");
+  assert.equal(
+    observe(site, outside, { ...placed, native_relpath: "../../etc/hostname" }),
+    null,
+    "the registry observed a path outside the root it manages",
+  );
+  assert.equal(observe(null, contract, placed), null, "the registry observed something with no root configured at all");
 });
 
 /**
@@ -512,7 +542,11 @@ function excitableKinds(): Array<{ kind: string; contract: any; satisfying: Reco
     const shape = OUTCOME_CHECK_SHAPE[kind]!;
     // the contract's own parameter, typed by the one thing the reader already
     // knows about it: `exit_code` is an integer and the other three are strings
-    const parameter: unknown = shape.parameter === "exit_code" ? 0 : `skln-probe-${kind}`;
+    // 2.3: a `stdout_match` names the DIGEST it expects — a substring pattern is
+    // not executable by this registry, so a kind given one could not be excited
+    // at all and the sweep below would refuse rather than skip it.
+    const parameter: unknown =
+      shape.parameter === "exit_code" ? 0 : shape.parameter === "stdout_match" ? R6_DIGEST : `skln-probe-${kind}`;
     const contract = {
       check: { kind, [shape.parameter]: parameter },
       evidence: [...shape.reads],
@@ -522,7 +556,11 @@ function excitableKinds(): Array<{ kind: string; contract: any; satisfying: Reco
     // of what any check does: the parameter itself, the parameter in a list,
     // the two integers a status can be, something that matches nothing, and an
     // empty list.
-    const candidates: unknown[] = [parameter, [parameter], 0, 1, "skln-probe-matches-nothing", []];
+    // …and a SECOND digest, so a kind that reads one has something to be
+    // refuted by. Under 2.3 a value that is not a digest is not of a shape the
+    // check can read at all, which is `unknown` and not `no` — without this the
+    // search space could excite `yes` for `stdout_match` and never `no`.
+    const candidates: unknown[] = [parameter, [parameter], 0, 1, "skln-probe-matches-nothing", [], R6_SUITE_DIGEST];
     const names = [...shape.reads];
     const combinations: Array<Record<string, unknown>> = [];
     const build = (i: number, acc: Record<string, unknown>): void => {
@@ -558,7 +596,7 @@ test("[D-18] NO check kind, of the set the CODE declares, turns a principal's ev
     ] as Array<[string, Record<string, unknown>, string]>) {
       // ---- PRESENTED BY A PRINCIPAL. There is no path to a verdict.
       for (const type of ["human", "agent", "service"] as const) {
-        const claimed = assess({ contract: k.contract, claimed: evidence, observed: null, principal: { type } });
+        const claimed = assess({ contract: k.contract, claimed: selfReported(evidence), observed: null, principal: { type } });
         claims += 1;
         if (claimed.value !== "unknown") {
           escaped.push(`${k.kind} · ${label} · claimed by a ${type} → ${claimed.value}: a verdict out of evidence nobody checked`);
@@ -569,18 +607,27 @@ test("[D-18] NO check kind, of the set the CODE declares, turns a principal's ev
         if (claimed.claim !== conclusion) escaped.push(`${k.kind} · ${label} · ${type} → claim ${claimed.claim}, expected ${conclusion}`);
       }
       // ---- READ BY THE REGISTRY. Here, and only here, there IS one.
-      const own = assess({ contract: k.contract, claimed: null, observed: evidence, principal: { type: "agent" } });
-      verdicts += 1;
-      if (own.value !== conclusion) escaped.push(`${k.kind} · ${label} · read by the registry → ${own.value} (${own.reason}), expected ${conclusion}`);
+      // ROUND 7's NARROWING ON THIS AXIS. Values the registry produced ITSELF
+      // still decide nothing for a kind whose subject is a process on somebody
+      // else's machine: `observable` is read off `OUTCOME_CHECK_SHAPE`, so the
+      // set of kinds that may answer is the CODE's and not a list written here.
+      const observable = OUTCOME_CHECK_SHAPE[k.kind]!.observable;
+      const own = assess({ contract: k.contract, claimed: null, observed: registryObserved(evidence), principal: { type: "agent" } });
+      const expected = observable ? conclusion : "unknown";
+      if (observable) verdicts += 1;
+      if (own.value !== expected) escaped.push(`${k.kind} · ${label} · read by the registry → ${own.value} (${own.reason}), expected ${expected}`);
       if (own.basis !== "registry_observation") escaped.push(`${k.kind} · ${label} · registry → basis ${own.basis}`);
-      console.log(`  ${k.kind.padEnd(16)} ${label.padEnd(10)} claimed → unknown/${conclusion}   observed → ${own.value}`);
+      console.log(`  ${k.kind.padEnd(16)} ${label.padEnd(10)} claimed → unknown/${conclusion}   observed → ${own.value}${observable ? "" : "  (not a kind this registry can observe)"}`);
     }
   }
   console.log(`[D-18] principal-presented combinations that produced NO verdict: ${claims}`);
   console.log(`[D-18] registry-read combinations that produced one: ${verdicts}`);
   assert.deepEqual(escaped, [], "evidence a principal presented reached §4's fact column as a verdict");
   assert.equal(claims, OUTCOME_CHECK_KINDS.length * 2 * 3, "the sweep did not cover every kind × both conclusions × every principal type");
-  assert.equal(verdicts, OUTCOME_CHECK_KINDS.length * 2, "the registry's own reading must still answer, or the sweep proves only that nothing answers");
+  const observableKinds = OUTCOME_CHECK_KINDS.filter((k) => OUTCOME_CHECK_SHAPE[k]!.observable).length;
+  console.log(`[D-18] kinds this registry may observe at all: ${observableKinds} of ${OUTCOME_CHECK_KINDS.length} — round 7's narrowing`);
+  assert.ok(observableKinds > 0, "no kind is observable at all, so the registry axis proves nothing");
+  assert.equal(verdicts, observableKinds * 2, "the registry's own reading must still answer for the kinds it CAN observe, or the sweep proves only that nothing answers");
 });
 
 test("[D-18] the assessor that publishes a claim as a verdict is KILLED on the same evidence", async () => {
@@ -592,24 +639,31 @@ test("[D-18] the assessor that publishes a claim as a verdict is KILLED on the s
   mkdirSync(join(dir, "src"), { recursive: true });
   for (const f of ["outcome.ts"]) {
     const before = readFileSync(join(REPO_ROOT, "src", f), "utf8");
-    const from = `  const claimed = evaluateOutcome(input.contract, input.claimed);
-  if (claimed.value === "unknown") return registry(claimed);
-  return {
-    value: "unknown",
-    reason: "self_reported_not_verified_by_the_registry",`;
-    const to = `  const claimed = evaluateOutcome(input.contract, input.claimed);
-  if (claimed.value === "unknown") return registry(claimed);
-  return {
-    value: claimed.value,
-    reason: "self_reported_not_verified_by_the_registry",`;
+    // THE MUTATION IS THE SAME READING OF D-18 §3 AS BEFORE — a self-report
+    // that reaches the fact column as `yes` so long as it is LABELLED — written
+    // against the shape the code has after round 7. `stands` is the one
+    // expression that decides whether a verdict rests on this registry's
+    // authority; the mutant makes every executed check rest on it.
+    const from = `    value: stands ? verdict.value : "unknown",`;
+    const to = `    value: verdict.value,`;
     assert.equal(before.split(from).length - 1, 1, `the mutation template must occur EXACTLY ONCE in src/${f}`);
     writeFileSync(join(dir, "src", f), before.replace(from, to));
   }
-  const mutated = (await import(`${dir}/src/outcome.ts`)) as { assessOutcome: (i: unknown) => Assessment };
+  const mutated = (await import(`${dir}/src/outcome.ts`)) as {
+    assessOutcome: (i: unknown) => Assessment;
+    selfReported: (v: Record<string, unknown>) => unknown;
+  };
 
   const kinds = excitableKinds();
-  const shipped = kinds.map((k) => assessor()({ contract: k.contract, claimed: k.satisfying, observed: null, principal: { type: "agent" } }));
-  const broken = kinds.map((k) => mutated.assessOutcome({ contract: k.contract, claimed: k.satisfying, observed: null, principal: { type: "agent" } }));
+  // EACH MODULE MARKS WITH ITS OWN CONSTRUCTOR. The mark is membership in a
+  // `WeakMap` held in a module's closure, and the mutant is a SECOND instance of
+  // the module with a closure of its own — so values marked by the shipped
+  // build are correctly foreign to it. That is the mechanism working, not an
+  // obstacle to the test, and each side marks its own.
+  const shipped = kinds.map((k) => assessor()({ contract: k.contract, claimed: selfReported(k.satisfying), observed: null, principal: { type: "agent" } }));
+  const broken = kinds.map((k) =>
+    mutated.assessOutcome({ contract: k.contract, claimed: mutated.selfReported(k.satisfying), observed: null, principal: { type: "agent" } }),
+  );
   for (const [i, k] of kinds.entries()) {
     console.log(`  ${k.kind.padEnd(16)} shipped → ${shipped[i]!.value}   mutant → ${broken[i]!.value} (labelled ${broken[i]!.basis})`);
   }
@@ -670,9 +724,9 @@ test("[D-18] every `outcome` column carries its basis — the attribute is a MET
     ["no contract at all", base({})],
     ["a contract and nothing observed", base({ outcome_contract: CONTRACT })],
     ["a run that presented no evidence", base({ outcome_contract: CONTRACT, snapshot: snap([rec({ role: "call", call_id: "p" }), rec({ call_id: "p" })], { agent_id: "a", type: "agent" }) })],
-    ["a self-report that satisfies", base({ outcome_contract: CONTRACT, snapshot: snap([rec({ role: "call", call_id: "q" }), rec({ call_id: "q", evidence: { stdout: "ALL GREEN" } })], { agent_id: "a", type: "service" }) })],
-    ["the registry's own reading", base({ outcome_contract: { check: { kind: "artifact_exists", artifact_path: "out/x" }, evidence: ["artifacts"], unknown: "nothing was evaluated" }, observed_evidence: { artifacts: ["out/x"] } })],
-    ["the registry's own reading, negative", base({ outcome_contract: { check: { kind: "artifact_exists", artifact_path: "out/x" }, evidence: ["artifacts"], unknown: "nothing was evaluated" }, observed_evidence: { artifacts: [] } })],
+    ["a self-report that satisfies", base({ outcome_contract: CONTRACT, snapshot: snap([rec({ role: "call", call_id: "q" }), rec({ call_id: "q", evidence: selfReported({ stdout: R6_DIGEST }) })], { agent_id: "a", type: "service" }) })],
+    ["the registry's own reading", base({ outcome_contract: { check: { kind: "artifact_exists", artifact_path: "out/x" }, evidence: ["artifacts"], unknown: "nothing was evaluated" }, observed_evidence: registryObserved({ artifacts: ["out/x"] }) })],
+    ["the registry's own reading, negative", base({ outcome_contract: { check: { kind: "artifact_exists", artifact_path: "out/x" }, evidence: ["artifacts"], unknown: "nothing was evaluated" }, observed_evidence: registryObserved({ artifacts: [] }) })],
   ];
   const naked: string[] = [];
   for (const [label, ev] of cases) {

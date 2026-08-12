@@ -30,6 +30,7 @@ import {
 } from "./fleet.ts";
 import type { RuntimeRecordSource, RuntimeRecordWindow } from "./assignments.ts";
 import type { GrantPrincipal } from "./grants.ts";
+import { selfReported, type Evidence } from "./outcome.ts";
 
 export interface RuntimeObservationRow {
   id: string;
@@ -167,14 +168,27 @@ export function recordsOfObservation(db: Db, observationId: string): ObservedRec
     .all(observationId) as ObservedRecordRow[];
 }
 
-/** Stored evidence, back into named values. Unreadable stored bytes are `null`
- *  — an evidence nobody can read is an evidence nobody presented, and that is
- *  `unknown` downstream, never `no`. */
-function parseEvidence(stored: string | null): Record<string, unknown> | null {
+/**
+ * Stored evidence, back into named values — MARKED AS A PRINCIPAL'S.
+ *
+ * This is the point of acceptance on the reading side, and the mark goes on
+ * here rather than at the column that publishes a verdict (2.1). These bytes
+ * were written by `observation.report`: they are what an agent said about a
+ * machine this registry cannot reach, and nothing downstream may treat them as
+ * anything else. Marking them where they are parsed is what makes the
+ * provenance of the verdict a property of the DATA rather than of the branch
+ * that read it.
+ *
+ * Unreadable stored bytes are `null` — an evidence nobody can read is an
+ * evidence nobody presented, and that is `unknown` downstream, never `no`.
+ */
+function parseEvidence(stored: string | null): Evidence | null {
   if (stored === null) return null;
   try {
     const parsed = JSON.parse(stored);
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? selfReported(parsed as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }
