@@ -43,21 +43,37 @@
 //   moment it is classified — which is the same medicine that stopped the tool
 //   findings and the document findings from recurring.
 //
-// THE TRAP THAT IS NOT IN THE OWNER'S LIST, AND WHY IT DECIDES THE DESIGN.
+// THE TRAP THAT IS NOT IN THE OWNER'S LIST, AND HOW ROUND 12 ANSWERED IT.
 //
-//   A database raised on the CURRENT build already holds digests. If the
+//   A database raised on the ROUND-10 build already holds digests. If the
 //   migration hashes what it finds, those become `sha256(sha256(k))`, which is
 //   not what the retry computes, and EVERY existing repeat breaks — silently, on
-//   every database created since round 10. So the migration must hash only what
-//   is NOT ALREADY A DIGEST, and both upgrade paths have to be shown:
-//   `[11.1]`/`[11.2]` come from the base build, `[11.3]` from this one.
+//   every such database.
 //
-// WHAT THIS FILE DOES NOT CLAIM. A legacy key that IS, letter for letter, a
-// string of the form `sha256:<64 lowercase hex>` cannot be told from the digest
-// of a key by any inspection of the value, and is left alone. `[11.11]` states
-// that residue as a fact of the shipped behaviour rather than leaving a reader
-// to discover it: the one adopter that chose such a key loses the replay of that
-// one key, and nothing else moves.
+//   `0011` answered that by deciding PER VALUE, BY ITS FORM: a string shaped
+//   `sha256:<64 lowercase hex>` was taken to be a digest already and carried
+//   across. THAT ANSWER WAS WRONG, and round 12 removed it rather than repairing
+//   it. A row does not record which build wrote it, so the form of a value
+//   cannot say which it is — and a reviewer put a key and the LITERAL DIGEST OF
+//   THAT KEY on one receipt through the base build's own surfaces, at which
+//   point the rule made the two equal and the rebuild died on
+//   `UNIQUE(adoption_receipt_id, idempotency_key)` with the upgrade unable ever
+//   to finish. `test/p14-r12-probes.test.ts` carries that run.
+//
+//   So the answer is now split in two, and this file was rewritten to the new
+//   rule: `0012` HASHES EVERY NON-EMPTY KEY with no test of form, and an upgrade
+//   from `user_version` 10 — the state whose values may already be digests — is
+//   REFUSED by name. Round 10 was an intermediate development commit of this
+//   tree and was never released or deployed, so the set of supported upgrades is
+//   `user_version` 9 or below, and 9 is what every legacy state below is built
+//   at. `[11.3]` used to demonstrate the round-10 path working; it now
+//   demonstrates it refused.
+//
+// WHAT THIS FILE NO LONGER CLAIMS. `[11.11]` used to record a residue: a legacy
+// key that IS, letter for letter, of the stored form was left as it stands, and
+// the replay of that one key stopped matching. There is no residue now — that
+// key is hashed like every other — so `[11.11]` asserts the opposite of what it
+// asserted, which is what it means for a decision to have been reversed.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -70,8 +86,9 @@ import { JOURNAL_INTAKE, correlationDigest, journalColumnsOf, journalTablesOf, s
 import { MIGRATION_STEPS } from "../src/migration-steps.ts";
 import { EVIDENCE_DIGEST } from "../src/outcome.ts";
 import { ulid } from "../src/ulid.ts";
+import { mintApiKey } from "../src/auth.ts";
 import { seedGraph, insertReceiptEvent } from "./helpers.ts";
-import { p4Fixture, reviewedVersion, rest, adoptThroughSurfaces, env, type P4Fixture } from "./p6-helpers.ts";
+import { p4Fixture, reviewedVersion, rest, adoptThroughSurfaces, env, NOW, type P4Fixture } from "./p6-helpers.ts";
 
 // ---------------------------------------------------------------------------
 // Building a database an OLDER BUILD left behind.
@@ -108,6 +125,20 @@ function databaseAtVersion(through: number): Db {
   }
   return db;
 }
+
+/**
+ * THE HIGHEST LEGACY STATE THIS TREE SUPPORTS UPGRADING FROM.
+ *
+ * Not 10, which is what every probe here used to build. `0010` shipped before
+ * the round-10 writer did, so a database left at 10 may hold the older build's
+ * raw keys, may hold the round-10 build's digests, and may hold both — and
+ * nothing in a row says which. `0012` hashes unconditionally, so it would hash a
+ * digest a second time; `migrate()` therefore REFUSES `user_version` 10 outright
+ * and `[11.3]` is the run of that refusal. 9 is the last state whose every key
+ * is the adopter's own string, because no build that stops at `0009` had the
+ * writer that hashes.
+ */
+const LEGACY_BASE = 9;
 
 function userVersion(db: Db): number {
   return (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
@@ -161,6 +192,23 @@ function receiptEventsDefinition(db: Db): unknown {
 }
 
 /**
+ * REST over a database that has ALREADY been migrated, with the API key of the
+ * legacy receipt's own adopter.
+ *
+ * A supported legacy database is filled the way the older build filled it — the
+ * statement `6303814` issued, which put the adopter's string into the column
+ * verbatim — and this build's surfaces are driven only AFTER the upgrade. The
+ * order matters now that `0012` hashes unconditionally: a row THIS build writes
+ * into a database it has not yet migrated is a row no deployment can hold,
+ * because `migrate()` runs before the first request is served, and hashing one
+ * twice would be an artefact of the probe and not of the product.
+ */
+function restOverMigrated(db: Db, adopterAgentId: string): { fx: P4Fixture; key: string } {
+  const fx = p4Fixture({ db });
+  return { fx, key: mintApiKey(db, adopterAgentId, NOW).api_key };
+}
+
+/**
  * A version, a receipt and a `delivered` event, all through the shipped REST
  * surface, on whatever database the fixture was given.
  */
@@ -180,7 +228,7 @@ test("[11.0] a migration answers for the rows an older build wrote", () => {
     "round 11 claims a migration `0011`; the set of migration files does not contain one",
   );
   const db = openMigrated();
-  assert.equal(userVersion(db), 11, "a freshly migrated database reports the migration this round adds");
+  assert.equal(userVersion(db), LATEST, "a freshly migrated database reports every migration this tree ships");
   db.close();
 });
 
@@ -205,7 +253,7 @@ test("[11.1] a base-build database upgrades, and every key it held becomes the d
 
   migrate(db);
 
-  assert.equal(userVersion(db), 11, "the shipped runner carried 0005..0011 in one pass");
+  assert.equal(userVersion(db), LATEST, "the shipped runner carried 0005..0012 in one pass");
   const after = keys(db);
   assert.equal(after.length, 3, "a rebuild that loses a row is a rebuild that loses a receipt's history");
   assert.deepEqual(
@@ -224,19 +272,21 @@ test("[11.1] a base-build database upgrades, and every key it held becomes the d
 // ===========================================================================
 
 test("[11.2] a repeat of a legacy key is idempotent across the upgrade, through the shipped REST surface", () => {
-  const fx = p4Fixture({ db: databaseAtVersion(10) });
-  const { receiptId } = receiptThroughSurfaces(fx, "upgrade-legacy");
+  const db = databaseAtVersion(LEGACY_BASE);
+  const seed = seedGraph(db);
   const LEGACY = "legacy retry key with spaces";
 
-  // The one row the current build cannot write: an `attempted` event whose key
-  // is the adopter's own string, which is the statement `appendReceiptEventInTx`
-  // issued before round 10 and the reason this round exists.
-  insertReceiptEvent(fx.db, receiptId, "attempted", nextSeq(fx.db, receiptId), Date.now(), LEGACY);
-  const before = (fx.db.prepare("SELECT COUNT(*) AS c FROM receipt_events").get() as { c: number }).c;
+  // The rows the current build cannot write: events whose key is the adopter's
+  // own string, which is the statement `appendReceiptEventInTx` issued before
+  // round 10 and the reason this round exists.
+  insertReceiptEvent(db, seed.receipt, "delivered", 1, seed.now, "a handover of the older build");
+  insertReceiptEvent(db, seed.receipt, "attempted", 2, seed.now, LEGACY);
+  const before = (db.prepare("SELECT COUNT(*) AS c FROM receipt_events").get() as { c: number }).c;
 
-  migrate(fx.db);
+  migrate(db);
 
-  const repeat = rest(fx, "POST", `/v1/receipts/${receiptId}/events`, fx.keys.member!, {
+  const { fx, key } = restOverMigrated(db, seed.adopterA);
+  const repeat = rest(fx, "POST", `/v1/receipts/${seed.receipt}/events`, key, {
     event: "attempted",
     idempotency_key: LEGACY,
   });
@@ -244,26 +294,35 @@ test("[11.2] a repeat of a legacy key is idempotent across the upgrade, through 
   assert.equal(repeat.body.noop, true, "and it is answered as one");
   assert.equal(repeat.body.receipt_event, "attempted", "with the event the original row recorded");
   assert.equal(
-    (fx.db.prepare("SELECT COUNT(*) AS c FROM receipt_events").get() as { c: number }).c,
+    (db.prepare("SELECT COUNT(*) AS c FROM receipt_events").get() as { c: number }).c,
     before,
     "a repeat writes no row",
   );
   assert.equal(
-    (fx.db.prepare("SELECT COUNT(*) AS c FROM receipt_events WHERE idempotency_key=?").get(LEGACY) as { c: number }).c,
+    (db.prepare("SELECT COUNT(*) AS c FROM receipt_events WHERE idempotency_key=?").get(LEGACY) as { c: number }).c,
     0,
     "and the adopter's string is no longer in the journal",
   );
 });
 
 // ===========================================================================
-// [11.3] UPGRADE PATH B — a database raised on THIS build, whose keys are
-//        already digests. The migration must leave them ALONE.
+// [11.3] UPGRADE PATH B — a database raised on the ROUND-10 build, whose keys
+//        are already digests. This probe used to require the migration to leave
+//        them alone; it now requires the RUNNER TO REFUSE THE PATH.
+//
+//        Why the claim reversed. Leaving them alone means deciding, per value,
+//        whether it is a digest already — and the only evidence available is the
+//        FORM of the value, which cannot say which build wrote a row. `[12.1]`
+//        drives that guess into a collision no upgrade can get past. Removing
+//        the guess means hashing unconditionally, and that is wrong for exactly
+//        this state and no other. Round 10 was never released or deployed, so
+//        the state is withdrawn from the supported set rather than guessed at.
 // ===========================================================================
 
-test("[11.3] a database whose keys are already digests keeps the same digests, and its repeats still repeat", () => {
+test("[11.3] a database raised on the round-10 build is refused, by name and with its reason", () => {
   const fx = p4Fixture({ db: databaseAtVersion(10) });
-  const { receiptId } = receiptThroughSurfaces(fx, "upgrade-current");
-  const KEY = "a key this build hashed on the way in";
+  const { receiptId } = receiptThroughSurfaces(fx, "upgrade-round-ten");
+  const KEY = "a key the round-10 build hashed on the way in";
 
   const first = rest(fx, "POST", `/v1/receipts/${receiptId}/events`, fx.keys.member!, {
     event: "attempted",
@@ -271,39 +330,33 @@ test("[11.3] a database whose keys are already digests keeps the same digests, a
   });
   assert.equal(first.status, 200, first.raw);
   const before = keys(fx.db);
-  assert.ok(before.every((k) => EVIDENCE_DIGEST.test(k)), "this build writes digests before the migration exists");
+  assert.ok(before.every((k) => EVIDENCE_DIGEST.test(k)), "the round-10 build wrote digests, which is the whole problem");
+  assert.ok(before.includes(correlationDigest(KEY)), "including this one");
 
-  migrate(fx.db);
-
-  assert.deepEqual(keys(fx.db), before, "a value already in the stored form is not stored a second time");
-  assert.ok(
-    keys(fx.db).includes(correlationDigest(KEY)),
-    "and it is still the digest OF THE KEY, not the digest of a digest",
+  assert.throws(
+    () => migrate(fx.db),
+    /user_version/,
+    "hashing a digest a second time is a repeat that never repeats; the runner refuses instead",
   );
-  const repeat = rest(fx, "POST", `/v1/receipts/${receiptId}/events`, fx.keys.member!, {
-    event: "attempted",
-    idempotency_key: KEY,
-  });
-  assert.equal(repeat.status, 200, `every repeat on every database raised since round 10: ${repeat.raw}`);
-  assert.equal(repeat.body.noop, true, "answered as a repeat");
+  assert.equal(userVersion(fx.db), 10, "the refusal changes no version");
+  assert.deepEqual(keys(fx.db), before, "and no row");
 });
 
 /**
- * [11.3] IS THE ONE PROBE HERE THAT PASSES BEFORE THE FIX, and it is in the set
- * on purpose: it does not discriminate against the MISSING migration, it
- * discriminates against the WRONG one. The obvious migration — hash the column
- * — turns every database raised since round 10 into one whose every repeat
- * fails, quietly, with nothing in any log. `[11.3b]` puts that failure on the
- * record instead of describing it, so the shape of the mistake is a run and not
- * a warning in a comment.
+ * [11.3b] IS THE PROBE THAT SAYS WHY THE REFUSAL IS NOT COWARDICE. Hashing a
+ * value that is already a digest gives `sha256(sha256(k))` — a well-formed value
+ * of exactly the right shape that no reader computes — so every repeat on such a
+ * database stops repeating, quietly, with nothing in any log. This puts that
+ * failure on the record as a run rather than as a warning in a comment.
  */
-test("[11.3b] a key hashed twice is a repeat that never repeats — the failure the migration must not create", () => {
-  const fx = p4Fixture({ db: databaseAtVersion(10) });
-  const { receiptId } = receiptThroughSurfaces(fx, "upgrade-double");
+test("[11.3b] a key hashed twice is a repeat that never repeats — the failure the refusal exists to prevent", () => {
+  const fx = p4Fixture();
+  const v = reviewedVersion(fx, "upgrade-double");
+  const { receiptId } = adoptThroughSurfaces(fx, v, fx.keys.member!, { terminal: "none" });
   const KEY = "the key an adopter will send again";
 
-  // The row a hash-everything migration would leave behind: the digest OF THE
-  // DIGEST, which is a well-formed value of the right shape and the wrong one.
+  // The row a hash-everything migration would leave behind on a round-10
+  // database: the digest OF THE DIGEST.
   insertReceiptEvent(
     fx.db,
     receiptId,
@@ -322,35 +375,34 @@ test("[11.3b] a key hashed twice is a repeat that never repeats — the failure 
 });
 
 // ===========================================================================
-// [11.4] A MIXED database — the realistic one. A deployment that took the
-//        round-10 build without a migration wrote digests next to the raw keys
-//        it already had, so both are in one table and the rule is per ROW.
+// [11.4] A LEGACY TABLE OF MANY SHAPES. The "mixed" table this probe used to
+//        build — the older build's raw keys beside the round-10 build's digests
+//        — IS the `user_version` 10 state, and that state is now refused. What
+//        a supported legacy database holds is the adopter's own strings, of
+//        whatever shape the adopter chose, and the rule is one rule for all of
+//        them.
 // ===========================================================================
 
-test("[11.4] legacy and current keys in one table: both end as digests, and the survey still classifies the schema", () => {
-  const fx = p4Fixture({ db: databaseAtVersion(10) });
-  const { receiptId } = receiptThroughSurfaces(fx, "upgrade-mixed");
-  const LEGACY = "written before the upgrade";
-  const CURRENT = "written after it";
+test("[11.4] keys of every shape in one table end as digests, and the survey still classifies the schema", () => {
+  const db = databaseAtVersion(LEGACY_BASE);
+  const seed = seedGraph(db);
+  const PLAIN = "written before the upgrade";
+  const ODD = "RETRY/2026-08-12 #7 — kлюч на кириллице";
 
-  insertReceiptEvent(fx.db, receiptId, "attempted", nextSeq(fx.db, receiptId), Date.now(), LEGACY);
-  const done = rest(fx, "POST", `/v1/receipts/${receiptId}/events`, fx.keys.member!, {
-    event: "failed",
-    failure_report: { category: "gate_failed", summary: "the declared gate did not pass" },
-    idempotency_key: CURRENT,
-  });
-  assert.equal(done.status, 200, done.raw);
+  insertReceiptEvent(db, seed.receipt, "delivered", 1, seed.now, PLAIN);
+  insertReceiptEvent(db, seed.receipt, "attempted", 2, seed.now, ODD);
 
-  migrate(fx.db);
+  migrate(db);
 
-  const after = keys(fx.db);
-  assert.ok(after.includes(correlationDigest(LEGACY)), "the row an older build wrote is hashed");
-  assert.ok(after.includes(correlationDigest(CURRENT)), "the row this build wrote is not hashed twice");
+  const after = keys(db);
+  assert.ok(after.includes(correlationDigest(PLAIN)), "an ordinary key is hashed");
+  assert.ok(after.includes(correlationDigest(ODD)), "and so is one of any other shape");
   for (const k of after) assert.match(k, EVIDENCE_DIGEST, "and not one value of any other form is left");
 
-  const survey = surveyJournalIntake(fx.db);
+  const survey = surveyJournalIntake(db);
   assert.deepEqual(survey.unclassified, [], "the migrated schema leaves no column unclassified");
   assert.deepEqual(survey.freeText, [], "and no journal column of it is free text");
+  db.close();
 });
 
 // ===========================================================================
@@ -359,33 +411,20 @@ test("[11.4] legacy and current keys in one table: both end as digests, and the 
 // ===========================================================================
 
 test("[11.5] a synthesized `delivered` written by an older build ends where this build's synthesized key is", () => {
-  const legacyFx = p4Fixture({ db: databaseAtVersion(10) });
-  const v = reviewedVersion(legacyFx, "upgrade-synth");
-  const requested = rest(legacyFx, "POST", "/v1/adoptions/requests", legacyFx.keys.member!, {
-    skill_version_id: v.versionId,
-  });
-  assert.equal(requested.status, 201, requested.raw);
-  const receiptId = requested.body.receipt_id as string;
+  const db = databaseAtVersion(LEGACY_BASE);
+  const seed = seedGraph(db);
+  const receiptId = seed.receipt;
 
   // §5.3's synthesized pair, as the older build wrote it: the fixed key verbatim.
-  legacyFx.db
-    .prepare(
-      `INSERT INTO receipt_events(id, adoption_receipt_id, event, event_seq, evidence_json, server_at_ms, idempotency_key)
-       VALUES (?,?, 'delivered', ?, '{"synthesized":true}', ?, ?)`,
-    )
-    .run(ulid(Date.now()), receiptId, nextSeq(legacyFx.db, receiptId), Date.now(), `synth-delivered:${receiptId}`);
-  insertReceiptEvent(
-    legacyFx.db,
-    receiptId,
-    "attempted",
-    nextSeq(legacyFx.db, receiptId),
-    Date.now(),
-    "an attempt of the older build",
-  );
+  db.prepare(
+    `INSERT INTO receipt_events(id, adoption_receipt_id, event, event_seq, evidence_json, server_at_ms, idempotency_key)
+       VALUES (?,?, 'delivered', 1, '{"synthesized":true}', ?, ?)`,
+  ).run(ulid(seed.now), receiptId, seed.now, `synth-delivered:${receiptId}`);
+  insertReceiptEvent(db, receiptId, "attempted", 2, seed.now, "an attempt of the older build");
 
-  migrate(legacyFx.db);
+  migrate(db);
 
-  const migrated = legacyFx.db
+  const migrated = db
     .prepare("SELECT idempotency_key AS k FROM receipt_events WHERE adoption_receipt_id=? AND event='delivered'")
     .get(receiptId) as { k: string };
   assert.equal(
@@ -393,6 +432,7 @@ test("[11.5] a synthesized `delivered` written by an older build ends where this
     correlationDigest(`synth-delivered:${receiptId}`),
     "the registry's own key goes through the rule its adopters' keys go through",
   );
+  db.close();
 
   // …and that value is what THIS build writes, read off a live run rather than
   // asserted from the same expression twice.
@@ -415,12 +455,12 @@ test("[11.5] a synthesized `delivered` written by an older build ends where this
 });
 
 // ===========================================================================
-// [11.6] `UNIQUE(adoption_receipt_id, idempotency_key)` survives the third
-//        rebuild of this table, and two different legacy keys stay two rows.
+// [11.6] `UNIQUE(adoption_receipt_id, idempotency_key)` survives the rebuilds
+//        of this table, and two different legacy keys stay two rows.
 // ===========================================================================
 
 test("[11.6] the uniqueness the replay depends on is still enforced after the rebuild", () => {
-  const db = databaseAtVersion(10);
+  const db = databaseAtVersion(LEGACY_BASE);
   const seed = seedGraph(db);
   insertReceiptEvent(db, seed.receipt, "delivered", 1, seed.now, "one legacy key");
   insertReceiptEvent(db, seed.receipt, "attempted", 2, seed.now, "another legacy key");
@@ -443,16 +483,17 @@ test("[11.6] the uniqueness the replay depends on is still enforced after the re
 });
 
 // ===========================================================================
-// [11.7] THE THIRD REBUILD OF THIS TABLE. What `0011` leaves must be, object
-//        for object, what `0009` + `0010` left. The intended difference is NONE:
-//        this migration changes VALUES and no part of the shape.
+// [11.7] THE REBUILDS OF THIS TABLE, END TO END. What the migrated schema
+//        leaves must be, object for object, what `0009` + `0010` left. The
+//        intended difference is NONE: `0011` and `0012` change VALUES and no
+//        part of the shape, and `[12.5]` asserts the same across `0012` alone.
 // ===========================================================================
 
-test("[11.7] the definition of `receipt_events` after 0011 is the definition after 0009 and 0010, object for object", () => {
+test("[11.7] the definition of `receipt_events` after every rebuild is the definition after 0009 and 0010, object for object", () => {
   const before = databaseAtVersion(10);
   const after = openMigrated();
   assert.equal(userVersion(before), 10);
-  assert.equal(userVersion(after), 11);
+  assert.equal(userVersion(after), LATEST);
   assert.deepEqual(
     receiptEventsDefinition(after),
     receiptEventsDefinition(before),
@@ -500,24 +541,25 @@ function nonDigests(db: Db): string[] {
 }
 
 test("[11.8] in a migrated legacy database, every column the code calls a digest holds one", () => {
-  const fx = p4Fixture({ db: databaseAtVersion(10) });
-  const { receiptId } = receiptThroughSurfaces(fx, "upgrade-set");
-  insertReceiptEvent(fx.db, receiptId, "attempted", nextSeq(fx.db, receiptId), Date.now(), "a key of an older build");
+  const db = databaseAtVersion(LEGACY_BASE);
+  const seed = seedGraph(db);
+  insertReceiptEvent(db, seed.receipt, "attempted", 1, seed.now, "a key of an older build");
 
-  const columns = digestColumns(fx.db);
+  const columns = digestColumns(db);
   assert.ok(
     columns.includes("receipt_events.idempotency_key"),
     "the set comes from the code's own classification, and this round's column is in it",
   );
-  assert.deepEqual(nonDigests(fx.db), [`receipt_events.idempotency_key=a key of an older build`], "…before the upgrade");
+  assert.deepEqual(nonDigests(db), [`receipt_events.idempotency_key=a key of an older build`], "…before the upgrade");
 
-  migrate(fx.db);
+  migrate(db);
 
-  assert.deepEqual(nonDigests(fx.db), [], "…and nothing of any other form is left in any of them after it");
+  assert.deepEqual(nonDigests(db), [], "…and nothing of any other form is left in any of them after it");
+  db.close();
 });
 
 test("[11.8b] the walker bites: a value of another form in any such column is reported", () => {
-  const db = databaseAtVersion(10);
+  const db = databaseAtVersion(LEGACY_BASE);
   const seed = seedGraph(db);
   migrate(db);
   assert.deepEqual(nonDigests(db), [], "a migrated database with no legacy row has nothing to report");
@@ -553,7 +595,7 @@ test("[11.9] the probe's own migration loop leaves the schema the shipped runner
 // ===========================================================================
 
 test("[11.10] migrating an already-migrated database changes nothing", () => {
-  const db = databaseAtVersion(10);
+  const db = databaseAtVersion(LEGACY_BASE);
   const seed = seedGraph(db);
   insertReceiptEvent(db, seed.receipt, "delivered", 1, seed.now, "a key of an older build");
   migrate(db);
@@ -568,7 +610,7 @@ test("[11.10] migrating an already-migrated database changes nothing", () => {
 // [11.12] THE BOUNDARY OF THIS ROUND, RUN RATHER THAN DESCRIBED.
 //
 //   Round 10 narrowed more than one column. `receipt_events.idempotency_key` is
-//   what `0011` repairs; `observed_records.call_id` became a digest in the same
+//   what `0011` and then `0012` repair; `observed_records.call_id` became a digest in the same
 //   round, and `runtime_observations.model` and `.window_detail` were narrowed
 //   in it, all three without a migration. The table that holds them was created
 //   by `0008`, so a database older than that carries no row of any of them —
@@ -585,7 +627,7 @@ test("[11.10] migrating an already-migrated database changes nothing", () => {
 // ===========================================================================
 
 test("[11.12] the columns round 10 narrowed in `observed_records` and `runtime_observations` are NOT repaired here", () => {
-  const db = databaseAtVersion(10);
+  const db = databaseAtVersion(LEGACY_BASE);
   const seed = seedGraph(db);
   const RAW_CALL_ID = "call-42 from the runtime's own log";
   const RAW_MODEL = "a model name of the older build, with spaces";
@@ -608,7 +650,7 @@ test("[11.12] the columns round 10 narrowed in `observed_records` and `runtime_o
   assert.equal(
     (db.prepare("SELECT call_id AS v FROM observed_records").get() as { v: string }).v,
     RAW_CALL_ID,
-    "0011 answers for one column and says so; this is the one it does not answer for",
+    "`0011` and `0012` answer for one column and say so; this is the one they do not answer for",
   );
   const obs = db.prepare("SELECT model AS m, window_detail AS w FROM runtime_observations").get() as {
     m: string;
@@ -620,14 +662,22 @@ test("[11.12] the columns round 10 narrowed in `observed_records` and `runtime_o
 });
 
 // ===========================================================================
-// [11.11] THE RESIDUE, STATED. A legacy key that is ITSELF of the stored form
-//         is indistinguishable from the digest of a key, and is left alone.
-//         This is the shipped behaviour; the probe exists so that it is a
-//         recorded decision and not a discovery.
+// [11.11] THE RESIDUE, WITHDRAWN. This probe used to require a legacy key that
+//         is ITSELF of the stored form to be CARRIED ACROSS, on the ground that
+//         no inspection of the value can say which it is. That was true and it
+//         was the wrong conclusion: two rows of one receipt, one keyed `K` and
+//         one keyed with the literal digest of `K`, became the same value under
+//         that rule and the upgrade could never finish (`[12.1]`).
+//
+//         There is no residue now. The key is hashed like every other, and the
+//         cost that used to be spent here is spent at the door instead: a key of
+//         the stored form may no longer OPEN a record — `[12.7]` — while the one
+//         an older build already wrote is still replayable, because a replay
+//         creates nothing (`[12.8]`).
 // ===========================================================================
 
-test("[11.11] a legacy key already shaped like a digest is left as it stands, and that is the whole of the cost", () => {
-  const db = databaseAtVersion(10);
+test("[11.11] a legacy key already shaped like a digest is hashed like every other, and no value is carried across", () => {
+  const db = databaseAtVersion(LEGACY_BASE);
   const seed = seedGraph(db);
   const SHAPED = `sha256:${"0".repeat(64)}`; // an adopter's own string, of the stored form
   const ORDINARY = "an adopter's ordinary key";
@@ -637,12 +687,9 @@ test("[11.11] a legacy key already shaped like a digest is left as it stands, an
   migrate(db);
 
   const after = keys(db);
-  assert.ok(after.includes(SHAPED), "the value is carried across unchanged: no inspection of it can say which it is");
-  assert.ok(after.includes(correlationDigest(ORDINARY)), "and the key beside it is hashed as every other key is");
-  // The consequence, spelled out: the replay of THAT one key no longer finds its
-  // row, because the reader hashes before it looks. No other key moves, nothing
-  // is lost from the journal, and no value of another form is introduced.
-  assert.notEqual(correlationDigest(SHAPED), SHAPED, "the reader computes a different value for that one key");
+  assert.equal(after.includes(SHAPED), false, "nothing is left as it stands on account of how it looks");
+  assert.ok(after.includes(correlationDigest(SHAPED)), "it is the digest of itself…");
+  assert.ok(after.includes(correlationDigest(ORDINARY)), "…exactly as the key beside it is");
   for (const k of after) assert.match(k, EVIDENCE_DIGEST, "the column still holds one kind of value");
   db.close();
 });
