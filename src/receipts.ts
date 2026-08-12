@@ -21,7 +21,6 @@ import { validatePayload } from "./manifest.ts";
 import { validateEvidenceForVersion } from "./verified-gate.ts";
 import { ulid } from "./ulid.ts";
 import { correlationDigest } from "./journal.ts";
-import { refuseStoredKeyForm } from "./idempotency.ts";
 
 export type ReceiptEvent =
   | "delivered"
@@ -367,16 +366,6 @@ export function appendReceiptEventInTx(db: Db, input: AppendInput): AppendResult
   if (replay) {
     return { receipt_event: replay.event, event_seq: replay.event_seq, noop: true };
   }
-  // (1b) NOTHING TO REPEAT, so this key is about to become a row. A key of the
-  // form this column STORES (`sha256:` and 64 lowercase hex) is refused here:
-  // `migrations/0011` tried to tell such a string apart from a digest of one,
-  // could not, and collided two rows of one receipt into an upgrade that could
-  // never finish. `0012` removed the guess by hashing everything; this stops any
-  // further row from posing the question. It comes AFTER the lookup on purpose —
-  // a repeat writes nothing, so a key of this form that an older build already
-  // wrote is still answered as the repeat it is.
-  refuseStoredKeyForm(input.idempotencyKey);
-
   // (3) derived state → the §5.3 table
   const from = derivedState(db, input.receiptId);
   const action = RECEIPT_TRANSITIONS[from][input.event];

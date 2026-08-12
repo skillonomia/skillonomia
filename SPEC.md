@@ -3531,6 +3531,12 @@ for `call_id`; `NOT NULL` refuses a NULL and rolls the migration back, and an
 EMPTY STRING is not NULL and is therefore carried across — a state no writer of a
 conforming registry can produce, and named here rather than claimed away.
 
+A CONFORMING REGISTRY MUST NOT REFUSE AN INCOMING `idempotency_key` FOR ITS
+SHAPE. A key of the stored form is an ordinary key: it is hashed like any other
+string, which yields a value distinct from the digest of any other key, so no row
+it produces is ambiguous and no repeat of it is lost. A refusal is required only
+where something decides by form, and D.1l requires that nothing does.
+
 THE SET OF SUPPORTED UPGRADES IS NARROWED, AND THIS IS NORMATIVE. Hashing
 unconditionally is wrong for a database whose keys ARE already digests: it would
 store the digest of a digest, a well-formed value no reader computes, and every
@@ -3544,13 +3550,6 @@ and the supported path. THE SUPPORTED UPGRADE PATH IS A DATABASE AT
 `PRAGMA user_version` 9 OR BELOW. Version 11 is NOT refused: a process that dies
 between two migrations of one pass leaves a database there with its keys
 untransformed, and that database MUST be able to finish.
-
-AND NO FURTHER ROW MAY BE AMBIGUOUS. An incoming `idempotency_key` matching
-`^sha256:[0-9a-f]{64}$` — the form this registry writes into its own journals —
-MUST be refused as the key of a NEW record, on every surface of §6 that accepts
-one, with `INVALID_SCHEMA`. It MUST NOT be refused when it REPEATS a record that
-already exists: a repeat writes nothing, introduces no value of any form, and is
-the answer an adopter of an earlier build was already given.
 
 `receipt_events` is rebuilt a fourth time, with every column, constraint, index
 and trigger re-created verbatim, so the live schema after this migration is the
@@ -3608,12 +3607,17 @@ definition object for object to say so. `PRAGMA user_version` = `12`.
 -- hashes. `SPEC.md` and `docs/API.md` carry that boundary in the shipped text,
 -- and `[12.3]` runs the refusal against a real round-10 database.
 --
--- AND NO FUTURE ROW IS AMBIGUOUS EITHER. An incoming `idempotency_key` of the
--- stored form — `sha256:` and 64 lowercase hex — is REFUSED as the key of a new
--- record, on every surface that accepts one (`STORED_KEY_FORM`,
--- `src/idempotency.ts`; `[12.7]`). A key of that form may still REPEAT a record
--- an older build wrote, because a repeat creates nothing and an adopter that
--- chose such a key is owed the answer it always got (`[12.8]`).
+-- AND NO INCOMING KEY IS REFUSED FOR ITS SHAPE. A draft of this migration also
+-- turned away a caller's `idempotency_key` of the stored form, so that no
+-- further row could be ambiguous. It was withdrawn, and the reason is the point
+-- of the whole round: a refusal is only needed while something DECIDES BY FORM,
+-- and nothing does any more. An adopter that sends `sha256:<64 lowercase hex>`
+-- gets the digest OF THAT STRING, which is not the digest of the other key, so
+-- the pair that collided is two values here and two values in the live writer
+-- alike (`[12.1]`, `[12.1b]`). A rule whose answer depended on what was already
+-- in the table would also have been a rule no reader could check against a
+-- request. `[12.7]` walks `src/` and requires that no statement naming an
+-- idempotency key applies a pattern to it.
 --
 -- ABSENCE IS NOT HASHED, for the reason `correlationDigest` gives: one shared
 -- digest for every row without a value would manufacture matches out of absence.

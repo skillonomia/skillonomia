@@ -669,11 +669,12 @@ test("[11.12] the columns round 10 narrowed in `observed_records` and `runtime_o
 //         one keyed with the literal digest of `K`, became the same value under
 //         that rule and the upgrade could never finish (`[12.1]`).
 //
-//         There is no residue now. The key is hashed like every other, and the
-//         cost that used to be spent here is spent at the door instead: a key of
-//         the stored form may no longer OPEN a record — `[12.7]` — while the one
-//         an older build already wrote is still replayable, because a replay
-//         creates nothing (`[12.8]`).
+//         There is no residue now, and no cost moved anywhere else either. The
+//         key is hashed like every other, which puts it on a value of its own —
+//         a value distinct from the digest of the key it was the digest OF, which
+//         is the whole of why the collision is gone. Nothing refuses such a key
+//         on the way in: `[12.7]` walks `src/` and requires that nothing looks at
+//         the form of one at all, and `[12.8]` sends one through the surface.
 // ===========================================================================
 
 test("[11.11] a legacy key already shaped like a digest is hashed like every other, and no value is carried across", () => {

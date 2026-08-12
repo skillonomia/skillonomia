@@ -48,12 +48,17 @@
 -- hashes. `SPEC.md` and `docs/API.md` carry that boundary in the shipped text,
 -- and `[12.3]` runs the refusal against a real round-10 database.
 --
--- AND NO FUTURE ROW IS AMBIGUOUS EITHER. An incoming `idempotency_key` of the
--- stored form — `sha256:` and 64 lowercase hex — is REFUSED as the key of a new
--- record, on every surface that accepts one (`STORED_KEY_FORM`,
--- `src/idempotency.ts`; `[12.7]`). A key of that form may still REPEAT a record
--- an older build wrote, because a repeat creates nothing and an adopter that
--- chose such a key is owed the answer it always got (`[12.8]`).
+-- AND NO INCOMING KEY IS REFUSED FOR ITS SHAPE. A draft of this migration also
+-- turned away a caller's `idempotency_key` of the stored form, so that no
+-- further row could be ambiguous. It was withdrawn, and the reason is the point
+-- of the whole round: a refusal is only needed while something DECIDES BY FORM,
+-- and nothing does any more. An adopter that sends `sha256:<64 lowercase hex>`
+-- gets the digest OF THAT STRING, which is not the digest of the other key, so
+-- the pair that collided is two values here and two values in the live writer
+-- alike (`[12.1]`, `[12.1b]`). A rule whose answer depended on what was already
+-- in the table would also have been a rule no reader could check against a
+-- request. `[12.7]` walks `src/` and requires that no statement naming an
+-- idempotency key applies a pattern to it.
 --
 -- ABSENCE IS NOT HASHED, for the reason `correlationDigest` gives: one shared
 -- digest for every row without a value would manufacture matches out of absence.

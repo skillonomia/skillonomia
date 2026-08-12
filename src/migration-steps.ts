@@ -49,12 +49,12 @@ import { correlationDigest } from "./journal.ts";
  *   completed by any run of any build. `[12.1]` is that run.
  *
  *   One unconditional rule has no such state: two different strings have two
- *   different digests, whatever either of them looks like. The protection the
- *   form check was reaching for is provided instead by `UNSUPPORTED_UPGRADE_FROM`
- *   in `src/db.ts`, which REFUSES a database left at the one `user_version`
- *   whose values may already be digests, and by the refusal of an incoming key
- *   of that form (`STORED_KEY_FORM`, `src/idempotency.ts`), which stops any
- *   further row from being ambiguous in the first place.
+ *   different digests, whatever either of them looks like. `K` becomes the
+ *   digest of `K`; a key that IS a digest becomes the digest of THAT STRING,
+ *   which is a different value again. There is nothing left to guess, so nothing
+ *   asks — and `[12.7]` walks `src/` to require that nothing does. The one state
+ *   an unconditional rule is wrong for is not guessed at either: it is REFUSED,
+ *   by `UNSUPPORTED_UPGRADE_FROM` in `src/db.ts`.
  *
  * ABSENCE IS NOT HASHED, for the reason `correlationDigest` gives: a digest of
  * nothing would give every row without a value ONE SHARED value and manufacture
