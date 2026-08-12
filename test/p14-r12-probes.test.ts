@@ -37,11 +37,15 @@
 //      supported upgrade path is `user_version` 9 or below, and that is written
 //      into the shipped documents rather than left to be discovered.
 //
-//   3. A KEY OF THE STORED FORM IS REFUSED ON THE WAY IN, on every surface that
-//      accepts one, so that no row this registry writes from here on can be
-//      ambiguous about which it is. It is refused as the key of a NEW record:
-//      the one thing it may still do is repeat a record that already exists,
-//      which creates nothing and is what an adopter of the base build is owed.
+//   3. NOTHING ANYWHERE LOOKS AT THE FORM OF A KEY, and `[12.7]` walks `src/`
+//      to say so. An earlier draft of this round REFUSED an incoming key of the
+//      stored form, so that no further row could be ambiguous. The owner
+//      withdrew it: the refusal was only ever needed while something DID decide
+//      by form, and it made the answer to one input depend on the state of the
+//      database — a rule you cannot check by reading a request. A key that IS a
+//      digest is now simply hashed like any other string, which gives a
+//      different value from the digest of the OTHER key, which is the whole of
+//      why the collision is gone.
 //
 // THE PROBES BELOW WERE WRITTEN FROM THAT REQUIREMENT AND COMMITTED RED [D-16].
 import { test } from "node:test";
@@ -56,13 +60,11 @@ import { migrationsDir } from "../src/assets.ts";
 import type { Db } from "../src/sqlite.ts";
 import { correlationDigest, surveyJournalIntake } from "../src/journal.ts";
 import { MIGRATION_STEPS } from "../src/migration-steps.ts";
-import { STORED_KEY_FORM } from "../src/idempotency.ts";
 import { EVIDENCE_DIGEST } from "../src/outcome.ts";
-import { MCP_TOOLS } from "../src/mcp.ts";
 import { mintApiKey } from "../src/auth.ts";
 import { ulid } from "../src/ulid.ts";
 import { seedGraph, insertReceiptEvent } from "./helpers.ts";
-import { p4Fixture, reviewedVersion, rest, mcp, adoptThroughSurfaces, NOW, type P4Fixture } from "./p6-helpers.ts";
+import { p4Fixture, reviewedVersion, rest, adoptThroughSurfaces, NOW, type P4Fixture } from "./p6-helpers.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const MIGRATION_DIR = migrationsDir();
@@ -183,15 +185,21 @@ function restOverMigrated(db: Db, adopterAgentId: string): { fx: P4Fixture; key:
 //   different strings, which is what two different strings always are.
 // ===========================================================================
 
-test("[12.1] a key and the literal digest of that key, on one receipt, upgrade to two rows that are still two", () => {
-  const db = databaseAtVersion(9);
-  const seed = seedGraph(db);
-  const K = "collision-pair-key";
-  const LITERAL = correlationDigest(K); // `sha256:a8ac…` — a STRING an adopter sent
+/** The pair the reviewer sent: a key, and the literal digest OF that key. */
+const K = "collision-pair-key";
+const LITERAL = correlationDigest(K); // `sha256:a8ac…d353` — a STRING an adopter sent
 
-  // The rows as `6303814` wrote them: that build passed `input.idempotencyKey`
-  // straight into the column, so a raw string here is the row its REST surface
-  // produced and not an imitation of one. Both calls were answered 200.
+test("[12.1] the reviewer's pair, on one receipt of a base-build database, upgrades to two rows that are still two", () => {
+  const db = databaseAtVersion(4);
+  assert.equal(userVersion(db), 4, "`6303814`'s schema stops at 0004, and this is it");
+  const seed = seedGraph(db);
+
+  // The rows as `6303814`'s REST surface wrote them. That build's
+  // `appendReceiptEventInTx` passed `input.idempotencyKey` STRAIGHT INTO THE
+  // COLUMN — there was no digest on the way in — so a raw string here is the row
+  // `POST /v1/receipts/{id}/events` produced on that build and not an imitation
+  // of one. Both calls were answered 200 by it, which is what made this an
+  // upgrade of a database the repository supports and not an attack.
   insertReceiptEvent(db, seed.receipt, "attempted", 1, seed.now, K);
   insertReceiptEvent(db, seed.receipt, "failed", 2, seed.now, LITERAL);
   assert.equal(keys(db).length, 2, "two rows before the upgrade");
@@ -208,6 +216,51 @@ test("[12.1] a key and the literal digest of that key, on one receipt, upgrade t
     "each key is the digest of the string that was stored, with nothing deciding which of them was 'already' one",
   );
   db.close();
+});
+
+test("[12.1b] the same pair sent to THIS build's REST is accepted, and lands on those same two values", () => {
+  // The other half of the refutation, and the half that is driven end to end
+  // through the shipped surface rather than planted: nothing refuses a key for
+  // looking like a digest, so an adopter may still send `sha256:<64 hex>` — and
+  // what it produces is the digest OF THAT STRING, which is not the digest of
+  // the other key. Two different strings, two different values, `UNIQUE` intact.
+  const fx = p4Fixture();
+  const v = reviewedVersion(fx, "collision-live");
+  const run = adoptThroughSurfaces(fx, v, fx.keys.member!, { terminal: "none" });
+
+  const first = rest(fx, "POST", `/v1/receipts/${run.receiptId}/events`, fx.keys.member!, {
+    event: "attempted",
+    idempotency_key: K,
+  });
+  assert.equal(first.status, 200, `an ordinary key: ${first.raw}`);
+  const second = rest(fx, "POST", `/v1/receipts/${run.receiptId}/events`, fx.keys.member!, {
+    event: "failed",
+    failure_report: { category: "gate_failed", summary: "the declared gate did not pass" },
+    idempotency_key: LITERAL,
+  });
+  assert.equal(second.status, 200, `a key that IS the digest of the first: ${second.raw}`);
+
+  const live = new Set(
+    (
+      fx.db
+        .prepare("SELECT idempotency_key AS k FROM receipt_events WHERE adoption_receipt_id=?")
+        .all(run.receiptId) as Array<{ k: string }>
+    ).map((r) => r.k),
+  );
+  assert.ok(live.has(correlationDigest(K)), "the first is the digest of the first key");
+  assert.ok(live.has(correlationDigest(LITERAL)), "the second is the digest of the second key");
+  assert.notEqual(correlationDigest(K), correlationDigest(LITERAL), "and those are two values, not one");
+
+  // …and they are the SAME two values `[12.1]` reaches by migration, so the
+  // upgraded database and the live writer agree about this pair rather than
+  // each being right on its own.
+  const repeat = rest(fx, "POST", `/v1/receipts/${run.receiptId}/events`, fx.keys.member!, {
+    event: "failed",
+    failure_report: { category: "gate_failed", summary: "the declared gate did not pass" },
+    idempotency_key: LITERAL,
+  });
+  assert.equal(repeat.status, 200, `and a key of that shape repeats like any other: ${repeat.raw}`);
+  assert.equal(repeat.body.noop, true, "answered as the repeat it is");
 });
 
 // ===========================================================================
@@ -458,156 +511,85 @@ test("[12.6] an empty key survives the migration, and the shipped text says exac
 });
 
 // ===========================================================================
-// [12.7] A KEY OF THE STORED FORM IS REFUSED ON EVERY SURFACE THAT ACCEPTS ONE.
+// [12.7] NOTHING IN `src/` TESTS THE FORM OF AN IDEMPOTENCY KEY.
 //
-//   The set is not a list kept here. For MCP it is every tool whose declared
-//   `inputSchema` carries `idempotency_key`; for REST it is every route of
-//   `src/http.ts` that reads the field. A surface added tomorrow is in this
-//   sweep the moment it declares the field, which is the medicine [D-12]
-//   prescribes for guards that say "every".
+//   The rule that decided by form is gone from the migration, and this is the
+//   guard that keeps it from coming back somewhere else. An earlier draft of
+//   this round REFUSED an incoming key of the stored form, so that no further
+//   row could be ambiguous; the owner withdrew that on the ground that it was
+//   only ever needed while something DID look at the form. Unconditional hashing
+//   removes the question: `K` becomes the digest of `K`, and a key that IS a
+//   digest becomes the digest of THAT STRING, which is a different value. There
+//   is nothing left for a form test to decide, so there must be no form test —
+//   including one that would refuse a caller's key for its looks.
 //
-//   WHAT IS REFUSED, STATED EXACTLY. A key of the stored form may not create a
-//   RECORD. It may still repeat one that exists — `[12.8]` — because a repeat
-//   writes nothing, and an adopter of the base build whose key happened to have
-//   this shape is owed the answer it always got.
+//   THE SET IS THE DIRECTORY. Every `.ts` under `src/`, found by walking it, so
+//   a file added tomorrow is inside this guard without anybody remembering it.
+//   Comments are stripped first: this round's files DESCRIBE the form at length,
+//   and a guard that could not tell a description from a statement would have to
+//   be turned off, which is the failure this file is written against.
 // ===========================================================================
 
-const DIGEST_SHAPED = `sha256:${"b".repeat(64)}`;
-
-/** Every MCP tool that declares an `idempotency_key`, from the shipped table. */
-function mcpSurfaces(): string[] {
-  return MCP_TOOLS.filter((t: any) => t.inputSchema?.properties?.idempotency_key !== undefined)
-    .map((t: any) => t.name as string)
-    .sort();
-}
-
-/**
- * Every REST route that reads `idempotency_key`, from the shipped router.
- *
- * `src/http.ts` states its routes as a method test and a path — a literal or a
- * regular expression — followed by the handler that reads the field. This walks
- * that source and pairs them, so the set is the router's and not a copy of it.
- */
-function restSurfaces(): Array<{ method: string; path: string }> {
-  const source = readFileSync(join(REPO_ROOT, "src/http.ts"), "utf8");
-  const out: Array<{ method: string; path: string }> = [];
-  let route: string | null = null;
-  let method: string | null = null;
-  for (const line of source.split("\n")) {
-    const literal = /path === "([^"]+)"/.exec(line);
-    if (literal) route = literal[1]!;
-    const pattern = /\/\^(\\\/[^ ]*?)\$\/\.exec\(path\)/.exec(line);
-    if (pattern) route = pattern[1]!.replace(/\\\//g, "/").replace(/\(\[\^\/\]\+\)/g, "{id}");
-    const verb = /method === "([A-Z]+)"/.exec(line);
-    if (verb) method = verb[1]!;
-    if (line.includes("idemKey(body)") && route && method) out.push({ method, path: route });
+/** Every `.ts` file under `src/`, by walking the directory. */
+function sourceFiles(dir = join(REPO_ROOT, "src")): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...sourceFiles(full));
+    else if (entry.name.endsWith(".ts")) out.push(full);
   }
-  return out;
+  return out.sort();
 }
 
-/**
- * Arguments broad enough that every surface's own parsing is satisfied, so what
- * answers is the key and not a missing field. Ids that must be REAL are filled
- * in by the caller; everything else may be nonsense, because the refusal comes
- * before the surface looks anything up.
- */
-function fillerFor(receiptId: string, versionId: string, surface = ""): Record<string, unknown> {
-  const args: Record<string, unknown> = {
-    idempotency_key: DIGEST_SHAPED,
-    slug: "filler-slug",
-    skill_id: ulid(NOW),
-    skill_version_id: versionId,
-    archive: "AA==",
-    archive_base64: "AA==",
-    source: "AA==",
-    source_base64: "AA==",
-    receipt_id: receiptId,
-    adoption_receipt_id: receiptId,
-    adoption_request_id: ulid(NOW),
-    assignment_id: ulid(NOW),
-    agent_id: ulid(NOW),
-    kid: "filler-kid",
-    event: "attempted",
-    score: 5,
-    recipient: { kind: "local_agent", ref: ulid(NOW) },
-    decision: "approved",
-    verdict: "approved",
-    reason: "filler",
-    public_key: "AA==",
-  };
-  // `skill.verify` is the one surface whose OWN parsing refuses a COMBINATION —
-  // a version id and an archive together are two different calls — so the
-  // scaffolding drops the field it does not need. This is an argument, not a
-  // member of the set: the set is still read from the code, and a surface that
-  // needs scaffolding nobody wrote shows up in `missed` rather than in silence.
-  if (surface === "skill.verify") delete args.archive_base64;
-  return args;
+/** The file with every `//` line and every `/* … *\/` block removed. */
+function statementsOf(source: string): string[] {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((l) => !l.trimStart().startsWith("//"));
 }
 
-test("[12.7] every MCP tool that accepts an idempotency key refuses one of the stored form", () => {
-  const fx = p4Fixture({ rateLimit: { capacity: 10_000, refillPerSec: 10_000 } });
-  const v = reviewedVersion(fx, "stored-form-mcp");
-  const run = adoptThroughSurfaces(fx, v, fx.keys.member!, { terminal: "none" });
-  const surfaces = mcpSurfaces();
-  assert.ok(surfaces.length >= 20, `the sweep must cover the shipped set, whatever its size: ${surfaces.length}`);
+test("[12.7] no file under src/ tests the FORM of an idempotency key", () => {
+  const files = sourceFiles();
+  assert.ok(files.length > 30, `the walk must find the shipped tree, whatever its size: ${files.length}`);
+  for (const known of ["src/idempotency.ts", "src/receipts.ts", "src/migration-steps.ts", "src/http.ts", "src/mcp.ts"]) {
+    assert.ok(
+      files.some((f) => f.endsWith(known.slice(3))),
+      `${known} is in the walked set`,
+    );
+  }
 
-  const missed: string[] = [];
-  for (const name of surfaces) {
-    const res = mcp(fx, fx.keys.member!, name, fillerFor(run.receiptId, v.versionId, name));
-    if (!res.isError || res.data?.error?.code !== "INVALID_SCHEMA" || !/stored digest form/.test(String(res.data?.error?.message))) {
-      missed.push(`${name} → ${JSON.stringify(res.data)}`);
+  // A form test is a pattern applied to a value. This looks for one on any
+  // statement line that also names the key — which is how a rule about the shape
+  // of an idempotency key would have to be written.
+  const APPLIES_A_PATTERN = /EVIDENCE_DIGEST|STORED_KEY_FORM|\.test\(|\.match\(|\bmatchAll\(|startsWith\(\s*["'`]sha256|\/\^/;
+  const offenders: string[] = [];
+  for (const file of files) {
+    const rel = file.slice(REPO_ROOT.length);
+    for (const line of statementsOf(readFileSync(file, "utf8"))) {
+      if (!/idempotency/i.test(line)) continue;
+      if (APPLIES_A_PATTERN.test(line)) offenders.push(`${rel}: ${line.trim().slice(0, 140)}`);
     }
   }
-  assert.deepEqual(missed, [], "a surface that accepts the field and not the refusal is a surface the rule does not reach");
-});
+  assert.deepEqual(offenders, [], "a statement that names an idempotency key and applies a pattern to it");
 
-test("[12.7b] every REST route that accepts an idempotency key refuses one of the stored form", () => {
-  const fx = p4Fixture({ rateLimit: { capacity: 10_000, refillPerSec: 10_000 } });
-  const v = reviewedVersion(fx, "stored-form-rest");
-  const run = adoptThroughSurfaces(fx, v, fx.keys.member!, { terminal: "none" });
-  const routes = restSurfaces();
-  assert.ok(routes.length >= 20, `the sweep must cover the shipped router, whatever its size: ${routes.length}`);
-
-  const missed: string[] = [];
-  for (const route of routes) {
-    // Surface 8 reads its receipt BEFORE it reaches the key, so that one route
-    // gets the real receipt; every other route refuses the key before it looks
-    // anything up, so any well-formed id will do.
-    const filler = route.path.startsWith("/v1/receipts/") ? run.receiptId : v.versionId;
-    const url = route.path.replace(/\{id\}/g, filler);
-    const res = rest(fx, route.method, url, fx.keys.member!, fillerFor(run.receiptId, v.versionId));
-    if (res.status !== 400 || !/stored digest form/.test(res.raw)) {
-      missed.push(`${route.method} ${route.path} → ${res.status} ${res.raw.slice(0, 160)}`);
+  // …and the refusal that was withdrawn cannot come back under its own name
+  // without this failing, whatever line it is written on.
+  const withdrawn: string[] = [];
+  for (const file of files) {
+    const text = readFileSync(file, "utf8");
+    for (const name of ["STORED_KEY_FORM", "refuseStoredKeyForm"]) {
+      if (text.includes(name)) withdrawn.push(`${file.slice(REPO_ROOT.length)}: ${name}`);
     }
   }
-  assert.deepEqual(missed, [], "a route that reads the field and not the refusal is a route the rule does not reach");
-});
-
-test("[12.7c] the refused form is the stored form, and nothing wider", () => {
-  const fx = p4Fixture();
-  const v = reviewedVersion(fx, "stored-form-bounds");
-  const run = adoptThroughSurfaces(fx, v, fx.keys.member!, { terminal: "none" });
-  // Neighbours of the form, every one of them still a perfectly good key: the
-  // narrowing is exactly `STORED_KEY_FORM` and is not a ban on the word.
-  const accepted = [`sha256:${"B".repeat(64)}`, `sha256:${"b".repeat(63)}`, "b".repeat(64), `sha256-${"b".repeat(64)}`];
-  for (const key of accepted) {
-    assert.equal(STORED_KEY_FORM.test(key), false, `${key} is not of the stored form`);
-    const res = rest(fx, "POST", `/v1/receipts/${run.receiptId}/events`, fx.keys.member!, {
-      event: "attempted",
-      idempotency_key: key,
-    });
-    assert.notEqual(res.status, 400, `a key beside the form is still a key: ${res.raw}`);
-    // one event per receipt state, so each neighbour gets its own chain
-    const next = adoptThroughSurfaces(fx, v, fx.keys.member!, { terminal: "none" });
-    run.receiptId = next.receiptId;
-  }
+  assert.deepEqual(withdrawn, [], "the withdrawn refusal is gone from the shipped tree, name and all");
 });
 
 // ===========================================================================
-// [12.8] THE ONE THING A KEY OF THE STORED FORM MAY STILL DO: repeat a record
-//        that already exists. A legacy key of that shape is hashed like every
-//        other key — no residue, no row decided by its looks — and the adopter
-//        that sent it before the upgrade is answered `200 noop` after it.
+// [12.8] A LEGACY KEY OF THE STORED FORM IS AN ORDINARY KEY. It is hashed like
+//        every other — no residue, no row decided by its looks — and the adopter
+//        that sent it before the upgrade is answered `200 noop` after it, with
+//        nothing refusing it on the way in.
 // ===========================================================================
 
 test("[12.8] a legacy key of the stored form is hashed like every other, and its repeat is still a repeat", () => {
@@ -629,17 +611,22 @@ test("[12.8] a legacy key of the stored form is hashed like every other, and its
     event: "attempted",
     idempotency_key: SHAPED,
   });
-  assert.equal(repeat.status, 200, `a key of the stored form may still REPEAT what it wrote: ${repeat.raw}`);
+  assert.equal(repeat.status, 200, `the repeat of a key written before the upgrade: ${repeat.raw}`);
   assert.equal(repeat.body.noop, true, "answered as the repeat it is");
   assert.equal(nextSeq(db, seed.receipt), 3, "and it writes no row");
 
-  // …and the same key, on a receipt where it would have to CREATE one, is
-  // refused. The rule is about new records, and it says so in the same run.
+  // …and the same key on a receipt where it would OPEN a chain is accepted like
+  // any other string. Nothing refuses a key for its shape.
   const fresh = anotherReceipt(db, seed, 1);
-  const refused = rest(fx, "POST", `/v1/receipts/${fresh}/events`, key, {
+  const opened = rest(fx, "POST", `/v1/receipts/${fresh}/events`, key, {
     event: "attempted",
     idempotency_key: SHAPED,
   });
-  assert.equal(refused.status, 400, `a new record keyed with the stored form is refused: ${refused.raw}`);
-  assert.match(refused.raw, /stored digest form/, "with the reason named");
+  assert.equal(opened.status, 200, `a key of that shape opens a record like any other: ${opened.raw}`);
+  assert.equal(opened.body.noop, undefined, "and it is a write, not a replay");
+  assert.equal(
+    (db.prepare("SELECT idempotency_key AS k FROM receipt_events WHERE adoption_receipt_id=? AND event='attempted'").get(fresh) as { k: string }).k,
+    correlationDigest(SHAPED),
+    "stored as the digest of the string that was sent",
+  );
 });
