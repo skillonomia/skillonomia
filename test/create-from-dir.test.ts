@@ -1121,6 +1121,7 @@ function outcomeEvidence(input: {
     subject: { skill_version_id: "01OUTCOMEVERSION0000000000", marker, has_executable_step: true },
     registered: { value: "yes", reason: null, window_detail: "the inventory root of this test" },
     intent: null,
+    reported_by: { agent_id: "01OUTCOMEREPORTER000000000", type: "agent" },
     snapshot: {
       runtime: "claude_code",
       window: "period",
@@ -1306,12 +1307,21 @@ test("D-2: the contract is EXECUTED, and a principal's own word is not a verdict
   assert.equal(satisfied.value, "unknown", "a report about another machine was published as this registry's verdict");
   assert.equal(satisfied.assessment?.claim, "yes", "an executed check that was satisfied must publish the claim it establishes");
   assert.equal(satisfied.assessment?.basis, "self_report");
+  assert.equal(satisfied.assessment?.assessed_by, "principal");
+  assert.equal(satisfied.assessment?.principal_type, "agent", "the verdict lost the kind of principal that claimed it [I-5]");
+  assert.ok((satisfied.assessment?.reason ?? "").length > 0, "a verdict with no reason [I-3]");
   assert.equal(unsatisfied.value, "unknown");
   assert.equal(unsatisfied.assessment?.claim, "no", "an executed check that was not satisfied must publish the claim it refutes");
+  assert.equal(unsatisfied.assessment?.basis, "self_report");
+  assert.equal(unsatisfied.assessment?.assessed_by, "principal");
+  assert.equal(unsatisfied.assessment?.principal_type, "agent");
   // THE TWO THAT USED TO BE A VERDICT. Neither the word `success` nor the word
   // `failure` moves this column: without evidence the check was never run.
   assert.equal(declaredSuccess.value, "unknown", "a principal declared its own success and the registry printed it");
   assert.equal(declaredSuccess.assessment?.claim, null, "a word with no working is not even a claim the contract establishes");
+  assert.equal(declaredSuccess.assessment?.basis, "registry_observation", "`basis` is the METHOD and is on every verdict, not only on the doubtful ones [I-3]");
+  assert.equal(declaredSuccess.assessment?.assessed_by, "registry");
+  assert.equal(noContract.assessment?.basis, "registry_observation", "even `no_outcome_contract` says on whose authority it stands");
   assert.equal(declaredFailure.value, "unknown", "a principal declared its own failure and the registry printed it");
   assert.match(String(declaredSuccess.reason), /never_executed/);
   assert.equal(finished.value, "unknown");

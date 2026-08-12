@@ -41,6 +41,7 @@ import { fileURLToPath } from "node:url";
 import * as outcomeNamespace from "../src/outcome.ts";
 import * as activationNamespace from "../src/activation.ts";
 import { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, evaluateOutcome } from "../src/outcome.ts";
+import { capabilityColumns } from "../src/fleet.ts";
 import { arrivalMarker } from "../src/marker.ts";
 import { p4Fixture, reviewedVersion, rest, type P4Fixture } from "./p6-helpers.ts";
 
@@ -487,6 +488,211 @@ test("[D-18] an artifact under the root THIS REGISTRY manages is the registry's 
   };
   assert.equal(observe(site, outside), null, "the registry observed a path outside the root it manages");
   assert.equal(observe(null, contract), null, "the registry observed something with no root configured at all");
+});
+
+/**
+ * A CONTRACT AND A PAIR OF EVIDENCE OBJECTS FOR EVERY DECLARED CHECK KIND,
+ * DISCOVERED RATHER THAN LISTED.
+ *
+ * The particular case D-18 names — `{"command":"false","exit_code":0}` — proves
+ * one path. Four rounds of this project were lost to exactly that: a fix
+ * bounded by the case its author could write down. So the set of kinds is
+ * `OUTCOME_CHECK_SHAPE` itself, the named values are that kind's own `reads`,
+ * and the SATISFYING and REFUTING evidence is FOUND by asking the shipped
+ * evaluator which combinations it answers `yes` and `no` to. Nothing about any
+ * particular kind is written here.
+ *
+ * A kind added tomorrow is swept without an edit. A kind this search cannot
+ * excite FAILS rather than being skipped: an evidence state nothing can reach
+ * is a hole in the sweep, not an absence of one.
+ */
+function excitableKinds(): Array<{ kind: string; contract: any; satisfying: Record<string, unknown>; refuting: Record<string, unknown> }> {
+  const out: Array<{ kind: string; contract: any; satisfying: Record<string, unknown>; refuting: Record<string, unknown> }> = [];
+  for (const kind of OUTCOME_CHECK_KINDS) {
+    const shape = OUTCOME_CHECK_SHAPE[kind]!;
+    // the contract's own parameter, typed by the one thing the reader already
+    // knows about it: `exit_code` is an integer and the other three are strings
+    const parameter: unknown = shape.parameter === "exit_code" ? 0 : `skln-probe-${kind}`;
+    const contract = {
+      check: { kind, [shape.parameter]: parameter },
+      evidence: [...shape.reads],
+      unknown: "no evaluated run of this skill was reported, which is not a failure of it",
+    };
+    // THE CANDIDATE VALUES, built from the contract rather than from knowledge
+    // of what any check does: the parameter itself, the parameter in a list,
+    // the two integers a status can be, something that matches nothing, and an
+    // empty list.
+    const candidates: unknown[] = [parameter, [parameter], 0, 1, "skln-probe-matches-nothing", []];
+    const names = [...shape.reads];
+    const combinations: Array<Record<string, unknown>> = [];
+    const build = (i: number, acc: Record<string, unknown>): void => {
+      if (i === names.length) {
+        combinations.push({ ...acc });
+        return;
+      }
+      for (const v of candidates) build(i + 1, { ...acc, [names[i]!]: v });
+    };
+    build(0, {});
+    const satisfying = combinations.find((c) => evaluateOutcome(contract, c).value === "yes");
+    const refuting = combinations.find((c) => evaluateOutcome(contract, c).value === "no");
+    assert.ok(satisfying, `no evidence in the search space makes a \`${kind}\` check answer \`yes\`: this sweep cannot excite the kind and would skip it`);
+    assert.ok(refuting, `no evidence in the search space makes a \`${kind}\` check answer \`no\`: this sweep cannot excite the kind and would skip it`);
+    out.push({ kind, contract, satisfying, refuting });
+  }
+  return out;
+}
+
+test("[D-18] NO check kind, of the set the CODE declares, turns a principal's evidence into a verdict", () => {
+  const assess = assessor();
+  const kinds = excitableKinds();
+  assert.deepEqual(kinds.map((k) => k.kind).sort(), [...OUTCOME_CHECK_KINDS].sort(), "the sweep lost a kind between discovery and use");
+  console.log(`[D-18] check kinds discovered from OUTCOME_CHECK_SHAPE: ${kinds.map((k) => k.kind).join(", ")}`);
+
+  const escaped: string[] = [];
+  let claims = 0;
+  let verdicts = 0;
+  for (const k of kinds) {
+    for (const [label, evidence, conclusion] of [
+      ["satisfying", k.satisfying, "yes"],
+      ["refuting", k.refuting, "no"],
+    ] as Array<[string, Record<string, unknown>, string]>) {
+      // ---- PRESENTED BY A PRINCIPAL. There is no path to a verdict.
+      for (const type of ["human", "agent", "service"] as const) {
+        const claimed = assess({ contract: k.contract, claimed: evidence, observed: null, principal: { type } });
+        claims += 1;
+        if (claimed.value !== "unknown") {
+          escaped.push(`${k.kind} · ${label} · claimed by a ${type} → ${claimed.value}: a verdict out of evidence nobody checked`);
+        }
+        if (claimed.basis !== "self_report") escaped.push(`${k.kind} · ${label} · ${type} → basis ${claimed.basis}`);
+        if (claimed.assessed_by !== "principal") escaped.push(`${k.kind} · ${label} · ${type} → assessed_by ${claimed.assessed_by}`);
+        if (claimed.principal_type !== type) escaped.push(`${k.kind} · ${label} · ${type} → principal_type ${claimed.principal_type}`);
+        if (claimed.claim !== conclusion) escaped.push(`${k.kind} · ${label} · ${type} → claim ${claimed.claim}, expected ${conclusion}`);
+      }
+      // ---- READ BY THE REGISTRY. Here, and only here, there IS one.
+      const own = assess({ contract: k.contract, claimed: null, observed: evidence, principal: { type: "agent" } });
+      verdicts += 1;
+      if (own.value !== conclusion) escaped.push(`${k.kind} · ${label} · read by the registry → ${own.value} (${own.reason}), expected ${conclusion}`);
+      if (own.basis !== "registry_observation") escaped.push(`${k.kind} · ${label} · registry → basis ${own.basis}`);
+      console.log(`  ${k.kind.padEnd(16)} ${label.padEnd(10)} claimed → unknown/${conclusion}   observed → ${own.value}`);
+    }
+  }
+  console.log(`[D-18] principal-presented combinations that produced NO verdict: ${claims}`);
+  console.log(`[D-18] registry-read combinations that produced one: ${verdicts}`);
+  assert.deepEqual(escaped, [], "evidence a principal presented reached §4's fact column as a verdict");
+  assert.equal(claims, OUTCOME_CHECK_KINDS.length * 2 * 3, "the sweep did not cover every kind × both conclusions × every principal type");
+  assert.equal(verdicts, OUTCOME_CHECK_KINDS.length * 2, "the registry's own reading must still answer, or the sweep proves only that nothing answers");
+});
+
+test("[D-18] the assessor that publishes a claim as a verdict is KILLED on the same evidence", async () => {
+  // THE MUTATION IS THE OTHER READING OF D-18 §3 — a self-report that reaches
+  // the fact column as `yes` so long as it is labelled. [I-2] forbids it in the
+  // same words it forbids intent in a fact column, and this is the guard that
+  // says so on running code rather than in a comment.
+  const dir = temp("skln-r6-mutant-");
+  mkdirSync(join(dir, "src"), { recursive: true });
+  for (const f of ["outcome.ts"]) {
+    const before = readFileSync(join(REPO_ROOT, "src", f), "utf8");
+    const from = `  const claimed = evaluateOutcome(input.contract, input.claimed);
+  if (claimed.value === "unknown") return registry(claimed);
+  return {
+    value: "unknown",
+    reason: "self_reported_not_verified_by_the_registry",`;
+    const to = `  const claimed = evaluateOutcome(input.contract, input.claimed);
+  if (claimed.value === "unknown") return registry(claimed);
+  return {
+    value: claimed.value,
+    reason: "self_reported_not_verified_by_the_registry",`;
+    assert.equal(before.split(from).length - 1, 1, `the mutation template must occur EXACTLY ONCE in src/${f}`);
+    writeFileSync(join(dir, "src", f), before.replace(from, to));
+  }
+  const mutated = (await import(`${dir}/src/outcome.ts`)) as { assessOutcome: (i: unknown) => Assessment };
+
+  const kinds = excitableKinds();
+  const shipped = kinds.map((k) => assessor()({ contract: k.contract, claimed: k.satisfying, observed: null, principal: { type: "agent" } }));
+  const broken = kinds.map((k) => mutated.assessOutcome({ contract: k.contract, claimed: k.satisfying, observed: null, principal: { type: "agent" } }));
+  for (const [i, k] of kinds.entries()) {
+    console.log(`  ${k.kind.padEnd(16)} shipped → ${shipped[i]!.value}   mutant → ${broken[i]!.value} (labelled ${broken[i]!.basis})`);
+  }
+  assert.deepEqual(shipped.map((a) => a.value), kinds.map(() => "unknown"), "the shipped build must refuse, or the mutation proves nothing");
+  assert.deepEqual(
+    broken.map((a) => a.value),
+    kinds.map(() => "yes"),
+    "THE MUTANT SURVIVED: the labelled-`yes` reading answered `unknown` anyway, so this test discriminates nothing",
+  );
+  // …and the mutant is exactly what the sweep above refuses
+  assert.ok(broken.every((a) => a.basis === "self_report"), "the mutant must still be LABELLED, or it is a different mutation");
+});
+
+test("[D-18] every `outcome` column carries its basis — the attribute is a METHOD, not a note about an exception", async () => {
+  const fleet = await import("../src/fleet.ts");
+  const missing = required<(v: unknown) => string | null>(
+    fleet as unknown as Record<string, unknown>,
+    "missingVerdictAttribute",
+    "[D-18] requires `basis` on EVERY verdict: an attribute that appears only when the answer is doubtful reads as a note about an exception [I-3]",
+  );
+  const sweep = required<(columns: readonly any[]) => string | null>(
+    fleet as unknown as Record<string, unknown>,
+    "unverdicted",
+    "[D-18] requires the rule to be applicable to a FINISHED answer, not only at construction",
+  );
+
+  const CONTRACT = {
+    check: { kind: "stdout_match", stdout_match: "ALL GREEN" },
+    evidence: ["stdout"],
+    unknown: "no evaluated run of this skill was reported, which is not a failure of it",
+  };
+  const marker = arrivalMarker("01K1M83S80CCCCCCCCCCCCCCCC");
+  const snap = (records: any[], reported: unknown) => ({
+    agent_id: "01K1M83S80AAAAAAAAAAAAAAAA",
+    runtime: "codex",
+    model: null,
+    session_active: "unknown",
+    last_activity_ms: null,
+    window: "all_time",
+    window_detail: "the probe's own records, all time",
+    proposal_inventory_complete: false,
+    reported_by: reported,
+    records,
+  });
+  const rec = (over: any) => ({ agent_id: "01K1M83S80AAAAAAAAAAAAAAAA", runtime: "codex", role: "output", call_id: "c", at_ms: 1, marker, result: "unknown", evidence: null, ...over });
+  const base = (over: any) => ({
+    runtime: "codex",
+    subject: { skill_version_id: "01K1M83S80CCCCCCCCCCCCCCCC", marker, has_executable_step: true },
+    registered: { value: "yes", reason: null, window_detail: "a tree built by the probe" },
+    intent: null,
+    snapshot: null,
+    outcome_contract: null,
+    ...over,
+  });
+
+  // EVERY WAY THE COLUMN CAN BE REACHED, not the doubtful ones only.
+  const cases: Array<[string, any]> = [
+    ["no contract at all", base({})],
+    ["a contract and nothing observed", base({ outcome_contract: CONTRACT })],
+    ["a run that presented no evidence", base({ outcome_contract: CONTRACT, snapshot: snap([rec({ role: "call", call_id: "p" }), rec({ call_id: "p" })], { agent_id: "a", type: "agent" }) })],
+    ["a self-report that satisfies", base({ outcome_contract: CONTRACT, snapshot: snap([rec({ role: "call", call_id: "q" }), rec({ call_id: "q", evidence: { stdout: "ALL GREEN" } })], { agent_id: "a", type: "service" }) })],
+    ["the registry's own reading", base({ outcome_contract: { check: { kind: "artifact_exists", artifact_path: "out/x" }, evidence: ["artifacts"], unknown: "nothing was evaluated" }, observed_evidence: { artifacts: ["out/x"] } })],
+    ["the registry's own reading, negative", base({ outcome_contract: { check: { kind: "artifact_exists", artifact_path: "out/x" }, evidence: ["artifacts"], unknown: "nothing was evaluated" }, observed_evidence: { artifacts: [] } })],
+  ];
+  const naked: string[] = [];
+  for (const [label, ev] of cases) {
+    const columns = capabilityColumns(ev);
+    const outcome = columns.find((c: any) => c.column === "outcome")!;
+    console.log(`  ${label.padEnd(34)} → ${outcome.value} · basis: ${outcome.assessment?.basis} · assessed_by: ${outcome.assessment?.assessed_by}`);
+    if (missing(outcome) !== null) naked.push(`${label}: \`${missing(outcome)}\``);
+    if (sweep(columns) !== null) naked.push(`${label}: the sweep found ${sweep(columns)}`);
+    if (outcome.assessment?.basis === undefined) naked.push(`${label}: no basis at all`);
+  }
+  assert.deepEqual(naked, [], "an `outcome` column was published without its provenance [I-3], [D-18]");
+
+  // …and a verdict stripped of its basis is REFUSED by the same rule, or the
+  // six passes above are six objects that happened to have a field.
+  const stripped = { ...capabilityColumns(base({ outcome_contract: CONTRACT })).find((c: any) => c.column === "outcome")! } as any;
+  delete stripped.assessment;
+  assert.equal(missing(stripped), "assessment", "a verdict with no assessment was accepted as attributed");
+  const wrongBasis = JSON.parse(JSON.stringify(capabilityColumns(base({ outcome_contract: CONTRACT })).find((c: any) => c.column === "outcome")!));
+  wrongBasis.assessment.basis = "self_report";
+  assert.equal(missing(wrongBasis), "basis", "a verdict whose basis contradicts its `assessed_by` was accepted");
 });
 
 test("[D-18] the panel prints a self-report DIFFERENTLY from the registry's own observation", async () => {

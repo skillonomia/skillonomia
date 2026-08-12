@@ -729,16 +729,8 @@ function column(
   };
   const missing = missingAttribute(col);
   if (missing !== null) throw new Error(`a state column is not published without its method: \`${missing}\` [I-3]`);
-  // A VERDICT WITH A PROVENANCE THAT DISAGREES WITH ITSELF IS NOT PUBLISHED.
-  // `assessed_by` and `basis` are one fact under two names and are computed from
-  // each other in `src/outcome.ts`; this is the assertion that they arrived that
-  // way, applied to the finished column rather than trusted to the producer.
-  if (col.assessment !== undefined) {
-    const a = col.assessment;
-    const consistent = a.assessed_by === "registry" ? a.basis === "registry_observation" : a.basis === "self_report";
-    if (!consistent) throw new Error("a verdict whose `assessed_by` and `basis` disagree is not published [I-3], [D-18]");
-    if (a.value !== col.value) throw new Error("a verdict published beside an assessment of a different value [I-3]");
-  }
+  const unverdicted = missingVerdictAttribute(col);
+  if (unverdicted !== null) throw new Error(`a verdict is not published without its provenance: \`${unverdicted}\` [I-3], [D-18]`);
   return col;
 }
 
@@ -929,6 +921,64 @@ export function capabilityColumns(ev: CapabilityEvidence): StateColumn[] {
   out.push(column("outcome", "outcome", runtime, outcome.value, outcomeReason, outcomeSource, outcomeWindow, { assessment: outcome }));
 
   return out;
+}
+
+/**
+ * The name of the FIRST provenance attribute a VERDICT is missing, or null.
+ *
+ * WHY `basis` IS ON EVERY VERDICT AND NOT ONLY ON THE DOUBTFUL ONES. An
+ * attribute that appears in one case reads as a NOTE ABOUT AN EXCEPTION — the
+ * reader learns that this particular answer is qualified, and infers that the
+ * unqualified ones are not. An attribute that is always there reads as the
+ * METHOD, which is what it is, and is the shape [I-3] already requires of every
+ * counted number in this product: a number does not say "measured by counting"
+ * only when the count was hard. So a `yes` this registry established itself
+ * carries `basis: registry_observation` exactly as loudly as a self-report
+ * carries `basis: self_report`.
+ *
+ * It is applied at CONSTRUCTION, like `missingAttribute`, and exported so that
+ * a sweep can apply it to a finished answer — a surface that assembled its own
+ * object literal would satisfy the first check and not the second.
+ *
+ * WHICH COLUMNS IT GOVERNS: the ones whose state is `outcome`. The other five
+ * are this registry's own reading of its own journals and its own disk; there is
+ * no second party for their answers to have come from, and an `assessed_by`
+ * saying `registry` on every row of them would be furniture. `outcome` is the
+ * only column §4 has whose value can originate outside this registry, which is
+ * exactly why D-18 exists.
+ */
+export function missingVerdictAttribute(v: unknown): string | null {
+  const col = v as Partial<StateColumn> | null | undefined;
+  if (!col || typeof col !== "object") return "assessment";
+  if (col.state !== "outcome") return null;
+  const a = col.assessment;
+  if (!a || typeof a !== "object") return "assessment";
+  if (a.assessed_by !== "registry" && a.assessed_by !== "principal") return "assessed_by";
+  if (a.basis !== "registry_observation" && a.basis !== "self_report") return "basis";
+  // `principal_type` is a field with a NULL that means something — "nothing was
+  // reported" — so its presence is checked and its value is not required.
+  if (!(a.principal_type === null || a.principal_type === "human" || a.principal_type === "agent" || a.principal_type === "service")) {
+    return "principal_type";
+  }
+  if (!(a.claim === null || a.claim === "yes" || a.claim === "no" || a.claim === "unknown")) return "claim";
+  if (typeof a.reason !== "string" || a.reason.length === 0) return "reason";
+  // ONE FACT UNDER TWO NAMES MAY NOT DISAGREE. `basis` is computed from
+  // `assessed_by` in `src/outcome.ts`; this is the assertion that it arrived
+  // that way rather than being set by hand at some call site.
+  const consistent = a.assessed_by === "registry" ? a.basis === "registry_observation" : a.basis === "self_report";
+  if (!consistent) return "basis";
+  if (a.value !== col.value) return "value";
+  return null;
+}
+
+/** The first column that published a verdict with no provenance, or null —
+ *  `missingVerdictAttribute` over a whole finished answer. */
+export function unverdicted(columns: readonly StateColumn[]): string | null {
+  for (const c of columns) {
+    const missing = missingVerdictAttribute(c);
+    if (missing !== null) return `${c.runtime}/${c.column}: \`${missing}\``;
+  }
+  return null;
 }
 
 /**

@@ -58,6 +58,8 @@ import {
   gapOf,
   matrixCell,
   missingAttribute,
+  missingVerdictAttribute,
+  unverdicted,
   scanArrivals,
   stateOfColumn,
   syncStatusOf,
@@ -728,13 +730,19 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
         record({ role: "output", call_id: "c-3", result: "unknown", evidence: { stdout: "the suite says ALL GREEN" } }),
       ]),
       outcome_contract: CONTRACT,
+      reported_by: { type: "agent" },
     }),
   );
   const goodCell = cellOf(good, "outcome");
+  // EVERY ATTRIBUTE, not the one that changed. A verdict half-checked is the
+  // same defect as a number half-attributed [I-3].
   assert.equal(goodCell.value, "unknown", "a report about somebody else's machine was published as a verdict");
   assert.equal(goodCell.assessment?.claim, "yes", "the self-report's own conclusion is not published at all");
   assert.equal(goodCell.assessment?.basis, "self_report");
   assert.equal(goodCell.assessment?.assessed_by, "principal");
+  assert.equal(goodCell.assessment?.principal_type, "agent", "the verdict lost the kind of principal that claimed it [I-5]");
+  assert.ok((goodCell.assessment?.reason ?? "").length > 0, "a verdict with no reason [I-3]");
+  assert.equal(goodCell.reason, goodCell.assessment?.reason, "the cell and its assessment give two different reasons");
   const bad = capabilityColumns(
     evidence({
       snapshot: snapshot([
@@ -742,11 +750,15 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
         record({ role: "output", call_id: "c-4", result: "unknown", evidence: { stdout: "3 failures" } }),
       ]),
       outcome_contract: CONTRACT,
+      reported_by: { type: "service" },
     }),
   );
   const badCell = cellOf(bad, "outcome");
   assert.equal(badCell.value, "unknown");
   assert.equal(badCell.assessment?.claim, "no", "the column does not move for a report that refutes the contract");
+  assert.equal(badCell.assessment?.basis, "self_report");
+  assert.equal(badCell.assessment?.assessed_by, "principal");
+  assert.equal(badCell.assessment?.principal_type, "service", "the type printed is not the type that reported [I-5]");
   assert.notEqual(goodCell.assessment?.claim, badCell.assessment?.claim, "the column is dead: it answers the same either way");
 
   // …AND THE REGISTRY'S OWN READING IS A REAL `yes` AND A REAL `no`. Without
@@ -766,9 +778,14 @@ test("[M-6] a run that FINISHED is not a run that succeeded", () => {
     "outcome",
   );
   assert.equal(seen.value, "yes", "the registry read its own root and would not answer for it");
-  assert.equal(seen.assessment?.basis, "registry_observation");
+  assert.equal(seen.assessment?.basis, "registry_observation", "a verdict the registry established was published as a claim");
+  assert.equal(seen.assessment?.assessed_by, "registry");
+  assert.equal(seen.assessment?.claim, null, "a reading of this registry's own disk is not somebody's claim");
+  assert.equal(seen.source, "filesystem", "a verdict read off a disk was attributed to a transcript [I-3]");
   assert.equal(unseen.value, "no", "a root that WAS walked and did not hold it answers `no`, not `unknown`");
   assert.equal(unseen.assessment?.basis, "registry_observation");
+  assert.equal(unseen.assessment?.assessed_by, "registry");
+  assert.ok((unseen.assessment?.reason ?? "").length > 0, "a verdict with no reason [I-3]");
 });
 
 // ===========================================================================
@@ -1136,13 +1153,20 @@ test("[M-7] the assessment logic imports no filesystem, and the whole pipeline r
     record({ role: "call", call_id: "wire-1" }),
     record({ role: "output", call_id: "wire-1", result: "success", evidence: { stdout: "ALL GREEN" } }),
   ];
-  const columns = capabilityColumns(evidence({ snapshot: snapshot(records), outcome_contract: CONTRACT }));
+  const columns = capabilityColumns(evidence({ snapshot: snapshot(records), outcome_contract: CONTRACT, reported_by: { type: "agent" } }));
   assert.equal(cellOf(columns, "invoked").value, "yes");
   // …and `outcome` reached its answer from those records too: a self-report,
   // named as one, whose own conclusion is published beside it [D-18]. The
-  // point of this test is that the pipeline ran with no disk anywhere near it.
-  assert.equal(cellOf(columns, "outcome").value, "unknown");
-  assert.equal(cellOf(columns, "outcome").assessment?.claim, "yes");
+  // point of this test is that the pipeline ran with no disk anywhere near it,
+  // and every attribute of the verdict is checked because a verdict that says
+  // only half of where it came from is the defect D-18 removed.
+  const wire = cellOf(columns, "outcome");
+  assert.equal(wire.value, "unknown");
+  assert.equal(wire.assessment?.claim, "yes");
+  assert.equal(wire.assessment?.basis, "self_report");
+  assert.equal(wire.assessment?.assessed_by, "principal");
+  assert.equal(wire.assessment?.principal_type, "agent");
+  assert.equal(unverdicted(columns), null, "a column published a verdict with no provenance [I-3], [D-18]");
   const rows = scanArrivals(records, [subject(V1)]);
   assert.equal(rows.length, 1, "[A-6]'s tuple came out of a message, not a file");
   assert.deepEqual(Object.keys(rows[0]!).sort(), [
@@ -1855,7 +1879,9 @@ test("[D-2] over the WHOLE cross product, `outcome` moves only where a check was
         if (executed) {
           claimed += 1;
           if (asClaim.assessment?.basis !== "self_report") wrong.push(`${c.kind} · ${label} · a claim was published as an observation`);
+          if (asClaim.assessment?.assessed_by !== "principal") wrong.push(`${c.kind} · ${label} · the claim was attributed to the registry`);
           if (asClaim.assessment?.principal_type !== "agent") wrong.push(`${c.kind} · ${label} · the claim lost the principal's type [I-5]`);
+          if ((asClaim.assessment?.reason ?? "").length === 0) wrong.push(`${c.kind} · ${label} · a verdict with no reason [I-3]`);
         }
 
         // ---- the OBSERVATION axis: the registry produced the same values
@@ -1882,6 +1908,19 @@ test("[D-2] over the WHOLE cross product, `outcome` moves only where a check was
           observed += 1;
           if (asObservation.assessment?.basis !== "registry_observation") {
             wrong.push(`${c.kind} · ${label} · the registry's own reading was published as a claim`);
+          }
+          if (asObservation.assessment?.assessed_by !== "registry") {
+            wrong.push(`${c.kind} · ${label} · the registry's own reading was attributed to a principal`);
+          }
+          if (asObservation.assessment?.claim !== null) {
+            wrong.push(`${c.kind} · ${label} · a reading of this registry's own disk carried somebody's claim`);
+          }
+        }
+        // EVERY cell of the sweep carries its provenance, not only the ones a
+        // check moved: `basis` is the method, not a note about an exception.
+        for (const cell of [asClaim, asObservation]) {
+          if (missingVerdictAttribute(cell) !== null) {
+            wrong.push(`${c.kind} · ${label} · a verdict missing \`${missingVerdictAttribute(cell)}\` [I-3], [D-18]`);
           }
         }
         // an answer that is not `yes` always carries a reason a machine can read
