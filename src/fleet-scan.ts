@@ -34,6 +34,7 @@
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { markerInSkillMd, markersIn } from "./marker.ts";
+import { correlationDigest } from "./journal.ts";
 import {
   CAPABILITY_KINDS,
   NO_SNAPSHOT_WINDOW,
@@ -460,7 +461,14 @@ export function recordsUnder(site: TranscriptSite, agentId: string): ObservedRec
             agent_id: agentId,
             runtime: site.runtime,
             role,
-            call_id: typeof line.call_id === "string" && line.call_id.length > 0 ? line.call_id : null,
+            // THE SCANNER HANDS OVER A DIGEST, NOT THE ID. §6's question of a
+            // pair is whether two records carry the SAME id, and equality
+            // survives a hash exactly; the runtime's own string does not leave
+            // this function. A record whose runtime gave no id stays NULL —
+            // hashing an absence would make every such record pair with every
+            // other [M-5], [I-1].
+            call_id:
+              typeof line.call_id === "string" && line.call_id.length > 0 ? correlationDigest(line.call_id) : null,
             at_ms: Number.isInteger(line.at_ms) ? (line.at_ms as number) : null,
             marker,
             result,

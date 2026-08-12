@@ -119,7 +119,6 @@ function i7Fixture(): I7Fixture {
       agent_id: fx.owner.agent_id,
       runtime: "codex",
       window: "all_time",
-      window_detail: "the probe's own records, all time",
       records,
     });
   return { fx, marker: arrivalMarker(version.versionId), report };
@@ -848,7 +847,6 @@ test("[D-18] the §4 `outcome` column, end to end, publishes the provenance of i
     agent_id: addressee,
     runtime: "codex",
     window: "all_time",
-    window_detail: "the probe's own records, all time",
     records: [
       { role: "call", call_id: "d18-1", marker, at_ms: 1 },
       { role: "output", call_id: "d18-1", marker, at_ms: 2, result: "success", evidence: { command: evidenceDigestOf("false"), exit_code: 0 } },

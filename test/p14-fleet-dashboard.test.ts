@@ -277,7 +277,6 @@ function screens(): Screens {
     session_active: true,
     last_activity_ms: NOW,
     window: "live_session",
-    window_detail: "one live session, enumerating what it was offered",
     proposal_inventory_complete: true,
     records: [
       { role: "proposal", call_id: "p-1", at_ms: NOW, text: `offered ${alpha.marker}` },
@@ -290,7 +289,8 @@ function screens(): Screens {
     agent_id: codexAgent,
     runtime: "codex",
     window: "period",
-    window_detail: "one session file of the last hour",
+    window_from_ms: NOW - 3_600_000,
+    window_to_ms: NOW,
     records: [{ role: "call", call_id: "c-1", at_ms: NOW, text: `starting ${beta.marker}` }],
   });
   assert.equal(lone.status, 201, lone.raw);

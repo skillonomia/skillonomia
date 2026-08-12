@@ -516,7 +516,6 @@ test("[D-2] `observation.report` takes a `result` only with the evidence that es
       agent_id: fx.owner.agent_id,
       runtime: "codex",
       window: "all_time",
-      window_detail: "the probe's own records, all time",
       records,
     });
 

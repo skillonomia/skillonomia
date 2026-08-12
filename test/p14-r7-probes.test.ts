@@ -553,7 +553,6 @@ function fixture(): Fixture {
       agent_id: fx.owner.agent_id,
       runtime: "codex",
       window: "all_time",
-      window_detail: "the probe's own records, all time",
       records,
     });
   return { fx, marker: arrivalMarker(version.versionId), report };
@@ -806,7 +805,6 @@ test("[DELTA] the shipped surface refuses the OLD name and accepts the NEW one, 
       agent_id: fx.owner.agent_id,
       runtime: "codex",
       window: "all_time",
-      window_detail: "the probe's own records, all time",
       records: [
         { role: "call", call_id: id, marker, at_ms: 1 },
         { role: "output", call_id: id, marker, at_ms: 2, result: "success", evidence },

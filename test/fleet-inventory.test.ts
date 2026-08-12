@@ -43,6 +43,7 @@ import { MCP_TOOLS } from "../src/mcp.ts";
 import { serve } from "../src/server.ts";
 import { TRANSFER_ACTION } from "../src/transfer.ts";
 import { arrivalMarker } from "../src/marker.ts";
+import { correlationDigest } from "../src/journal.ts";
 import { ulid } from "../src/ulid.ts";
 import {
   CAPABILITY_KINDS,
@@ -1244,7 +1245,9 @@ test("[M-7] the two V-1 sources answer the SAME interfaces, and neither is visib
   const rows = scanArrivals(snap.records, [subject(V1)]);
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.result, "success");
-  assert.equal(rows[0]!.call_id, "t-1");
+  // THE ID DID NOT SURVIVE EITHER: the adapter hands over `sha256:` of it, so a
+  // pair is still one pair and the runtime's own string is not carried [M-5], [I-7]
+  assert.equal(rows[0]!.call_id, correlationDigest("t-1"));
 
   // the same object answers §5.5's older seam, unchanged
   const window = source.recordsFor(AGENT)!;
@@ -1388,7 +1391,8 @@ test("a reported PAIR moves the observation column, and a lone record does not",
     agent_id: fx.reviewer.agent_id,
     runtime: "codex",
     window: "period",
-    window_detail: "one session file of the last hour",
+    window_from_ms: 1_754_000_000_000,
+    window_to_ms: 1_754_003_600_000,
     records: [{ role: "call", call_id: "x-1", at_ms: 1_754_000_000_000, text: `starting ${d.marker}` }],
   });
   assert.equal(lone.status, 201, lone.raw);
@@ -1404,7 +1408,8 @@ test("a reported PAIR moves the observation column, and a lone record does not",
     agent_id: fx.reviewer.agent_id,
     runtime: "codex",
     window: "period",
-    window_detail: "one session file of the last hour",
+    window_from_ms: 1_754_000_000_000,
+    window_to_ms: 1_754_003_600_000,
     records: [
       { role: "call", call_id: "x-2", at_ms: 1_754_000_001_000, text: `starting ${d.marker}` },
       { role: "output", call_id: "x-2", at_ms: 1_754_000_002_000, text: `done ${d.marker}`, result: "success", evidence: { exit_code: 0 } },
@@ -1431,7 +1436,7 @@ test("a reported PAIR moves the observation column, and a lone record does not",
   assert.equal(tuple.agent_id, fx.reviewer.agent_id);
   assert.equal(tuple.runtime, "codex");
   assert.equal(tuple.at_ms, 1_754_000_002_000);
-  assert.equal(tuple.call_id, "x-2");
+  assert.equal(tuple.call_id, correlationDigest("x-2"), "the pairing id is published as the digest that is stored");
   assert.equal(tuple.result, "success");
 
   // the gap now reads the OTHER way round: observed, with no active intent
@@ -1453,7 +1458,8 @@ test("[I-7] a record's TEXT does not reach the database, the answer or a log lin
     agent_id: fx.reviewer.agent_id,
     runtime: "codex",
     window: "period",
-    window_detail: "one session file",
+    window_from_ms: 1,
+    window_to_ms: 2,
     records: [
       { role: "call", call_id: "s-1", text: `${SECRET} running ${d.marker} from ${PATH}` },
       { role: "output", call_id: "s-1", text: `${SECRET} done ${d.marker}`, result: "success", evidence: { exit_code: 0 } },
@@ -1569,7 +1575,8 @@ test("the §6 surfaces enforce the same ACL and the same permission as the rest 
     agent_id: fx.reviewer.agent_id,
     runtime: "codex",
     window: "period",
-    window_detail: "one session file",
+    window_from_ms: 1,
+    window_to_ms: 2,
     records: [],
   };
   const refused = rest(fx, "POST", "/v1/observations", fx.keys.owner, body);
@@ -1578,10 +1585,19 @@ test("the §6 surfaces enforce the same ACL and the same permission as the rest 
   allow(fx, fx.owner.agent_id, "report_outcome");
   assert.equal(rest(fx, "POST", "/v1/observations", fx.keys.owner, body).status, 201);
 
-  // [I-3] a report with no boundary is refused rather than defaulted
-  const noWindow = rest(fx, "POST", "/v1/observations", fx.keys.owner, { ...body, window_detail: "" });
-  assert.equal(noWindow.status, 400, noWindow.raw);
-  assert.match(noWindow.body.error.message, /window_detail/);
+  // [I-3] a report with no boundary is refused rather than defaulted, and the
+  // boundary PHRASE is the registry's own: a reporter that sends one is refused
+  // rather than ignored, because a boundary silently dropped would be believed
+  const noBounds = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+    ...body,
+    window_from_ms: undefined,
+    window_to_ms: undefined,
+  });
+  assert.equal(noBounds.status, 400, noBounds.raw);
+  assert.match(noBounds.body.error.message, /window_from_ms/);
+  const dictated = rest(fx, "POST", "/v1/observations", fx.keys.owner, { ...body, window_detail: "whatever I say" });
+  assert.equal(dictated.status, 400, dictated.raw);
+  assert.match(dictated.body.error.message, /window_detail/);
   const badRuntime = rest(fx, "POST", "/v1/observations", fx.keys.owner, { ...body, runtime: "emacs" });
   assert.equal(badRuntime.status, 400);
   // a report about an agent of another workspace is ABSENT
@@ -1610,7 +1626,8 @@ test("MCP and REST answer identically, and the write replays byte for byte", () 
     agent_id: fx.reviewer.agent_id,
     runtime: "codex",
     window: "period",
-    window_detail: "one session file",
+    window_from_ms: 1,
+    window_to_ms: 2,
     records: [
       { role: "call", call_id: "m-1", text: `run ${d.marker}` },
       { role: "output", call_id: "m-1", text: `ok ${d.marker}`, result: "success", evidence: { exit_code: 0 } },
@@ -1627,7 +1644,7 @@ test("MCP and REST answer identically, and the write replays byte for byte", () 
   // and a capability.get over MCP names the tuple
   const one = mcp(fx, fx.keys.owner, "capability.get", { agent_id: fx.reviewer.agent_id, name: d.slug });
   assert.equal(one.data.scan.length, 1);
-  assert.equal(one.data.scan[0].call_id, "m-1");
+  assert.equal(one.data.scan[0].call_id, correlationDigest("m-1"));
   fx.db.close();
 });
 
@@ -1639,7 +1656,8 @@ test("a report is INSERT-only: it cannot be edited or withdrawn", () => {
     agent_id: fx.reviewer.agent_id,
     runtime: "codex",
     window: "period",
-    window_detail: "one session file",
+    window_from_ms: 1,
+    window_to_ms: 2,
     records: [{ role: "call", call_id: "i-1", text: `run ${d.marker}` }],
   });
   assert.equal(res.status, 201, res.raw);
@@ -1752,7 +1770,8 @@ test("every capability kind is answered for an agent with no configured root —
     agent_id: fx.reviewer.agent_id,
     runtime: "codex",
     window: "period",
-    window_detail: "one session file of the last hour",
+    window_from_ms: 1,
+    window_to_ms: 2,
     records: [],
   });
   assert.equal(reported.status, 201, reported.raw);

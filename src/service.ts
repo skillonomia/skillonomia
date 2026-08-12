@@ -34,6 +34,7 @@ import { outcomeContractOf, validateManifest, type OutcomeContract } from "./man
 // could present; the journal's names are `EVIDENCE_NAMES` and the form is a rule
 // about the MANIFEST, enforced in the schema and in `src/manifest.ts` (9b).
 import { EVIDENCE_LIST_MAX, EVIDENCE_NAMES, isAdmissibleEvidenceValue, selfReported } from "./outcome.ts";
+import { MODEL_NAME, correlationDigest } from "./journal.ts";
 import { decodeCursor, encodeCursor as encodeCursorToken, type Cursor } from "./cursor.ts";
 import { manifestHash, contentHash, signManifest } from "./signing.ts";
 import {
@@ -534,6 +535,59 @@ const MANIFEST_SECTIONS = [
   "lifecycle",
   "integrity",
 ] as const;
+
+/** The milliseconds a `period` report ran between, or `null` for the two windows
+ *  that declare no time bound. */
+type ObservationBounds = { from_ms: number; to_ms: number } | null;
+
+/**
+ * THE BOUNDS OF A REPORT, TAKEN AS NUMBERS AND CHECKED AS NUMBERS.
+ *
+ * `period` requires both, because a period with one end is not a period and
+ * [I-3] refuses a boundary rather than inventing one. The other two windows
+ * REFUSE bounds: `live_session` and `all_time` declare no time bound, and a
+ * reporter that sends one under them is describing a search it did not perform.
+ */
+function observationBounds(input: Record<string, unknown>): ObservationBounds {
+  const from = input.window_from_ms;
+  const to = input.window_to_ms;
+  if (input.window !== "period") {
+    if (from !== undefined || to !== undefined) {
+      throw new ApiError(
+        "INVALID_SCHEMA",
+        "window_from_ms/window_to_ms belong to a `period` report: `live_session` and `all_time` declare no time bound",
+      );
+    }
+    return null;
+  }
+  if (!Number.isSafeInteger(from) || (from as number) <= 0 || !Number.isSafeInteger(to) || (to as number) <= 0) {
+    throw new ApiError(
+      "INVALID_SCHEMA",
+      "a `period` report states window_from_ms and window_to_ms (positive integers, milliseconds): " +
+        "a report with no boundary is a number with no method [I-3]",
+    );
+  }
+  if ((from as number) > (to as number)) {
+    throw new ApiError("INVALID_SCHEMA", "window_from_ms must not be after window_to_ms");
+  }
+  return { from_ms: from as number, to_ms: to as number };
+}
+
+/**
+ * THE BOUNDARY PHRASE — this registry's own sentence about the reporter's own
+ * bounded declaration. Every character of it is written here, which is what
+ * makes `runtime_observations.window_detail` a registry-generated column rather
+ * than a place a reporter writes.
+ */
+function windowDetailOf(window: SelectionWindow, bounds: ObservationBounds): string {
+  if (window === "period" && bounds !== null) {
+    return `period: records from ${bounds.from_ms} to ${bounds.to_ms} (registry milliseconds, inclusive)`;
+  }
+  if (window === "live_session") {
+    return "live_session: the session live when the report was filed; no time bound was declared";
+  }
+  return "all_time: every record the reporter examined; no time bound was declared";
+}
 
 export const OBSERVATION_REPORT_NOTE =
   "Records were reduced to §5 arrival markers at this boundary: no record text is stored, logged or returned. " +
@@ -4924,13 +4978,51 @@ export class Registry {
     if (!isSelectionWindow(input.window)) {
       throw new ApiError("INVALID_SCHEMA", `window must be one of ${SELECTION_WINDOWS.join("|")}`);
     }
-    const windowDetail = input.window_detail;
-    if (typeof windowDetail !== "string" || windowDetail.length === 0 || windowDetail.length > 500) {
-      // [I-3]: a report with no boundary is a number with no method, and it is
-      // refused rather than given a default that would describe the wrong search
-      throw new ApiError("INVALID_SCHEMA", "window_detail (1..500 chars) required: a report states what it looked at");
+    // THE BOUNDARY IS COMPOSED HERE, AND IT USED TO BE DICTATED.
+    //
+    // `window_detail` was a string of up to 500 characters the REPORTER sent,
+    // stored as sent and published as the `boundary` attribute of every cell
+    // derived from the report. [I-3] asks for the method behind a number; it
+    // does not ask for a sentence, and a sentence is what a text channel is.
+    // So the reporter now states the boundary in BOUNDED PARTS — the window
+    // kind, which was always an enum, and the milliseconds a `period` runs
+    // between — and this registry writes the phrase. The result is stricter
+    // about [I-3] than the prose was: a boundary is now machine-readable, and a
+    // `period` that declares no bounds is refused instead of being described in
+    // words nothing can check.
+    //
+    // A REPORTER THAT SENDS `window_detail` IS REFUSED rather than ignored, for
+    // the reason `receipts.ts` refuses a payload on an event that carries none:
+    // a caller whose boundary was silently dropped would believe it had been
+    // recorded.
+    if (input.window_detail !== undefined) {
+      throw new ApiError(
+        "INVALID_SCHEMA",
+        "window_detail is not accepted: this registry composes the boundary from `window` and, for a `period`, " +
+          "`window_from_ms`/`window_to_ms`. A journal column is not a place for a reporter's prose [I-3], [I-7]",
+      );
     }
-    const model = input.model === undefined || input.model === null ? null : String(input.model).slice(0, 200);
+    const bounds = observationBounds(input);
+    const windowDetail = windowDetailOf(input.window as SelectionWindow, bounds);
+
+    // A MODEL NAME, AND NOT A PARAGRAPH. This used to be
+    // `String(input.model).slice(0, 200)`: anything at all, truncated. It is
+    // read by a human off a dashboard, so a digest would empty the column and an
+    // enumeration would be wrong the week a new model ships — what it gets
+    // instead is a FORM of this registry's own (`MODEL_NAME`, `src/journal.ts`),
+    // and that form is a narrowing and is classified as one. A name outside it
+    // is refused rather than truncated: half a sentence is still a sentence.
+    let model: string | null = null;
+    if (input.model !== undefined && input.model !== null) {
+      if (typeof input.model !== "string" || !MODEL_NAME.test(input.model)) {
+        throw new ApiError(
+          "INVALID_SCHEMA",
+          "model must be a name of a model: at most 64 characters, no whitespace, beginning with a letter or digit " +
+            "(`MODEL_NAME`, src/journal.ts). Omit it to report `unknown` — an absent model is not `no model` [I-1]",
+        );
+      }
+      model = input.model;
+    }
     const sessionActive =
       input.session_active === undefined || input.session_active === null ? null : input.session_active === true;
     const lastActivity =
@@ -4960,8 +5052,31 @@ export class Registry {
       const markers = typeof r.text === "string" ? markersIn(r.text) : [];
       const declared = typeof r.marker === "string" ? markersIn(r.marker) : [];
       const all = [...new Set([...markers, ...declared])];
-      const callId =
-        typeof r.call_id === "string" && r.call_id.length > 0 && r.call_id.length <= 200 ? r.call_id : null;
+      // THE ID THAT BINDS A CALL TO ITS OUTPUT, REDUCED TO A DIGEST.
+      //
+      // [M-5] asks ONE thing of this column: whether two records carry the SAME
+      // id. Equality is exactly what a digest preserves, so the correlation is
+      // untouched and the reporter's string is not stored. A human holding the
+      // runtime's own log hashes the id they have and finds the row.
+      //
+      // NULL STAYS NULL. `migrations/0008` records that a record with no id can
+      // never form a pair; hashing an absent id would give every such record one
+      // shared value and manufacture pairs out of absence, which is `unknown`
+      // turned into `yes` [I-1], [A-0].
+      //
+      // AND AN ID TOO LONG TO ACCEPT IS REFUSED, NOT QUIETLY DROPPED. It used
+      // to become NULL, which is the fail-closed direction and still a lie: an
+      // id of 300 characters is not "the runtime gave no id", and the pair it
+      // belonged to silently stopped existing. The reporter is told instead.
+      if (typeof r.call_id === "string" && r.call_id.length > 200) {
+        throw new ApiError(
+          "INVALID_SCHEMA",
+          "records[].call_id is at most 200 characters. It is stored as a digest of itself, so its length is a bound " +
+            "on what this boundary accepts and never on what is kept; an id past the bound is refused rather than " +
+            "turned into the NULL that means `the runtime gave no id` [M-5], [I-1]",
+        );
+      }
+      const callId = typeof r.call_id === "string" && r.call_id.length > 0 ? correlationDigest(r.call_id) : null;
       const atMs = Number.isInteger(r.at_ms) && (r.at_ms as number) > 0 ? (r.at_ms as number) : null;
 
       // A VERDICT IS NOT A THING A PRINCIPAL MAY STATE ON ITS OWN [M-6], [D-2].

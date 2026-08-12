@@ -205,7 +205,8 @@ function report(w: Wired, records: Array<Record<string, unknown>>): void {
     agent_id: w.agent,
     runtime: "codex",
     window: "period",
-    window_detail: "the records this test filed, and nothing else",
+    window_from_ms: 1,
+    window_to_ms: 1_900_000_000_000,
     records,
   });
   assert.equal(res.status, 201, res.raw);
@@ -1298,7 +1299,8 @@ function toolDrive(): ToolWorld {
         agent_id: fx.reviewer.agent_id,
         runtime: "codex",
         window: "period",
-        window_detail: "the tool sweep's own records",
+        window_from_ms: 1,
+        window_to_ms: NOW,
         records: [{ role: "call", call_id: "s-1", at_ms: NOW, text: "nothing in particular" }],
       }),
     ],

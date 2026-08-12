@@ -39,6 +39,7 @@
 import type { Db } from "./sqlite.ts";
 import { ApiError } from "./errors.ts";
 import { ulid } from "./ulid.ts";
+import { EVENT_REASON } from "./journal.ts";
 import {
   arrivalMarker,
   assessArrival,
@@ -358,6 +359,21 @@ export interface AppendAssignmentEventInput {
  * placed. An unfinished activation is a fact worth keeping.
  */
 export function appendAssignmentEvent(db: Db, input: AppendAssignmentEventInput): { event_seq: number } {
+  // A REASON THIS REGISTRY WRITES, ENFORCED WHERE IT IS WRITTEN.
+  //
+  // Every writer passes one of four phrases of this repository's own —
+  // `no_activation_root_configured`, `native_copy_missing`,
+  // `native_copy_differs`, `superseded_by_assignment:<ULID>` — and nothing
+  // refused a fifth. The round-10 survey (`src/journal.ts`) classifies this
+  // column as a bounded form, and a classification the append does not enforce
+  // is an observation about today's call sites.
+  if (input.reason !== undefined && input.reason !== null && !EVENT_REASON.test(input.reason)) {
+    throw new ApiError(
+      "INVALID_SCHEMA",
+      "reason must be a reason this registry writes: an identifier, optionally naming one ULID " +
+        "(`EVENT_REASON`, src/journal.ts)",
+    );
+  }
   const existing = eventsOf(db, [input.assignmentId]);
   let seq = 1;
   if (existing.length > 0) {

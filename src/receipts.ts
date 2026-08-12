@@ -20,6 +20,7 @@ import { ApiError } from "./errors.ts";
 import { validatePayload } from "./manifest.ts";
 import { validateEvidenceForVersion } from "./verified-gate.ts";
 import { ulid } from "./ulid.ts";
+import { correlationDigest } from "./journal.ts";
 
 export type ReceiptEvent =
   | "delivered"
@@ -307,6 +308,17 @@ export function appendReceiptEventInTx(db: Db, input: AppendInput): AppendResult
   if (typeof input.idempotencyKey !== "string" || input.idempotencyKey.length === 0 || input.idempotencyKey.length > 128) {
     throw new ApiError("INVALID_SCHEMA", "idempotency_key must be a string of 1..128 characters");
   }
+  // THE KEY IS STORED AS A DIGEST, AND NOTHING READS IT.
+  //
+  // An idempotency key is an adopter's own string of up to 128 characters, and
+  // this journal used to hold it word for word — a text channel with no subject
+  // rule, on an INSERT-only table, found by the round-10 survey and not by any
+  // of the nine passes before it. The ONLY question asked of the column is
+  // whether a later call repeats an earlier one, and equality survives a hash
+  // exactly, so the string is replaced by `sha256:<hex>` on both sides of that
+  // comparison. `UNIQUE(adoption_receipt_id, idempotency_key)` still separates
+  // two different keys; a reader still sees which rows a retry produced.
+  const storedKey = correlationDigest(input.idempotencyKey);
   // §5.3: the declared environment is a property of the handover, so it rides
   // on `delivered` and on nothing else. Guarded here rather than trusted,
   // because a descriptor attached to a later event would be a second, mutable
@@ -350,7 +362,7 @@ export function appendReceiptEventInTx(db: Db, input: AppendInput): AppendResult
   // UNIQUE(adoption_receipt_id, idempotency_key)
   const replay = db
     .prepare("SELECT event, event_seq FROM receipt_events WHERE adoption_receipt_id=? AND idempotency_key=?")
-    .get(input.receiptId, input.idempotencyKey) as { event: ReceiptEvent; event_seq: number } | undefined;
+    .get(input.receiptId, storedKey) as { event: ReceiptEvent; event_seq: number } | undefined;
   if (replay) {
     return { receipt_event: replay.event, event_seq: replay.event_seq, noop: true };
   }
@@ -387,7 +399,9 @@ export function appendReceiptEventInTx(db: Db, input: AppendInput): AppendResult
       "delivered",
       seq,
       { evidence: SYNTHESIZED_DELIVERED_EVIDENCE },
-      `synth-delivered:${input.receiptId}`,
+      // digested like every other key of this column, so the column holds ONE
+      // kind of value and its classification in `src/journal.ts` is exact
+      correlationDigest(`synth-delivered:${input.receiptId}`),
       input.nowMs,
     );
     db.prepare(
@@ -405,7 +419,7 @@ export function appendReceiptEventInTx(db: Db, input: AppendInput): AppendResult
     seq += 1;
   }
 
-  insertEvent(db, input.receiptId, input.event, seq, input, input.idempotencyKey, input.nowMs);
+  insertEvent(db, input.receiptId, input.event, seq, input, storedKey, input.nowMs);
   return synthesized
     ? { receipt_event: input.event, event_seq: seq, synthesized }
     : { receipt_event: input.event, event_seq: seq };

@@ -254,6 +254,16 @@ test("[10.2] a NEW journal column that takes text fails the guard until it is cl
     "observed_records.operator_note",
     "transfers.courier_note",
   ]);
+
+  // AND THE BUILD IS WHAT FAILS, not merely a list that grew. This is the
+  // assertion `[10.1]` makes on the real schema, re-executed here against the
+  // scratch one: a guard that reports a column into a variable nobody checks is
+  // the guard this round exists to stop shipping.
+  assert.throws(
+    () => assert.deepEqual(surveyJournalIntake(db).unclassified, []),
+    /operator_note/,
+    "a column added to a journal must FAIL the assertion the suite runs, not merely appear in a list",
+  );
 });
 
 // ===========================================================================
@@ -304,6 +314,24 @@ test("[10.3b] the digest keeps the pair [M-5] finds, and keeps NULL a NULL", () 
   for (const r of nulls) {
     assert.equal(r.call_id, null, "a record whose runtime gave no id must stay NULL: a digest of nothing is a pair");
   }
+});
+
+test("[10.3d] an id past the bound is REFUSED, not turned into the NULL that means `no id`", () => {
+  const f = fixture("r10-long-id");
+  const long = "a".repeat(201);
+  const withDetail = f.report({
+    window_detail: "the probe's own records, all time",
+    records: [{ role: "call", call_id: long, marker: f.marker, at_ms: 1 }],
+  });
+  const withoutDetail = f.report({ records: [{ role: "call", call_id: long, marker: f.marker, at_ms: 1 }] });
+  for (const res of [withDetail, withoutDetail]) {
+    assert.equal(res.status, 400, `an over-long id was accepted: ${res.raw}`);
+  }
+  assert.equal(
+    (f.fx.db.prepare("SELECT COUNT(*) AS c FROM observed_records").get() as { c: number }).c,
+    0,
+    "a refused report wrote a record",
+  );
 });
 
 test("[10.3c] two different ids stay different, so a digest never invents a pair", () => {
@@ -416,6 +444,9 @@ test("[10.6] an adopter's idempotency key does not reach `receipt_events` word f
   assert.ok(keys.length > 0, "the probe wrote no event");
   for (const k of keys) {
     assert.ok(!k.idempotency_key.includes(KEY_LIKE), `\`receipt_events\` held: ${k.idempotency_key}`);
+    // EVERY key, the registry's own synthesized ones included: a column that
+    // holds one kind of value is a column whose classification is exact
+    assert.match(k.idempotency_key, /^sha256:[0-9a-f]{64}$/, `\`receipt_events\` held: ${k.idempotency_key}`);
   }
   // …and the key still replays, which is the whole of what a key is for
   const replay = rest(fx, "POST", `/v1/receipts/${receipt.id}/events`, fx.keys.member, {
@@ -571,12 +602,17 @@ test("[10.10] no shipped file promises that a secret cannot be in a journal", ()
   }
 });
 
-test("[10.10b] and the achievable sentence is the one that is written", () => {
+test("[10.10b] and the achievable sentence is the one that is written, exception and all", () => {
   const journal = readFileSync(join(REPO_ROOT, "src/journal.ts"), "utf8");
   assert.match(
     journal,
-    /does not put text into (its|the) journals?/i,
+    /puts no caller's text into a journal/i,
     "the deliverable is stated in the shipped file that enforces it",
+  );
+  assert.match(
+    journal,
+    /except in the columns this file names as declared limits/i,
+    "…and its exception is INSIDE the sentence, not in a footnote a reader drops",
   );
   assert.match(journal, /bounded alphabet/i, "and the limit of that statement is stated beside it");
 });

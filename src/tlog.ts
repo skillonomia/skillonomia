@@ -5,6 +5,8 @@
 import { createHash } from "node:crypto";
 import type { Db } from "./sqlite.ts";
 import { jcsBytes, type JcsValue } from "./jcs.ts";
+import { ApiError } from "./errors.ts";
+import { TLOG_EVENT_KIND, TLOG_SUBJECT } from "./journal.ts";
 
 export const GENESIS_PREV_HASH = "0".repeat(64);
 
@@ -50,6 +52,28 @@ export function appendTlogInTx(
   payload: JcsValue,
   serverAtMs: number,
 ): TlogRow {
+  // THE TWO TEXT-SHAPED COLUMNS OF THIS JOURNAL, BOUNDED AT THE APPEND.
+  //
+  // `event_kind` is a constant of this repository at every writer and
+  // `subject_id` is a ULID, a `kid` or a manifest hash — but neither the column
+  // nor this function refused anything else, so both were properties of the call
+  // sites that exist today rather than of the journal. The round-10 survey
+  // (`src/journal.ts`) classifies them, and a classification an append does not
+  // enforce is an observation. A `kid` is chosen by the principal that registers
+  // a key, so `subject_id` is a caller-influenced identifier and is classified
+  // as one.
+  if (!TLOG_EVENT_KIND.test(event_kind)) {
+    throw new ApiError(
+      "INVALID_SCHEMA",
+      "event_kind must be an identifier of this registry's own (`TLOG_EVENT_KIND`, src/journal.ts)",
+    );
+  }
+  if (!TLOG_SUBJECT.test(subject_id)) {
+    throw new ApiError(
+      "INVALID_SCHEMA",
+      "subject_id must be an identifier — a ULID, a kid or a hash (`TLOG_SUBJECT`, src/journal.ts)",
+    );
+  }
   const last = db
     .prepare("SELECT seq, this_hash FROM transparency_log ORDER BY seq DESC LIMIT 1")
     .get() as { seq: number; this_hash: string } | undefined;

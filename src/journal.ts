@@ -47,21 +47,96 @@
 //   that the survey can NAME the defect rather than lack a word for it, and so
 //   that the red commit of a round could record what the tree actually held.
 //
-// WHAT IS DELIVERED, STATED SO THAT NOTHING LARGER IS IMPLIED.
+// WHAT IS DELIVERED, IN ONE SENTENCE WRITTEN SO THAT ITS OWN EXCEPTIONS ARE IN IT.
 //
-//   THIS REGISTRY DOES NOT PUT TEXT INTO ITS JOURNALS, THE FORMS IT ACCEPTS
-//   THERE ARE ITS OWN, AND WHERE A CALLER'S TEXT IS STILL ADMITTED THAT IS
-//   NAMED AS A LIMIT.
+//   EXCEPT IN THE COLUMNS THIS FILE NAMES AS DECLARED LIMITS, THIS REGISTRY
+//   PUTS NO CALLER'S TEXT INTO A JOURNAL, AND THE FORMS IT ACCEPTS THERE ARE
+//   ITS OWN.
 //
-//   The larger sentence — that a secret cannot be in a journal — is FALSE under
+//   The exception clause is first on purpose. "The registry does not put text
+//   into its journals", said flatly and qualified afterwards, is the shape of
+//   sentence this project has had to correct four times: the reader keeps the
+//   headline and loses the qualification. Four columns of `receipt_events` hold
+//   an adopter's prose, deliberately, and they are named where the promise is
+//   made rather than in a footnote to it.
+//
+//   The LARGER sentence — that a secret cannot be in a journal — is FALSE under
 //   every alphabet and is written nowhere. A bounded alphabet can be made to
-//   carry an encoding by somebody who sets out to build one, exactly as the
-//   flat list of thirty-two integers an evidence value may be can; a bound on a
-//   number bounds a quantity of bits and not their meaning. The property that
-//   is enforced is the first sentence, and it is the one worth having: a
-//   registry that accumulates transcripts is a registry that holds material
-//   nobody meant to give it.
+//   carry an encoding by somebody who sets out to build one, exactly as the flat
+//   list of thirty-two integers an evidence value may be can; a bound on a
+//   number bounds a quantity of bits and not their meaning. What is enforced is
+//   the sentence above, and it is the one worth having: a registry that
+//   accumulates transcripts is a registry that holds material nobody meant to
+//   give it.
 import type { Db } from "./sqlite.ts";
+import { evidenceDigestOf } from "./outcome.ts";
+
+/**
+ * A CORRELATION KEY, REDUCED TO A DIGEST.
+ *
+ * Two columns of this schema exist so that two facts can be recognised as the
+ * same one: `observed_records.call_id` binds a call to its output [M-5], and
+ * `receipt_events.idempotency_key` binds a retry to the call it repeats. NEITHER
+ * IS EVER READ — only compared. So the string a caller sends is replaced by its
+ * digest: equality survives a hash exactly, and the string does not survive at
+ * all. A human holding the runtime's own log hashes the id they have and finds
+ * the row; a human holding only the journal learns that two rows go together,
+ * which is the entire question those columns answer.
+ *
+ * `evidenceDigestOf` is reused rather than reimplemented, for the reason
+ * `isAdmissibleEvidenceValue` is in one place: two implementations of "the
+ * digest of a string" are two answers to one question.
+ *
+ * NULL IS NOT HASHED, and that is load-bearing. `migrations/0008` records that a
+ * record with no `call_id` can never form a pair — a runtime that gave no id
+ * established nothing. Hashing the empty string would give every such record
+ * ONE SHARED VALUE and manufacture pairs out of absence, turning `unknown` into
+ * `yes` [I-1], [A-0]. A caller that sends nothing gets NULL.
+ */
+export function correlationDigest(value: string): string {
+  return evidenceDigestOf(value);
+}
+
+/**
+ * A NAME OF A MODEL — a form this registry defined, and not a sentence.
+ *
+ * What it is for: `runtime_observations.model` is read by a human off a
+ * dashboard, so a digest would make the column useless and an enumeration would
+ * make it wrong the week a new model ships. What it is NOT: a closure. Round 9b
+ * settled that a form is not a subject — every alphabet fit for readable names
+ * is fit for part of the secrets — so this is a NARROWING and is classified as
+ * one. What it delivers is that a boundary column of this registry holds a token
+ * of at most 64 characters with no whitespace, and never a paragraph.
+ */
+export const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:@+/[\]-]{0,63}$/;
+
+/**
+ * A REASON THIS REGISTRY WRITES — an identifier, optionally naming one ULID.
+ *
+ * `assignment_events.reason` carried `no_activation_root_configured`,
+ * `native_copy_missing`, `native_copy_differs` and
+ * `superseded_by_assignment:<ULID>` from every writer, and refused nothing. A
+ * column whose contents happen to be safe is a property of today's call sites;
+ * this is the same property made a property of the append.
+ */
+export const EVENT_REASON = /^[a-z][a-z0-9_]{0,63}(:[0-9A-HJKMNP-TV-Z]{26})?$/;
+
+/**
+ * A SUBJECT OF THE TRANSPARENCY LOG — a ULID, a `kid`, or another identifier of
+ * this registry's own vocabulary. Bounded here so the classification of
+ * `transparency_log.subject_id` is a rule and not an observation about the
+ * writers that exist today.
+ */
+export const TLOG_SUBJECT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
+
+/**
+ * A KIND OF TRANSPARENCY-LOG EVENT — an identifier, and no route lets a caller
+ * choose one. Every writer passes a constant of this repository
+ * (`approval_recorded`, `signing_key_registered`, `version_verified`,
+ * `countersign`, …); the form below is the backstop that makes that a property
+ * of the APPEND and not of the writers that happen to exist today.
+ */
+export const TLOG_EVENT_KIND = /^[a-z][a-z0-9_]{0,59}$/;
 
 export type JournalIntake =
   | "registry_generated"
@@ -91,8 +166,8 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
   "assignment_events.event": { intake: "bounded_form", note: "the eight §5.5 deployment states" },
   "assignment_events.event_seq": { intake: "registry_generated", note: "derived from the head of the chain" },
   "assignment_events.reason": {
-    intake: "free_text",
-    note: "every writer passes one of this registry's own phrases; nothing refuses another",
+    intake: "bounded_form",
+    note: "`EVENT_REASON` — an identifier, optionally naming one ULID; enforced by `appendAssignmentEvent`",
   },
   "assignment_events.actor_agent_id": { intake: "registry_generated", note: "taken from AuthContext" },
   "assignment_events.actor_type": { intake: "bounded_form", note: "human|agent|service" },
@@ -130,8 +205,8 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
   "observed_records.runtime": { intake: "bounded_form", note: "claude_code|codex" },
   "observed_records.role": { intake: "bounded_form", note: "proposal|call|output" },
   "observed_records.call_id": {
-    intake: "free_text",
-    note: "the reporter's own id, stored word for word, bounded only in length (1..200)",
+    intake: "digest",
+    note: "`sha256:` of the reporter's id, or NULL when the runtime gave none. Equality is all [M-5] asks, and equality is what a digest keeps",
   },
   "observed_records.at_ms": { intake: "bounded_form", note: "a positive integer" },
   "observed_records.marker": {
@@ -151,25 +226,25 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
   "receipt_events.event": { intake: "bounded_form", note: "the seven §5.3 receipt events" },
   "receipt_events.event_seq": { intake: "registry_generated", note: "derived from the head of the chain" },
   "receipt_events.evidence_json": {
-    intake: "free_text",
-    note: "the adopter's §5.3 evidence, validated against the version's declared validation_gates and stored as sent",
+    intake: "declared_limit",
+    note: "THE STATED LIMIT OF V-1. §5.3 requires an adopter to PRESENT the results of the gates the version declared, and this column holds that document as sent — schema-checked in shape, with prose inside its own fields. It is not reduced to a digest because a human reads it to decide whether an adoption is trustworthy, and a digest of a report is not a report. This is a limit, not a closure: an adopter is a fleet agent and what it writes here is its own text",
   },
   "receipt_events.failure_report_json": {
-    intake: "free_text",
-    note: "the adopter's §5.3 failure report, schema-checked in shape and free in its prose fields",
+    intake: "declared_limit",
+    note: "THE STATED LIMIT OF V-1. §5.3 requires an adopter that failed to say WHY, and a cause a human can act on is prose. Schema-checked in shape, free in its `summary` and its detail fields. A digest here would leave a reader with a failure and no account of it",
   },
   "receipt_events.rollback_report_json": {
-    intake: "free_text",
-    note: "the adopter's §5.3 rollback report, schema-checked in shape and free in its prose fields",
+    intake: "declared_limit",
+    note: "THE STATED LIMIT OF V-1, for the reason the failure report is one: §5.3 requires an account of what was undone, and an account is prose. Schema-checked in shape, free in its prose fields",
   },
   "receipt_events.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
   "receipt_events.idempotency_key": {
-    intake: "free_text",
-    note: "the adopter's own key, stored word for word, bounded only in length (1..128)",
+    intake: "digest",
+    note: "`sha256:` of the adopter's key. Nothing reads the column — a retry is recognised by EQUALITY, which a digest keeps exactly, and `UNIQUE(adoption_receipt_id, idempotency_key)` still separates two keys",
   },
   "receipt_events.environment_json": {
-    intake: "free_text",
-    note: "the adopter's declared environment, validated against Appendix E.2 and stored as sent",
+    intake: "declared_limit",
+    note: "THE STATED LIMIT OF V-1. §5.3's declared environment is validated against Appendix E.2 and stored as sent; the schema bounds its SHAPE and its version strings are the adopter's own. The compatibility answer is computed from it, so a digest would remove the fact it exists to carry",
   },
   "receipt_events.recipient_json": {
     intake: "registry_generated",
@@ -181,15 +256,15 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
   "runtime_observations.agent_id": { intake: "registry_generated", note: "a principal resolved by this registry" },
   "runtime_observations.runtime": { intake: "bounded_form", note: "claude_code|codex" },
   "runtime_observations.model": {
-    intake: "free_text",
-    note: "`String(input.model).slice(0, 200)` — any 200 characters the reporter sends",
+    intake: "bounded_form",
+    note: "`MODEL_NAME` — at most 64 characters, no whitespace, refused rather than truncated. A NARROWING and not a closure: round 9b settled that a form is not a subject",
   },
   "runtime_observations.session_active": { intake: "bounded_form", note: "a boolean, or NULL for `unknown`" },
   "runtime_observations.last_activity_ms": { intake: "bounded_form", note: "a positive integer, or NULL" },
   "runtime_observations.selection_window": { intake: "bounded_form", note: "live_session|period|all_time" },
   "runtime_observations.window_detail": {
-    intake: "free_text",
-    note: "any 1..500 characters the reporter sends, published verbatim as the boundary of every cell derived from the report",
+    intake: "registry_generated",
+    note: "composed by `windowDetailOf` (`src/service.ts`) from the window kind and, for a `period`, the milliseconds the reporter declared. A report that sends `window_detail` is REFUSED, not ignored [I-3]",
   },
   "runtime_observations.proposal_inventory_complete": { intake: "bounded_form", note: "a boolean" },
   "runtime_observations.records_read": { intake: "bounded_form", note: "a non-negative integer" },
@@ -230,12 +305,12 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
   // ---------------------------------------------------------- transparency_log
   "transparency_log.seq": { intake: "registry_generated", note: "AUTOINCREMENT" },
   "transparency_log.event_kind": {
-    intake: "free_text",
-    note: "every writer passes one of this registry's own constants; nothing refuses another",
+    intake: "registry_generated",
+    note: "a constant of this repository at every writer, and `TLOG_EVENT_KIND` at the append so that this is a property of the journal",
   },
   "transparency_log.subject_id": {
-    intake: "free_text",
-    note: "a ULID or a `kid` at every writer; the column and the append take any string",
+    intake: "bounded_form",
+    note: "`TLOG_SUBJECT` — a ULID, a manifest hash, or a `kid`, which the principal registering a key chooses; enforced at the append",
   },
   "transparency_log.payload_hash": { intake: "digest", note: "SHA-256 of the JCS payload" },
   "transparency_log.prev_hash": { intake: "digest", note: "the previous row's hash" },

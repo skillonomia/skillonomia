@@ -170,9 +170,15 @@ export const EVIDENCE_NAME_MAX = 40;
  * author plausibly needs is a compound of three words —
  * `integration_suite_exit_code` is twenty-seven. Forty is comfortably above
  * both, and it is still short enough that a name fits a dashboard cell and
- * reads as a key rather than as a phrase. The number is not what closes the
- * channel — the ALPHABET is — so it is set where legitimate names live and not
- * at the smallest value that would still pass the tests.
+ * reads as a key rather than as a phrase.
+ *
+ * NEITHER THE NUMBER NOR THE ALPHABET CLOSES ANYTHING, and this paragraph used
+ * to say that the alphabet did — three paragraphs after the same file records
+ * that a bounded alphabet can be made to carry an encoding. What closed the
+ * channel was the deletion of the WIDENING: a declared name is not a key of the
+ * journal, so no bound on its form is protecting anything. The form is required
+ * because a manifest has to stay machine-readable, and the length is set where
+ * legitimate names live rather than at the smallest value the tests would pass.
  */
 export const EVIDENCE_NAME = new RegExp(`^[a-z][a-z0-9_]{0,${EVIDENCE_NAME_MAX - 1}}$`);
 
@@ -315,7 +321,17 @@ function isAdmissibleEvidenceScalar(value: unknown): boolean {
 
 export interface OutcomeContract {
   check: OutcomeCheck;
-  /** the named values a run must produce for the check to be executable */
+  /**
+   * THE AUTHOR'S DECLARATION of the values a run of this skill OUGHT to present.
+   *
+   * It is not a precondition of anything. Round 9 removed the loop that required
+   * every declared name to be present before a verdict could be reached, and
+   * round 9b removed the widening that made a declared name a key of the
+   * observation journal at all. A check is executed against the values this
+   * registry's own four names carry; this field says what the author expected a
+   * run to produce, and reads like the substring form of a `stdout_match` — text
+   * under a signature, with no standing in the journal [I-7].
+   */
   evidence: string[];
   /** what the absence of evidence means; never "a failure" */
   unknown: string;

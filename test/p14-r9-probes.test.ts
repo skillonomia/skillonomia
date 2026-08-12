@@ -328,7 +328,6 @@ function fixture(contract: unknown = DECLARED_CONTRACT, slug = "r9-probe"): Fixt
       agent_id: fx.owner.agent_id,
       runtime: "codex",
       window: "all_time",
-      window_detail: "the probe's own records, all time",
       records,
     });
   return { fx, versionId: version.versionId, marker: arrivalMarker(version.versionId), report };

@@ -14,6 +14,7 @@ import {
 } from "../src/receipts.ts";
 import { isApiError } from "../src/errors.ts";
 import { ulid } from "../src/ulid.ts";
+import { correlationDigest } from "../src/journal.ts";
 
 function rejects(fn: () => unknown, code: string, message?: RegExp): any {
   try {
@@ -86,7 +87,9 @@ test("§5.3 auto-ack: `attempted` from `none` synthesizes `delivered` in the SAM
   assert.deepEqual(out.synthesized, { receipt_event: "delivered", event_seq: 1 });
   const rows = fx.db.prepare("SELECT event, event_seq, idempotency_key FROM receipt_events WHERE adoption_receipt_id=? ORDER BY event_seq").all(r) as any[];
   assert.equal(rows[0].event, "delivered");
-  assert.equal(rows[0].idempotency_key, `synth-delivered:${r}`);
+  // the key is stored as a digest of itself, the registry's own synthesized key
+  // included: it is compared and never read (`src/journal.ts`)
+  assert.equal(rows[0].idempotency_key, correlationDigest(`synth-delivered:${r}`));
   const logged = fx.db
     .prepare("SELECT COUNT(*) AS c FROM activity_log WHERE subject_id=? AND action='receipt.delivered.synthesized'")
     .get(r) as any;
