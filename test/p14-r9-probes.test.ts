@@ -78,6 +78,20 @@ const SECRET_VALUE = "sk-live-skln-r9-not-a-real-credential-4b71ce";
 const TRANSCRIPT_VALUE =
   "the operator pasted the deploy key and the assistant repeated it back, and then the whole session went on for another hour";
 
+/**
+ * The token-shaped key of [9.5], assembled from fragments at run time rather
+ * than written out — the convention `test/p7-threats.test.ts` TM-03 states and
+ * this file had broken. A push-side scanner reads the FILE, so a complete
+ * literal of this shape refuses the publication of the whole repository
+ * (GH013 on candidate `bdc99bdd`) over a fixture that is not a credential.
+ *
+ * THE VALUE IS UNCHANGED, BYTE FOR BYTE. Only its spelling here is: the probe
+ * still presents the same string, still inside `^[a-z][a-z0-9_]{0,39}$`, and
+ * [9.5] asserts that form on it before using it, so a mangled assembly fails
+ * loudly instead of quietly weakening the attack.
+ */
+const TOKEN_LIKE = ["sk", "live", "4ec39hqlyjwdarjtt1zdp7dc"].join("_");
+
 const SCHEMA = JSON.parse(readFileSync(join(REPO_ROOT, "schema/skill-package-v1.schema.json"), "utf8"));
 /** The schema's shape for a DECLARED name — the packing-side half of the rule. */
 const DECLARED = SCHEMA.properties?.outcome_contract?.properties?.evidence;
@@ -411,29 +425,44 @@ test("[9.4] a planted contract of IDENTIFIERS still declares its names — the b
 // 9.5 — THE SWEEP: EVERY ADMISSIBLE NAME, EVERY SHAPE OF TEXT, KEYS AND VALUES
 // ===========================================================================
 
-test("[9.5] no shape of author text reaches the journal as a KEY or as a VALUE — swept over the set the code defines", () => {
-  // THE SET IS THE CODE'S, as D-12 requires of any guard that says `every`:
-  // `EVIDENCE_NAMES` is derived in `src/outcome.ts` from the check table, and
-  // the declared half is what a contract may legally add under the new form.
-  const declared = ["suite_digest", "coverage_ratio"];
-  const names = [...new Set([...EVIDENCE_NAMES, ...declared])];
-  console.log(`[9.5] admissible names swept: ${names.join(", ")}`);
+test("[9.5] no string an author declared reaches the journal as a KEY — including the ones the FORM admits", () => {
+  // WHAT THIS PROBE USED TO DO, AND WHY IT COULD NOT FAIL.
+  //
+  // It decided what "text" was by asking whether a string had FAILED THE FORM:
+  // `/[^a-z0-9_]/.test(name) || name.length > 40 || /^[^a-z]/.test(name)`. Every
+  // string INSIDE the form was therefore excluded from the sweep by the sweep's
+  // own definition — and the real attack is inside the form. A reviewer declared
+  // `a0123456789abcdef0123456789abcdef`, an ordinary hex string of 33
+  // characters, as an evidence NAME: it packed, `/v1/observations` answered 201,
+  // and the material came back out of `observed_records.evidence` word for word,
+  // with this test green beside it. A guard whose subject is "whatever the code
+  // already refuses" is not a guard.
+  //
+  // SO THE SUBJECT IS NOW EVERY STRING AN AUTHOR DECLARED, form or no form. The
+  // journal's keys are `EVIDENCE_NAMES` — derived in `src/outcome.ts` from the
+  // check table — and a declaration adds nothing to them, so the expected answer
+  // does not depend on how a declared name looks.
+  const names = [...EVIDENCE_NAMES];
+  console.log(`[9.5] the journal's admissible names: ${names.join(", ")}`);
   assert.ok(names.length >= 4, "the admissible set is empty, so the sweep proves nothing");
 
-  // AND THE SHAPES OF TEXT, offered as NAMES this time — the channel round 8
-  // left open — and as values, which it closed, so one sweep answers for both
-  // halves of the column.
+  // THE SHAPES OF AUTHOR TEXT, offered as NAMES — prose that the form refuses
+  // AND material that the form admits, so the sweep spans both sides of the line
+  // the old predicate drew.
   const texts: Array<[string, string]> = [
     ["a secret", SECRET_VALUE],
     ["a transcript", TRANSCRIPT_VALUE],
     ["a fragment of prose", "the operator pasted the key "],
+    ["a hex string inside the form", "a0123456789abcdef0123456789abcdef"],
+    ["a base32 blob inside the form", "abcdefghijklmnopqrstuvwxyz234567"],
+    ["a token-shaped key inside the form", TOKEN_LIKE],
   ];
 
   const escaped: string[] = [];
   for (const [label, text] of texts) {
-    // AS A NAME: declared by the contract, presented by the run — in every
-    // deformation of the form, because "a sentence is refused" is a fix for one
-    // shape and the requirement is about the form.
+    // AS A NAME: declared by the version's own signed contract, presented by its
+    // own run — in every deformation, because the requirement is about what the
+    // journal accepts and not about which deformation somebody thought of.
     const asNames: Array<[string, string]> = [
       ["as written", text.slice(0, 80)],
       ["with the spaces removed", text.replace(/\s+/g, "_").slice(0, 80)],
@@ -441,6 +470,7 @@ test("[9.5] no shape of author text reaches the journal as a KEY or as a VALUE �
       ["punctuation only", text.slice(0, 80).replace(/[a-z0-9]/gi, ".")],
       ["with a leading digit", `0${text.slice(0, 60)}`],
       ["as unicode", `т${text.slice(0, 60)}`],
+      ["lower case, no punctuation — an identifier", `a${text.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 39)}`],
     ];
     for (const [shape, name] of asNames) {
       const { fx, versionId, marker, report } = fixture(DECLARED_CONTRACT, "r9-sweep");
@@ -450,13 +480,12 @@ test("[9.5] no shape of author text reaches the journal as a KEY or as a VALUE �
         { role: "output", call_id: "r9-5", marker, at_ms: 2, result: "success", evidence: { [name]: 1 } },
       ]);
       const back = `${stored(fx)}\n${decoded(fx)}`;
-      // A NAME THAT SURVIVES THE FORM IS NOT AN ESCAPE — `with the spaces
-      // removed` is an identifier and the journal is allowed to hold it. What
-      // is asked here is whether the TEXT came through: the material, in the
-      // shape an author wrote it, is what [I-7] is about.
-      const isText = /[^a-z0-9_]/.test(name) || name.length > 40 || /^[^a-z]/.test(name);
-      if (isText && asName.status === 201) escaped.push(`${label} ${shape}, as a KEY (accepted)`);
-      else if (isText && back.includes(name.slice(0, 24))) escaped.push(`${label} ${shape}, as a KEY (stored anyway)`);
+      // THE EXPECTATION NO LONGER ASKS THE CODE WHAT IT REFUSES. A declared name
+      // is admissible only if it is one of the journal's own — which none of
+      // these is, however it is spelled.
+      const admissible = names.includes(name);
+      if (!admissible && asName.status === 201) escaped.push(`${label} ${shape}, as a KEY (accepted)`);
+      else if (!admissible && back.includes(name.slice(0, 24))) escaped.push(`${label} ${shape}, as a KEY (stored anyway)`);
       fx.db.close();
     }
 
