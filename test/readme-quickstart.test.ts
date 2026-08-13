@@ -360,3 +360,47 @@ test("the quickstart parser refuses an empty, an untyped and a wrong-shaped body
   assert.equal(ok.status, 0, "the happy path must still succeed");
   assert.equal(ok.stdout.trim(), "sk_own_abc", "the happy path must still yield the value");
 });
+
+// ---------------------------------------------------------------------------
+// A DOCUMENT MAY NOT ADVERTISE A COMMAND THIS PROJECT HAS ALREADY REPLACED.
+//
+// `README.md`'s Development block told a reader to run `bun test`. That command
+// exists, and it FAILS: `package.json` defines the suite as
+// `bun test --timeout 120000`, bun's own default is five seconds, and four
+// tests here legitimately take 7-25 s because they sweep a whole set. So the
+// document shipped a runnable line that does not work — and the same mistake
+// had already been found and fixed in `.github/workflows/ci.yml`, which is what
+// makes it worth a guard rather than an edit: one spelling was repaired and the
+// other was left, in a different file, saying the same wrong thing.
+//
+// The rule is derived from `package.json`, not listed here: if a script's
+// command begins with what a README line runs, and the script adds more, then
+// the README is advertising the truncated form of a command this project has
+// already decided how to run. The remedy is named in the failure, so nobody has
+// to guess which script was meant.
+test("no runnable README line is the truncated form of a command package.json defines", () => {
+  const scripts: Record<string, string> = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).scripts ?? {};
+  const blocks = [...README.matchAll(/```bash\n([\s\S]*?)\n```/g)].map((m) => m[1]);
+
+  for (const block of blocks) {
+    for (const raw of block.split("\n")) {
+      const line = raw.replace(/\s+#.*$/, "").trim();
+      if (!line) continue;
+      for (const [name, body] of Object.entries(scripts)) {
+        if (body === line) continue;                       // the whole command: fine
+        if (!body.startsWith(line + " ")) continue;         // unrelated: fine
+        // The defect is DROPPED FLAGS, not a shorter command. `npm run check` is
+        // `npm run typecheck && npm test`, so the README's `npm run typecheck` is
+        // a prefix of it — and is its own perfectly good command. What cannot be
+        // dropped is the tail that MODIFIES the same invocation, and that tail
+        // begins with a flag.
+        const tail = body.slice(line.length + 1);
+        if (!tail.startsWith("-")) continue;
+        assert.fail(
+          `README runs \`${line}\`, which is \`npm run ${name}\` (\`${body}\`) with its tail cut off. ` +
+            `The missing part is not decoration — run \`npm run ${name}\`.`,
+        );
+      }
+    }
+  }
+});
