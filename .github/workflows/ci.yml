@@ -66,8 +66,17 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Typecheck under Bun's toolchain
         run: bunx tsc --noEmit
+      # `npm run test:bun`, NOT a bare `bun test`. The script carries
+      # `--timeout 120000`; bun's default is 5 s, and four tests in this suite
+      # legitimately take 7–25 s because they plant a lie in EVERY discovered
+      # document and refuse it, one file at a time. A bare `bun test` here made
+      # the workflow assert something the project does not: that its own suite
+      # passes under a limit the project never set. Two definitions of one
+      # command drift; this repository has one, in `package.json`. Run through
+      # `bun run` rather than `npm run`: this job installs bun and nothing else,
+      # so the step depends only on what the job itself put there.
       - name: Run test suite under Bun (canonical §2 runtime)
-        run: bun test
+        run: bun run test:bun
 
   # ------------------------------------------------------------ supply chain
   # An install or a build that is not reproducible is not reviewable: a reviewer
@@ -199,11 +208,11 @@ jobs:
           for _ in $(seq 1 60); do curl -fsS http://localhost:7431/health && break; sleep 1; done
           curl -fsS http://localhost:7431/health | grep -q '"status":"ok"'
           ./dist/skillonomia version
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: skillonomia-linux-x86_64
-          path: |
-            dist/skillonomia
-            dist/migrations
-            dist/schema
-            dist/seed
+      # NO `upload-artifact` HERE, ON PURPOSE.
+      #
+      # This job compiles the binary and runs it, which is the whole point: a
+      # binary that does not start is a broken build. Uploading it is a
+      # different act — a workflow artifact is downloadable by anyone who can
+      # see this repository, so the upload made `README.md` untrue where it says
+      # the binary is not shipped, and made a source-only release ship a binary
+      # nobody signed, attested or versioned. Nothing consumed the artifact.
