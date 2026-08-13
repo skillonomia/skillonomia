@@ -479,6 +479,9 @@ test("[9.5] no string an author declared reaches the journal as a KEY — includ
     ["a base32 blob inside the form", "abcdefghijklmnopqrstuvwxyz234567"],
     ["a token-shaped key inside the form", TOKEN_LIKE],
   ];
+  // The fixture is assembled, so its shape is asserted rather than assumed: an
+  // attack that stopped passing the form would stop being the attack.
+  assert.match(TOKEN_LIKE, /^[a-z][a-z0-9_]{0,39}$/, "the token-shaped key no longer passes the form, so it no longer attacks the form");
 
   const escaped: string[] = [];
   for (const [label, text] of texts) {

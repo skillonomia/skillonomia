@@ -58,8 +58,20 @@ test("schema: missing R-field FAILs; high risk without sandbox FAILs; zero failu
 
 // ----------------------------------------------------------- gate 2: secrets
 
-const RAW_JWT =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c";
+/**
+ * Assembled from its three segments at run time, not written as a literal —
+ * the convention `test/p7-threats.test.ts` TM-03 states for the same reason: a
+ * push-side scanner reads the FILE, and a red-team fixture of a credential's
+ * shape can refuse the publication of the whole repository. The VALUE is
+ * unchanged, byte for byte; the assertion below is untouched, and it is the
+ * one that would fail loudly on a mangled assembly, because it requires gate 2
+ * to name the finding `jwt`.
+ */
+const RAW_JWT = [
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+  "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+  "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c",
+].join(".");
 
 test("secrets: raw JWT in SKILL.md FAILs; the redacted form passes (defect #7)", () => {
   const raw = gate(CLEAN, { "SKILL.md": `# skill\nToken: ${RAW_JWT}\n` });

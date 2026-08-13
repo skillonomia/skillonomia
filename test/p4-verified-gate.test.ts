@@ -28,6 +28,21 @@ import {
 } from "../src/verified-gate.ts";
 import { isApiError } from "../src/errors.ts";
 
+/**
+ * The gate-2 leak fixture, assembled from its three segments at run time rather
+ * than written as a literal — the convention `test/p7-threats.test.ts` TM-03
+ * states for the same reason: a push-side scanner reads the FILE, and a
+ * red-team fixture of a credential's shape can refuse the publication of the
+ * whole repository. The VALUE is unchanged, byte for byte; the case that uses
+ * it asserts the shape first, because its own assertion is about the gate run
+ * being re-evaluated and would hold for any string gate 2 dislikes.
+ */
+const RAW_JWT = [
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+  "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+  "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c",
+].join(".");
+
 function stateOf(fx: P4Fixture, versionId: string): string {
   return (fx.db.prepare("SELECT state FROM skill_versions WHERE id=?").get(versionId) as any).state;
 }
@@ -337,9 +352,10 @@ test("conjunct 4 (§5.1) — the CURRENT run decides: a FAIL now blocks even tho
   // must refuse regardless of history
   const ref = (fx.db.prepare("SELECT package_blob_ref FROM skill_versions WHERE id=?").get(v.versionId) as any)
     .package_blob_ref;
+  assert.match(RAW_JWT, /^eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}$/, "the assembled fixture is no longer the shape gate 2 names `jwt`");
   const leaky = makeManifest({ author_agent: fx.author.agent_id, access_policy: "workspace" });
   const { tar } = buildPackage(leaky, {
-    "SKILL.md": "# s\nToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c\n",
+    "SKILL.md": `# s\nToken: ${RAW_JWT}\n`,
   });
   fx.registry.blobs.put(ref, tar);
 

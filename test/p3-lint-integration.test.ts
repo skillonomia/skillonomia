@@ -12,8 +12,20 @@ import { mintApiKey } from "../src/auth.ts";
 import { handleRest } from "../src/http.ts";
 import { isApiError } from "../src/errors.ts";
 
-const RAW_JWT =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c";
+/**
+ * Assembled from its three segments at run time, not written as a literal —
+ * the convention `test/p7-threats.test.ts` TM-03 states for the same reason: a
+ * push-side scanner reads the FILE, and a red-team fixture of a credential's
+ * shape can refuse the publication of the whole repository. The VALUE is
+ * unchanged, byte for byte. The tests below assert only that gate 2 FAILS, and
+ * the entropy heuristic would fail for a mangled assembly too, so the shape is
+ * asserted where the constant is first used rather than assumed.
+ */
+const RAW_JWT = [
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+  "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+  "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c",
+].join(".");
 
 function rest(registry: Registry, method: string, url: string, key: string, body?: unknown) {
   const res = handleRest(registry, {
@@ -26,6 +38,7 @@ function rest(registry: Registry, method: string, url: string, key: string, body
 }
 
 test("a failing gate blocks draft→linted through REST and MCP alike (§7.1 not bypassable)", () => {
+  assert.match(RAW_JWT, /^eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}$/, "the assembled fixture is no longer the shape gate 2 names `jwt`");
   const seed = seedGraph();
   const registry = new Registry(seed.db, { now: () => NOW });
   const key = mintApiKey(seed.db, seed.authorA, NOW).api_key;
