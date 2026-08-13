@@ -295,3 +295,68 @@ test("the README promises no artifact that does not exist", () => {
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// THE RELEASE GATE MUST REFUSE IN ITS OWN VOICE.
+//
+// `ci/quickstart-docker.sh` is what the release is measured against, and it
+// drives `ci/quickstart.sh`. That script parses every response through one
+// helper. The helper used to be `json.load(sys.stdin); print(<expr>)`, which
+// reads a value where the answer has the expected shape and DIES OF PYTHON
+// where it does not: an empty body, a proxy's plain-text 502, or a typed API
+// error carrying no `api_key` each ended the gate with a JSONDecodeError or a
+// KeyError naming python's internals — not the step, not what came back. The
+// script has owned a `fail()` that says both all along; the parser was dying
+// before reaching it.
+//
+// This probe runs THE SHIPPED FILE, not a copy of its logic: it reads
+// `ci/quickstart.sh`, takes the parser exactly as the script defines it, and
+// feeds it the three answers a gate meets on a bad day. A traceback reaching
+// the log is the defect, so a traceback fails this test.
+test("the quickstart parser refuses an empty, an untyped and a wrong-shaped body in the script's own voice", () => {
+  const script = readFileSync(join(ROOT, "ci/quickstart.sh"), "utf8");
+
+  // The parser is taken from the file, so a rewrite that drops the refusal
+  // cannot leave this probe passing against yesterday's text.
+  const start = script.indexOf("QS_PARSER='");
+  const end = script.indexOf("\njqf() {", start);
+  assert.ok(start > 0 && end > start, "ci/quickstart.sh no longer defines QS_PARSER followed by jqf()");
+  const defs = script.slice(start, end) + "\njqf() { QS_EXPR=\"$1\" python3 -c \"$QS_PARSER\"; }";
+
+  const cases: Array<[string, string, RegExp]> = [
+    ["an empty body", "", /the response body was EMPTY where JSON was required/],
+    ["a body that is not JSON", "service unavailable", /the response is not JSON/],
+    ["JSON without the field", '{"error":{"code":"UNAUTHORIZED"}}', /the response is JSON but has no d\['api_key'\]/],
+  ];
+
+  for (const [what, body, expected] of cases) {
+    const run = spawnSync("bash", ["-c", `${defs}\nprintf '%s' "$1" | jqf "d['api_key']"`, "_", body], {
+      encoding: "utf8",
+      env: { ...process.env, QS_STEP: "9.1.6.1 exchange the bootstrap token for the owner key" },
+    });
+    assert.equal(run.status, 1, `${what}: the gate must exit 1, got ${run.status}`);
+    assert.match(run.stderr, /^FAIL: /m, `${what}: the refusal must be the script's own FAIL line`);
+    assert.match(run.stderr, expected, `${what}: the refusal must say which of the three answers arrived`);
+    assert.match(
+      run.stderr,
+      /9\.1\.6\.1 exchange the bootstrap token/,
+      `${what}: the refusal must name the STEP — a gate that says only "failed" sends its reader back to guessing`,
+    );
+    // The defect is a TRACEBACK — python's frames in place of a sentence. The
+    // exception's NAME inside the refusal is not the defect; it is evidence,
+    // and the message carries it on purpose. So this forbids the frames.
+    assert.doesNotMatch(
+      run.stderr,
+      /Traceback \(most recent call last\)|^\s+File ".*", line \d+/m,
+      `${what}: python frames in the log IS the defect this probe exists for`,
+    );
+  }
+
+  // …and the value still comes back on the happy path, or the repair broke the gate.
+  const ok = spawnSync("bash", ["-c", `${defs}\nprintf '%s' "$1" | jqf "d['api_key']"`, "_", '{"api_key":"sk_own_abc"}'], {
+    encoding: "utf8",
+    env: { ...process.env, QS_STEP: "9.1.6.1" },
+  });
+  assert.equal(ok.status, 0, "the happy path must still succeed");
+  assert.equal(ok.stdout.trim(), "sk_own_abc", "the happy path must still yield the value");
+});

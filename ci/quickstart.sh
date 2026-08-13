@@ -17,9 +17,46 @@ H='Content-Type: application/json'
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-jqf() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
-step() { printf '\n=== %s\n' "$*"; }
+# A GATE THAT DIES OF A TRACEBACK HAS NOT REPORTED ANYTHING.
+#
+# `jqf` used to be `json.load(sys.stdin); print(<expr>)`. That reads a value
+# where the answer is the shape it expects, and DIES OF PYTHON where it is not:
+# an empty body, a proxy's plain-text 502, or a typed API error carrying no
+# `api_key` all ended this gate with a JSONDecodeError or a KeyError naming
+# python's internals — never the step, never what came back. The script owns a
+# `fail()` that says both, and the parser was dying before reaching it.
+#
+# So the parser refuses in the script's own voice. Three answers are separated
+# because they mean three different things to whoever reads the CI log: nothing
+# arrived, something arrived that is not JSON, or JSON arrived without the field
+# this step needs. The first 200 bytes of the body are shown for the same
+# reason — a gate that says only "failed" sends its reader back to guessing.
+step() { QS_STEP="$*"; export QS_STEP; printf '\n=== %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+#
+# The program is held in a variable and passed with `-c`, NOT on stdin: the
+# body being parsed arrives on stdin, and `python3 - <<EOF` would eat it.
+QS_PARSER='
+import json, os, sys
+
+raw = sys.stdin.read()
+where = os.environ.get("QS_STEP", "(before the first step)")
+expr = os.environ["QS_EXPR"]
+head = raw[:200] + ("…" if len(raw) > 200 else "")
+
+if not raw.strip():
+    sys.exit(f"FAIL: {where} — the response body was EMPTY where JSON was required")
+try:
+    d = json.loads(raw)
+except json.JSONDecodeError as e:
+    sys.exit(f"FAIL: {where} — the response is not JSON ({e}); first bytes: {head!r}")
+try:
+    print(eval(expr, {"__builtins__": {}}, {"d": d}))
+except (KeyError, IndexError, TypeError) as e:
+    sys.exit(f"FAIL: {where} — the response is JSON but has no {expr} "
+             f"({type(e).__name__}: {e}); first bytes: {head!r}")
+'
+jqf() { QS_EXPR="$1" python3 -c "$QS_PARSER"; }
 
 step "9.1.6.1 exchange the bootstrap token for the owner key"
 OWNER_JSON=$(curl -sS -X POST "$BASE_URL/v1/auth/bootstrap" -H "$H" \
