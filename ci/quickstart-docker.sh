@@ -32,8 +32,29 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
   docker build -q -t "$IMAGE" "$REPO"
 fi
 
+# THE DELIVERY RECORD IS A RECORD, SO IT HAS TO SAY SOMETHING.
+#
+# This used to be one `docker image inspect --format '{{.Id}}  {{join
+# .RepoDigests ", "}}'`. It PRINTS; it asserts nothing. `join` on an empty or
+# absent list is not an error — verified against this docker: a null field
+# yields "" and exits 0 — so an image that answered with no id at all would
+# print a blank line here and the gate would keep going, and the file CI keeps
+# from the same query is called a release delivery record.
+#
+# An empty id is a real failure: it means the inspect did not answer for this
+# tag, and a record of nothing is worse than no record.
+#
+# An empty RepoDigests is NOT a failure and must not be dressed as one. This
+# image is always built from this repository — V1 publishes no image, so there
+# is nothing to pull and nothing to be named by a registry. That case is
+# spelled out instead of trailing off into whitespace.
 echo "=== image digest / id"
-docker image inspect "$IMAGE" --format '{{.Id}}  {{join .RepoDigests ", "}}'
+IMAGE_ID=$(docker image inspect "$IMAGE" --format '{{.Id}}') || {
+  echo "FAIL: docker image inspect did not answer for $IMAGE" >&2; exit 1; }
+[ -n "$IMAGE_ID" ] || { echo "FAIL: $IMAGE has no image id — the delivery record would be empty" >&2; exit 1; }
+IMAGE_DIGESTS=$(docker image inspect "$IMAGE" --format '{{join .RepoDigests ", "}}')
+echo "id      : $IMAGE_ID"
+echo "digests : ${IMAGE_DIGESTS:-(none — built from this repository, never pushed to a registry)}"
 
 # The clock starts HERE: §9.1's target is "clean machine → receipt adopted in
 # ≤10 minutes", and step 1 is `docker run`.

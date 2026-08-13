@@ -35,7 +35,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { createServer } from "node:net";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -403,4 +403,64 @@ test("no runnable README line is the truncated form of a command package.json de
       }
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// A DELIVERY RECORD THAT CAN BE EMPTY IS NOT A RECORD.
+//
+// `ci/quickstart-docker.sh` prints the image id and repo digests, and CI keeps
+// the same query's answer in `ci/quickstart-image-id.txt`, calling it a release
+// delivery record. The step used to be one `docker image inspect --format` that
+// PRINTED and asserted nothing: `join` over an empty or absent list is not an
+// error — measured against docker 29.5.2, a null field yields "" and exits 0 —
+// so an image that answered with no id would have printed a blank line and the
+// gate would have carried on with an empty record.
+//
+// Two answers that look alike and are not: an empty ID is a failure (the
+// inspect did not answer for this tag), an empty DIGEST LIST is the normal case
+// (V1 publishes no image, so nothing was ever pushed) and must be said in words
+// rather than trail off into whitespace.
+//
+// The probe runs THE SHIPPED FILE's own block with `docker` stubbed on PATH.
+test("the quickstart gate refuses an empty image id and spells out an empty digest list", () => {
+  const script = readFileSync(join(ROOT, "ci/quickstart-docker.sh"), "utf8");
+  const from = script.indexOf("# THE DELIVERY RECORD");
+  const to = script.indexOf("\n\n", script.indexOf('echo "digests', from));
+  assert.ok(from > 0 && to > from, "ci/quickstart-docker.sh no longer carries the delivery-record block");
+  const block = script.slice(from, to);
+
+  const withStub = (body: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "sklo-docker-stub-"));
+    writeFileSync(join(dir, "docker"), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    const run = spawnSync("bash", ["-c", `set -euo pipefail\n${block}`], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, IMAGE: "skillonomia:probe" },
+    });
+    rmSync(dir, { recursive: true, force: true });
+    return run;
+  };
+
+  const idOnly = 'case "$*" in *RepoDigests*) echo "";; *) echo "sha256:deadbeef";; esac';
+  const both = 'case "$*" in *RepoDigests*) echo "reg@sha256:abc";; *) echo "sha256:deadbeef";; esac';
+
+  const ok = withStub(both);
+  assert.equal(ok.status, 0, "an image with an id and a digest must pass");
+  assert.match(ok.stdout, /id\s*:\s*sha256:deadbeef/, "the id must be reported");
+  assert.match(ok.stdout, /digests\s*:\s*reg@sha256:abc/, "the digest must be reported");
+
+  const local = withStub(idOnly);
+  assert.equal(local.status, 0, "a locally built image with no repo digest is NOT a failure");
+  assert.match(
+    local.stdout,
+    /digests\s*:\s*\(none/,
+    "an empty digest list must be said in words — this project publishes no image, and silence reads as a value",
+  );
+
+  const noId = withStub('echo ""');
+  assert.equal(noId.status, 1, "an empty image id must fail the gate");
+  assert.match(noId.stderr, /^FAIL: .*has no image id/m, "…in the script's own voice");
+
+  const broken = withStub("exit 1");
+  assert.equal(broken.status, 1, "an inspect that does not answer must fail the gate");
+  assert.match(broken.stderr, /^FAIL: docker image inspect did not answer/m, "…naming what did not answer");
 });
