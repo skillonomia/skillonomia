@@ -75,6 +75,7 @@ import { appendTlog } from "../src/tlog.ts";
 import { arrivalMarker } from "../src/marker.ts";
 import { REPO_ROOT, documentSet } from "./docs-guard.ts";
 import { p4Fixture, reviewedVersion, rest, adoptThroughSurfaces, type P4Fixture } from "./p6-helpers.ts";
+import { pinnedFixture } from "./helpers.ts";
 
 /** The three columns the owner had already found by hand. The survey has to
  *  find them ITSELF — a survey that has to be told is not a survey. */
@@ -99,7 +100,11 @@ const KNOWN_THREE = [
  * here is, and `KEY_LIKE` is the same constant the probes below search the
  * journals for, so the search and the planting cannot drift apart.
  */
-const KEY_LIKE = ["AKIA", "0123456789", "ABCDEF"].join("");
+const KEY_LIKE = pinnedFixture(
+  ["AKIA", "0123456789", "ABCDEF"].join(""),
+  "d5bde4de080e64fc9b093e0d14e164c828c4b4195a6932fa7c53d25472f43000",
+  "the key-shaped string round 10 plants and then hunts for",
+);
 const TEXT = `op paste: ${KEY_LIKE}/wJalrXUtnFEMI+K7MDENG, ~/home/operator/.aws/credentials`;
 
 // ===========================================================================

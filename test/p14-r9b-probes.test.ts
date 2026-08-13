@@ -71,6 +71,7 @@ import { arrivalMarker } from "../src/marker.ts";
 import { writeTar, type PackageFiles } from "../src/archive.ts";
 import { p4Fixture, reviewedVersion, rest, type P4Fixture } from "./p6-helpers.ts";
 import { makeManifest, p2Fixture } from "./p2-helpers.ts";
+import { pinnedFixture } from "./helpers.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const outcome = outcomeNamespace as unknown as Record<string, unknown>;
@@ -94,7 +95,11 @@ const outcome = outcomeNamespace as unknown as Record<string, unknown>;
  */
 const HEX_LIKE = "a0123456789abcdef0123456789abcdef";
 const BASE32_LIKE = "abcdefghijklmnopqrstuvwxyz234567";
-const TOKEN_LIKE = ["sk", "live", "4ec39hqlyjwdarjtt1zdp7dc"].join("_");
+const TOKEN_LIKE = pinnedFixture(
+  ["sk", "live", "4ec39hqlyjwdarjtt1zdp7dc"].join("_"),
+  "70775e630d40625a16439c6f582921f68e12be686ca6f5026a9357f3729da2cc",
+  "the token-shaped key of [9b.1]",
+);
 const SECRETS_IN_THE_FORM: Array<[string, string]> = [
   ["a hex string of 33 characters", HEX_LIKE],
   ["a base32-shaped blob", BASE32_LIKE],

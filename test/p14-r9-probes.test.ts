@@ -52,6 +52,7 @@ import { arrivalMarker } from "../src/marker.ts";
 import { writeTar, type PackageFiles } from "../src/archive.ts";
 import { p4Fixture, reviewedVersion, rest, type P4Fixture } from "./p6-helpers.ts";
 import { makeManifest, p2Fixture } from "./p2-helpers.ts";
+import { pinnedFixture } from "./helpers.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const outcome = outcomeNamespace as unknown as Record<string, unknown>;
@@ -87,10 +88,15 @@ const TRANSCRIPT_VALUE =
  *
  * THE VALUE IS UNCHANGED, BYTE FOR BYTE. Only its spelling here is: the probe
  * still presents the same string, still inside `^[a-z][a-z0-9_]{0,39}$`, and
- * [9.5] asserts that form on it before using it, so a mangled assembly fails
- * loudly instead of quietly weakening the attack.
+ * [9.5] asserts that form on it before using it. The FORM is not enough on its
+ * own — `join("")` yields a different string that is still a valid identifier —
+ * so `pinnedFixture` pins the bytes themselves at the assembly.
  */
-const TOKEN_LIKE = ["sk", "live", "4ec39hqlyjwdarjtt1zdp7dc"].join("_");
+const TOKEN_LIKE = pinnedFixture(
+  ["sk", "live", "4ec39hqlyjwdarjtt1zdp7dc"].join("_"),
+  "70775e630d40625a16439c6f582921f68e12be686ca6f5026a9357f3729da2cc",
+  "the token-shaped key [9.5] offers as an evidence name",
+);
 
 const SCHEMA = JSON.parse(readFileSync(join(REPO_ROOT, "schema/skill-package-v1.schema.json"), "utf8"));
 /** The schema's shape for a DECLARED name — the packing-side half of the rule. */

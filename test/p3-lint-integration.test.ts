@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { seedGraph } from "./helpers.ts";
 import { p2Fixture, makeManifest, buildPackage, NOW } from "./p2-helpers.ts";
-import { insertVersion } from "./helpers.ts";
+import { pinnedFixture, insertVersion } from "./helpers.ts";
 import { Registry } from "../src/service.ts";
 import { mintApiKey } from "../src/auth.ts";
 import { handleRest } from "../src/http.ts";
@@ -21,11 +21,15 @@ import { isApiError } from "../src/errors.ts";
  * the entropy heuristic would fail for a mangled assembly too, so the shape is
  * asserted where the constant is first used rather than assumed.
  */
-const RAW_JWT = [
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-  "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
-  "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c",
-].join(".");
+const RAW_JWT = pinnedFixture(
+  [
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+    "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+    "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c",
+  ].join("."),
+  "11b708d7f6c755ec2f4c7d406306bf540557e6ab3ce5672c127e5bd32aeb859e",
+  "the raw JWT the lint surfaces must refuse",
+);
 
 function rest(registry: Registry, method: string, url: string, key: string, body?: unknown) {
   const res = handleRest(registry, {

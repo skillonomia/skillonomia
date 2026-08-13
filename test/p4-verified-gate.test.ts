@@ -16,7 +16,7 @@ import {
   NOW,
   type P4Fixture,
 } from "./p4-helpers.ts";
-import { insertLintRun } from "./helpers.ts";
+import { pinnedFixture, insertLintRun } from "./helpers.ts";
 import { makeManifest, buildPackage } from "./p2-helpers.ts";
 import { GATE_NAMES } from "../src/gates.ts";
 import { transitionVersion } from "../src/transitions.ts";
@@ -37,11 +37,15 @@ import { isApiError } from "../src/errors.ts";
  * it asserts the shape first, because its own assertion is about the gate run
  * being re-evaluated and would hold for any string gate 2 dislikes.
  */
-const RAW_JWT = [
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-  "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
-  "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c",
-].join(".");
+const RAW_JWT = pinnedFixture(
+  [
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+    "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+    "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c",
+  ].join("."),
+  "11b708d7f6c755ec2f4c7d406306bf540557e6ab3ce5672c127e5bd32aeb859e",
+  "the raw JWT the verified gate must refuse",
+);
 
 function stateOf(fx: P4Fixture, versionId: string): string {
   return (fx.db.prepare("SELECT state FROM skill_versions WHERE id=?").get(versionId) as any).state;

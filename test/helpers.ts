@@ -1,5 +1,6 @@
 // Shared seed graph for probes: two workspaces, agents, skill, version,
 // adoption request + receipt. Mirrors the Appendix G seed.
+import { createHash } from "node:crypto";
 import type { Db } from "../src/sqlite.ts";
 import { openMigrated } from "../src/db.ts";
 import { ulid } from "../src/ulid.ts";
@@ -167,4 +168,38 @@ export function insertApproveReview(db: Db, seed: Seed, versionId: string, atMs:
     "INSERT INTO reviews(id, skill_version_id, reviewer_agent_id, verdict, note, created_at_ms) VALUES (?,?,?, 'approve', NULL, ?)",
   ).run(ulid(atMs), versionId, reviewer, atMs);
   return reviewer;
+}
+
+/**
+ * A FIXTURE WHOSE SHAPE IS A SCANNER'S SHAPE IS ASSEMBLED, NEVER WRITTEN.
+ *
+ * `test/p7-threats.test.ts` (TM-03) says why: a push-side secret scanner matches
+ * the blob, not the intent, and blocks the push on a red-team fixture. GH013
+ * refused a whole release candidate over one such literal.
+ * `test/p14-r15-probes.test.ts` enforces the rule over every tracked file.
+ *
+ * Assembly buys that at a price, and this function is the price paid. Where the
+ * value was a literal, mangling it changed the file; now a wrong `join` produces
+ * a DIFFERENT STRING that can still satisfy the shape the probe asserts, and the
+ * probe goes quietly green against material it was never written against.
+ * Changing `AKIA` to `AKIB` is still an AWS shape. `join("_")` to `join("")` is
+ * still a valid identifier.
+ *
+ * So the bytes are pinned here, at the assembly, by digest — the one property
+ * that no near-miss shares. The digest is safe to write down: it is not the
+ * value, it cannot be run backwards, and it carries no scanner's shape.
+ *
+ * This function does NOT claim the fixture is secret-free or that a scanner
+ * will pass it. It claims exactly one thing: these are the bytes the probe
+ * downstream was written against.
+ */
+export function pinnedFixture(value: string, sha256Hex: string, what: string): string {
+  const actual = createHash("sha256").update(value, "utf8").digest("hex");
+  if (actual !== sha256Hex) {
+    throw new Error(
+      `${what}: the assembled fixture is not the value this probe was written against — ` +
+        `expected sha256 ${sha256Hex}, assembled ${actual} (${value.length} bytes)`,
+    );
+  }
+  return value;
 }

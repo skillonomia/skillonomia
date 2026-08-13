@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { makeManifest, buildPackage, NOW } from "./p2-helpers.ts";
+import { pinnedFixture } from "./helpers.ts";
 import {
   runGates,
   stripRedactions,
@@ -67,11 +68,15 @@ test("schema: missing R-field FAILs; high risk without sandbox FAILs; zero failu
  * one that would fail loudly on a mangled assembly, because it requires gate 2
  * to name the finding `jwt`.
  */
-const RAW_JWT = [
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-  "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
-  "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c",
-].join(".");
+const RAW_JWT = pinnedFixture(
+  [
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+    "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+    "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c",
+  ].join("."),
+  "11b708d7f6c755ec2f4c7d406306bf540557e6ab3ce5672c127e5bd32aeb859e",
+  "the raw JWT gate 2 must name as `jwt`",
+);
 
 test("secrets: raw JWT in SKILL.md FAILs; the redacted form passes (defect #7)", () => {
   const raw = gate(CLEAN, { "SKILL.md": `# skill\nToken: ${RAW_JWT}\n` });
