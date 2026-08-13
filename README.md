@@ -108,8 +108,9 @@ fallback — CI runs the whole suite on both.
 
 ## Availability of prebuilt artifacts
 
-**There is no published release yet.** Nothing in this document asks you to
-download one:
+**This project publishes source only.** A tagged release carries the source
+and a git bundle you can verify yourself; nothing in this document asks you to
+download a prebuilt artifact:
 
 - There is **no `skillonomia` package published by this project** on the public
   npm registry. The name is currently occupied by an unrelated third-party
@@ -437,9 +438,10 @@ them, it is a different topology — a **TLS-terminating** reverse proxy in fron
 with the registry port not published at all (see
 [The network boundary](#the-network-boundary)).
 
-When the first release is cut, the corresponding `docker run
-<registry>/<image>:<tag>` and `npx skillonomia` forms will be added to this
-table. Until then they do not exist and are deliberately not written here.
+This release is source only: no image and no npm package is published by this
+project, so the corresponding `docker run <registry>/<image>:<tag>` and `npx
+skillonomia` forms do not exist and are deliberately not written here. If they
+are ever published, they will be added to this table then, and not before.
 
 ### Supported platforms
 
