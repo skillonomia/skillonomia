@@ -216,3 +216,4 @@ jobs:
       # see this repository, so the upload made `README.md` untrue where it says
       # the binary is not shipped, and made a source-only release ship a binary
       # nobody signed, attested or versioned. Nothing consumed the artifact.
+      # `test/source-only.test.ts` keeps this from coming back.
