@@ -156,7 +156,7 @@ export const REFERENCED_ONLY: ReadonlyArray<{ pattern: RegExp; why: string }> = 
     pattern: /^skills\/git-bundle-verify\//,
     why:
       "a shipped skill package under the no-touch rule: its `SKILL.md` is the runbook an adopter executes and its " +
-      "bytes are covered by test/skill-git-bundle-verify.ts. Its claims are checked, never rewritten.",
+      "bytes are covered by test/skill-git-bundle-verify.test.ts. Its claims are checked, never rewritten.",
   },
 ];
 

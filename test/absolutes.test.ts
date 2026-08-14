@@ -581,6 +581,30 @@ test("no declaration is dead: every entry keys a sentence that is still written"
   );
 });
 
+// EVERY `test/…​.ts` THIS GUARD'S OWN SOURCE NAMES MUST EXIST.
+//
+// The guard above checks the paths cited by `behaviour` declarations. It does
+// NOT check the paths named in the ROSTER's prose — and one of them was wrong:
+// `test/absolutes.ts` named the bundle-verify suite without its `.test`
+// segment, and no such file exists. A release review found it. The guard that exists to stop a
+// document naming what the tree does not have was doing exactly that, one
+// function above the check that would have caught it.
+//
+// The wrong spelling is described here rather than quoted: this guard reads its
+// own source, so writing the bad path in a comment would make the comment the
+// defect. It caught exactly that on the first run.
+test("every test path this guard's own source names exists", () => {
+  const sources = ["test/absolutes.ts", "test/absolutes.test.ts"];
+  const bad: string[] = [];
+  for (const src of sources) {
+    const text = readFileSync(join(REPO_ROOT, src), "utf8");
+    for (const m of text.matchAll(/\btest\/[A-Za-z0-9_.-]+\.ts\b/g)) {
+      if (!existsSync(join(REPO_ROOT, m[0]))) bad.push(`${src} names \`${m[0]}\`, which does not exist`);
+    }
+  }
+  assert.deepEqual(bad, [], "this guard names a test file the tree does not have");
+});
+
 test("a `behaviour` declaration names a test file that exists", () => {
   const behaviour = DECLARED.filter((d) => d.ground === "behaviour");
   assert.ok(behaviour.length > 0, "no behaviour declaration — this guard is reading the wrong list");
