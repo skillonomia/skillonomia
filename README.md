@@ -98,9 +98,12 @@ lifecycle, eight deterministic safety gates, human review, an approval matrix,
 adoption receipts written only by the adopter, and a reputation computed from
 those receipts alone.
 
-Everything runs in one process against one SQLite file. There is no build step:
-Bun 1.3 runs the TypeScript sources directly, and Node 22.6+ is a first-class
-fallback — CI runs the whole suite on both.
+Everything runs in one process against one SQLite file. **A checkout needs no
+build step**: Bun 1.3 runs the TypeScript sources directly, and Node 22.6+ is a
+first-class fallback — CI runs the whole suite on both. Two of the four
+packaging paths below *do* build something — `npm pack` compiles the plain-JS
+entry point and `npm run build:binary` compiles an executable — and neither is
+on the road from a clone to a running registry.
 
 `SPEC.md` is the normative specification.
 

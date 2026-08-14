@@ -32,10 +32,13 @@ finding out from a `FAIL` on a draft.
 
 ## Writing the scripts
 
-Gate 5 admits only shell it can read statically (Appendix G.4). Twelve classes
-are refused, and the four that bite hardest when writing an honest runbook are
-command substitution, `eval`/`source`, inline interpreter code, and **every**
-control construct — `if`, `for`, `while`, `case`, subshells, brace groups.
+Gate 5 admits only shell it can read statically (Appendix G.4). It names twelve
+classes, of which **ten are refused** — a FAIL, which blocks `draft → linted` —
+while the remaining two (a background daemon, an unquoted expansion) are WARNs
+that do not block. The four refusals that bite hardest when writing an honest
+runbook are command substitution, `eval`/`source`, inline interpreter code, and
+**every** control construct — `if`, `for`, `while`, `case`, subshells, brace
+groups.
 
 That is narrower than it first looks, and mostly for the better. The usual
 
@@ -83,8 +86,10 @@ So `skills/git-bundle-verify` ships `vectors/`: four classes of defective bundle
 (damaged, truncated, incremental, foreign), a positive control, the digest each
 is to be offered with, and the step that must refuse it — in `MATRIX.tsv`, one
 row per case. The runbook's own step 5 is to run them. Keep such vectors small
-and cut from a throwaway repository; the whole set here is under 2 KB, and
-`tools/gen-bundle-vectors.sh` regenerates it byte for byte.
+and cut from a throwaway repository; the five bundles here are under 2 KB
+together (the matrix, the digests and the reference tree add about 1.3 KB more,
+and `vectors/README.md` explains them), and `tools/gen-bundle-vectors.sh`
+regenerates the set byte for byte.
 
 The positive control is not optional. A runbook that refuses everything passes
 a matrix of refusals perfectly.
