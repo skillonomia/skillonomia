@@ -95,3 +95,43 @@ test("the documents agree with the single source", () => {
     assert.equal(v, VERSION, "README's /health transcript must show the shipping version");
   }
 });
+
+test("SECURITY.md names the shipping version and no version that does not exist", () => {
+  // SECURITY.md went stale in exactly the way this file exists to prevent: the
+  // version moved and the security policy still described the one before it,
+  // because nothing compared them. Two versions are real here and both are read
+  // out of the tree rather than written down:
+  //
+  //   the shipping one   package.json, through src/version.ts
+  //   the baseline       the line release.yml actually RUNS to refuse it
+  //
+  // Reading the baseline off the executed `if` rather than off the prose around
+  // it means the guard follows the gate: retire that refusal and this test stops
+  // permitting the baseline in the same breath.
+  const refusal = /\[\s*"\$TAG"\s*=\s*"v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)"\s*\]/
+    .exec(read(".github/workflows/release.yml"));
+  assert.ok(refusal, "release.yml no longer refuses a baseline tag by name — this guard is reading the wrong thing");
+  const real = new Set([VERSION, refusal[1]]);
+
+  const security = read("SECURITY.md");
+  const named = [...security.matchAll(/`v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)`/g)].map((m) => m[1]);
+
+  // BOTH directions, because a guard that only checks one of them is the
+  // refusal-only shape that already shipped an unreleasable gate once.
+  //
+  // forward — the version moved and this file stayed silent
+  assert.ok(
+    named.includes(VERSION),
+    `SECURITY.md must say what \`${VERSION}\` is: it names ${named.length ? named.join(", ") : "no version at all"}`,
+  );
+  const row = new RegExp(`^\\|\\s*\`${VERSION.replace(/\./g, "\\.")}\`\\s*\\|`, "m");
+  assert.match(security, row, `SECURITY.md's supported-versions table must carry a row for \`${VERSION}\``);
+
+  // backward — this file names a version the tree does not have
+  const invented = [...new Set(named)].filter((v) => !real.has(v));
+  assert.deepEqual(
+    invented,
+    [],
+    `SECURITY.md names ${invented.join(", ")}, which this tree does not have; it has ${[...real].join(" and ")}`,
+  );
+});
