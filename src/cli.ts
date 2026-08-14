@@ -8,4 +8,4 @@ import { runCli } from "./cli-commands.ts";
 
 // `process.exitCode`, not `process.exit`: `serve` returns 0 with a listener
 // still bound, and the process must stay alive to answer on it.
-process.exitCode = runCli(process.argv.slice(2));
+process.exitCode = await runCli(process.argv.slice(2));

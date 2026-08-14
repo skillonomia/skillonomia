@@ -14,7 +14,6 @@
 // visible in the command line or the unit file that a reviewer reads.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -39,10 +38,9 @@ async function boundAddressOf(
   const dataDir = mkdtempSync(join(tmpdir(), "sklo-bind-"));
   let inst: Instance | null = null;
   try {
-    inst = serve({ port: 0, dataDir, workerIntervalMs: 0, installSeedPackage: false, log: () => {}, ...opts });
-    // `listen` is asynchronous: the socket has no address until it is bound,
-    // and the address is the whole subject of this file
-    if (inst.server.address() === null) await once(inst.server, "listening");
+    // `serve` resolves only once the socket is BOUND (src/server.ts), so the
+    // address — the whole subject of this file — is there when it returns
+    inst = await serve({ port: 0, dataDir, workerIntervalMs: 0, installSeedPackage: false, log: () => {}, ...opts });
     const addr = inst.server.address();
     assert.ok(addr && typeof addr === "object", "the listener must have an address");
     return addr.address;

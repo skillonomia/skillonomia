@@ -1,0 +1,74 @@
+{
+  "skill_id": "01HGRSKSAFE000000000000000",
+  "semantic_version": "1.0.0",
+  "title": "high-risk-safe",
+  "capability_statement": "Declare risk_level high, and do nothing dangerous: one deterministic fixture prints one fixed string. The package exists so the §7.3 human-approval lane can be exercised end to end without running anything an operator would have to think about.",
+  "owner": "skillonomia",
+  "author_agent": "00000000000000000000000000",
+  "created_at": "2026-08-14T00:00:00Z",
+  "license": "Apache-2.0",
+  "access_policy": "workspace",
+  "scope": {
+    "problem_class": "Exercising the high-risk adoption lane — typed refusal, human approval, sandbox attestation, terminal receipt — on a payload with no blast radius.",
+    "non_goals": [
+      "Doing anything a high-risk package would normally do: this one writes no file, reads no secret and opens no socket",
+      "Standing in for a real high-risk package in a threat model",
+      "Any production use"
+    ],
+    "prerequisites": [
+      "a POSIX shell on PATH — the fixture is one `echo`"
+    ],
+    "risk_level": "high",
+    "required_approvals": ["publish", "adopt_high_risk"],
+    "maturity_tier": "experimental"
+  },
+  "runtime": {
+    "model_compat": [{ "id": "any", "range": "*" }],
+    "runtime_compat": [{ "id": "any", "range": "*" }],
+    "tool_compat": [{ "id": "shell", "range": "*" }],
+    "os": ["linux", "macos"],
+    "shell": ["bash", "sh"],
+    "cloud_iam_assumptions": [],
+    "mcp_dependencies": []
+  },
+  "procedure": {
+    "steps": [
+      {
+        "n": 1,
+        "instruction": "Run the fixture script and compare its stdout with the declared string. It takes no arguments, writes nothing and reads nothing outside its own text.",
+        "command": "sh fixtures/tv-high.sh",
+        "expected": "skillonomia-high-risk-safe-ok"
+      }
+    ],
+    "expected_outputs": ["skillonomia-high-risk-safe-ok"],
+    "validation_gates": [
+      {
+        "gate_id": "g1-stdout",
+        "check": "stdout of step 1 equals the declared string",
+        "pass_criteria": "stdout == 'skillonomia-high-risk-safe-ok'"
+      }
+    ],
+    "rollback": ["Nothing was changed; there is nothing to roll back."],
+    "failure_modes": [
+      {
+        "mode": "shell-missing",
+        "symptom": "sh: not found",
+        "mitigation": "install a POSIX shell, or run the package on a host that has one"
+      }
+    ],
+    "tools_used": [{ "id": "shell", "range": "*" }]
+  },
+  "evidence": {
+    "summary": "The fixture prints one fixed string; gate g1-stdout compares stdout with it. Nothing else is observed and nothing else is claimed.",
+    "test_results": "local: g1-stdout pass",
+    "redaction_level": "none"
+  },
+  "safety": {
+    "forbidden_actions": ["network access", "file writes", "reading anything outside the package"],
+    "secrets_policy": "No secrets are used, accepted or emitted by this package.",
+    "dependency_manifest": [],
+    "url_allowlist": [],
+    "sandbox_requirement": "required"
+  },
+  "lifecycle": { "supersedes": null }
+}

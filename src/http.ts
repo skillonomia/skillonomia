@@ -473,8 +473,31 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
   }
 }
 
-/** Bind the router to a real HTTP listener (quickstart entry point). */
-export function startServer(registry: Registry, port: number, host = "127.0.0.1"): Server {
+/**
+ * Bind the router to a real HTTP listener (quickstart entry point), and RESOLVE
+ * ONLY ONCE THE SOCKET IS BOUND.
+ *
+ * WHY THIS IS A PROMISE. `server.listen()` returns with the bind still pending
+ * — for a host it is preceded by a name lookup, so the failure arrives an event
+ * loop turn later as an `error` event. A caller that treated the return as
+ * success went on to open a deployment and print its startup block for a
+ * listener that did not exist: on `EADDRINUSE`, the ordinary case of a port
+ * another instance already holds, the operator got the whole success banner
+ * INCLUDING the two §9.1 one-time credentials, and then exit code 1. Bind
+ * readiness is therefore the FIRST thing `serve` waits for and everything else
+ * is downstream of it (src/server.ts).
+ *
+ * A failed bind rejects with the `listen` error and leaves no listener behind.
+ * After the bind, this function's own `error` handler is removed: a later error
+ * on the server has the same disposition it always had.
+ *
+ * `registry` is a THUNK, not a value, because the deployment behind the router
+ * is opened AFTER the socket is bound. Nothing can call it in between — the
+ * caller's setup from bind to registry is synchronous, so no request can be
+ * dispatched in that window — and calling it early raises, which the request
+ * path below answers as an internal error rather than as a surface refusal.
+ */
+export function startServer(registry: () => Registry, port: number, host = "127.0.0.1"): Promise<Server> {
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     let bytes = 0;
@@ -491,7 +514,7 @@ export function startServer(registry: Registry, port: number, host = "127.0.0.1"
     req.on("end", () => {
       if (res.writableEnded) return;
       try {
-        const out = handleRest(registry, {
+        const out = handleRest(registry(), {
           method: req.method ?? "GET",
           url: req.url ?? "/",
           headers: { authorization: req.headers.authorization },
@@ -505,6 +528,15 @@ export function startServer(registry: Registry, port: number, host = "127.0.0.1"
       }
     });
   });
-  server.listen(port, host);
-  return server;
+  return new Promise<Server>((resolve, reject) => {
+    const failed = (e: Error): void => {
+      server.close();
+      reject(e);
+    };
+    server.once("error", failed);
+    server.listen(port, host, () => {
+      server.removeListener("error", failed);
+      resolve(server);
+    });
+  });
 }

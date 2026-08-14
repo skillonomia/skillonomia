@@ -425,3 +425,25 @@ Every other version, 9 and below or 11 and above, upgrades normally; see
 
 See the README. In short: delete the seed skill, its versions and the seed
 signing key, or start with `serve({ installSeedPackage: false })`.
+
+## The high-risk adoption exercise
+
+```bash
+node ci/high-risk-exercise.mjs --clean --transcript evidence/high-risk-exercise.json
+```
+
+One clean instance, driven through the §7.3 lane: a start on an occupied port
+that refuses fail-closed, `fixtures/high-risk-safe/` loaded and reviewed, an
+adoption request held at `approval_pending`, the typed `FORBIDDEN` refusal, a
+human `adopt_high_risk` approval bound to that one request, the safe fixture
+run, and the receipt read back from the server.
+
+**Terminal state:** exit 0, with `HIGH_RISK_EXERCISE_OK` as the last line and
+the redacted transcript written at the `--transcript` path, its
+`terminal_read_back.derived_state` reading `adopted`. A step that behaves
+otherwise ends the run with exit 1 and names the step; the transcript is then
+absent, because it is written after the last step it records.
+
+The receipt is a server-recorded adopter claim. The registry compares the
+reported gate ids with the ones `fixtures/high-risk-safe/manifest.json`
+declares and requires a pass on the declared set; it does not witness the run.

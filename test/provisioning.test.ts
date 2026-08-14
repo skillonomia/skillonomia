@@ -9,7 +9,6 @@
 // `UNKNOWN_KEY`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -527,7 +526,7 @@ interface Api {
 }
 
 test("PROVISIONING E2E: bootstrap → principal → its own signing key → create/lint/review/verify → published, over HTTP only", async () => {
-  const inst = serve({
+  const inst = await serve({
     port: 0,
     host: "127.0.0.1",
     dataDir: mkdtempSync(join(tmpdir(), "sklo-prov-")),
@@ -535,7 +534,7 @@ test("PROVISIONING E2E: bootstrap → principal → its own signing key → crea
     log: () => {},
   });
   try {
-    if (!inst.server.listening) await once(inst.server, "listening");
+    // `serve` resolves once the socket is bound (src/server.ts)
     const addr = inst.server.address();
     const base = `http://127.0.0.1:${typeof addr === "object" && addr !== null ? addr.port : inst.port}`;
 

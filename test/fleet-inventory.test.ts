@@ -1686,7 +1686,7 @@ test("a report is INSERT-only: it cannot be edited or withdrawn", () => {
   fx.db.close();
 });
 
-test("the inventory root is CONFIGURATION: a deployment names it, and a bare start names nowhere", () => {
+test("the inventory root is CONFIGURATION: a deployment names it, and a bare start names nowhere", async () => {
   // D-7's rule as a property of the deployment rather than of a constructor
   // argument: pointing this registry at a fleet member's directories is a
   // variable an operator writes down, not a code change — and a half-written
@@ -1707,7 +1707,7 @@ test("the inventory root is CONFIGURATION: a deployment names it, and a bare sta
     //     will walk nothing, and what the numbers will therefore be
     delete process.env.SKILLONOMIA_INVENTORY_ROOT;
     delete process.env.SKILLONOMIA_INVENTORY_RUNTIME;
-    const bare = start();
+    const bare = await start();
     bare.close();
     const offLine = lines.find((l) => l.startsWith("fleet inventory"));
     assert.ok(offLine, "a start must say whether it can read a fleet member's directories");
@@ -1716,15 +1716,15 @@ test("the inventory root is CONFIGURATION: a deployment names it, and a bare sta
 
     // (b) a root with no layout, and a layout with no root, are REFUSED
     process.env.SKILLONOMIA_INVENTORY_ROOT = root;
-    assert.throws(start, /SKILLONOMIA_INVENTORY_RUNTIME must be one of/, "a root with no layout was accepted");
+    await assert.rejects(start, /SKILLONOMIA_INVENTORY_RUNTIME must be one of/, "a root with no layout was accepted");
     delete process.env.SKILLONOMIA_INVENTORY_ROOT;
     process.env.SKILLONOMIA_INVENTORY_RUNTIME = "codex";
-    assert.throws(start, /without SKILLONOMIA_INVENTORY_ROOT/, "a layout with no place was accepted");
+    await assert.rejects(start, /without SKILLONOMIA_INVENTORY_ROOT/, "a layout with no place was accepted");
 
     // (c) both set: the inventory is on, and the start says so
     process.env.SKILLONOMIA_INVENTORY_ROOT = root;
     lines.length = 0;
-    const configured = start();
+    const configured = await start();
     configured.close();
     const onLine = lines.find((l) => l.startsWith("fleet inventory"));
     assert.ok(onLine && /ON/.test(onLine), `a configured start must say so: ${onLine}`);
@@ -1733,9 +1733,9 @@ test("the inventory root is CONFIGURATION: a deployment names it, and a bare sta
     // (d) a relative root is refused, and a `~` one is refused rather than
     //     expanded: a place this process derived is a place nobody chose
     process.env.SKILLONOMIA_INVENTORY_ROOT = "relative/path";
-    assert.throws(start, /absolute/, "a relative root was accepted");
+    await assert.rejects(start, /absolute/, "a relative root was accepted");
     process.env.SKILLONOMIA_INVENTORY_ROOT = "~/skills";
-    assert.throws(start, /absolute/, "a `~` root was expanded rather than refused");
+    await assert.rejects(start, /absolute/, "a `~` root was expanded rather than refused");
   } finally {
     if (saved.root === undefined) delete process.env.SKILLONOMIA_INVENTORY_ROOT;
     else process.env.SKILLONOMIA_INVENTORY_ROOT = saved.root;

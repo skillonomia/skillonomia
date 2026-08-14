@@ -634,7 +634,7 @@ test("no shipped source names a real runtime location, and the default root is n
   }
 });
 
-test("the activation root is CONFIGURATION: a deployment names it in the environment, and a bare start names nowhere", () => {
+test("the activation root is CONFIGURATION: a deployment names it in the environment, and a bare start names nowhere", async () => {
   // D-7 point 1 as a property of the deployment rather than of a constructor
   // argument: pointing this registry at a real runtime directory is a variable
   // an operator writes down, not a code change — and a half-written one is
@@ -655,7 +655,7 @@ test("the activation root is CONFIGURATION: a deployment names it in the environ
     //     will write no managed copy anywhere
     delete process.env.SKILLONOMIA_ACTIVATION_ROOT;
     delete process.env.SKILLONOMIA_ACTIVATION_TARGET;
-    const bare = start();
+    const bare = await start();
     bare.close();
     const offLine = lines.find((l) => l.startsWith("native activation:"));
     assert.ok(offLine, "a start must say whether it can write into a runtime");
@@ -665,15 +665,15 @@ test("the activation root is CONFIGURATION: a deployment names it in the environ
     // (b) a root with no target, and a target with no root, are REFUSED. A
     //     half-configured activation must not resolve to a guess about where.
     process.env.SKILLONOMIA_ACTIVATION_ROOT = root;
-    assert.throws(start, /SKILLONOMIA_ACTIVATION_TARGET must be one of/, "a root with no layout was accepted");
+    await assert.rejects(start, /SKILLONOMIA_ACTIVATION_TARGET must be one of/, "a root with no layout was accepted");
     delete process.env.SKILLONOMIA_ACTIVATION_ROOT;
     process.env.SKILLONOMIA_ACTIVATION_TARGET = "codex";
-    assert.throws(start, /without SKILLONOMIA_ACTIVATION_ROOT/, "a layout with no place was accepted");
+    await assert.rejects(start, /without SKILLONOMIA_ACTIVATION_ROOT/, "a layout with no place was accepted");
 
     // (c) both set: activation is on, and the start says so
     process.env.SKILLONOMIA_ACTIVATION_ROOT = root;
     lines.length = 0;
-    const configured = start();
+    const configured = await start();
     configured.close();
     const onLine = lines.find((l) => l.startsWith("native activation:"));
     assert.ok(onLine && /ON/.test(onLine), `a configured start must say so: ${onLine}`);
@@ -682,9 +682,9 @@ test("the activation root is CONFIGURATION: a deployment names it in the environ
     // (d) a relative root is refused: nothing here is resolved against a
     //     working directory, and nothing is expanded
     process.env.SKILLONOMIA_ACTIVATION_ROOT = "relative/path";
-    assert.throws(start, /absolute/, "a relative root was accepted");
+    await assert.rejects(start, /absolute/, "a relative root was accepted");
     process.env.SKILLONOMIA_ACTIVATION_ROOT = "~/skills";
-    assert.throws(start, /absolute/, "a `~` root was expanded rather than refused");
+    await assert.rejects(start, /absolute/, "a `~` root was expanded rather than refused");
   } finally {
     if (saved.root === undefined) delete process.env.SKILLONOMIA_ACTIVATION_ROOT;
     else process.env.SKILLONOMIA_ACTIVATION_ROOT = saved.root;

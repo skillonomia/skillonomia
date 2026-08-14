@@ -254,7 +254,7 @@ export interface Reference {
 
 /** The subcommands `src/cli-commands.ts` dispatches, read from the dispatcher. */
 export function subcommands(): string[] {
-  const body = /export function runCli\([\s\S]*?\n\}/.exec(read("src/cli-commands.ts"));
+  const body = /export async function runCli\([\s\S]*?\n\}/.exec(read("src/cli-commands.ts"));
   assert.ok(body, "runCli not found in src/cli-commands.ts — this guard is reading the wrong thing");
   const found = [...body[0].matchAll(/case "([a-z-]+)":/g)].map((m) => m[1]!).filter((c) => !c.startsWith("-"));
   assert.ok(found.length > 0, "no subcommand cases parsed out of runCli — this guard is reading the wrong thing");

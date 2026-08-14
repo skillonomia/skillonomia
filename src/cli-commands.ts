@@ -127,7 +127,7 @@ function requireExistingDb(path: string): string {
  *  exit. Only reached if a handle outlives the ones `serve` owns. */
 const SHUTDOWN_GRACE_MS = 5_000;
 
-function cmdServe(argv: readonly string[], io: CliIo): number {
+async function cmdServe(argv: readonly string[], io: CliIo): Promise<number> {
   const parsed = parseArgs(argv, ["--port", "--data", "--host"], []);
   if (parsed.positional.length > 0) {
     throw new UsageError(`serve takes no positional arguments (got ${parsed.positional[0]})`);
@@ -173,7 +173,7 @@ function cmdServe(argv: readonly string[], io: CliIo): number {
   // process exits 0 having actually printed what it said. The unref'd fallback
   // bounds the wait if a handle this command does not own keeps the loop alive;
   // being unref'd it can never delay the exit itself.
-  let instance: ReturnType<typeof serve> | null = null;
+  let instance: Awaited<ReturnType<typeof serve>> | null = null;
   let stopped = false;
   const stop = (): void => {
     if (stopped) return; // SIGINT after SIGTERM must not close twice
@@ -185,7 +185,10 @@ function cmdServe(argv: readonly string[], io: CliIo): number {
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 
-  instance = serve(opts);
+  instance = await serve(opts);
+  // A signal that arrived while the socket was still binding found no instance
+  // to close. Closing it here is the same decision taken one moment later.
+  if (stopped) instance.close();
   // the listener keeps the process alive; returning here is not exiting
   return EXIT_OK;
 }
@@ -251,10 +254,12 @@ function cmdVerifyLog(argv: readonly string[], io: CliIo): number {
 // ---------------------------------------------------------------- dispatch
 
 /**
- * Run one command line. Returns the process exit code; `serve` returns 0 and
- * leaves the listener running, which is what keeps the process alive.
+ * Run one command line. Resolves to the process exit code; `serve` resolves 0
+ * once its socket is BOUND and leaves the listener running, which is what keeps
+ * the process alive. A bind that fails rejects inside `cmdServe` and is caught
+ * below as the operational failure it is — one message, exit 1, no banner.
  */
-export function runCli(argv: readonly string[], io: CliIo = CONSOLE_IO): number {
+export async function runCli(argv: readonly string[], io: CliIo = CONSOLE_IO): Promise<number> {
   // A bare invocation serves — the behaviour every packaging path shipped
   // before there were subcommands, and what the container's CMD relies on.
   const cmd = argv[0] ?? "serve";
@@ -272,7 +277,7 @@ export function runCli(argv: readonly string[], io: CliIo = CONSOLE_IO): number 
         io.out(HELP);
         return EXIT_OK;
       case "serve":
-        return cmdServe(rest, io);
+        return await cmdServe(rest, io);
       case "verify":
         return cmdVerify(rest, io);
       case "verify-log":

@@ -9,7 +9,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { once } from "node:events";
 import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, cpSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,9 +50,11 @@ function randomPart(secret: string): string {
 }
 
 /** A listener on an ephemeral port, with the delivery worker disabled unless asked. */
-function instance(opts: Parameters<typeof serve>[0] = {}) {
+async function instance(opts: Parameters<typeof serve>[0] = {}) {
   const lines: string[] = [];
-  const inst = serve({
+  // `serve` resolves once the socket is bound, so the address is available
+  // without waiting on the listener a second time (src/server.ts).
+  const inst = await serve({
     port: 0,
     host: "127.0.0.1",
     dataDir: dataDir(),
@@ -62,7 +63,6 @@ function instance(opts: Parameters<typeof serve>[0] = {}) {
     ...opts,
   });
   const address = async (): Promise<string> => {
-    if (!inst.server.listening) await once(inst.server, "listening");
     const addr = inst.server.address();
     const port = typeof addr === "object" && addr !== null ? addr.port : inst.port;
     return `http://127.0.0.1:${port}`;
@@ -92,7 +92,7 @@ async function api(
 // ------------------------------------------------------------------- §9.1 E2E
 
 test("§9.1 quickstart: clean start → seed found → adoption → fixture → terminal `adopted` receipt", async () => {
-  const { inst, address } = instance();
+  const { inst, address } = await instance();
   const base = await address();
   try {
     // 9.1.2/9.1.5 — two one-time credentials at first start
@@ -162,11 +162,11 @@ test("§9.1 quickstart: clean start → seed found → adoption → fixture → 
 
 test("a restart re-opens the same deployment: no new credentials, no second seed", async () => {
   const dir = dataDir();
-  const first = instance({ dataDir: dir });
+  const first = await instance({ dataDir: dir });
   const seedVersion = first.inst.seed!.skill_version_id;
   first.inst.close();
 
-  const second = instance({ dataDir: dir });
+  const second = await instance({ dataDir: dir });
   try {
     assert.equal(second.inst.credentials, null, "credentials are never re-issued");
     assert.equal(second.inst.seed, null, "the seed is installed once");
@@ -201,12 +201,12 @@ test("a restart re-opens the same deployment: no new credentials, no second seed
 
 test("the bootstrap token survives a restart before the exchange", async () => {
   const dir = dataDir();
-  const first = instance({ dataDir: dir });
+  const first = await instance({ dataDir: dir });
   const token = first.inst.credentials!.bootstrap_owner_token;
   const demoToken = first.inst.credentials!.demo_adopter_token;
   first.inst.close(); // a restart BEFORE the exchange — the case that stranded it
 
-  const second = instance({ dataDir: dir });
+  const second = await instance({ dataDir: dir });
   try {
     assert.equal(second.inst.credentials, null, "nothing is re-issued");
     assert.equal(second.inst.registry.bootstrapOutstanding(), true, "but the token is still outstanding");
@@ -232,7 +232,7 @@ test("the bootstrap token survives a restart before the exchange", async () => {
 
 test("the exchange is still one-time, and stays spent across a restart", async () => {
   const dir = dataDir();
-  const first = instance({ dataDir: dir });
+  const first = await instance({ dataDir: dir });
   const token = first.inst.credentials!.bootstrap_owner_token;
   const base1 = await first.address();
   const ok = await api(base1, "POST", "/v1/auth/bootstrap", undefined, { bootstrap_token: token });
@@ -241,7 +241,7 @@ test("the exchange is still one-time, and stays spent across a restart", async (
   assert.equal(again.status, 401, "a second exchange in the same process");
   first.inst.close();
 
-  const second = instance({ dataDir: dir });
+  const second = await instance({ dataDir: dir });
   try {
     assert.equal(second.inst.registry.bootstrapOutstanding(), false);
     assert.ok(
@@ -263,7 +263,7 @@ test("the exchange is still one-time, and stays spent across a restart", async (
 
 test("the token is never at rest in the clear: not in the file, not in the database", async () => {
   const dir = dataDir();
-  const { inst, lines } = instance({ dataDir: dir });
+  const { inst, lines } = await instance({ dataDir: dir });
   try {
     const token = inst.credentials!.bootstrap_owner_token;
     const demo = inst.credentials!.demo_adopter_token;
@@ -309,7 +309,7 @@ test("the token is never at rest in the clear: not in the file, not in the datab
 // ------------------------------------------------------------------- /health
 
 test("GET /health answers before any credential exists, and carries no instance data", async () => {
-  const { inst, address } = instance();
+  const { inst, address } = await instance();
   const base = await address();
   try {
     const res = await fetch(`${base}/health`);
@@ -325,8 +325,8 @@ test("GET /health answers before any credential exists, and carries no instance 
 
 // ------------------------------------------------------------------ §9.1 seed
 
-test("the seed package is genuinely signed by the baked-in kid and reaches `reviewed` through the surfaces", () => {
-  const { inst } = instance();
+test("the seed package is genuinely signed by the baked-in kid and reaches `reviewed` through the surfaces", async () => {
+  const { inst } = await instance();
   try {
     const db = inst.db;
     const seed = inst.seed!;
@@ -376,7 +376,7 @@ test("the seed package is genuinely signed by the baked-in kid and reaches `revi
 // --------------------------------------------------------------- §9.1 demo mode
 
 test("§9.1 demo mode is on with one human principal, ends with the second, and is labelled on the dashboard", async () => {
-  const { inst, address, lines } = instance();
+  const { inst, address, lines } = await instance();
   const base = await address();
   try {
     assert.equal(demoMode(inst.db), true);
@@ -581,7 +581,7 @@ test("the published JS entry point is BUILT here and answers `version` — never
 // ------------------------ P7 verdict 1, major #1: the narrowed dead-letter rule
 
 test("a dead-lettered NOTIFICATION does not refuse adoption; a denied approval still does", async () => {
-  const { inst, address } = instance();
+  const { inst, address } = await instance();
   const base = await address();
   try {
     const owner = await api(base, "POST", "/v1/auth/bootstrap", undefined, {

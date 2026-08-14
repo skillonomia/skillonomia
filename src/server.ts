@@ -91,8 +91,18 @@ export function defaultDbPath(): string {
   return join(defaultDataDir(), DB_FILENAME);
 }
 
-/** Open (or create) a deployment at `dataDir` and start serving. */
-export function serve(opts: ServeOptions = {}): Instance {
+/**
+ * Open (or create) a deployment at `dataDir` and start serving.
+ *
+ * THE ORDER IS THE CONTRACT: the socket is bound FIRST, and the data directory,
+ * the database, the §9.1 bootstrap, the seed package and the startup block all
+ * happen after — so a bind that fails leaves no deployment behind and prints
+ * nothing. This used to run the other way round, and a second instance on an
+ * occupied port printed its two one-time credentials, seeded a data directory
+ * and then died with `EADDRINUSE`. Awaiting the bind is what makes the failure
+ * closed rather than half-open; `test/server-startup.test.ts` is the regression.
+ */
+export async function serve(opts: ServeOptions = {}): Promise<Instance> {
   const log = opts.log ?? ((line: string) => console.log(line));
   const dataDir = opts.dataDir ?? defaultDataDir();
   const port = opts.port ?? Number(env("SKILLONOMIA_PORT") ?? DEFAULT_PORT);
@@ -151,118 +161,136 @@ export function serve(opts: ServeOptions = {}): Instance {
     throw new Error("SKILLONOMIA_INVENTORY_RUNTIME is set without SKILLONOMIA_INVENTORY_ROOT — a runtime names a layout, not a place");
   }
 
-  mkdirSync(dataDir, { recursive: true });
-  const db = openMigrated(join(dataDir, DB_FILENAME));
-  const secrets = new FsSecretStore(join(dataDir, "secrets"));
-  const registry = new Registry(db, {
-    activation,
-    inventory,
-    blobs: new FsBlobStore(join(dataDir, "blobs")),
-    secrets,
-    // §9.1: the outstanding token's HASH, in the data directory. Without this a
-    // restart between the first start and the exchange stranded the deployment
-    // — the two principals were committed, so the token was never re-issued,
-    // and nothing could mint the owner's key again.
-    bootstrap: new FsBootstrapStore(join(dataDir, BOOTSTRAP_FILENAME)),
-  });
+  // BIND FIRST. Everything below this line is a side effect on the operator's
+  // machine — a directory, a database, two credentials that exist once — and
+  // none of it may happen for a process that has no listener.
+  let opened: Registry | null = null;
+  const server = await startServer(() => {
+    if (opened === null) throw new Error("a request reached the listener before the deployment was open");
+    return opened;
+  }, port, host);
 
-  // §9.1: first start bootstraps and prints two one-time credentials. A
-  // restart returns null and prints nothing — credentials are never re-issued.
-  const credentials = registry.bootstrap();
-  let seed: SeedResult | null = null;
-  if (credentials && opts.installSeedPackage !== false) {
-    seed = installSeed(registry, db, {
-      workspaceId: credentials.workspace_id,
-      ownerAgentId: credentials.owner_agent_id,
-      nowMs: Date.now(),
-      dir: opts.seedDir,
+  // A FAILURE AFTER THE BIND CLOSES THE SOCKET IT OPENED. The order above
+  // means an unreadable data directory or a refused migration is now reached
+  // with a listener already bound; leaving it bound would turn `serve`'s exit 1
+  // into a process that reports the failure and then never ends.
+  try {
+    mkdirSync(dataDir, { recursive: true });
+    const db = openMigrated(join(dataDir, DB_FILENAME));
+    const secrets = new FsSecretStore(join(dataDir, "secrets"));
+    const registry = new Registry(db, {
+      activation,
+      inventory,
+      blobs: new FsBlobStore(join(dataDir, "blobs")),
+      secrets,
+      // §9.1: the outstanding token's HASH, in the data directory. Without this a
+      // restart between the first start and the exchange stranded the deployment
+      // — the two principals were committed, so the token was never re-issued,
+      // and nothing could mint the owner's key again.
+      bootstrap: new FsBootstrapStore(join(dataDir, BOOTSTRAP_FILENAME)),
     });
-  }
+    opened = registry;
 
-  const server = startServer(registry, port, host);
-  // The real outbound transport, with the §5.2 address/redirect/timeout rules
-  // (src/transport.ts). A deployment may supply its own; passing NullTransport
-  // switches push delivery off, which is a choice, not a default.
-  const transport = opts.transport ?? defaultTransport();
-  const worker = workerId(Date.now());
-  const tick = async (nowMs: number = Date.now()): Promise<void> => {
-    sweep(db, nowMs);
-    await runWorkerOnce(db, secrets, transport, worker, nowMs);
-  };
-  const intervalMs = opts.workerIntervalMs ?? Number(env("SKILLONOMIA_WORKER_MS") ?? 1000);
-  // one tick at a time: the network makes a tick outlast its interval, and two
-  // overlapping ticks would be two workers under one identity
-  let ticking = false;
-  const timer =
-    intervalMs > 0
-      ? setInterval(() => {
-          if (ticking) return;
-          ticking = true;
-          tick()
-            .catch((e) => log(`delivery worker tick failed: ${String((e as Error).message ?? e)}`))
-            .finally(() => {
-              ticking = false;
-            });
-        }, intervalMs)
-      : null;
-  timer?.unref?.();
-
-  log(`skillonomia ${VERSION} listening on http://${host}:${port}  (data: ${dataDir})`);
-  log(`health           : GET /health   (unauthenticated)`);
-  // The one setting that lets this process write outside its own data
-  // directory is printed on every start, set or not: an operator has to be able
-  // to see it without reading the unit file.
-  log(
-    activation
-      ? `native activation: ON — ${activationTarget ?? "configured by the embedding caller"} under the configured root. ` +
-        `\`assignment.activate\` writes managed copies there and NOWHERE else.`
-      : "native activation: off — no SKILLONOMIA_ACTIVATION_ROOT. Activations record `queued` and write no file.",
-  );
-  // The other setting that reaches outside this process's own data directory.
-  // Reading is a smaller act than writing and it is still an act on somebody
-  // else's machine, so it is printed on every start, set or not.
-  log(
-    inventory
-      ? `fleet inventory  : ON — ${inventoryRuntime ?? "configured by the embedding caller"} layout under the configured root. ` +
-        `\`agent.capabilities\` READS there and NOWHERE else, following symbolic links.`
-      : "fleet inventory  : off — no SKILLONOMIA_INVENTORY_ROOT. Every inventory number is `unknown`, never zero.",
-  );
-  if (credentials) {
-    log("");
-    log("first start — these two one-time credentials are printed ONCE (SPEC §9.1):");
-    log(`BOOTSTRAP_OWNER_TOKEN=${credentials.bootstrap_owner_token}`);
-    log(`DEMO_ADOPTER_TOKEN=${credentials.demo_adopter_token}`);
-    log("");
-    if (seed) log(seedNotice(seed));
-    if (demoMode(db)) {
-      log("demo mode        : ON — one human principal (SPEC §9.1). It ends automatically");
-      log("                   when a second human principal is created.");
+    // §9.1: first start bootstraps and prints two one-time credentials. A
+    // restart returns null and prints nothing — credentials are never re-issued.
+    const credentials = registry.bootstrap();
+    let seed: SeedResult | null = null;
+    if (credentials && opts.installSeedPackage !== false) {
+      seed = installSeed(registry, db, {
+        workspaceId: credentials.workspace_id,
+        ownerAgentId: credentials.owner_agent_id,
+        nowMs: Date.now(),
+        dir: opts.seedDir,
+      });
     }
-  } else if (registry.bootstrapOutstanding()) {
-    // A restart before the exchange. The token is NOT reprinted — only its hash
-    // was ever stored — but silence here would read as "you have missed your
-    // chance", which was true before and is not any more.
-    log("");
-    log("BOOTSTRAP_OWNER_TOKEN is still outstanding: the token printed at first start");
-    log("is still valid. Exchange it at POST /v1/auth/bootstrap. It cannot be reprinted —");
-    log(`only its hash is stored (${join(dataDir, BOOTSTRAP_FILENAME)}); if it is lost, see`);
-    log("docs/OPERATIONS.md > First start.");
-  }
 
-  return {
-    db,
-    registry,
-    server,
-    port,
-    credentials,
-    seed,
-    tick,
-    close: () => {
-      if (timer) clearInterval(timer);
-      server.close();
-      db.close();
-    },
-  };
+    // The real outbound transport, with the §5.2 address/redirect/timeout rules
+    // (src/transport.ts). A deployment may supply its own; passing NullTransport
+    // switches push delivery off, which is a choice, not a default.
+    const transport = opts.transport ?? defaultTransport();
+    const worker = workerId(Date.now());
+    const tick = async (nowMs: number = Date.now()): Promise<void> => {
+      sweep(db, nowMs);
+      await runWorkerOnce(db, secrets, transport, worker, nowMs);
+    };
+    const intervalMs = opts.workerIntervalMs ?? Number(env("SKILLONOMIA_WORKER_MS") ?? 1000);
+    // one tick at a time: the network makes a tick outlast its interval, and two
+    // overlapping ticks would be two workers under one identity
+    let ticking = false;
+    const timer =
+      intervalMs > 0
+        ? setInterval(() => {
+            if (ticking) return;
+            ticking = true;
+            tick()
+              .catch((e) => log(`delivery worker tick failed: ${String((e as Error).message ?? e)}`))
+              .finally(() => {
+                ticking = false;
+              });
+          }, intervalMs)
+        : null;
+    timer?.unref?.();
+
+    log(`skillonomia ${VERSION} listening on http://${host}:${port}  (data: ${dataDir})`);
+    log(`health           : GET /health   (unauthenticated)`);
+    // The one setting that lets this process write outside its own data
+    // directory is printed on every start, set or not: an operator has to be able
+    // to see it without reading the unit file.
+    log(
+      activation
+        ? `native activation: ON — ${activationTarget ?? "configured by the embedding caller"} under the configured root. ` +
+          `\`assignment.activate\` writes managed copies there and NOWHERE else.`
+        : "native activation: off — no SKILLONOMIA_ACTIVATION_ROOT. Activations record `queued` and write no file.",
+    );
+    // The other setting that reaches outside this process's own data directory.
+    // Reading is a smaller act than writing and it is still an act on somebody
+    // else's machine, so it is printed on every start, set or not.
+    log(
+      inventory
+        ? `fleet inventory  : ON — ${inventoryRuntime ?? "configured by the embedding caller"} layout under the configured root. ` +
+          `\`agent.capabilities\` READS there and NOWHERE else, following symbolic links.`
+        : "fleet inventory  : off — no SKILLONOMIA_INVENTORY_ROOT. Every inventory number is `unknown`, never zero.",
+    );
+    if (credentials) {
+      log("");
+      log("first start — these two one-time credentials are printed ONCE (SPEC §9.1):");
+      log(`BOOTSTRAP_OWNER_TOKEN=${credentials.bootstrap_owner_token}`);
+      log(`DEMO_ADOPTER_TOKEN=${credentials.demo_adopter_token}`);
+      log("");
+      if (seed) log(seedNotice(seed));
+      if (demoMode(db)) {
+        log("demo mode        : ON — one human principal (SPEC §9.1). It ends automatically");
+        log("                   when a second human principal is created.");
+      }
+    } else if (registry.bootstrapOutstanding()) {
+      // A restart before the exchange. The token is NOT reprinted — only its hash
+      // was ever stored — but silence here would read as "you have missed your
+      // chance", which was true before and is not any more.
+      log("");
+      log("BOOTSTRAP_OWNER_TOKEN is still outstanding: the token printed at first start");
+      log("is still valid. Exchange it at POST /v1/auth/bootstrap. It cannot be reprinted —");
+      log(`only its hash is stored (${join(dataDir, BOOTSTRAP_FILENAME)}); if it is lost, see`);
+      log("docs/OPERATIONS.md > First start.");
+    }
+
+    return {
+      db,
+      registry,
+      server,
+      port,
+      credentials,
+      seed,
+      tick,
+      close: () => {
+        if (timer) clearInterval(timer);
+        server.close();
+        db.close();
+      },
+    };
+  } catch (e) {
+    server.close();
+    throw e;
+  }
 }
 
 // The command line lives in src/cli-commands.ts: `serve` is one subcommand of

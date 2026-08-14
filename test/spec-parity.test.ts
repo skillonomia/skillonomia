@@ -755,7 +755,7 @@ test("README.md's interface table pairs every MCP tool with its REST route", () 
 
 test("§2, the help text, README and OPERATIONS list the same subcommands", () => {
   const dispatch = read("src/cli-commands.ts");
-  const body = /export function runCli\([\s\S]*?\n\}/.exec(dispatch);
+  const body = /export async function runCli\([\s\S]*?\n\}/.exec(dispatch);
   assert.ok(body, "runCli not found");
   // the canonical name of each subcommand: a `case "x":` that is not an alias
   const subcommands = [...body[0].matchAll(/case "([a-z-]+)":/g)]
