@@ -104,3 +104,54 @@ test("README does not claim a binary is unavailable while a workflow publishes o
     "README says no release ships a build of the binary, and a workflow uploads it. One of the two is lying.",
   );
 });
+
+// ---------------------------------------------------------------------------
+// TWO DOCUMENTS THAT NAME THE SAME SET MUST NAME THE SAME SET.
+//
+// `README.md` said "Every surface exists twice — REST … and MCP tools …", and
+// `docs/API.md` said, in the same tree, that `GET /health`,
+// `POST /v1/auth/bootstrap`, `GET /v1/receipts/{id}` and webhook management have
+// no MCP tool at all. Both sentences shipped, in every published commit, for the
+// whole life of this repository, and they cannot both be true.
+//
+// A release review found it one step before the push. It is the eighth defect of
+// one family and the second where the contradiction was already inside the
+// SHIPPED SET rather than between a document and the code — which is what makes
+// it checkable: the exceptions are named in prose twice, so the two lists can be
+// compared without a parser for either.
+test("the REST-only surfaces README names are exactly the ones docs/API.md names", () => {
+  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+  const api = readFileSync(join(ROOT, "docs/API.md"), "utf8");
+
+  // The surfaces, as each document spells them. `webhook management` is prose in
+  // both, so it is matched as prose; the three routes are matched as routes.
+  const SURFACES = [
+    /`GET \/health`/,
+    /`POST \/v1\/auth\/bootstrap`/,
+    /`GET \/v1\/receipts\/\{id\}`/,
+    /webhook management/,
+  ];
+
+  const inReadme = SURFACES.filter((re) => re.test(readme)).length;
+  const inApi = SURFACES.filter((re) => re.test(api)).length;
+
+  assert.equal(
+    inApi,
+    SURFACES.length,
+    "docs/API.md no longer names all four REST-only surfaces — if the set changed, both documents change together",
+  );
+  assert.equal(
+    inReadme,
+    SURFACES.length,
+    "README names fewer REST-only surfaces than docs/API.md does. The two documents describe one system; " +
+      "for the whole life of this repository README claimed every surface exists twice while API.md listed " +
+      "the exceptions, and both shipped.",
+  );
+
+  // …and README must not be claiming universality again.
+  assert.doesNotMatch(
+    readme,
+    /^Every surface exists twice/m,
+    "README claims every surface exists twice, which docs/API.md contradicts in the same tree",
+  );
+});
