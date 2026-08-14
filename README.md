@@ -111,22 +111,43 @@ on the road from a clone to a running registry.
 
 ## Availability of prebuilt artifacts
 
-**This project publishes source only.** A tagged release carries the source
-and a git bundle you can verify yourself; nothing in this document asks you to
-download a prebuilt artifact:
+**One prebuilt artifact is published: the Linux x86_64 binary.** A tagged
+release carries the source and a git bundle you can verify yourself, and — from
+a version tag after `v0.1.0` — `skillonomia-linux-x86_64.tar.gz` with
+`SHA256SUMS` beside it. Nothing else is published:
 
 - There is **no `skillonomia` package published by this project** on the public
   npm registry. The name is currently occupied by an unrelated third-party
   placeholder — `npx skillonomia` would install *that*, not this software. Do
   not run it.
 - There is **no `skillonomia/skillonomia` container image** in any registry.
-- The Linux x86_64 binary is produced by `npm run build:binary` from a
-  checkout; no release of this project ships one.
+- `v0.1.0` carries source only and keeps carrying source only:
+  `.github/workflows/release.yml` refuses that tag by name. A published release
+  that grows an asset later changes what its own checksum meant to everyone who
+  already read it, so a new artifact gets a new version instead.
 
-Every path below starts from a checkout of this
+Apart from the binary, every path below starts from a checkout of this
 repository, and the Docker path builds the image locally from the `Dockerfile`
-in it. When artifacts are published, the commands that consume them will be
-added here — not before.
+in it. When the image or the npm package is published, the commands that
+consume them will be added here — not before.
+
+## Install the released binary
+
+Download both files from the release page for the tag you want, check the
+archive against the checksum, and unpack it anywhere:
+
+```bash
+sha256sum -c SHA256SUMS
+mkdir -p ~/skillonomia && tar -xzf skillonomia-linux-x86_64.tar.gz -C ~/skillonomia
+~/skillonomia/skillonomia serve --port 7431 --data ./skillonomia-data
+```
+
+The archive holds the executable and the runtime data it opens a database with —
+`skillonomia`, `migrations/`, `schema/`, `seed/` and `LICENSE` — and nothing
+else; keep them together. From here the quickstart below is the same, starting
+at the first-start credentials. `node ci/mvp-release.mjs binary --tag <tag>` is
+the same check run against the published release: it downloads the assets,
+verifies the checksum, and starts the unpacked binary outside any checkout.
 
 ## Quickstart from source (≤10 minutes on a clean machine)
 
@@ -424,8 +445,8 @@ See `docs/API.md` for the full request and response shapes, and
 
 ## Packaging
 
-Four paths, all of them built from this checkout. None of them downloads a
-published artifact, because there is none yet (see
+Four paths. Three of them are built from this checkout; the binary is the one
+that is also published, as a release asset a tag away from this table (see
 [Availability of prebuilt artifacts](#availability-of-prebuilt-artifacts)).
 
 | Path | Command | Notes |
@@ -433,7 +454,7 @@ published artifact, because there is none yet (see
 | Docker | `docker build -t skillonomia:local .` → `docker run -p 127.0.0.1:7431:7431 -v skillonomia-data:/data skillonomia:local` | the normative quickstart target; the publish is loopback-only |
 | Node | `npm ci` → `npm start -- --port 7431 --data ./skillonomia-data` | needs Node ≥22.6 |
 | npm tarball | `npm pack` → `npm install -g ./skillonomia-0.1.0.tgz` → `skillonomia serve` | packed here and installed **from the file**, never from a registry; `prepack` builds the plain-JS entry point the installed package runs |
-| Linux x86_64 binary | `npm run build:binary` → `dist/skillonomia serve` | ships `migrations/`, `schema/` and `seed/` next to the executable |
+| Linux x86_64 binary | `npm run build:binary` → `dist/skillonomia serve`, or the released `skillonomia-linux-x86_64.tar.gz` | ships `migrations/`, `schema/` and `seed/` next to the executable |
 
 All four rows are **local**: each one puts a plain-HTTP listener on the
 loopback and on nothing else. Serving another host is not a flag on any of
@@ -441,10 +462,10 @@ them, it is a different topology — a **TLS-terminating** reverse proxy in fron
 with the registry port not published at all (see
 [The network boundary](#the-network-boundary)).
 
-This release is source only: no image and no npm package is published by this
-project, so the corresponding `docker run <registry>/<image>:<tag>` and `npx
-skillonomia` forms do not exist and are deliberately not written here. If they
-are ever published, they will be added to this table then, and not before.
+No image and no npm package is published by this project, so the corresponding
+`docker run <registry>/<image>:<tag>` and `npx skillonomia` forms do not exist
+and are deliberately not written here. If they are ever published, they will be
+added to this table then, and not before.
 
 ### Supported platforms
 

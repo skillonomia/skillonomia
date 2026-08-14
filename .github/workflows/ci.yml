@@ -244,7 +244,13 @@ jobs:
       # This job compiles the binary and runs it, which is the whole point: a
       # binary that does not start is a broken build. Uploading it is a
       # different act — a workflow artifact is downloadable by anyone who can
-      # see this repository, so the upload made `README.md` untrue where it says
-      # the binary is not shipped, and made a source-only release ship a binary
-      # nobody signed, attested or versioned. Nothing consumed the artifact.
-      # `test/source-only.test.ts` keeps this from coming back.
+      # see this repository, so the upload once made `README.md` untrue where it
+      # said the binary is not shipped, and shipped a binary nobody had
+      # checksummed or versioned. Nothing consumed the artifact.
+      #
+      # This project DOES ship that binary now, and that changed where the line
+      # is rather than removing it: the release asset is packaged, checksummed
+      # and smoke-tested by `ci/mvp-release.mjs`, staged for review by
+      # `candidate.yml` and published by `release.yml` on a version tag. What a
+      # smoke job emits is still nothing. `test/source-only.test.ts` holds all
+      # three halves of that boundary.

@@ -14,7 +14,7 @@
 // document fails this suite until somebody decides which it is.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -43,15 +43,23 @@ import { REPO_ROOT } from "./docs-guard.ts";
 const read = (rel: string): string => readFileSync(join(REPO_ROOT, rel), "utf8");
 
 /**
- * `.github/workflows/ci.yml` WITH ITS COMMENTS REMOVED — what the workflow
- * RUNS, as opposed to what it says about itself.
+ * EVERY workflow file WITH ITS COMMENTS REMOVED — what the automation RUNS, as
+ * opposed to what it says about itself.
  *
  * The distinction is not academic: `ci.yml` explains in prose that "`npm pack`
  * produces the tarball locally", and a whole-file substring search is satisfied
  * by that sentence alone. Deleting the step and keeping the comment passed.
+ *
+ * The sweep is over the DIRECTORY and not over `ci.yml`, because as of A2 it is
+ * not the only workflow: `candidate.yml` stages the release asset and
+ * `release.yml` publishes it. A guard that reads one file would have kept
+ * answering for a repository that had grown two more.
  */
 const workflowSteps = (): string =>
-  read(".github/workflows/ci.yml")
+  readdirSync(join(REPO_ROOT, ".github", "workflows"))
+    .filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))
+    .map((f) => read(`.github/workflows/${f}`))
+    .join("\n")
     .split("\n")
     .filter((l) => !/^\s*#/.test(l))
     .join("\n");
@@ -94,10 +102,9 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
   // ------------------------------------------------------------------ README
   [
     ["README.md", "30dbd7abb8b0bb13", "behaviour", "a checkout runs without a build: exercised on both runtimes by test/readme-quickstart.test.ts"],
-    ["README.md", "aaab99462cb028db", "intent", "\"publishes source only\" — a release policy; the automation half is checked by test/source-only.test.ts"],
     ["README.md", "03fd3a6a759c7dac", "external", "what the public npm registry does or does not carry is not readable from this tree"],
     ["README.md", "82f0853c4eeb6ea5", "external", "what any container registry carries is not readable from this tree"],
-    ["README.md", "dbb2eac9bceb1957", "editorial", "says where the paths below start; about the document's own structure"],
+    ["README.md", "5fc10604045d611d", "editorial", "says where the paths below start, now that one of them does not; about the document's own structure"],
     ["README.md", "6b4fbfc701c8952c", "editorial", "names the one non-literal step of the transcript; about the document"],
     ["README.md", "8324343cd261dc26", "editorial", "defines the `# →` convention the quickstart transcript is written in"],
     ["README.md", "db0351bb0784e0b7", "editorial", "claims the README cannot drift; the mechanism is test/readme-quickstart.test.ts"],
@@ -119,10 +126,9 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["README.md", "f2a588b83554c3be", "behaviour", "an unreadable opening event contributes nothing: test/p14-r5-probes.test.ts"],
     ["README.md", "4f7d657d7b0926ff", "behaviour", "each migrations row names its opening events: test/p14-r5-probes.test.ts"],
     ["README.md", "88366685b1659567", "behaviour", "a never-migrated skill is a row of zeroes: test/p14-r5-probes.test.ts"],
-    ["README.md", "5bed43c8936b9328", "intent", "no path downloads a published artifact because none is published; a release policy"],
     ["README.md", "591ffd55b670d997", "behaviour", "every packaging row listens on the loopback: test/bind-address.test.ts and test/docker-network-boundary.test.ts"],
     ["README.md", "809e73863b64d7c0", "intent", "serving another host is a different topology, not a flag; a support boundary"],
-    ["README.md", "ada62185f0bf7f27", "intent", "the `npx` and `docker run <registry>` forms are deliberately unwritten; a release policy"],
+    ["README.md", "6c01aea9b642884e", "intent", "the `npx` and `docker run <registry>` forms are deliberately unwritten; a release policy"],
     ["README.md", "6f5c06901f9b0185", "behaviour", "every workflow job runs on ubuntu-latest: checked below and by test/platform.test.ts"],
     ["README.md", "d1c42e370adfede6", "intent", "no macOS and no Windows binary is a V1 artifact; a scope decision"],
     ["README.md", "9cd583109af75ccb", "external", "how a case-insensitive or normalizing filesystem behaves is a property of that filesystem"],
@@ -274,7 +280,7 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["docs/OPERATIONS.md", "7131c613333314bb", "external", "why a firewall in front is not the boundary; about the operator's estate"],
     ["docs/OPERATIONS.md", "2aa6bc7c9fce75b9", "intent", "the compose recipe's first rule; a support boundary"],
     ["docs/OPERATIONS.md", "60cb61e268f7df48", "external", "the proxy is the only public listener in the operator's project"],
-    ["docs/OPERATIONS.md", "777fc396f2487b43", "intent", "no packaging path is a published artifact; a release policy"],
+    ["docs/OPERATIONS.md", "d0538b721c9405f9", "intent", "which of the four packaging paths is published and which are not; a release policy"],
     ["docs/OPERATIONS.md", "8b3fec11c8d01d3d", "behaviour", "verify and verify-log need no path on a running deployment: test/cli.test.ts"],
     ["docs/OPERATIONS.md", "217e562748f2a229", "behaviour", "credentials are issued at first start only: test/p5-e2e.test.ts"],
     ["docs/OPERATIONS.md", "a6cd6e33f5aae00f", "behaviour", "both credentials are printed once and not stored retrievably: test/p2-auth.test.ts"],
@@ -470,32 +476,39 @@ test("the shipped skill's vector set is the size skills/README.md says it is", (
 // The fourth defect of this family was a document saying the binary is not
 // shipped while `.github/workflows/ci.yml` uploaded it on every push, and
 // `test/source-only.test.ts` closed that one sentence. This is the general
-// form: the workflow may not PUBLISH — to npm, to a container registry, or as
-// a downloadable artifact — while every delivered document says nothing is
-// published.
+// form: the automation may not PUBLISH what every delivered document says is
+// unpublished.
+//
+// THE SUBJECT OF THIS TEST NARROWED IN A2, and the narrowing is stated rather
+// than silently done. A release of this project now DOES carry a Linux binary,
+// so "publishes nothing" is no longer the claim any document makes and no
+// longer the line to hold; the release-asset half moved to
+// `test/source-only.test.ts`, which reads the trigger, the tag rule and the one
+// file allowed to publish. What is left here is what the documents still assert
+// an ABSENCE about: the npm registry and the container registries.
 test("no workflow publishes what every delivered document says is unpublished", () => {
   const workflow = workflowSteps();
   const publishing = [
     [/^\s*(?:run:\s*)?.*\bnpm\s+publish\b/m, "`npm publish`"],
     [/^\s*(?:run:\s*)?.*\bdocker\s+push\b/m, "`docker push`"],
     [/uses:\s*docker\/build-push-action/, "docker/build-push-action"],
-    [/uses:\s*softprops\/action-gh-release|uses:\s*actions\/create-release/, "a GitHub release action"],
   ] as const;
   const found = publishing.filter(([re]) => re.test(workflow)).map(([, what]) => what);
   assert.deepEqual(
     found,
     [],
-    `the workflow ${found.join(" and ")}, and every delivered document states that V1 publishes no artifact. ` +
-      "One of the two is lying — and the last time this pair disagreed, the automation was the one that acted.",
+    `the workflow ${found.join(" and ")}, and every delivered document states that this project publishes no npm ` +
+      "package and no container image. One of the two is lying — and the last time this pair disagreed, the " +
+      "automation was the one that acted.",
   );
   // …and the claim is actually made, or this guard is checking a sentence
   // nobody writes any more.
   const claimants = deliveredDocuments().filter(([, text]) =>
-    /publishes no artifact|ships no npm package|no npm package is published|publishes source only/i.test(text),
+    /ships no npm package|no npm package is published/i.test(text),
   );
   assert.ok(
     claimants.length >= 2,
-    "no delivered document states that this project publishes nothing — if that changed, this guard changes with it",
+    "no delivered document states that no npm package is published — if that changed, this guard changes with it",
   );
 });
 

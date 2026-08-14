@@ -111,12 +111,16 @@ not themselves normative.
   compiled Linux binary — are byte-reproducible on one host, which CI asserts by
   building each twice and comparing hashes. `test/supply-chain.test.ts` holds
   the offline half of this and refuses a base image on a tag.
-- **Distribution:** four packaging paths, all produced from a checkout of this
+- **Distribution:** four packaging paths, each produced from a checkout of this
   repository — a container image built from the repository's `Dockerfile`, a
   Node ≥22.6 entry point (`npm start`, which is `src/cli.ts serve`), an npm
   tarball built by `npm pack` and installed **from the file**, and a compiled
-  Linux x86_64 binary (`npm run build:binary`). **V1 publishes no
-  artifact to a public registry**: there is no npm package and no container
+  Linux x86_64 binary (`npm run build:binary`). The binary is the one path whose
+  output is also **published**: a version tag after `v0.1.0` publishes
+  `skillonomia-linux-x86_64.tar.gz` and `SHA256SUMS` as release assets, and
+  `ci/mvp-release.mjs binary --tag <tag>` downloads them again, verifies the
+  checksum and runs the unpacked binary outside any checkout. **V1 publishes no
+  artifact to a package registry**: there is no npm package and no container
   image under this project's name, and no documented command may depend on one
   existing. Packing a tarball locally and installing it from disk is not a
   publication and depends on no registry. The `npx` and `docker pull` forms

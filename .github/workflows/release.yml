@@ -1,0 +1,97 @@
+name: release
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+defaults:
+  run:
+    shell: bash
+
+# ------------------------------------------------------- the one publishing file
+#
+# THE ONLY WORKFLOW IN THIS REPOSITORY THAT PUBLISHES. It runs on a NEW version
+# tag and on nothing else — not on a push to a branch, not on a schedule, not on
+# a manual dispatch — because pushing a version tag is the act that carries the
+# owner's decision to release, and CI must not be able to manufacture that
+# decision for itself. The `release` environment is the second half of the same
+# gate: it holds the job until the owner approves the deployment.
+#
+# `v0.1.0` IS REFUSED BY NAME. It is the source-only baseline: it was published
+# with source and a git bundle and no binary, and a published release is a thing
+# people have already downloaded and checksummed. Adding an asset to it later
+# would silently change what "v0.1.0" means for everyone who reads that page
+# afterwards. A new artifact needs a new version.
+#
+# The tag must also match `package.json`, so a release cannot carry a version
+# its own manifest disagrees with, and the release is refused if it already
+# exists — this workflow creates, it never amends.
+#
+# `test/source-only.test.ts` checks these three refusals against this file.
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-binary:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
+
+      - name: The tag is a new version, and not the baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ "$TAG" = "v0.1.0" ]; then
+            echo "::error::v0.1.0 is the source-only baseline release. It is never re-published and never gains an asset; publish a new version instead."
+            exit 1
+          fi
+          VERSION="v$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::tag $TAG does not match package.json ($VERSION) — the tag must point at the approved candidate commit"
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists — this workflow creates releases, it does not amend them"
+            exit 1
+          fi
+
+      # The same packaging the candidate stage ran, on the commit the tag points
+      # at. `build:binary` is byte-reproducible (the `supply-chain` job in
+      # `ci.yml` proves it on every push), so this produces the reviewed bytes.
+      - name: Package and smoke the release asset
+        run: node ci/mvp-release.mjs binary --local
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Linux x86_64 release binary. Verify with \`sha256sum -c SHA256SUMS\` before running." \
+            dist/release/skillonomia-linux-x86_64.tar.gz \
+            dist/release/SHA256SUMS
+
+      # THE READ-BACK. What was just published is downloaded again from the
+      # release, checksummed against the published `SHA256SUMS`, unpacked outside
+      # this checkout and run. Until this step prints `RELEASE_BINARY_OK`, the
+      # release is a file upload and not a verified artifact.
+      - name: Download the published assets and smoke them
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf dist/release
+          node ci/mvp-release.mjs binary --tag "${GITHUB_REF_NAME}"

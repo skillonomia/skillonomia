@@ -18,6 +18,46 @@ may target `macos` or `windows` and be adopted from one; §4.2 compatibility is
 evaluated against the adopter's declared environment, not against the machine
 the registry runs on.
 
+## The release binary
+
+A release tagged after `v0.1.0` carries two files:
+`skillonomia-linux-x86_64.tar.gz` and `SHA256SUMS`. Verify the archive before
+unpacking it, and keep the runtime data with the executable:
+
+```bash
+sha256sum -c SHA256SUMS
+mkdir -p /opt/skillonomia && tar -xzf skillonomia-linux-x86_64.tar.gz -C /opt/skillonomia
+/opt/skillonomia/skillonomia version
+SKILLONOMIA_DATA=/var/lib/skillonomia /opt/skillonomia/skillonomia serve
+```
+
+The archive holds `skillonomia`, `migrations/`, `schema/`, `seed/` and
+`LICENSE`. The three data directories are the assets the server opens a database
+and installs the seed package with; moving the executable away from them needs
+`SKILLONOMIA_ASSETS` pointed at wherever they went, or the start fails loudly.
+Nothing else is required — no checkout, no Node, no Bun: `ci/mvp-release.mjs`
+unpacks the archive into a directory outside this repository and starts it
+there, which is the whole of what a release asset has to do.
+
+**Where the file comes from.** `.github/workflows/candidate.yml` packages the
+same archive on a candidate commit and uploads it as a workflow artifact for
+review; it publishes nothing. `.github/workflows/release.yml` is the only file
+that publishes, it runs only on a new version tag, and it refuses `v0.1.0` —
+that release went out as source and is not amended. After publishing it
+downloads what it just published and runs it:
+
+```bash
+node ci/mvp-release.mjs binary --tag <tag>
+```
+
+which fetches the two assets from the release, verifies the checksum, unpacks
+the archive outside any checkout and drives `version`, `serve` and `/health`
+against what was unpacked. **Terminal state:** exit 0 with `RELEASE_BINARY_OK`
+as the last line. The rehearsal before a tag exists is
+`node ci/mvp-release.mjs binary --local`: the same packaging and the same smoke,
+on the archive built here, printing `RELEASE_BINARY_STAGED_OK` instead —
+a different marker because nothing was downloaded from a release.
+
 ## Layout of a deployment
 
 One process, one SQLite file, one data directory:
@@ -206,9 +246,10 @@ for the same reason: a CI runner is a host on a network like any other.
 
 One executable, five subcommands — the same set on all four packaging paths
 (a locally built container image, a checkout run with Node ≥22.6, an npm
-tarball packed here and installed from the file, the compiled binary). None of
-them is a published artifact: V1 ships no npm package and no container image
-under this project's name, so every path below starts from this repository.
+tarball packed here and installed from the file, the compiled binary). Only the
+last of them is a published artifact: V1 ships no npm package and no container
+image under this project's name, so every other path starts from this
+repository.
 
 ```
 skillonomia serve [--port N] [--data DIR] [--host H]
