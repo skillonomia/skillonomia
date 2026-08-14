@@ -44,6 +44,17 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
+      # Bun is installed in the NODE job too, and it is not a stray dependency:
+      # `test/absolutes.ts` enumerates the shipped file set by asking npm itself
+      # (`npm pack --dry-run --json`), `npm pack` runs `prepack`, and `prepack`
+      # is `build:js`, which is a `bun build`. A guard that cannot list its
+      # subject REFUSES rather than sweeping an empty set — so without bun this
+      # job fails loudly, which is exactly what it did. The alternative was to
+      # reimplement npm's own file resolution inside the guard, and a second
+      # answer to "what ships" is the thing that guard exists to prevent.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
       - run: npm ci
       - name: Typecheck (tsc --noEmit, strict)
         run: npm run typecheck
