@@ -37,8 +37,10 @@
 // either cannot quietly move it out of this guard's sight.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -217,6 +219,167 @@ test("the baseline release cannot gain an asset, and a tag cannot disagree with 
     "release.yml no longer refuses a tag whose release already exists, so a publish could amend one",
   );
   console.log(`[release-boundary] package.json is at ${version}; v0.1.0 is refused by name`);
+});
+
+// ---------------------------------------------------------------------------
+// A GATE THAT NEVER PASSES IS THE MIRROR OF A GATE THAT PASSES EVERYTHING, and
+// this repository shipped the first kind.
+//
+// The test above reads the three refusals out of `release.yml` and checks that
+// each one is still written there. It never asked whether ANY tag survives
+// them. It could not have: it compares text to text. So when A2 introduced the
+// tag rules while `package.json` was still at `0.1.0`, the refusals were all
+// present, the guard was green, and the set of publishable tags was EMPTY —
+// `v0.1.0` refused by name as the baseline, and everything else refused for
+// disagreeing with `package.json`. The candidate could not be released by any
+// tag at all, and nothing in the suite said so, because every assertion in the
+// file was of the form "this refusal is still here".
+//
+// A refusal-only guard cannot see that. The missing assertion is the POSITIVE
+// one: that the tag the owner would actually push — `v` plus the version
+// `package.json` names — is ACCEPTED. That is the assertion below, and it is
+// the reason this test runs the gate instead of reading it.
+//
+// So the gate is EXECUTED, not mirrored: the `run:` block is lifted out of
+// `release.yml` and handed to `bash` with `GITHUB_REF_NAME` set, in this
+// checkout, against this `package.json`. A re-implementation of the rules here
+// would agree with itself and prove nothing about the file CI runs. The only
+// substitution is `gh release view`, the one refusal that needs the network; a
+// stub answers it locally, and the last case below pushes the stub the other
+// way so that "accepted" cannot mean "the gate stopped running".
+//
+// The version is READ, never written: this test says nothing about which
+// version ships, only that whatever `package.json` says can be tagged.
+
+/** Every `run: |` block in a workflow file, dedented, in file order. */
+function runBlocks(text: string): string[] {
+  const lines = text.split("\n");
+  const blocks: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const opener = /^(\s*)run:\s*\|\s*$/.exec(lines[i]);
+    if (!opener) continue;
+    const indent = opener[1].length;
+    const body: string[] = [];
+    let j = i + 1;
+    for (; j < lines.length; j += 1) {
+      if (lines[j].trim() === "") {
+        body.push("");
+        continue;
+      }
+      if (lines[j].search(/\S/) <= indent) break;
+      body.push(lines[j]);
+    }
+    const filled = body.filter((l) => l !== "");
+    const pad = Math.min(...filled.map((l) => l.search(/\S/)));
+    blocks.push(body.map((l) => l.slice(pad)).join("\n"));
+    i = j - 1;
+  }
+  return blocks;
+}
+
+/**
+ * The one step in `release.yml` that decides whether a tag may publish, found
+ * by what it does rather than by its name, so renaming the step cannot move it
+ * out of sight.
+ */
+function tagGate(): string {
+  const release = readFileSync(join(WORKFLOWS, "release.yml"), "utf8");
+  const gates = runBlocks(release).filter((b) => b.includes("GITHUB_REF_NAME") && b.includes("package.json"));
+  assert.equal(
+    gates.length,
+    1,
+    `release.yml has ${gates.length} steps that read the tag against package.json — this guard needs exactly the one`,
+  );
+  assert.doesNotMatch(
+    gates[0],
+    /\$\{\{/,
+    "the tag gate interpolates a GitHub expression into its script, so running it here would not be running what " +
+      "CI runs — the substitution would have to be guessed, and a guessed gate proves nothing",
+  );
+  return gates[0];
+}
+
+/** The gate, run as CI runs it: `bash`, `GITHUB_REF_NAME`, this checkout. */
+function runGate(tag: string, releaseAlreadyExists: boolean): { status: number; output: string } {
+  const bin = mkdtempSync(join(tmpdir(), "sklo-tag-gate-"));
+  // The only stub. `gh release view` asks the network whether the release is
+  // already there; exit 0 says it is, exit 1 says it is not.
+  writeFileSync(join(bin, "gh"), `#!/bin/sh\nexit ${releaseAlreadyExists ? 0 : 1}\n`);
+  chmodSync(join(bin, "gh"), 0o755);
+  try {
+    const run = spawnSync("bash", ["-c", tagGate()], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: { ...process.env, GITHUB_REF_NAME: tag, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` },
+    });
+    return { status: run.status ?? -1, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
+}
+
+test("the tag gate refuses the baseline and any mismatch, AND accepts the version package.json names", () => {
+  const version: string = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
+  const candidate = `v${version}`;
+  // The refused-by-name tag comes out of the workflow, so this test keeps
+  // working if the baseline is ever a different tag, and cannot silently stop
+  // testing the refusal that exists.
+  const baseline = /if \[ "\$TAG" = "(v[^"]+)" \]/.exec(tagGate())?.[1];
+  assert.ok(baseline, "release.yml no longer refuses a tag by name — the baseline refusal is what this reads");
+
+  // THE DEADLOCK, stated as an arithmetic fact before anything is run: if the
+  // version in package.json IS the baseline, the two rules contradict and no
+  // tag exists that satisfies both.
+  assert.notEqual(
+    candidate,
+    baseline,
+    `package.json is at ${version}, which is exactly the tag release.yml refuses by name (${baseline}). No tag can ` +
+      "satisfy both rules, so this candidate cannot be published at all. Bump the version.",
+  );
+
+  const refusedBaseline = runGate(baseline, false);
+  assert.notEqual(refusedBaseline.status, 0, `the gate accepted ${baseline}, which is refused by name`);
+  assert.match(refusedBaseline.output, /baseline/, "the refusal of the baseline tag says why");
+  // BY NAME, and by nothing else. Once the version moved off the baseline, the
+  // version check refuses that tag too — so a baseline branch that printed its
+  // error and then fell through would still look refused here, and the
+  // refusal-by-name would be gone without a single test turning red. It is the
+  // reason that has to hold: the gate stops at the name.
+  assert.doesNotMatch(
+    refusedBaseline.output,
+    /does not match package\.json/,
+    `${baseline} was refused for disagreeing with package.json, not for being the baseline. The baseline refusal ` +
+      "no longer stops the run — and it would disappear entirely the day the version happened to match.",
+  );
+
+  // A tag that is neither the baseline nor the version: one major above.
+  const mismatch = `v${Number(version.split(".")[0]) + 1}.0.0`;
+  assert.notEqual(mismatch, candidate);
+  assert.notEqual(mismatch, baseline);
+  const refusedMismatch = runGate(mismatch, false);
+  assert.notEqual(refusedMismatch.status, 0, `the gate accepted ${mismatch}, which package.json does not name`);
+  assert.match(refusedMismatch.output, /does not match package\.json/, "the refusal of a mismatched tag says why");
+
+  // THE ONE THAT WAS MISSING. Everything above can be true of a gate that
+  // refuses everything.
+  const accepted = runGate(candidate, false);
+  assert.equal(
+    accepted.status,
+    0,
+    `the gate refused ${candidate}, the tag package.json itself names, so no tag can publish this candidate: ` +
+      `${accepted.output.trim()}`,
+  );
+
+  // …and "accepted" means the gate ran and let it through, not that the gate
+  // stopped deciding: the same tag is refused when the release already exists.
+  const refusedExisting = runGate(candidate, true);
+  assert.notEqual(refusedExisting.status, 0, `the gate accepted ${candidate} over an existing release, which it amends`);
+  assert.match(refusedExisting.output, /already exists/, "the refusal of an existing release says why");
+
+  console.log(
+    `[release-boundary] tag gate: ${baseline} refused (baseline), ${mismatch} refused (mismatch), ` +
+      `${candidate} ACCEPTED, ${candidate} refused when the release already exists`,
+  );
 });
 
 test("the documents describe the release the workflow actually publishes", () => {

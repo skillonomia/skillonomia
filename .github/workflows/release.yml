@@ -27,7 +27,12 @@ defaults:
 # its own manifest disagrees with, and the release is refused if it already
 # exists — this workflow creates, it never amends.
 #
-# `test/source-only.test.ts` checks these three refusals against this file.
+# `test/source-only.test.ts` checks these three refusals against this file — and
+# then RUNS the step below against this checkout's `package.json`, because three
+# refusals with no accepting case is a gate that publishes nothing. It shipped
+# that way: the rules landed while `package.json` still said `0.1.0`, so the
+# baseline refusal and the version check together left no tag that could be
+# pushed, and every text-level assertion stayed green.
 
 permissions:
   contents: write
