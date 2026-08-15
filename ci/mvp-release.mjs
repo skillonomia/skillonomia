@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // THE RELEASE-ARTIFACT CHECKS — one script, one subcommand per published thing.
 //
-//   node ci/mvp-release.mjs binary --tag v0.1.2         # the release path: download, then smoke
+//   node ci/mvp-release.mjs binary --tag v0.1.3         # the release path: download, then smoke
 //   node ci/mvp-release.mjs binary --local              # the rehearsal: package, then smoke
 //   node ci/mvp-release.mjs ghcr --digest <ref@sha256:> # pull one published image and drive it
 //   node ci/mvp-release.mjs npm --package <tgz|spec>    # install as a consumer, with no Bun
