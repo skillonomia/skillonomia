@@ -114,13 +114,21 @@ on the road from a clone to a running registry.
 **One prebuilt artifact is published: the Linux x86_64 binary.** A tagged
 release carries the source and a git bundle you can verify yourself, and — from
 a version tag after `v0.1.0` — `skillonomia-linux-x86_64.tar.gz` with
-`SHA256SUMS` beside it. Nothing else is published:
+`SHA256SUMS` beside it.
 
-- There is **no `skillonomia` package published by this project** on the public
-  npm registry. The name is currently occupied by an unrelated third-party
-  placeholder — `npx skillonomia` would install *that*, not this software. Do
-  not run it.
-- There is **no `skillonomia/skillonomia` container image** in any registry.
+Two more artifacts have a publishing path that is BUILT AND ARMED and has not
+run. `.github/workflows/candidate.yml` builds both on every push and pushes
+neither; `.github/workflows/release.yml` publishes them on a version tag, out of
+an environment the owner approves by hand. Until that happens:
+
+- **No digest has been published** for the container image
+  `ghcr.io/skillonomia/skillonomia`, so the `docker pull` below resolves to
+  nothing. The command is written here as the shape it will have, with the
+  digest left as `<digest>`, because an image is pinned by digest, never by a
+  tag.
+- `@skillonomia/cli` is **not on the npm registry yet**. The unscoped name
+  `skillonomia` there is an unrelated third-party placeholder — `npx
+  skillonomia` would install *that*, not this software. Do not run it.
 - `v0.1.0` carries source only and keeps carrying source only:
   `.github/workflows/release.yml` refuses that tag by name. A published release
   that grows an asset later changes what its own checksum meant to everyone who
@@ -128,8 +136,7 @@ a version tag after `v0.1.0` — `skillonomia-linux-x86_64.tar.gz` with
 
 Apart from the binary, every path below starts from a checkout of this
 repository, and the Docker path builds the image locally from the `Dockerfile`
-in it. When the image or the npm package is published, the commands that
-consume them will be added here — not before.
+in it.
 
 ## Install the released binary
 
@@ -148,6 +155,46 @@ else; keep them together. From here the quickstart below is the same, starting
 at the first-start credentials. `node ci/mvp-release.mjs binary --tag <tag>` is
 the same check run against the published release: it downloads the assets,
 verifies the checksum, and starts the unpacked binary outside any checkout.
+
+## The two cross-platform paths, once they are published
+
+Both are written here as the shapes they will have. Neither works today — no
+digest and no npm version have been published — and the section above says so
+rather than leaving a reader to find out from an error message.
+
+**The container.** One image, pinned by digest, published on the LOOPBACK and
+nowhere else:
+
+```bash
+docker run -p 127.0.0.1:7431:7431 -v skillonomia-data:/data \
+  ghcr.io/skillonomia/skillonomia@sha256:<digest>
+```
+
+The `127.0.0.1:` is not decoration, and it is the whole of the boundary here.
+This listener speaks plain HTTP and prints two one-time credentials on its
+first start; a publish naming no host address puts both on every interface the
+machine has. A loopback publish is a **local trial and not a way to serve
+another host**: that is a different topology — a **TLS-terminating** reverse
+proxy in front, with the registry port not published at all (see
+[The network boundary](#the-network-boundary)).
+
+**The CLI.** Node ≥22.6 and nothing else — no Bun, no `bash`, no `curl`, no
+`tar`:
+
+```bash
+npm install -g @skillonomia/cli
+skillonomia serve --port 7431
+skillonomia demo                  # the whole quickstart, in one command
+```
+
+`skillonomia demo` runs the §9.1 scenario end to end — bootstrap exchange, seed
+package, adoption, the package's own step, terminal `adopted` receipt, read-back
+— against a clean deployment of its own, or against a running one with
+`--base-url`. It is the same scenario as the transcript below and needs none of
+the shell tools that transcript uses.
+
+Its data directory is the platform's own; see
+[Where the data lives](#where-the-data-lives).
 
 ## Quickstart from source (≤10 minutes on a clean machine)
 
@@ -174,7 +221,7 @@ path):
 <!-- doc-test: health -->
 ```bash
 curl -s localhost:7431/health
-# → {"status":"ok","service":"skillonomia","version":"0.1.1"}
+# → {"status":"ok","service":"skillonomia","version":"0.1.2"}
 ```
 
 In a second terminal, export the two credentials the first start printed — this
@@ -453,7 +500,7 @@ that is also published, as a release asset a tag away from this table (see
 |---|---|---|
 | Docker | `docker build -t skillonomia:local .` → `docker run -p 127.0.0.1:7431:7431 -v skillonomia-data:/data skillonomia:local` | the normative quickstart target; the publish is loopback-only |
 | Node | `npm ci` → `npm start -- --port 7431 --data ./skillonomia-data` | needs Node ≥22.6 |
-| npm tarball | `npm pack` → `npm install -g ./skillonomia-0.1.1.tgz` → `skillonomia serve` | packed here and installed **from the file**, never from a registry; `prepack` builds the plain-JS entry point the installed package runs |
+| npm tarball | `npm pack` → `npm install -g ./skillonomia-cli-0.1.2.tgz` → `skillonomia serve` | the `@skillonomia/cli` package, packed here and installed **from the file** until a version is published; `prepack` builds the plain-JS entry point the installed package runs, and it is the maintainer's step — a consumer install runs no Bun |
 | Linux x86_64 binary | `npm run build:binary` → `dist/skillonomia serve`, or the released `skillonomia-linux-x86_64.tar.gz` | ships `migrations/`, `schema/` and `seed/` next to the executable |
 
 All four rows are **local**: each one puts a plain-HTTP listener on the
@@ -462,41 +509,75 @@ them, it is a different topology — a **TLS-terminating** reverse proxy in fron
 with the registry port not published at all (see
 [The network boundary](#the-network-boundary)).
 
-No image and no npm package is published by this project, so the corresponding
-`docker run <registry>/<image>:<tag>` and `npx skillonomia` forms do not exist
-and are deliberately not written here. If they are ever published, they will be
-added to this table then, and not before.
+The published forms of the first and third rows — `docker pull` by digest and
+`npm install -g @skillonomia/cli` — are given under [The two cross-platform
+paths](#the-two-cross-platform-paths-once-they-are-published), together with the
+statement that neither has been published yet.
 
 ### Supported platforms
 
-**V1 supports Linux x86_64, and claims nothing else.** That is not a preference,
-it is the exact extent of what is tested:
+Two claims, and they are different sizes.
 
-- CI runs the full suite (Node and Bun), the container quickstart and both
-  packaging smokes on `ubuntu-latest` x86_64, and on no other runner.
-- `npm run build:binary` compiles `--target=bun-linux-x64`. There is no macOS
-  and no Windows binary; neither is a V1 release artifact.
+**The compiled binary is Linux x86_64 and claims nothing else.**
+`npm run build:binary` compiles `--target=bun-linux-x64`; there is no macOS and
+no Windows binary and neither is a release artifact.
+
+**The npm CLI and the container image are qualified on Ubuntu x86_64, macOS
+arm64 and Windows x86_64** — by the small user contract in
+`.github/workflows/platform.yml`, and not by this repository's full suite:
+clean install, `version`, `serve`, `/health`, `demo` to a terminal `adopted`
+receipt inside the 600-second budget, a restart on the same SQLite file, and the
+§4.1b archive vectors. The full suite (Node and Bun) stays a Linux regression
+gate on `ubuntu-latest`, which is where it was written and what it measures.
+
+Two things inside that contract are narrower than the platforms around them, and
+both say so where they are:
+
 - Part of §4.1b is filesystem-dependent. When a package is read from a plain
-  **directory** rather than a `.tar`, the case-insensitive and NFC/NFD
-  collision rules assume a case-sensitive, byte-preserving filesystem. On a
-  case-insensitive one (default APFS/HFS+, NTFS) or a normalizing one, the two
-  colliding members cannot coexist on disk at all, so the rule cannot be
-  exercised and this implementation's behaviour there is unspecified. The
-  archive (`.tar`) path has no such dependency and behaves identically
-  everywhere. `test/platform.test.ts` runs the directory check on Linux and
-  skips it, naming this reason, anywhere else.
+  **directory** rather than a `.tar`, the case-insensitive and NFC/NFD collision
+  rules need a case-sensitive, byte-preserving filesystem. On a case-insensitive
+  one (default APFS/HFS+, NTFS) or a normalizing one, the two colliding members
+  cannot coexist on disk at all, so there is no directory for the rule to read.
+  `test/platform.test.ts` PROBES the filesystem it is running on and skips that
+  case with the measurement as its reason. The archive (`.tar`) form of the same
+  rule has no such dependency and is asserted everywhere, on every platform, and
+  is never skipped.
+- The bundled sample skill `skills/git-bundle-verify` declares
+  `runtime.os: ["linux"]` and means it: its scripts use `sha256sum`, `sort
+  --version-sort` and GNU `sed` long options, and gate 5 refuses the conditional
+  that choosing between spellings would need. Its live cases skip off Linux,
+  citing that declaration. This is a property of that package, not of the
+  registry.
 
-The registry may well run on macOS today. It is not tested there, so it is not
-claimed there. This is a different question from a skill package's
-`runtime.os`, which may name `macos` or `windows`: that says where the
+A skill package's `runtime.os` is a third question again: it says where the
 **package's procedure** runs, and §4.2 compatibility honours it whatever the
-registry itself is hosted on.
+registry is hosted on. On Windows the seed package's `os: [linux, macos]` is
+genuinely unmet, `demo` reports the `mismatch`, and at `risk_level: low` that is
+a warning rather than a block — which is the §4.2 rule working, not an exception
+to it.
 
-Configuration is environment-first: `SKILLONOMIA_DATA` (default `/data`),
-`SKILLONOMIA_PORT` (7431), `SKILLONOMIA_HOST` (`127.0.0.1`),
-`SKILLONOMIA_WORKER_MS` (delivery-worker interval), `SKILLONOMIA_ASSETS` (where
-`migrations/`, `schema/` and `seed/` live — an explicit value must be correct;
-there is no silent fallback).
+### Where the data lives
+
+One directory holds the SQLite file, the package blobs, the outstanding
+bootstrap token's hash and the webhook secrets. Where it is depends on the
+platform, and `SKILLONOMIA_DATA` beats every default:
+
+| Platform | Default |
+|---|---|
+| macOS | `~/Library/Application Support/Skillonomia` |
+| Windows | `%LOCALAPPDATA%\Skillonomia` |
+| Linux | `${XDG_STATE_HOME:-~/.local/state}/skillonomia` |
+| In the container | `/data` — the image sets `SKILLONOMIA_DATA` itself |
+| Anywhere | `SKILLONOMIA_DATA`, when it is set, and `serve --data DIR` over that |
+
+A host where no home directory can be found is REFUSED with a message naming
+`SKILLONOMIA_DATA`, rather than served from a path this code guessed: the first
+start writes two one-time credentials into that directory.
+
+Configuration is otherwise environment-first: `SKILLONOMIA_PORT` (7431),
+`SKILLONOMIA_HOST` (`127.0.0.1`), `SKILLONOMIA_WORKER_MS` (delivery-worker
+interval), `SKILLONOMIA_ASSETS` (where `migrations/`, `schema/` and `seed/` live
+— an explicit value must be correct; there is no silent fallback).
 
 ### The network boundary
 
@@ -548,21 +629,30 @@ npm run verify-log -- <db>       # walk and recompute the transparency-log chain
 ```
 
 `verify` and `verify-log` are subcommands of the one executable
-(`src/cli.ts`), so the same five commands exist on every packaging path — from a
+(`src/cli.ts`), so the same six commands exist on every packaging path — from a
 checkout as `node --experimental-strip-types --no-warnings src/cli.ts …` (the
-`npm run …` lines above are aliases for three of the five, and `package.json`
-defines no script for `version` or `help`), inside the container as
+`npm run …` lines above are aliases for three of the six, and `package.json`
+defines no script for `version`, `help` or `demo`), inside the container as
 `docker exec <container> bun run /app/src/cli.ts …`, from an installed tarball
 as `skillonomia …`, and from the compiled binary as `./dist/skillonomia …`:
 
 ```bash
 skillonomia verify <package> [--db PATH] [--json]     # 0 verified, 1 not, 2 usage
 skillonomia verify-log [--db PATH] [--json]           # 0 intact, 1 broken
+skillonomia demo [--base-url URL] [--data DIR]        # the §9.1 quickstart, in Node
 skillonomia serve | version | help
 ```
 
 The registry defaults to `<SKILLONOMIA_DATA>/skillonomia.db` — the file `serve`
 opens — so on a running deployment neither needs a path.
+
+`demo` drives the whole §9.1 scenario itself: with `--base-url` it runs against a
+deployment that is already up (reading `SKILLONOMIA_BOOTSTRAP_TOKEN` and
+`SKILLONOMIA_ADOPTER_TOKEN` from the environment, never from the command line,
+where another user of the machine could read them), and with no arguments it
+starts a clean deployment of its own in a temporary directory. It spawns exactly
+one program: the step the delivered package declares. If that interpreter is
+missing it REFUSES rather than reporting a gate result no run produced.
 
 | Path | What |
 |---|---|

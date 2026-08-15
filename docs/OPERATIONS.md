@@ -5,18 +5,32 @@ README; for exact request shapes, see `API.md`.
 
 ## Platform
 
-**Linux x86_64.** That is the only platform V1 is tested on — the full suite
-under Node and Bun, the timed container quickstart and both packaging smokes all
-run on a clean Ubuntu x86_64 runner, and the compiled binary targets
-`bun-linux-x64`. macOS and Windows are not release artifacts and not tested
-hosts; running the registry on one is unsupported, not forbidden, and the one
-behaviour known to depend on the host is §4.1b's directory reader (see
-README → Supported platforms).
+**The compiled binary is Linux x86_64.** `build:binary` targets
+`bun-linux-x64`; there is no macOS and no Windows binary.
+
+**The container image and `@skillonomia/cli` are qualified on Ubuntu x86_64,
+macOS arm64 and Windows x86_64.** What is qualified there is the user contract
+in `.github/workflows/platform.yml` — clean install, `version`, `serve`,
+`/health`, `demo` to a terminal `adopted` receipt inside the 600-second budget,
+a restart on the same SQLite file, and the §4.1b archive vectors — and not the
+full suite, which stays a Linux regression gate under Node and Bun on a clean
+Ubuntu x86_64 runner. The one behaviour known to depend on the host filesystem
+is §4.1b's DIRECTORY reader (see README → Supported platforms); the archive form
+of the same rule holds everywhere.
+
+The three container jobs (`qualify-docker-linux`, `qualify-docker-macos`,
+`qualify-docker-windows`) take ONE published digest and need REAL Docker
+runtimes: a Linux daemon, and Docker Desktop in LINUX-CONTAINER mode on the
+macOS and Windows hosts. `ci/mvp-release.mjs ghcr --expect-host` refuses to run
+anywhere else, so a job pointed at a runner without such a daemon fails rather
+than reporting a platform it was not on.
 
 This is separate from what a skill package declares in `runtime.os`. A package
 may target `macos` or `windows` and be adopted from one; §4.2 compatibility is
 evaluated against the adopter's declared environment, not against the machine
-the registry runs on.
+the registry runs on. On Windows the built-in seed package's
+`os: [linux, macos]` is genuinely unmet, `skillonomia demo` reports the §4.2
+`mismatch`, and at `risk_level: low` that is a warning and not a block.
 
 ## The release binary
 
@@ -79,7 +93,7 @@ loudly rather than continuing with an empty registry.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SKILLONOMIA_DATA` | `/data` | data directory (created if missing) |
+| `SKILLONOMIA_DATA` | the platform default below | data directory (created if missing) |
 | `SKILLONOMIA_PORT` | `7431` | listener port (`0` asks the OS for one) |
 | `SKILLONOMIA_HOST` | `127.0.0.1` | bind address — see **The network boundary** |
 | `SKILLONOMIA_WORKER_MS` | `1000` | delivery-worker interval; `0` disables it |
@@ -88,6 +102,34 @@ loudly rather than continuing with an empty registry.
 | `SKILLONOMIA_ACTIVATION_TARGET` | — | which runtime layout to write under that root |
 | `SKILLONOMIA_INVENTORY_ROOT` | — | where the fleet inventory may read — see **The fleet inventory** |
 | `SKILLONOMIA_INVENTORY_RUNTIME` | — | which runtime layout to read under that root |
+
+### The data directory, per platform
+
+`SKILLONOMIA_DATA` beats every default, and `serve --data DIR` beats that. With
+neither given, one definition (`src/platform.ts`) answers for every subcommand:
+
+| Platform | Default |
+|---|---|
+| macOS | `~/Library/Application Support/Skillonomia` |
+| Windows | `%LOCALAPPDATA%\Skillonomia` |
+| Linux | `${XDG_STATE_HOME:-~/.local/state}/skillonomia` |
+| In the container | `/data` — the image sets `SKILLONOMIA_DATA` itself |
+
+Linux uses `XDG_STATE_HOME` rather than a cache or config location: a cache may
+be deleted at any moment and this database may not. A host where no home
+directory can be found is REFUSED with a message naming `SKILLONOMIA_DATA`
+rather than served from a guessed path — the first start writes two one-time
+credentials into that directory.
+
+**On Windows the ACL is the protection.** The bootstrap file
+(`bootstrap.json`) and the webhook secret store are written with POSIX mode
+`0600`, which NTFS ignores; what actually keeps them private is the ACL they
+inherit from `%LOCALAPPDATA%`, which grants the owning account and not the
+`Users` group. `ci/windows-security.ps1` checks that live — it reads the ACL AND
+tries the read as a second local account, and fails closed if either the ACL
+names an all-users group or the probe could not be run at all. Moving the data
+directory somewhere with a looser ACL (a shared drive, `C:\ProgramData`) moves
+the secrets there too.
 
 ## Native activation
 
@@ -213,7 +255,8 @@ Exactly two shapes are supported:
 
 | Purpose | Shape | Reachable from |
 |---|---|---|
-| local trial | `docker run -p 127.0.0.1:7431:7431 -v skillonomia-data:/data skillonomia:local` | this host, over the loopback |
+| local trial, image built here | `docker run -p 127.0.0.1:7431:7431 -v skillonomia-data:/data skillonomia:local` | this host, over the loopback |
+| local trial, published image | `docker run -p 127.0.0.1:7431:7431 -v skillonomia-data:/data ghcr.io/skillonomia/skillonomia@sha256:<digest>` | this host, over the loopback |
 | serving another host | the registry publishes **no** port; a **TLS-terminating** reverse proxy publishes `443` and reaches the registry over a network they share | anywhere, over TLS, through the proxy |
 
 A `docker run` that publishes the registry port **without a host address** —
@@ -240,24 +283,93 @@ The minimal external topology, stated so it can be checked rather than believed:
    credentials that have crossed it are disclosed.
 
 `ci/quickstart-docker.sh` — the timed release gate — publishes on the loopback
-for the same reason: a CI runner is a host on a network like any other.
+for the same reason: a CI runner is a host on a network like any other. It
+builds the image from this repository's `Dockerfile` and pulls nothing; it is
+the product quickstart, not the acceptance check for a published image.
+
+**The published image, and the digest that is not there yet.**
+No digest has been published for `ghcr.io/skillonomia/skillonomia`: the registry
+holds nothing under that name, and the row
+above is the shape the command will have, not a pull that works today. The
+publishing path exists and is armed — `.github/workflows/candidate.yml` builds
+both architectures on every push and pushes neither;
+`.github/workflows/release.yml` pushes on a version tag out of the protected
+`release` environment, then resolves the manifest back from the registry and
+smokes it. The acceptance check is:
+
+```bash
+docker buildx imagetools inspect ghcr.io/skillonomia/skillonomia@sha256:<digest>
+node ci/mvp-release.mjs ghcr --digest ghcr.io/skillonomia/skillonomia@sha256:<digest>
+```
+
+which pulls that exact digest, confirms the local daemon reports it as a
+`RepoDigest`, runs the container loopback-only, drives `skillonomia demo` to a
+terminal `adopted` receipt, restarts on the same volume — no second set of
+credentials — and reads the receipt back. **Terminal state:** exit 0 with
+`GHCR_SMOKE_OK` as the last line, and a machine-readable record naming the host,
+the daemon, the digest and the receipt state. A tag is refused: an image is
+pinned by digest, because a tag can be moved after it was smoked.
+
+## The npm CLI
+
+`@skillonomia/cli` installs the `skillonomia` executable on **Node ≥22.6** and
+needs no Bun, no `bash`, no `curl` and no `tar`:
+
+```bash
+npm install -g @skillonomia/cli
+skillonomia serve --port 7431
+skillonomia demo                       # the §9.1 quickstart, end to end
+```
+
+Bun is the maintainer's build runtime — `prepack` runs `bun build` to produce
+the plain-JS entry point the installed package runs — and npm runs `prepack`
+when a tarball is PACKED, never when one is installed. There is no `install`,
+`postinstall` or `prepare` script in this package.
+
+**Nothing has been published to npm yet.** The unscoped name `skillonomia` on
+the public registry is an unrelated third-party placeholder; do not install it.
+Until a version of `@skillonomia/cli` exists, the path is exercised from a file:
+
+```bash
+npm pack
+node ci/mvp-release.mjs npm --package ./skillonomia-cli-<version>.tgz
+```
+
+which installs into a clean npm prefix **with every directory holding a `bun`
+executable removed from PATH** (and refuses to continue if `bun` still
+resolves), then runs `version`, `serve`, `/health`, `demo`, a restart on the same
+SQLite file and a receipt read-back. **Terminal state:** `NPM_CLI_STAGED_OK`
+from a file, and `NPM_CLI_OK` only when the package came from the registry —
+different markers, because only one of them exercised the registry.
 
 ## The command line
 
-One executable, five subcommands — the same set on all four packaging paths
-(a locally built container image, a checkout run with Node ≥22.6, an npm
-tarball packed here and installed from the file, the compiled binary). Only the
-last of them is a published artifact: V1 ships no npm package and no container
-image under this project's name, so every other path starts from this
-repository.
+One executable, six subcommands — the same set on all four packaging paths
+(the container image, a checkout run with Node ≥22.6, the `@skillonomia/cli`
+tarball, the compiled binary). Only the binary is a published artifact today:
+the image and the npm package have a publishing path that is armed and has not
+run, so both are used from this repository until then.
 
 ```
 skillonomia serve [--port N] [--data DIR] [--host H]
 skillonomia verify <package> [<registry-db>] [--db PATH] [--json]
 skillonomia verify-log [<registry-db>] [--db PATH] [--json]
+skillonomia demo [--base-url URL] [--data DIR] [--json]
 skillonomia version
 skillonomia help
 ```
+
+`demo` runs the §9.1 quickstart in Node, with no `bash`, `curl` or `tar`: the
+bootstrap exchange, the seed package, an adoption, the package's own declared
+step, the terminal `adopted` receipt and a read-back from the server. With
+`--base-url` it drives a deployment that is already running and reads
+`SKILLONOMIA_BOOTSTRAP_TOKEN` and `SKILLONOMIA_ADOPTER_TOKEN` from the
+environment — never from the command line, where `ps` would show them to every
+other user of the machine. With no arguments it starts a clean deployment of its
+own in a temporary directory, so it cannot spend a real deployment's one-time
+credentials by accident. The single program it spawns is the interpreter the
+delivered package declares for its own step; where that interpreter is missing
+it refuses, rather than reporting a gate result that no run produced.
 
 A bare `skillonomia` serves — that is what the image's default command relies
 on. `verify` and `verify-log` default to `<SKILLONOMIA_DATA>/skillonomia.db`,

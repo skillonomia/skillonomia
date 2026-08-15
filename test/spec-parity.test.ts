@@ -761,7 +761,7 @@ test("§2, the help text, README and OPERATIONS list the same subcommands", () =
   const subcommands = [...body[0].matchAll(/case "([a-z-]+)":/g)]
     .map((m) => m[1])
     .filter((c) => !c.startsWith("-"));
-  assert.deepEqual(subcommands.sort(), ["help", "serve", "verify", "verify-log", "version"]);
+  assert.deepEqual(subcommands.sort(), ["demo", "help", "serve", "verify", "verify-log", "version"]);
 
   const help = /export const HELP: string = \[([\s\S]*?)\]\.join/.exec(dispatch);
   assert.ok(help, "HELP not found");

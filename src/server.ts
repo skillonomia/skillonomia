@@ -22,6 +22,7 @@ import { installSeed, seedNotice, demoMode, type SeedResult } from "./seed.ts";
 import { ACTIVATION_TARGETS, FixedActivationRoots, isActivationTarget, type ActivationRoots } from "./activation.ts";
 import { FLEET_RUNTIMES, isFleetRuntime } from "./fleet.ts";
 import { FixedInventoryRoots, type InventoryRoots } from "./fleet-scan.ts";
+import { defaultDataDir } from "./platform.ts";
 
 export { VERSION } from "./version.ts";
 import { VERSION } from "./version.ts";
@@ -80,11 +81,11 @@ export const DB_FILENAME = "skillonomia.db";
 /** §9.1: the outstanding bootstrap token's HASH — never the token itself. */
 export const BOOTSTRAP_FILENAME = "bootstrap.json";
 
-/** The data directory a bare invocation operates on: `SKILLONOMIA_DATA`, or
- *  `/data` (the volume the container image declares). */
-export function defaultDataDir(): string {
-  return env("SKILLONOMIA_DATA") ?? "/data";
-}
+/** The data directory a bare invocation operates on: `SKILLONOMIA_DATA`, or the
+ *  platform's own state location. One definition, in src/platform.ts, shared by
+ *  `serve`, `demo`, `verify` and `verify-log` — so a deployment is one place on
+ *  a host and not one per subcommand. */
+export { defaultDataDir };
 
 /** The registry database a bare invocation operates on. */
 export function defaultDbPath(): string {
@@ -170,6 +171,13 @@ export async function serve(opts: ServeOptions = {}): Promise<Instance> {
     return opened;
   }, port, host);
 
+  // THE PORT THIS PROCESS IS ON, not the one it asked for. `--port 0` means
+  // "ask the OS", and a caller that embeds `serve` (the `demo` subcommand does)
+  // has no other way to learn the answer; the banner below would otherwise
+  // announce a listener on port 0, which is not a port anything can reach.
+  const address = server.address();
+  const bound = address !== null && typeof address === "object" ? address.port : port;
+
   // A FAILURE AFTER THE BIND CLOSES THE SOCKET IT OPENED. The order above
   // means an unreadable data directory or a refused migration is now reached
   // with a listener already bound; leaving it bound would turn `serve`'s exit 1
@@ -231,7 +239,7 @@ export async function serve(opts: ServeOptions = {}): Promise<Instance> {
         : null;
     timer?.unref?.();
 
-    log(`skillonomia ${VERSION} listening on http://${host}:${port}  (data: ${dataDir})`);
+    log(`skillonomia ${VERSION} listening on http://${host}:${bound}  (data: ${dataDir})`);
     log(`health           : GET /health   (unauthenticated)`);
     // The one setting that lets this process write outside its own data
     // directory is printed on every start, set or not: an operator has to be able
@@ -277,7 +285,7 @@ export async function serve(opts: ServeOptions = {}): Promise<Instance> {
       db,
       registry,
       server,
-      port,
+      port: bound,
       credentials,
       seed,
       tick,

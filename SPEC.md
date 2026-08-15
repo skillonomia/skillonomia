@@ -1,6 +1,6 @@
 # Skillonomia — Verified Skill Package Specification
 
-Version `0.1.1`. Licensed under Apache-2.0, together with the implementation in
+Version `0.1.2`. Licensed under Apache-2.0, together with the implementation in
 this repository.
 
 This release version has ONE source: the `version` field of `package.json`.
@@ -133,6 +133,14 @@ not themselves normative.
   - `verify <package> [<registry-db>] [--db PATH] [--json]` — the §4.4
     algorithm over a package directory, `.tar` or `.tar.gz`.
   - `verify-log [<registry-db>] [--db PATH] [--json]` — the §4.4 chain walk.
+  - `demo [--base-url URL] [--data DIR] [--json]` — the §9.1 quickstart end to
+    end, orchestrated in the runtime rather than in a shell: the bootstrap
+    exchange, the seed package, an adoption, the delivered package's own
+    declared step, the terminal `adopted` receipt and a read-back. It needs no
+    Bash, `curl` or `tar`, which is what makes the §9.1 scenario runnable on a
+    host that has none of them. With no `--base-url` it starts a clean
+    deployment of its own; the one-time credentials of a running one are read
+    from the environment, never from the command line.
   - `version` — the release version. `help` — the subcommand list.
 
   The registry database of `verify` and `verify-log` comes from `--db`, from a

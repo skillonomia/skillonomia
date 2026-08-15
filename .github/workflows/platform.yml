@@ -1,0 +1,226 @@
+name: platform
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: >-
+          One PUBLISHED image, by immutable digest
+          (ghcr.io/<owner>/<image>@sha256:<64 hex>). The three `qualify-docker-*`
+          jobs below run that exact digest and nothing else; leave it empty and
+          they do not run at all.
+        required: false
+        default: ""
+
+defaults:
+  run:
+    shell: bash
+
+# ------------------------------------------------------- the qualification matrix
+#
+# B3: ONE npm tarball, built ONCE, qualified on three operating systems.
+#
+# `package-build` packs it (with Bun, which `prepack` needs) and records its
+# SHA-256. The three `qualify-*` jobs DOWNLOAD that artifact, check the checksum,
+# and install it the way a user does — WITH NO BUN ANYWHERE. They do not run
+# `npm pack` and they do not run `prepack`: a job that built its own package
+# would be qualifying its own build environment rather than the artifact the
+# other two jobs are running, and it would need the very toolchain B2 exists to
+# remove from the consumer's side.
+#
+# The full Linux regression suite stays in `ci.yml`. What runs here is the small
+# USER CONTRACT of §8 B3 — install, `version`, `serve`, `/health`, `demo` to a
+# terminal `adopted` receipt inside the 600-second budget, a restart on the same
+# SQLite file, and the §4.1b archive vectors — because the difference between
+# Ubuntu, macOS and Windows that a user meets is in those steps and not in the
+# thousand tests that never touch a path or a process.
+#
+# ------------------------------------------------- and the three Docker runtimes
+#
+# `qualify-docker-linux`, `qualify-docker-macos` and `qualify-docker-windows`
+# take ONE published digest and run it. They are `workflow_dispatch`-only and
+# they are SKIPPED when no digest is given, because there is nothing to qualify
+# until an image has been published — and a job that "passed" with no digest
+# would be reporting a cross-platform claim about nothing.
+#
+# The two that are not Linux need a REAL Docker Desktop host running Linux
+# containers, and no hosted GitHub runner is one: `macos-14` has no Docker
+# daemon and `windows-latest` runs Windows containers. They therefore ask for
+# self-hosted labels — and, because a label is a name somebody types, the first
+# thing they run is `ci/mvp-release.mjs ghcr --expect-host`, which refuses
+# unless the process really is on that platform and architecture and the daemon
+# really does run Linux containers. Mislabelling a runner produces a failed job
+# and never a green one.
+
+jobs:
+  # -------------------------------------------------------------- the artifact
+  package-build:
+    runs-on: ubuntu-latest
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      # `prepack` is `build:js`, which is a `bun build`. This is the ONE job
+      # that has Bun, and that is the whole point of the split.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+      - run: npm ci
+      - name: Pack one tarball and record its checksum
+        id: pack
+        run: |
+          TARBALL=$(npm pack --silent | tail -1)
+          SHA=$(sha256sum "$TARBALL" | cut -d' ' -f1)
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "$SHA  $TARBALL" | tee "$TARBALL.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-tarball
+          path: |
+            ${{ steps.pack.outputs.tarball }}
+            ${{ steps.pack.outputs.tarball }}.sha256
+
+  # ------------------------------------------------------- the three qualifications
+  qualify-ubuntu:
+    needs: package-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-tarball
+          path: artifact
+      # `--ignore-scripts`: this checkout is here for the orchestrator and the
+      # typecheck, not to build a package. Running `prepare`/`prepack` here
+      # would need Bun, which this job deliberately does not have.
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - name: The qualification contract on this platform
+        run: node ci/mvp-release.mjs platform --package "artifact/${{ needs.package-build.outputs.tarball }}" --sha256 "${{ needs.package-build.outputs.sha256 }}" --record qualification-ubuntu.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qualification-ubuntu
+          path: qualification-ubuntu.json
+
+  qualify-macos:
+    needs: package-build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-tarball
+          path: artifact
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - name: The qualification contract on this platform
+        run: node ci/mvp-release.mjs platform --package "artifact/${{ needs.package-build.outputs.tarball }}" --sha256 "${{ needs.package-build.outputs.sha256 }}" --record qualification-macos.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qualification-macos
+          path: qualification-macos.json
+
+  qualify-windows:
+    needs: package-build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-tarball
+          path: artifact
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - name: The qualification contract on this platform
+        run: node ci/mvp-release.mjs platform --package "artifact/${{ needs.package-build.outputs.tarball }}" --sha256 "${{ needs.package-build.outputs.sha256 }}" --record qualification-windows.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qualification-windows
+          path: qualification-windows.json
+
+  # ------------------------------------------------------------ Windows security
+  # B4's four live checks. This one IS a hosted runner's job: every check is
+  # about NTFS, Windows ACLs and reparse points, and `windows-latest` has all
+  # three. Each check fails closed — one that cannot be performed exits non-zero
+  # rather than reporting a pass it did not observe.
+  windows-security:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - name: Windows security checks (secret ACL, SQLite readOnly, reparse escape, archive contract)
+        shell: pwsh
+        run: pwsh -NoProfile -File ci/windows-security.ps1
+
+  # ------------------------------------------------- one published digest, three runtimes
+  qualify-docker-linux:
+    if: inputs.digest != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - name: Pull that digest and drive the quickstart through it
+        run: node ci/mvp-release.mjs ghcr --digest "${{ inputs.digest }}" --expect-host linux-x64 --record ghcr-linux.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ghcr-linux
+          path: ghcr-linux.json
+
+  qualify-docker-macos:
+    if: inputs.digest != ''
+    # A REAL macOS arm64 host with Docker Desktop in Linux-container mode. There
+    # is no hosted runner that is one; until such a runner is registered this job
+    # waits, which is the honest state of B1 and is not a pass.
+    runs-on: [self-hosted, macOS, ARM64, docker-desktop]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - name: Pull that digest and drive the quickstart through it
+        run: node ci/mvp-release.mjs ghcr --digest "${{ inputs.digest }}" --expect-host darwin-arm64 --record ghcr-macos.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ghcr-macos
+          path: ghcr-macos.json
+
+  qualify-docker-windows:
+    if: inputs.digest != ''
+    # A REAL Windows x86_64 host with Docker Desktop in LINUX-container mode.
+    # `windows-latest` is not one: its daemon runs Windows containers and cannot
+    # run this image at all.
+    runs-on: [self-hosted, Windows, X64, docker-desktop]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - name: Pull that digest and drive the quickstart through it
+        run: node ci/mvp-release.mjs ghcr --digest "${{ inputs.digest }}" --expect-host win32-x64 --record ghcr-windows.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ghcr-windows
+          path: ghcr-windows.json

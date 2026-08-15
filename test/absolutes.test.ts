@@ -102,8 +102,8 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
   // ------------------------------------------------------------------ README
   [
     ["README.md", "30dbd7abb8b0bb13", "behaviour", "a checkout runs without a build: exercised on both runtimes by test/readme-quickstart.test.ts"],
-    ["README.md", "03fd3a6a759c7dac", "external", "what the public npm registry does or does not carry is not readable from this tree"],
-    ["README.md", "82f0853c4eeb6ea5", "external", "what any container registry carries is not readable from this tree"],
+    ["README.md", "3302f5a81cc00960", "external", "what the npm registry and GHCR carry today is not readable from this tree"],
+    ["README.md", "0a5e27c0fc76536c", "external", "whether GHCR holds a digest for this image is a property of that registry"],
     ["README.md", "5fc10604045d611d", "editorial", "says where the paths below start, now that one of them does not; about the document's own structure"],
     ["README.md", "6b4fbfc701c8952c", "editorial", "names the one non-literal step of the transcript; about the document"],
     ["README.md", "8324343cd261dc26", "editorial", "defines the `# →` convention the quickstart transcript is written in"],
@@ -128,11 +128,15 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["README.md", "88366685b1659567", "behaviour", "a never-migrated skill is a row of zeroes: test/p14-r5-probes.test.ts"],
     ["README.md", "591ffd55b670d997", "behaviour", "every packaging row listens on the loopback: test/bind-address.test.ts and test/docker-network-boundary.test.ts"],
     ["README.md", "809e73863b64d7c0", "intent", "serving another host is a different topology, not a flag; a support boundary"],
-    ["README.md", "6c01aea9b642884e", "intent", "the `npx` and `docker run <registry>` forms are deliberately unwritten; a release policy"],
-    ["README.md", "6f5c06901f9b0185", "behaviour", "every workflow job runs on ubuntu-latest: checked below and by test/platform.test.ts"],
-    ["README.md", "d1c42e370adfede6", "intent", "no macOS and no Windows binary is a V1 artifact; a scope decision"],
-    ["README.md", "9cd583109af75ccb", "external", "how a case-insensitive or normalizing filesystem behaves is a property of that filesystem"],
-    ["README.md", "871677219aaddc35", "behaviour", "the `.tar` path is host-independent: test/platform.test.ts"],
+    ["README.md", "543ab46ce04a2c1f", "intent", "a loopback publish is a local trial and not a way to serve another host; a support boundary"],
+    ["README.md", "edfcc408cc28f15e", "behaviour", "an image is pinned by digest and a tag is refused: test/published-image-contract.test.ts"],
+    ["README.md", "ce778aeb74d8b1f6", "behaviour", "the CLI needs Node and no Bun, bash, curl or tar: test/npm-consumer.test.ts"],
+    ["README.md", "09da2477dd1e08af", "behaviour", "`demo` needs none of the transcript's shell tools: test/npm-consumer.test.ts"],
+    ["README.md", "54a1182959065f0a", "behaviour", "`demo` spawns exactly one program, the declared step: test/npm-consumer.test.ts"],
+    ["README.md", "bd29464177134815", "behaviour", "a missing interpreter is a refusal and not a receipt: test/npm-consumer.test.ts"],
+    ["README.md", "85b06f30c59faa01", "external", "what a `-p` without a host address exposes is docker's behaviour on the operator's host"],
+    ["README.md", "942f1892b504c907", "external", "how a case-insensitive or normalizing filesystem behaves is a property of that filesystem"],
+    ["README.md", "453e3d967aadc778", "behaviour", "the `.tar` form of §4.1b is asserted on every host and never skipped: test/platform.test.ts"],
     ["README.md", "cc176e35f7526d11", "external", "a MUST NOT addressed to the operator about the network the listener is placed on"],
     ["README.md", "2192832e07ef9685", "intent", "declares the one supported way to reach a deployment from another host"],
     ["README.md", "cb0c315f7f7daf11", "intent", "declares the two supported container shapes; a support boundary"],
@@ -154,7 +158,8 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["SECURITY.md", "00017c15de658726", "intent", "no security maintenance commitment at any version; a maintenance policy"],
     ["SECURITY.md", "d002d8a5033c2268", "intent", "only the tip of the published branch is looked at; a maintenance policy"],
     ["SECURITY.md", "de117bedc0e8ec40", "intent", "the supported-versions row restating that policy"],
-    ["SECURITY.md", "f94e3cc70264b45b", "intent", "the supported-versions row for the version this tree declares, restating that policy"],
+    ["SECURITY.md", "4ad7fabd2190ed01", "intent", "the supported-versions row for the version this tree declares, restating that policy"],
+    ["SECURITY.md", "a8ea82542519eb4c", "intent", "versions between the baseline and this one carry the same absence of commitment; a maintenance policy"],
     ["SECURITY.md", "e0c0cc07ec2fc4ca", "definition", "introduces the list of parts that make a security claim; defines the section's scope"],
     ["SECURITY.md", "5c767d464feceeb8", "definition", "assigns three attack shapes to the signing surface; a classification"],
     ["SECURITY.md", "d5ab67fba07df936", "behaviour", "there is no runtime sandbox: the gates are static only, test/p3-gates.test.ts"],
@@ -253,7 +258,16 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
   ],
   // --------------------------------------------------------- docs/OPERATIONS
   [
-    ["docs/OPERATIONS.md", "ef08f47b584ae0b3", "behaviour", "Linux x86_64 is the only tested platform: test/platform.test.ts"],
+    ["docs/OPERATIONS.md", "7cba9cf255642c1d", "behaviour", "the compiled binary targets Linux x86_64 and no other: test/platform.test.ts"],
+    ["docs/OPERATIONS.md", "b2cd59fa936e9a5d", "behaviour", "the Windows ACL check reads the ACL and runs a second-account probe, failing closed: test/windows-security.test.ts"],
+    ["docs/OPERATIONS.md", "6b23af1d966ed581", "external", "whether GHCR holds a digest for this image is a property of that registry"],
+    ["docs/OPERATIONS.md", "f2549d1d0fe06bdd", "behaviour", "the CLI needs Node and no Bun, bash, curl or tar: test/npm-consumer.test.ts"],
+    ["docs/OPERATIONS.md", "6ce22276f2e3fdcf", "external", "when npm runs `prepack` is npm's own lifecycle, not a fact of this tree"],
+    ["docs/OPERATIONS.md", "b561dd70d0febbbd", "behaviour", "no install, postinstall or prepare script exists: test/npm-consumer.test.ts"],
+    ["docs/OPERATIONS.md", "0dc49a43115a58ce", "behaviour", "the staged and registry markers are distinct and say which path ran: test/npm-consumer.test.ts"],
+    ["docs/OPERATIONS.md", "c415e04517ec1fe0", "behaviour", "`demo` runs the quickstart in Node with no bash, curl or tar: test/npm-consumer.test.ts"],
+    ["docs/OPERATIONS.md", "59a837b30de5d74d", "behaviour", "a self-started demo uses a temporary directory of its own: test/npm-consumer.test.ts"],
+    ["docs/OPERATIONS.md", "041392fd2dc3b0d2", "behaviour", "a missing interpreter is a refusal and not a receipt: test/npm-consumer.test.ts"],
     ["docs/OPERATIONS.md", "b616e87c205f4c67", "behaviour", "unset activation variables activate nothing: test/assignment-activation.test.ts"],
     ["docs/OPERATIONS.md", "48fac24685a61527", "intent", "writing into a runtime directory happens only on an operator's say-so; a design decision"],
     ["docs/OPERATIONS.md", "727edb1a232a9443", "behaviour", "no `~`, `$HOME` or relative form is expanded: test/assignment-activation.test.ts"],
@@ -283,7 +297,7 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["docs/OPERATIONS.md", "7131c613333314bb", "external", "why a firewall in front is not the boundary; about the operator's estate"],
     ["docs/OPERATIONS.md", "2aa6bc7c9fce75b9", "intent", "the compose recipe's first rule; a support boundary"],
     ["docs/OPERATIONS.md", "60cb61e268f7df48", "external", "the proxy is the only public listener in the operator's project"],
-    ["docs/OPERATIONS.md", "d0538b721c9405f9", "intent", "which of the four packaging paths is published and which are not; a release policy"],
+    ["docs/OPERATIONS.md", "1a38c34920c32449", "external", "which artifacts exist on a registry today is not readable from this tree"],
     ["docs/OPERATIONS.md", "8b3fec11c8d01d3d", "behaviour", "verify and verify-log need no path on a running deployment: test/cli.test.ts"],
     ["docs/OPERATIONS.md", "217e562748f2a229", "behaviour", "credentials are issued at first start only: test/p5-e2e.test.ts"],
     ["docs/OPERATIONS.md", "a6cd6e33f5aae00f", "behaviour", "both credentials are printed once and not stored retrievably: test/p2-auth.test.ts"],
@@ -482,37 +496,77 @@ test("the shipped skill's vector set is the size skills/README.md says it is", (
 // form: the automation may not PUBLISH what every delivered document says is
 // unpublished.
 //
-// THE SUBJECT OF THIS TEST NARROWED IN A2, and the narrowing is stated rather
-// than silently done. A release of this project now DOES carry a Linux binary,
-// so "publishes nothing" is no longer the claim any document makes and no
-// longer the line to hold; the release-asset half moved to
-// `test/source-only.test.ts`, which reads the trigger, the tag rule and the one
-// file allowed to publish. What is left here is what the documents still assert
-// an ABSENCE about: the npm registry and the container registries.
+// THE SUBJECT OF THIS TEST HAS NARROWED TWICE, and each narrowing is stated
+// rather than silently done.
+//
+// A2 made a release carry a Linux binary, so "publishes nothing" stopped being
+// anybody's claim; the release-asset half moved to `test/source-only.test.ts`,
+// which reads the trigger, the tag rule and the one file allowed to publish.
+//
+// B1 and B2 add a container image and `@skillonomia/cli`. The documents no
+// longer assert a permanent ABSENCE about either — they assert a CURRENT one:
+// the publishing path exists, is armed behind the owner's approval, and has not
+// run. That is a weaker sentence and it is the true one, so the guard tests the
+// pair that can still disagree:
+//
+//   * a publish of either artifact may exist ONLY in `release.yml`, which runs
+//     on a version tag out of the protected environment — nothing on a push;
+//   * and every delivered document that names one of them must say it has not
+//     been published, so a reader is never sent to an artifact that is not there.
+//
+// The document half is what makes this a pair rather than a duplicate of
+// `test/source-only.test.ts`: that file guards the automation, this one guards
+// the automation AGAINST THE DOCUMENTS, which is the defect family it belongs to.
 test("no workflow publishes what every delivered document says is unpublished", () => {
-  const workflow = workflowSteps();
-  const publishing = [
+  const PUBLISHERS = [
     [/^\s*(?:run:\s*)?.*\bnpm\s+publish\b/m, "`npm publish`"],
     [/^\s*(?:run:\s*)?.*\bdocker\s+push\b/m, "`docker push`"],
+    [/^\s*(?:run:\s*)?.*--push\b/m, "a buildx push"],
     [/uses:\s*docker\/build-push-action/, "docker/build-push-action"],
   ] as const;
-  const found = publishing.filter(([re]) => re.test(workflow)).map(([, what]) => what);
-  assert.deepEqual(
-    found,
-    [],
-    `the workflow ${found.join(" and ")}, and every delivered document states that this project publishes no npm ` +
-      "package and no container image. One of the two is lying — and the last time this pair disagreed, the " +
-      "automation was the one that acted.",
-  );
-  // …and the claim is actually made, or this guard is checking a sentence
-  // nobody writes any more.
-  const claimants = deliveredDocuments().filter(([, text]) =>
-    /ships no npm package|no npm package is published/i.test(text),
-  );
-  assert.ok(
-    claimants.length >= 2,
-    "no delivered document states that no npm package is published — if that changed, this guard changes with it",
-  );
+
+  const dir = join(REPO_ROOT, ".github", "workflows");
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))) {
+    const steps = read(`.github/workflows/${file}`)
+      .split("\n")
+      .filter((l) => !/^\s*#/.test(l))
+      .join("\n");
+    const found = PUBLISHERS.filter(([re]) => re.test(steps)).map(([, what]) => what);
+    if (file === "release.yml") {
+      assert.deepEqual(
+        found,
+        ["`npm publish`", "a buildx push"],
+        "release.yml publishes the npm package and the container image, and those are the two the documents describe",
+      );
+      continue;
+    }
+    assert.deepEqual(
+      found,
+      [],
+      `${file} ${found.join(" and ")}. Publication follows a version tag out of the protected environment; a ` +
+        "workflow that runs on a push must not be able to reach a registry.",
+    );
+  }
+
+  // THE DOCUMENT HALF. Both artifacts are named in the delivered documents, and
+  // both must be named together with the fact that they are not there yet.
+  const docs = deliveredDocuments();
+  for (const [what, names, absence] of [
+    ["the container image", /ghcr\.io\/skillonomia/, /no digest has been published/i],
+    ["`@skillonomia/cli`", /npm install -g @skillonomia\/cli/, /not on the npm registry yet|nothing has been published to npm yet/i],
+  ] as const) {
+    const naming = docs.filter(([, text]) => names.test(text));
+    assert.ok(naming.length >= 2, `${what} is named in ${naming.length} delivered document(s) — this guard reads two`);
+    for (const [name, text] of naming) {
+      assert.match(
+        text,
+        absence,
+        `${name} tells a reader how to consume ${what} without saying it has not been published. A reader follows ` +
+          "the command and meets an error the document could have prevented — and the last time a document and the " +
+          "automation disagreed, the automation was the one that acted.",
+      );
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -715,8 +769,8 @@ const PLANTINGS: ReadonlyArray<{ family: string; sentence: string; expect: RegEx
   },
   {
     family: "a count of the subcommands",
-    sentence: "One executable, seven subcommands, on every packaging path.",
-    expect: /claims 7 subcommands/,
+    sentence: "One executable, eight subcommands, on every packaging path.",
+    expect: /claims 8 subcommands/,
   },
   {
     family: "a count of the packaging paths",
@@ -768,7 +822,7 @@ test("the true form of each planted family passes", () => {
     "No caller may reach `/v1/skills` without a key.",
     "`SKILLONOMIA_DATA` must always be set.",
     "All eight safety gates run in one invocation.",
-    "One executable, five subcommands, on every packaging path.",
+    "One executable, six subcommands, on every packaging path.",
     "Only four packaging paths exist, and all of them are local.",
     "The threat model and the ten red-team tests that cover it are shipped.",
     "Gate 5 admits only what it can read: ten classes are refused.",

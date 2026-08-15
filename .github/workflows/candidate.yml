@@ -25,6 +25,20 @@ defaults:
 # `test/source-only.test.ts` holds that line from the other side: it fails if
 # any workflow but `release.yml` publishes, and if this one grows a publishing
 # step.
+#
+# B1 and B2 add two more things a release would carry — the container image and
+# the npm tarball — and they are staged here on exactly the same terms: built,
+# checksummed or digested, uploaded as a workflow artifact, and pushed NOWHERE.
+# `candidate-image` builds for both published architectures without a registry
+# in the command line at all; `candidate-npm` packs the tarball and records its
+# SHA-256, which is the number the three `platform.yml` qualification jobs check
+# what they downloaded against.
+
+env:
+  # The image a release publishes, named once. `release.yml` pushes to this
+  # reference and `test/published-image-contract.test.ts` requires the documents
+  # to name the same one — a second spelling anywhere would be a second image.
+  IMAGE: ghcr.io/skillonomia/skillonomia
 
 jobs:
   release-candidate:
@@ -63,3 +77,69 @@ jobs:
             dist/release/skillonomia-linux-x86_64.tar.gz
             dist/release/SHA256SUMS
             dist/release/CANDIDATE.txt
+
+  # ------------------------------------------------------------ the image (B1)
+  # Built for both published architectures, and pushed nowhere. The `push:
+  # false` is not the guard — the guard is that no registry credential is ever
+  # supplied here and `test/source-only.test.ts` refuses a push verb in this
+  # file. What a reviewer gets is the amd64 image loaded into this runner's
+  # daemon, its id, and the proof that the arm64 build of the same Dockerfile
+  # also completes.
+  candidate-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build both published architectures (no registry, no push)
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --tag "${IMAGE}:candidate" --output type=cacheonly .
+
+      - name: Load this runner's architecture and smoke the quickstart on it
+        run: |
+          docker buildx build --platform linux/amd64 --tag skillonomia:candidate --load .
+          docker image inspect skillonomia:candidate --format '{{.Id}}' | tee candidate-image-id.txt
+          IMAGE=skillonomia:candidate SKIP_BUILD=1 ci/quickstart-docker.sh | tee candidate-quickstart.txt
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-candidate-image
+          path: |
+            candidate-image-id.txt
+            candidate-quickstart.txt
+
+  # ------------------------------------------------------- the npm tarball (B2)
+  # `npm pack` and a checksum, and no `npm publish` anywhere near it. The
+  # consumer smoke runs the tarball the way a user installs it — a clean npm
+  # prefix with NO BUN ON PATH — and prints `NPM_CLI_STAGED_OK`, which is the
+  # marker for "installed from a file", never the registry one.
+  candidate-npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+      - run: npm ci
+
+      - name: Pack the tarball and record its checksum
+        id: pack
+        run: |
+          TARBALL=$(npm pack --silent | tail -1)
+          sha256sum "$TARBALL" | tee "$TARBALL.sha256"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: Install it as a consumer would, with no Bun on PATH
+        run: node ci/mvp-release.mjs npm --package "./${{ steps.pack.outputs.tarball }}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-candidate-npm
+          path: |
+            ${{ steps.pack.outputs.tarball }}
+            ${{ steps.pack.outputs.tarball }}.sha256

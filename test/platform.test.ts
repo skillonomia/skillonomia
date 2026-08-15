@@ -1,23 +1,35 @@
-// What V1 claims about platforms, and the one check that actually depends on
-// one.
+// What this project claims about platforms, and the one check that actually
+// depends on one.
 //
-// The claim is Linux x86_64 and nothing else: CI runs on `ubuntu-latest` only
-// and `build:binary` targets `bun-linux-x64`. Before this file that was true
-// but unwritten, which is the same shape of problem §1 fixed in the quickstart
-// — an unstated scope reads as a universal one.
+// THE CLAIM HAS MOVED, AND THE MOVE IS THE POINT. It was "Linux x86_64 and
+// nothing else": CI ran on `ubuntu-latest` alone and the compiled binary targets
+// `bun-linux-x64`. B2 and B3 add a second product path — `@skillonomia/cli` on
+// Node — and qualify it on Ubuntu, macOS and Windows, so the scope is now TWO
+// statements and not one, and both of them are narrower than "supported
+// everywhere":
 //
-// The substantive part is §4.1b. Its case-insensitive and NFC/NFD collision
-// refusals are defined over a package's member names. Read from a `.tar` those
-// names come from the archive, so the rule is host-independent and is asserted
-// here on every platform. Read from a plain DIRECTORY they come from the host
-// filesystem — and on a case-insensitive one (default APFS/HFS+, NTFS) or a
-// normalizing one the two colliding members cannot both exist on disk, so there
-// is nothing for the rule to refuse and this implementation's behaviour is
-// unspecified. That test therefore runs on Linux and SKIPS elsewhere, saying
-// why, rather than asserting a portability nobody measured.
+//   * the COMPILED BINARY is Linux x86_64 and stays so;
+//   * the npm CLI and the container image are qualified on the three platforms
+//     `.github/workflows/platform.yml` names, by the small user contract of that
+//     workflow — not by this suite's thousand Linux-oriented tests.
+//
+// The substantive part below is §4.1b. Its case-insensitive and NFC/NFD
+// collision refusals are defined over a package's member names. Read from a
+// `.tar` those names come from the archive, so the rule is host-independent and
+// is asserted here on every platform. Read from a plain DIRECTORY they come from
+// the host filesystem — and a case-insensitive one (default APFS/HFS+, NTFS) or
+// a normalizing one cannot hold the two colliding members at all.
+//
+// THAT SKIP IS NOW A CAPABILITY PROBE AND NOT A PLATFORM NAME. It used to be
+// `process.platform === "linux"`, which is a proxy: it skips on a
+// case-sensitive APFS volume (which could run the check) and would run on a
+// hypothetical case-insensitive Linux filesystem (which could not). The question
+// the test actually depends on is "can this filesystem hold these two names",
+// and that is a question a filesystem can be ASKED — so it is asked, here, in a
+// temporary directory, and the answer is what decides.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,29 +38,71 @@ import { ArchiveError, readDirectory, readTar, writeTar, type PackageFiles } fro
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p: string): string => readFileSync(join(ROOT, p), "utf8");
 
-/** The one platform V1 is built and tested on. */
-const SUPPORTED = "linux";
-const ON_SUPPORTED = process.platform === SUPPORTED;
+/**
+ * CAN THIS FILESYSTEM HOLD THE FIXTURE AT ALL? Two members differing only by
+ * case, and one name that is not NFC. A filesystem that folds case or
+ * normalizes silently merges or rewrites them, and then the directory the test
+ * would read is not the directory it wrote.
+ *
+ * Probed rather than assumed, and the probe cleans up after itself.
+ */
+function directoryFixturesArePossible(): { ok: boolean; why: string } {
+  const dir = mkdtempSync(join(tmpdir(), "sklo-probe-"));
+  try {
+    writeFileSync(join(dir, "Probe.md"), "a");
+    writeFileSync(join(dir, "probe.MD"), "b");
+    if (readdirSync(dir).length !== 2 || readFileSync(join(dir, "Probe.md"), "utf8") !== "a") {
+      return { ok: false, why: "this filesystem folds case: the two members cannot both exist" };
+    }
+    const nfd = "café".normalize("NFD");
+    writeFileSync(join(dir, nfd), "x");
+    if (!readdirSync(dir).includes(nfd)) {
+      return { ok: false, why: "this filesystem normalizes names: a non-NFC member cannot be stored as written" };
+    }
+    return { ok: true, why: "case-sensitive and byte-preserving" };
+  } catch (e) {
+    return { ok: false, why: `the fixture could not be created: ${String((e as Error).message)}` };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
-test("the Linux-only scope is stated in every document that would otherwise imply more", () => {
+const FIXTURE = directoryFixturesArePossible();
+
+test("the platform scope is stated in every document that would otherwise imply more", () => {
   // README's packaging table, SPEC's implementation profile and the operations
   // guide each describe how to RUN this software. A reader of any one of them
   // must find the scope there, not in the other two.
-  assert.match(read("README.md"), /V1 supports Linux x86_64, and claims nothing else/);
+  assert.match(read("README.md"), /^### Supported platforms$/m);
   assert.match(read("SPEC.md"), /\*\*Supported platform:\*\* \*\*Linux x86_64, and no other\.\*\*/);
   assert.match(read("docs/OPERATIONS.md"), /^## Platform$/m);
 
-  // and the claim matches what is actually built and exercised
+  // The compiled binary's scope has not moved, and the documents may not say it
+  // has: this is the artifact `--target=bun-linux-x64` produces.
   const pkg = JSON.parse(read("package.json"));
   assert.match(pkg.scripts["build:binary"], /--target=bun-linux-x64/, "the binary target is the claimed platform");
-  const ci = read(".github/workflows/ci.yml");
-  const runners = [...ci.matchAll(/runs-on:\s*(\S+)/g)].map((m) => m[1]);
-  assert.ok(runners.length >= 4, "every CI job declares a runner");
-  assert.deepEqual(
-    [...new Set(runners)],
-    ["ubuntu-latest"],
-    "CI runs on Linux only — a second runner here would make the README's scope a lie",
+  assert.match(
+    read("README.md"),
+    /The compiled binary is Linux x86_64 and claims nothing else/,
+    "README states the binary's scope in the words the build supports",
   );
+
+  // The FULL SUITE is a Linux regression gate and stays one: `ci.yml` runs on
+  // ubuntu and on nothing else. What runs on the other two platforms is the
+  // small user contract in `platform.yml`, and the two files may not be
+  // confused for one another.
+  const ci = read(".github/workflows/ci.yml");
+  const ciRunners = [...ci.matchAll(/runs-on:\s*(\S+)/g)].map((m) => m[1]);
+  assert.ok(ciRunners.length >= 4, "every CI job declares a runner");
+  assert.deepEqual(
+    [...new Set(ciRunners)],
+    ["ubuntu-latest"],
+    "the full regression suite runs on Linux only — the qualification matrix lives in platform.yml",
+  );
+  const platform = read(".github/workflows/platform.yml");
+  for (const runner of ["ubuntu-latest", "macos-14", "windows-latest"]) {
+    assert.ok(platform.includes(`runs-on: ${runner}`), `platform.yml qualifies on ${runner}`);
+  }
 });
 
 test("§4.1b collision refusals over a .tar are host-independent", () => {
@@ -71,9 +125,10 @@ test("§4.1b collision refusals over a .tar are host-independent", () => {
 });
 
 /**
- * A real skip with a real reason: on an unsupported host the fixture below
- * cannot even be built, so passing it would prove nothing and failing it would
- * blame the implementation for the filesystem.
+ * A real skip with a real reason, and the reason is a MEASUREMENT: the probe
+ * above tried to create the fixture and reports what the filesystem did with
+ * it. Where it cannot be created, passing this test would prove nothing and
+ * failing it would blame the implementation for the host.
  *
  * Declared as a test OPTION rather than `t.skip()` inside the body, because
  * Bun's `node:test` shim does not implement `t.skip` (ERR_NOT_IMPLEMENTED) and
@@ -81,14 +136,14 @@ test("§4.1b collision refusals over a .tar are host-independent", () => {
  * and not the reason, so the platform goes in the title too.
  */
 const DIRECTORY_RULE = "§4.1b collision refusals over a directory need a case-sensitive, byte-preserving filesystem";
-const SKIP_REASON = ON_SUPPORTED
+const SKIP_REASON = FIXTURE.ok
   ? undefined
-  : `skipped on ${process.platform}: this check writes two members that differ only by case and one whose name ` +
-    `is not NFC, which a case-insensitive or normalizing filesystem cannot hold. V1 is specified, built and ` +
-    `tested on ${SUPPORTED} x86_64 only (README -> Supported platforms); the archive form of the same rule is ` +
-    `asserted above and does hold here.`;
+  : `skipped on ${process.platform}: ${FIXTURE.why}. This check writes two members that differ only by case and ` +
+    `one whose name is not NFC; where the filesystem cannot hold them there is no directory for the rule to read, ` +
+    `and the ARCHIVE form of the same rule is asserted above and does hold here. The normative archive contract ` +
+    `is never skipped — only this directory-shaped input is.`;
 
-test(ON_SUPPORTED ? DIRECTORY_RULE : `${DIRECTORY_RULE} — SKIPPED on ${process.platform}`, { skip: SKIP_REASON }, () => {
+test(FIXTURE.ok ? DIRECTORY_RULE : `${DIRECTORY_RULE} — SKIPPED on ${process.platform}`, { skip: SKIP_REASON }, () => {
   const dir = mkdtempSync(join(tmpdir(), "sklo-plat-"));
   const caseDir = join(dir, "case");
   mkdirSync(caseDir);
@@ -110,5 +165,25 @@ test(ON_SUPPORTED ? DIRECTORY_RULE : `${DIRECTORY_RULE} — SKIPPED on ${process
     () => readDirectory(nfdDir),
     (e: unknown) => e instanceof ArchiveError && e.code === "MALFORMED_ARCHIVE" && /NFC/.test(e.message),
     "a member name this filesystem stored as NFD is not NFC-normalized",
+  );
+});
+
+test("the capability probe answers about THIS filesystem, and the skip follows the answer", () => {
+  // The probe is the thing deciding whether the case above runs, so it has to
+  // be checked itself: a probe that always answered "no" would silently retire
+  // the directory rule on every host, and a probe that always answered "yes"
+  // would fail the suite on macOS for a reason that is not a defect.
+  assert.match(FIXTURE.why, /\S/, "the probe always says what it found");
+  if (FIXTURE.ok) {
+    assert.equal(SKIP_REASON, undefined, "a filesystem that can hold the fixture runs the check");
+  } else {
+    assert.ok(SKIP_REASON !== undefined && SKIP_REASON.includes(FIXTURE.why), "the skip reason quotes the measurement");
+  }
+  // and the archive form is unconditional on every host, which is what makes
+  // the skip narrow rather than a hole in the §4.1b contract
+  assert.throws(
+    () => readTar(writeTar(new Map([["a.md", Buffer.from("x")], ["A.MD", Buffer.from("y")]]) as PackageFiles)),
+    (e: unknown) => e instanceof ArchiveError,
+    "the archive contract is asserted wherever this suite runs",
   );
 });

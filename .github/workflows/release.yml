@@ -37,6 +37,13 @@ defaults:
 permissions:
   contents: write
 
+env:
+  # The one image reference this project publishes. `candidate.yml` builds it
+  # without a registry and this file is the only place it is pushed;
+  # `test/published-image-contract.test.ts` requires the documents to name the
+  # same string, so a reader's `docker pull` and CI's push cannot drift apart.
+  IMAGE: ghcr.io/skillonomia/skillonomia
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -100,3 +107,111 @@ jobs:
         run: |
           rm -rf dist/release
           node ci/mvp-release.mjs binary --tag "${GITHUB_REF_NAME}"
+
+  # --------------------------------------------------------- the image (B1)
+  #
+  # THE GHCR PUSH, AND NOTHING BEFORE IT. This job runs only after
+  # `publish-binary` has published and read back the release, and only out of
+  # the `release` environment — the same owner approval, taken again for a
+  # second artifact. Nothing in `candidate.yml` can reach a registry; this is
+  # the one place a push exists.
+  #
+  # WHAT IS PUBLISHED IS A DIGEST. The tag `:<version>` is written too, because
+  # a human needs a name to read, but the artifact of record is the digest
+  # buildx reports and the read-back below re-resolves it from the registry: a
+  # tag can be moved afterwards and a digest cannot.
+  publish-image:
+    needs: publish-binary
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - run: npm ci --ignore-scripts
+
+      - name: Sign in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Build both architectures and push them under this version
+        id: push
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --tag "${IMAGE}:${VERSION}" \
+            --metadata-file metadata.json \
+            --push .
+          DIGEST=$(node -p "require('./metadata.json')['containerimage.digest']")
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "ref=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # THE READ-BACK. The manifest is re-resolved FROM THE REGISTRY, then the
+      # image is pulled by digest, run loopback-only, driven through the
+      # quickstart to a terminal `adopted` receipt, restarted on the same volume
+      # and the receipt is read back. Until `GHCR_SMOKE_OK` is printed, this is
+      # an upload and not a verified artifact.
+      - name: Resolve the published manifest and smoke it
+        run: |
+          docker buildx imagetools inspect "${{ steps.push.outputs.ref }}"
+          node ci/mvp-release.mjs ghcr --digest "${{ steps.push.outputs.ref }}" --expect-host linux-x64 --record ghcr-release.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ghcr-release-record
+          path: ghcr-release.json
+
+  # ----------------------------------------------------------- the npm CLI (B2)
+  #
+  # THE NPM PUBLISH. Same environment, same owner approval, third artifact.
+  #
+  # IT FAILS CLOSED ON A MISSING TOKEN, and that is deliberate. A publish step
+  # that skipped itself when `NPM_TOKEN` is unset would let a release go out
+  # announcing a CLI that is not on the registry, and nothing in the run would
+  # say so — the release notes, the documents and the qualification matrix would
+  # all describe a package a user cannot install. An absent credential is a
+  # blocked release, stated in one line, and not a quiet omission.
+  publish-npm:
+    needs: publish-image
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+      - run: npm ci
+
+      - name: A publish needs a publish token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "::error::NPM_TOKEN is not configured for the release environment, so @skillonomia/cli cannot be published. This release is blocked rather than published without its CLI; add a granular publish-only token and re-run."
+            exit 1
+          fi
+
+      # ONE TARBALL, PACKED ONCE, PUBLISHED AS PACKED. `npm publish <file>` is
+      # given the exact bytes that were just checksummed — not the working
+      # directory, which `npm publish .` would re-pack into a second tarball
+      # nobody checked.
+      - name: Pack, checksum, publish that file, and read the registry back
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="v$(node -p "require('./package.json').version")"
+          TARBALL=$(npm pack --silent | tail -1)
+          sha256sum "$TARBALL" | tee "$TARBALL.sha256"
+          npm publish "$TARBALL" --access public
+          npm view "@skillonomia/cli@${VERSION#v}" dist.integrity version --json
+          node ci/mvp-release.mjs npm --package "@skillonomia/cli@${VERSION#v}"

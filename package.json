@@ -1,12 +1,14 @@
 {
-  "name": "skillonomia",
-  "version": "0.1.1",
-  "private": true,
+  "name": "@skillonomia/cli",
+  "version": "0.1.2",
   "description": "Skillonomia V1 — self-hosted registry of Verified Skill Packages: signed skill packages, safety gates, review workflow, adoption receipts and evidence-backed reputation.",
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=22.6"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "test": "node --experimental-strip-types --no-warnings --test \"test/*.test.ts\"",

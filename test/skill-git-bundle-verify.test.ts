@@ -42,6 +42,36 @@ function gitAvailable(): boolean {
   return spawnSync("git", ["--version"], { encoding: "utf8" }).status === 0;
 }
 
+/**
+ * WHERE THIS RUNBOOK RUNS, AND WHY THE REST OF THIS FILE DOES NOT RUN ELSEWHERE.
+ *
+ * `skills/git-bundle-verify` DECLARES `runtime.os: ["linux"]`, and the test at
+ * the end of this file proves that declaration is forced: the scripts use
+ * `sha256sum`, `sort --version-sort` and GNU `sed` long options, none of which
+ * exist on BSD userland, and gate 5 refuses the conditional that choosing
+ * between spellings would need. The package is honest about being Linux-only.
+ *
+ * The LIVE cases below run those scripts. On macOS they failed — eight of them,
+ * counted in the §4 baseline — and every failure was the package's declaration
+ * coming true rather than a defect in the registry: `sha256sum: command not
+ * found` is not a finding about Skillonomia. A qualification matrix that let
+ * them fail there would be reporting a portability nobody claimed and nobody
+ * needs; one that quietly passed them would be worse.
+ *
+ * So the reason is TYPED and the skip is a test OPTION rather than `t.skip()`
+ * inside the body — Bun's `node:test` shim does not implement `t.skip`, and this
+ * suite must behave the same under both runners. What still runs everywhere is
+ * the declaration itself.
+ */
+const LINUX_ONLY =
+  `skipped on ${process.platform}: skills/git-bundle-verify declares runtime.os ["linux"] and its scripts use ` +
+  "GNU-only spellings (sha256sum, sort --version-sort, GNU sed long options). Running them here would measure " +
+  "the host's userland, not this package. The declaration is checked on every platform by the last test in this file.";
+
+/** The reason this case cannot run here, or `undefined` if it can. */
+const UNRUNNABLE: string | undefined =
+  process.platform !== "linux" ? LINUX_ONLY : gitAvailable() ? undefined : "git is not on PATH";
+
 /** Pack the source into a fresh directory and return where the package landed. */
 function packed(): string {
   const out = tmp("sklo-gbv-pkg-");
@@ -172,8 +202,7 @@ test("the shipped digests describe the shipped bytes", () => {
   }
 });
 
-test("the positive control is ACCEPTED — without it, refusing everything would look perfect", (t) => {
-  if (!gitAvailable()) return t.skip("git is not on PATH");
+test("the positive control is ACCEPTED — without it, refusing everything would look perfect", { skip: UNRUNNABLE }, () => {
   const pkg = packed();
   const row = matrix(pkg).find((r) => r.refuseAt === 0)!;
   assert.equal(row.bundle, "good.bundle");
@@ -208,8 +237,7 @@ test("the positive control is ACCEPTED — without it, refusing everything would
   assert.equal(readFileSync(join(work, "step3-input-id.sha256"), "utf8"), `${measured}\n`);
 });
 
-test("a bundle switched between g1 and g2 is refused before the probe repository exists", (t) => {
-  if (!gitAvailable()) return t.skip("git is not on PATH");
+test("a bundle switched between g1 and g2 is refused before the probe repository exists", { skip: UNRUNNABLE }, () => {
   const pkg = packed();
   const good = createHash("sha256").update(readFileSync(join(pkg, "vectors", "good.bundle"))).digest("hex");
   const work = join(tmp("sklo-gbv-switch12-"), "w");
@@ -232,8 +260,7 @@ test("a bundle switched between g1 and g2 is refused before the probe repository
   }
 });
 
-test("a bundle switched between g2 and g3 is refused before git clone", (t) => {
-  if (!gitAvailable()) return t.skip("git is not on PATH");
+test("a bundle switched between g2 and g3 is refused before git clone", { skip: UNRUNNABLE }, () => {
   const pkg = packed();
   const good = createHash("sha256").update(readFileSync(join(pkg, "vectors", "good.bundle"))).digest("hex");
   const work = join(tmp("sklo-gbv-switch23-"), "w");
@@ -252,8 +279,7 @@ test("a bundle switched between g2 and g3 is refused before git clone", (t) => {
   assert.ok(!existsSync(join(work, "head-commit.txt")), "…and no identity may be recorded for it");
 });
 
-test("a refusing g2 takes the previous g2's token with it — a PASS token cannot outlive its run", (t) => {
-  if (!gitAvailable()) return t.skip("git is not on PATH");
+test("a refusing g2 takes the previous g2's token with it — a PASS token cannot outlive its run", { skip: UNRUNNABLE }, () => {
   const pkg = packed();
   const good = createHash("sha256").update(readFileSync(join(pkg, "vectors", "good.bundle"))).digest("hex");
   const work = join(tmp("sklo-gbv-stale-"), "w");
@@ -287,8 +313,7 @@ test("a refusing g2 takes the previous g2's token with it — a PASS token canno
   assert.ok(existsSync(join(work, "bundle-verify.txt")), "the passing run's diagnosis may stay");
 });
 
-test("on the accepted run the two digest files agree, and step 1 leaves its success token", (t) => {
-  if (!gitAvailable()) return t.skip("git is not on PATH");
+test("on the accepted run the two digest files agree, and step 1 leaves its success token", { skip: UNRUNNABLE }, () => {
   const pkg = packed();
   const row = matrix(pkg).find((r) => r.refuseAt === 0)!;
   const bundle = join("vectors", row.bundle);
@@ -308,8 +333,7 @@ test("on the accepted run the two digest files agree, and step 1 leaves its succ
   assert.equal(readFileSync(join(work, "checksum-ok.txt"), "utf8"), "bundle-sha256-ok\n");
 });
 
-test("a refused g1 leaves BOTH digests in the work directory — the finding survives the refusal", (t) => {
-  if (!gitAvailable()) return t.skip("git is not on PATH");
+test("a refused g1 leaves BOTH digests in the work directory — the finding survives the refusal", { skip: UNRUNNABLE }, () => {
   const pkg = packed();
   // the real refusing rows, read out of the shipped matrix rather than invented
   // here: both damaged vectors offered under good.bundle's announced digest
@@ -365,8 +389,7 @@ test("a refused g1 leaves BOTH digests in the work directory — the finding sur
   }
 });
 
-test("every defective vector is refused at the step vectors/MATRIX.tsv names", (t) => {
-  if (!gitAvailable()) return t.skip("git is not on PATH");
+test("every defective vector is refused at the step vectors/MATRIX.tsv names", { skip: UNRUNNABLE }, () => {
   const pkg = packed();
   const base = tmp("sklo-gbv-matrix-");
   const rows = matrix(pkg).filter((r) => r.refuseAt !== 0);
@@ -424,8 +447,7 @@ test("every defective vector is refused at the step vectors/MATRIX.tsv names", (
   }
 });
 
-test("a refused g2 leaves its evidence but no success token, and step 3 stops before it clones", (t) => {
-  if (!gitAvailable()) return t.skip("git is not on PATH");
+test("a refused g2 leaves its evidence but no success token, and step 3 stops before it clones", { skip: UNRUNNABLE }, () => {
   const pkg = packed();
   // the real refusing row, read out of the shipped matrix rather than invented
   // here: the incremental bundle under its OWN digest, so step 1 passes and
@@ -462,8 +484,7 @@ test("a refused g2 leaves its evidence but no success token, and step 3 stops be
   assert.ok(!existsSync(join(work, "clone")), "nothing may be cloned after a refused step 2");
 });
 
-test("git bundle verify accepts damaged bytes — the recorded finding, pinned so it cannot be quietly forgotten", (t) => {
-  if (!gitAvailable()) return t.skip("git is not on PATH");
+test("git bundle verify accepts damaged bytes — the recorded finding, pinned so it cannot be quietly forgotten", { skip: UNRUNNABLE }, () => {
   const pkg = packed();
   // Step 2 passing here is not a bug in the runbook; it is what git does. The
   // manifest says so in the `damaged-packfile-passes-step-2` failure mode, and
@@ -511,8 +532,7 @@ function withoutLine(pkg: string, script: string, ...needles: string[]): string 
   return dir;
 }
 
-test("the guards are load-bearing: remove one and the vector it catches slips through", (t) => {
-  if (!gitAvailable()) return t.skip("git is not on PATH");
+test("the guards are load-bearing: remove one and the vector it catches slips through", { skip: UNRUNNABLE }, () => {
   const pkg = packed();
   const good = createHash("sha256").update(readFileSync(join(pkg, "vectors", "good.bundle"))).digest("hex");
 
@@ -822,8 +842,7 @@ test("the guards are load-bearing: remove one and the vector it catches slips th
   }
 });
 
-test("the counted lines do not depend on which `wc` is installed", (t) => {
-  if (!gitAvailable()) return t.skip("git is not on PATH");
+test("the counted lines do not depend on which `wc` is installed", { skip: UNRUNNABLE }, () => {
   const pkg = packed();
   const good = createHash("sha256").update(readFileSync(join(pkg, "vectors", "good.bundle"))).digest("hex");
   const env = { ...process.env, PATH: `${paddingWcPath()}:${process.env.PATH ?? ""}` };
@@ -879,4 +898,19 @@ test("runtime.os declares only where the runbook actually runs", () => {
     manifest.scope.prerequisites.some((p: string) => p.includes("GNU") && p.includes("runtime.os")),
     "a prerequisite must say why runtime.os is linux alone",
   );
+});
+
+test("the live cases DECLARE the platform they need, and the declaration is the package's own", () => {
+  // The skip reason is not free text: it has to agree with what the package
+  // says about itself, or a reader is being given two different scopes.
+  const manifest = JSON.parse(readFileSync(join(SRC, "manifest.json"), "utf8"));
+  assert.deepEqual(manifest.runtime.os, ["linux"], "the package declares one OS");
+
+  if (process.platform === "linux") {
+    assert.notEqual(UNRUNNABLE, LINUX_ONLY, "on the declared platform the live cases must actually run");
+  } else {
+    assert.equal(UNRUNNABLE, LINUX_ONLY, "off the declared platform they must skip, and not fail");
+    assert.match(UNRUNNABLE!, /runtime\.os/, "the reason cites the declaration rather than describing a symptom");
+    assert.ok(UNRUNNABLE!.includes(process.platform), "…and names the host it is skipping on");
+  }
 });

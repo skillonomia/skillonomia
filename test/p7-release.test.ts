@@ -485,21 +485,36 @@ test("the launcher runs the BUILT entry point, because Node refuses to strip typ
   mkdirSync(join(installed, "src"), { recursive: true });
   writeFileSync(join(installed, "src", "cli.ts"), 'const x: number = 1;\nconsole.log("FROM SOURCES", x);\n');
 
-  // (a) without the built entry, the sources cannot run from under node_modules
-  //     UNDER NODE — this is the failure the verdict reported. Bun strips types
-  //     anywhere, so the hazard is Node's alone; assert what each runtime does
-  //     rather than skipping the case on one of them.
+  // (a) without the built entry, an installed package cannot run at all — and
+  //     the launcher now says so ITSELF rather than letting Node's own message
+  //     be the answer. Both halves are asserted: the launcher's refusal, and
+  //     the hazard underneath it that makes the refusal necessary. Without the
+  //     second, the launcher could be refusing for no reason and this test
+  //     would agree with it.
   const bare = spawnSync(process.execPath, [join(installed, "bin", "skillonomia.js"), "version"], { encoding: "utf8" });
+  assert.notEqual(bare.status, 0, "an installed package with no built entry point must not pretend to run");
+  assert.match(
+    `${bare.stderr}`,
+    /carries no dist-js[\/\\]cli\.js/,
+    "…and the launcher names what is missing, rather than leaving a reader with Node's module-resolution error",
+  );
+
+  //     The hazard itself, measured directly: Node refuses to strip types under
+  //     `node_modules`, and Bun does not. That difference is the whole reason
+  //     the built entry point exists, so it is checked rather than remembered.
+  const direct = spawnSync(process.execPath, ["--experimental-strip-types", join(installed, "src", "cli.ts")], {
+    encoding: "utf8",
+  });
   if (typeof (globalThis as any).Bun === "undefined") {
-    assert.notEqual(bare.status, 0, "running the .ts sources from node_modules must fail under Node");
+    assert.notEqual(direct.status, 0, "running the .ts sources from node_modules must fail under Node");
     assert.match(
-      `${bare.stderr}`,
+      `${direct.stderr}`,
       /ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING|Unsupported/,
       "…and it fails for exactly the documented reason",
     );
   } else {
-    assert.equal(bare.status, 0, "Bun runs the sources anywhere — the restriction is Node's");
-    assert.match(bare.stdout, /FROM SOURCES/);
+    assert.equal(direct.status, 0, "Bun runs the sources anywhere — the restriction is Node's");
+    assert.match(direct.stdout, /FROM SOURCES/);
   }
 
   // (b) with the built entry present, the launcher runs THAT, with no flags

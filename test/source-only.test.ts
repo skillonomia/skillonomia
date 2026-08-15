@@ -32,6 +32,14 @@
 //              only, and a published release that later grows an asset changes
 //              what its own checksum meant for everyone who already read it.
 //
+// B1 AND B2 MOVE IT AGAIN, IN THE SAME DIRECTION. Two more artifacts are
+// published — the GHCR image and `@skillonomia/cli` — so `npm publish` and a
+// registry push stop being forbidden verbs and become verbs with ONE address.
+// The rule that replaces "these words appear nowhere" is stronger than it: every
+// job that publishes anything must sit behind the `release` environment, which
+// holds it until the owner approves the deployment. A file-level check would
+// have been satisfied by one guarded job among three.
+//
 // The NAMES ARE DERIVED rather than written here — the outfile from
 // `package.json`, the two asset names from `ci/mvp-release.mjs` — so renaming
 // either cannot quietly move it out of this guard's sight.
@@ -154,7 +162,7 @@ function workflowsPublishing(): Array<[string, string]> {
   return found;
 }
 
-test("one workflow publishes, it publishes only the release assets, and only on a version tag", () => {
+test("one workflow publishes, it publishes only the approved artifacts, and only on a version tag", () => {
   const publishing = workflowsPublishing();
   const { archive, sums } = releaseAssets();
   console.log(`[release-boundary] publishing steps: ${publishing.map(([f, w]) => `${f} ${w}`).join(", ") || "none"}`);
@@ -167,23 +175,37 @@ test("one workflow publishes, it publishes only the release assets, and only on 
       "performs; CI must not be able to reach the outside world on a push.",
   );
 
-  // Publication is the release assets and NOTHING ELSE at this version: no npm
-  // package and no container image are published under this project's name, and
-  // several delivered documents say so.
-  const verbs = publishing.map(([, what]) => what);
-  for (const forbidden of ["`npm publish`", "`docker push`", "docker/build-push-action"]) {
-    assert.ok(
-      !verbs.includes(forbidden),
-      `release.yml runs ${forbidden}, and this project publishes no npm package and no container image. ` +
-        "Whichever of the two changed, the documents change with it.",
-    );
-  }
-
+  // THE SET OF PUBLISHED THINGS HAS GROWN, AND IT IS STILL A SET. B1 adds a
+  // container image and B2 adds `@skillonomia/cli`, so `npm publish` and a
+  // registry push are no longer forbidden outright — they are forbidden
+  // ANYWHERE BUT HERE, and each one must be inside the protected environment
+  // that holds the job until the owner approves it. A publish verb that
+  // appeared in release.yml OUTSIDE that environment would be a release the
+  // owner never saw.
   const release = readFileSync(join(WORKFLOWS, "release.yml"), "utf8");
+  const verbs = publishing.map(([, what]) => what);
   assert.ok(verbs.includes("`gh release`"), "release.yml no longer publishes anything — this guard is reading the wrong file");
   for (const asset of [archive, sums]) {
     assert.match(release, new RegExp(asset.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `release.yml publishes ${asset}`);
   }
+
+  // Every publishing JOB is gated on the `release` environment. The check is per
+  // job rather than per file: one unguarded job in a file whose other jobs are
+  // guarded publishes just as thoroughly.
+  const jobs = [...release.matchAll(/^  ([a-z0-9-]+):\n((?:    .*\n|\n)*)/gm)].map(([, name, body]) => [name, body] as const);
+  assert.ok(jobs.length >= 3, `release.yml declares ${jobs.length} jobs; B1 and B2 add two to the binary's one`);
+  const PUBLISHES = /gh release create|npm publish|--push\b/;
+  for (const [name, body] of jobs) {
+    const steps = body.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+    if (!PUBLISHES.test(steps)) continue;
+    assert.match(steps, /environment: release/, `the publishing job \`${name}\` is not behind the release environment`);
+  }
+  const published = ["gh release create", "npm publish", "--push"].filter((verb) => release.includes(verb));
+  assert.deepEqual(
+    published,
+    ["gh release create", "npm publish", "--push"],
+    "the three published artifacts are the release assets, the npm package and the container image",
+  );
 
   // The trigger, read out of the file: tags, and no second way in. A
   // `workflow_dispatch` or a branch push here would be a publish button.

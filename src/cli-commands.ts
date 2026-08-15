@@ -21,6 +21,7 @@ import { VERSION } from "./version.ts";
 import { serve, defaultDbPath, type ServeOptions } from "./server.ts";
 import { verifyPackageAt } from "./verify-cli.ts";
 import { verifyLogAt } from "./verify-log.ts";
+import { runDemo } from "./demo.ts";
 
 export const EXIT_OK = 0;
 export const EXIT_CHECK_FAILED = 1;
@@ -57,6 +58,11 @@ export const HELP: string = [
   "  verify-log [<registry-db>] [--db PATH] [--json]",
   "        walk the §4.4 transparency-log hash chain and recompute every link.",
   "        Exit 0 = intact, 1 = broken.",
+  "  demo [--base-url URL] [--data DIR] [--json]",
+  "        the §9.1 quickstart, end to end: bootstrap exchange, seed package,",
+  "        adoption, the package's own step, terminal `adopted` receipt and a",
+  "        read-back. With no --base-url it starts a clean deployment of its own",
+  "        in a temporary directory. Needs no bash, curl or tar.",
   "  version",
   "        print the release version.",
   "  help",
@@ -64,9 +70,13 @@ export const HELP: string = [
   "",
   "The registry database defaults to <SKILLONOMIA_DATA>/skillonomia.db, the file",
   "`serve` opens — so `skillonomia verify ./pkg` checks against this deployment.",
+  "SKILLONOMIA_DATA itself defaults to the platform's own state location",
+  "(macOS ~/Library/Application Support/Skillonomia, Windows %LOCALAPPDATA%\\Skillonomia,",
+  "Linux ${XDG_STATE_HOME:-~/.local/state}/skillonomia); the container sets it to /data.",
   "",
   "environment: SKILLONOMIA_DATA, SKILLONOMIA_PORT, SKILLONOMIA_HOST,",
-  "             SKILLONOMIA_WORKER_MS, SKILLONOMIA_ASSETS",
+  "             SKILLONOMIA_WORKER_MS, SKILLONOMIA_ASSETS,",
+  "             SKILLONOMIA_BOOTSTRAP_TOKEN, SKILLONOMIA_ADOPTER_TOKEN (demo)",
 ].join("\n");
 
 interface ParsedArgs {
@@ -251,6 +261,32 @@ function cmdVerifyLog(argv: readonly string[], io: CliIo): number {
   return res.ok ? EXIT_OK : EXIT_CHECK_FAILED;
 }
 
+// -------------------------------------------------------------------- demo
+
+/**
+ * The §9.1 quickstart as a subcommand (src/demo.ts). Tokens come from the
+ * ENVIRONMENT and not from the command line: an argument is visible in `ps` to
+ * every other user of the machine, and these two are one-time credentials that
+ * mint an owner key.
+ */
+async function cmdDemo(argv: readonly string[], io: CliIo): Promise<number> {
+  const parsed = parseArgs(argv, ["--base-url", "--data"], ["--json"]);
+  if (parsed.positional.length > 0) {
+    throw new UsageError(`demo takes no positional arguments (got ${parsed.positional[0]})`);
+  }
+  const json = parsed.flags.has("--json");
+  const result = await runDemo({
+    baseUrl: parsed.values["--base-url"],
+    dataDir: parsed.values["--data"],
+    bootstrapToken: process.env.SKILLONOMIA_BOOTSTRAP_TOKEN,
+    adopterToken: process.env.SKILLONOMIA_ADOPTER_TOKEN,
+    log: json ? () => {} : (line) => io.out(line),
+  });
+  if (json) io.out(JSON.stringify(result));
+  else io.out(`DEMO OK — receipt ${result.receipt_id} reached terminal \`adopted\` in ${(result.elapsed_ms / 1000).toFixed(1)}s`);
+  return EXIT_OK;
+}
+
 // ---------------------------------------------------------------- dispatch
 
 /**
@@ -282,6 +318,8 @@ export async function runCli(argv: readonly string[], io: CliIo = CONSOLE_IO): P
         return cmdVerify(rest, io);
       case "verify-log":
         return cmdVerifyLog(rest, io);
+      case "demo":
+        return await cmdDemo(rest, io);
       default:
         throw new UsageError(`unknown command ${cmd}`);
     }

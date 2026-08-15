@@ -23,18 +23,20 @@ rather than publishing it.
 
 ## Supported versions
 
-`0.1.0` is published and is source only. Version `0.1.1` is the version this
-tree declares; a release tagged `v0.1.1` carries a Linux x86_64 binary and its
+`0.1.0` is published and is source only. Version `0.1.2` is the version this
+tree declares; a release tagged `v0.1.2` carries a Linux x86_64 binary and its
 checksum alongside the source. `v0.1.0` is refused by name, so the published
-source-only release is never amended. There is **no security maintenance
+source-only release is never amended. Every version between the baseline and
+the one this tree declares is published history and carries the same absence of
+commitment as the two rows below. There is **no security maintenance
 commitment** at any version: no backport policy, no patch SLA, and no advisory
 feed. Only the tip of the published branch is looked at.
 
 | Version | Supported |
 |---|---|
 | `0.1.0` | source published; no maintenance commitment |
-| `0.1.1` | what a `v0.1.1` tag carries — source and a Linux x86_64 binary; no maintenance commitment |
-| anything on npm | unrelated placeholder — not this software |
+| `0.1.2` | what a `v0.1.2` tag carries — source and a Linux x86_64 binary; no maintenance commitment |
+| the unscoped `skillonomia` package on npm | unrelated placeholder — not this software |
 
 ## Scope — what a security report would be about
 

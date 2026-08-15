@@ -274,10 +274,19 @@ test("the README's quickstart block, run verbatim, reaches a terminal `adopted` 
 });
 
 test("the README promises no artifact that does not exist", () => {
-  // §1's rule, kept mechanical: a `docker run` of a named image or an `npx` of
-  // this package would send a reader to something this project has not
-  // published. Both are allowed to appear in prose that says they do NOT
-  // exist; neither may appear inside a runnable block.
+  // §1's rule, kept mechanical, and NARROWED BY B1/B2 rather than dropped.
+  //
+  // Two commands a reader could copy now name artifacts this project intends to
+  // publish and has not: `docker run ghcr.io/...` and
+  // `npm install -g @skillonomia/cli`. Writing them down is right — they are the
+  // documented shapes — and writing them as if they WORKED is the defect. So:
+  //
+  //   * `npx skillonomia` stays forbidden outright. That name on the public
+  //     registry is somebody else's package, and `npx` would run it.
+  //   * a `docker run`/`pull` of the published image must carry the `<digest>`
+  //     PLACEHOLDER. A concrete digest would be a pull a reader can attempt and
+  //     an artifact this repository invented.
+  //   * and the README must say, in prose, that neither has been published.
   const blocks = [...README.matchAll(/```bash\n([\s\S]*?)\n```/g)].map((m) => m[1]);
   for (const b of blocks) {
     for (const line of b.split("\n")) {
@@ -287,13 +296,26 @@ test("the README promises no artifact that does not exist", () => {
         /^npx\s/,
         `README runnable block: \`${cmd}\` — the public npm name is an unrelated placeholder (§Availability)`,
       );
-      assert.doesNotMatch(
-        cmd,
-        /^docker\s+(run|pull)\b(?!.*skillonomia:local)/,
-        `README runnable block: \`${cmd}\` — no container image is published; build it locally`,
-      );
+      if (/^docker\s+(run|pull)\b/.test(cmd) || /ghcr\.io/.test(cmd)) {
+        const local = /skillonomia:local\b/.test(cmd) || /skillonomia:ci\b/.test(cmd);
+        const placeholder = /@sha256:<digest>/.test(cmd) || /\\$/.test(cmd);
+        assert.ok(
+          local || placeholder,
+          `README runnable block: \`${cmd}\` — an image is either built locally or named by the \`<digest>\` ` +
+            "placeholder; a concrete reference here would be a pull of something nobody published",
+        );
+      }
     }
   }
+
+  // The prose half. A placeholder a reader does not notice is a promise, so the
+  // absence is stated in words as well as in syntax.
+  assert.match(README, /No digest has been published/, "README says the image has no published digest");
+  assert.match(
+    README,
+    /`@skillonomia\/cli` is \*\*not on the npm registry yet\*\*/,
+    "README says the CLI is not on the registry yet",
+  );
 });
 
 // ---------------------------------------------------------------------------
