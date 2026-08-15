@@ -992,30 +992,42 @@ async function platform(argv) {
 // accepts is an SBOM the named image's own index points at, and not a document
 // that happens to sit in the same repository under a movable tag.
 //
-// THREE FAMILIES, REPORTED SEPARATELY. `SBOM`, `signature` and `provenance` are
-// three different questions, they fail for three different reasons, and a gate
-// that answered "supply chain: no" would send an operator to read a workflow
-// instead of to the one thing that is missing. Each family is reported with its
-// own verdict and its own sentence, and each artifact — the image and the npm
-// package — contributes to the families it can:
+// FOUR FAMILIES, REPORTED SEPARATELY. `SBOM`, `signature`, `provenance` and
+// `identity` are four different questions, they fail for four different reasons,
+// and a gate that answered "supply chain: no" would send an operator to read a
+// workflow instead of to the one thing that is missing. Each family is reported
+// with its own verdict and its own sentence, and each artifact — the image and
+// the npm package — contributes to the families it can:
 //
-//   SBOM        the image's per-platform SPDX/CycloneDX attestation, and the
-//               CycloneDX document published for the npm tarball on the release
-//   signature   the keyless cosign signature over the image index digest
+//   SBOM        the image's per-platform SPDX attestation, and the CycloneDX
+//               document published for the npm tarball on the release
+//   signature   the keyless cosign signature over the image index digest, and
+//               `npm audit signatures` over a clean install of the package
 //   provenance  the image's SLSA provenance attestation, attributed to a run of
 //               THIS repository's workflow, and npm's own publish provenance
+//   identity    that the two artifacts are ONE RELEASE — the same tag, the same
+//               commit and, when both record it, the same run
+//
+// THE FOURTH FAMILY IS THE ONE THE OTHER THREE CANNOT ASK. Every check above it
+// asks "is this artifact genuine", and two genuine artifacts of two different
+// releases answer yes to all of them: an image this repository signed in March
+// beside a package this repository attested in August is a pairing no run ever
+// produced and no per-artifact check can see. So the expectation is derived ONCE
+// from the npm version — `refs/tags/v<version>`, `release.yml`, this repository
+// — every provenance is measured against it, the cosign certificate identity is
+// pinned to THAT EXACT TAG rather than to `refs/tags/` and anything after it,
+// and the commits the two provenances name are then required to be the same.
 //
 // WHAT THIS GATE VERIFIES ITSELF AND WHAT IT DELEGATES. The digest chain above
-// is verified here, in this file. The CRYPTOGRAPHY is not re-implemented here:
-// the image signature is verified by `cosign verify` against a Fulcio identity,
-// and if `cosign` is not installed the signature check reports `UNVERIFIABLE`
-// and the gate refuses — a check that downgraded to "present" when its verifier
-// was missing would be the exact failure this stage exists to prevent. npm's
-// provenance bundle is checked for its published payload, its binding to the
-// tarball the registry serves and the workflow identity that payload claims;
-// its Sigstore bundle is verified cryptographically by `npm audit signatures` in
-// the publishing workflow, and that verification is NOT repeated here. Both
-// facts are printed, so a reader of the output is never left to assume either.
+// is verified here, in this file. The CRYPTOGRAPHY is delegated to the two
+// verifiers that own it, and both are run HERE, at the gate, against what the
+// registries serve now: `cosign verify` for the image, and `npm audit
+// signatures` on a clean temporary install for the package. If either verifier
+// is absent its family reports `UNVERIFIABLE` and the gate refuses — a check
+// that downgraded to "present" when its verifier was missing would be the exact
+// failure this stage exists to prevent — and `SUPPLY_CHAIN_HARDENING_OK` is
+// refused unless `npm audit signatures` named a verified attestation, so the
+// marker cannot be printed beside a record saying the bundle was never checked.
 
 const UA = "skillonomia-mvp-release";
 /** Every media type a manifest this gate reads may be served as. */
@@ -1026,9 +1038,20 @@ const OCI_ACCEPT = [
   "application/vnd.docker.distribution.manifest.v2+json",
 ].join(", ");
 const OIDC_ISSUER = "https://token.actions.githubusercontent.com";
-const SBOM_PREDICATES = ["https://spdx.dev/Document", "https://cyclonedx.org/bom"];
+const SPDX_PREDICATE = "https://spdx.dev/Document";
+const CYCLONEDX_PREDICATE = "https://cyclonedx.org/bom";
 const PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
 const NPM_PUBLISH_PREDICATE = "https://github.com/npm/attestation/tree/main/specs/publish/v0.1";
+/** The one workflow allowed to have produced a release this gate accepts. */
+const RELEASE_WORKFLOW = ".github/workflows/release.yml";
+/**
+ * THE ENVELOPE, AND WHY THE VERSION IS A SET. An attestation's OCI annotation is
+ * a label a pusher chose; the document inside is the claim. The claim is only a
+ * claim if it is an in-toto Statement, so `_type` is checked against the two
+ * spellings in the wild — v0.1 is what BuildKit has emitted for years, v1 is the
+ * current one — and anything else is a JSON blob wearing a label.
+ */
+const IN_TOTO_STATEMENT_TYPES = ["https://in-toto.io/Statement/v1", "https://in-toto.io/Statement/v0.1"];
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -1145,37 +1168,216 @@ function statementBinds(statement, digest) {
   return (statement.subject ?? []).some((s) => (s.digest ?? {}).sha256 === want);
 }
 
+/**
+ * THE ONE RELEASE THIS GATE IS ABOUT, DERIVED FROM ONE INPUT. The operator hands
+ * a deploy two strings — an image digest and a package specifier — and a gate
+ * that checked each of them against "some run of this repository" would accept
+ * last month's correctly signed image beside this month's correctly attested
+ * package. They would both be genuine and they would not be the same release.
+ *
+ * So the expectation is computed ONCE, from the npm version, and everything else
+ * is measured against it: the tag is `v<version>`, the ref is `refs/tags/v<version>`,
+ * the workflow is `release.yml`, and the Fulcio identity a signature must carry
+ * is that workflow AT THAT TAG — not `refs/tags/` and whatever follows.
+ */
+export function releaseIdentity(repo, version) {
+  const tag = `v${version}`;
+  const ref = `refs/tags/${tag}`;
+  return {
+    repo,
+    version,
+    tag,
+    ref,
+    workflow: RELEASE_WORKFLOW,
+    repositoryUrl: `https://github.com/${repo}`,
+    certificateIdentity: `https://github.com/${repo}/${RELEASE_WORKFLOW}@${ref}`,
+  };
+}
+
+/**
+ * WHY THE STATEMENT AND NOT THE ANNOTATION. `in-toto.io/predicate-type` on an
+ * OCI layer is metadata the pusher wrote; the gate finds attestations by it
+ * because that is how they are indexed, and then it must not believe it. What is
+ * checked here is the document: it is an in-toto Statement, its OWN
+ * `predicateType` is the one the annotation advertised, and its subject names
+ * the manifest this attestation was filed under. A layer annotated SPDX that
+ * carries a CycloneDX statement — or `{}` — fails here rather than counting.
+ *
+ * Returns the sentence that says what is wrong, or `null` when nothing is.
+ */
+export function statementFault(attached, digest, predicateType) {
+  const { predicateType: annotated, statement } = attached;
+  if (statement === null || typeof statement !== "object" || Array.isArray(statement)) {
+    return `the ${annotated} attestation is ${Array.isArray(statement) ? "a JSON array" : JSON.stringify(statement)}, not an in-toto Statement`;
+  }
+  if (!IN_TOTO_STATEMENT_TYPES.includes(statement._type)) {
+    return `the ${annotated} attestation's \`_type\` is ${JSON.stringify(statement._type ?? null)}, and an in-toto Statement is what carries a predicate`;
+  }
+  if (statement.predicateType !== predicateType) {
+    return `the layer is annotated ${annotated} and the statement inside says ${JSON.stringify(statement.predicateType ?? null)}`;
+  }
+  if (!statementBinds(statement, digest)) {
+    const names = (statement.subject ?? []).map((s) => s.name ?? "(unnamed)");
+    return `the ${annotated} attestation does not name ${digest} among its subjects (it names ${JSON.stringify(names)})`;
+  }
+  return null;
+}
+
+/** `https://github.com/o/r.git#refs/tags/v1` → its repository and its ref. */
+export function parseGitUri(uri) {
+  if (typeof uri !== "string") return null;
+  const m = /^(?:git\+)?(https:\/\/github\.com\/[^/\s]+\/[^/\s#@]+?)(?:\.git)?(?:[#@](\S+))?$/.exec(uri);
+  if (m === null) return null;
+  return { repository: m[1], ref: m[2] ?? null };
+}
+
+/**
+ * WHO BUILT IT, FROM WHICH COMMIT, UNDER WHICH WORKFLOW, IN WHICH RUN — read out
+ * of a SLSA v1 predicate wherever the generator that wrote it puts those facts.
+ * Three shapes are read, because two different generators produce the two
+ * provenances this gate compares:
+ *
+ *   externalParameters.workflow      npm's and GitHub's generator: {repository, ref, path}
+ *   externalParameters.configSource  a BuildKit build whose context is a git URL: {uri, digest, entryPoint}
+ *   resolvedDependencies[]           the git source either one resolved, with its commit
+ *
+ * A field no shape supplies stays `null`, and every caller treats `null` as a
+ * refusal rather than as a pass — a provenance that does not say which commit it
+ * built cannot be the one that says two artifacts came from the same commit.
+ */
+export function provenanceIdentity(predicate) {
+  const out = { repository: null, ref: null, commit: null, workflow: null, runId: null };
+  const take = (field, value) => {
+    if (out[field] === null && typeof value === "string" && value !== "") out[field] = value;
+  };
+  const bd = predicate?.buildDefinition ?? {};
+  const ext = bd.externalParameters ?? {};
+
+  const wf = ext.workflow ?? null;
+  if (wf !== null && typeof wf === "object") {
+    take("repository", wf.repository);
+    take("ref", wf.ref);
+    take("workflow", wf.path);
+  }
+  const cs = ext.configSource ?? null;
+  if (cs !== null && typeof cs === "object") {
+    const parsed = parseGitUri(cs.uri);
+    if (parsed !== null) {
+      take("repository", parsed.repository);
+      take("ref", parsed.ref);
+    }
+    take("commit", cs.digest?.sha1);
+    take("commit", cs.digest?.gitCommit);
+    take("workflow", cs.entryPoint);
+  }
+  for (const dep of Array.isArray(bd.resolvedDependencies) ? bd.resolvedDependencies : []) {
+    const parsed = parseGitUri(dep?.uri);
+    if (parsed === null) continue;
+    take("repository", parsed.repository);
+    take("ref", parsed.ref);
+    take("commit", dep?.digest?.sha1);
+    take("commit", dep?.digest?.gitCommit);
+  }
+  // The run: `builder.id` is what this repository's image build sets by hand,
+  // `metadata.invocationId` is what npm's generator writes. Either is the same
+  // number, and the number is what makes two artifacts one run.
+  const rd = predicate?.runDetails ?? {};
+  for (const candidate of [rd.builder?.id, rd.metadata?.invocationId]) {
+    if (typeof candidate !== "string") continue;
+    const m = /\/actions\/runs\/(\d+)(?:\/|$)/.exec(candidate);
+    if (m !== null) take("runId", m[1]);
+  }
+  return out;
+}
+
+/** What an identity read out of a provenance must say, or the sentence saying it did not. */
+function identityFaults(id, expected) {
+  const faults = [];
+  if (id.repository !== expected.repositoryUrl) {
+    faults.push(`it was built by ${id.repository ?? "(no repository)"} and this deploy expects ${expected.repositoryUrl}`);
+  }
+  if (id.workflow !== expected.workflow) {
+    faults.push(`the workflow is ${id.workflow ?? "(not recorded)"} and only ${expected.workflow} publishes this project`);
+  }
+  if (id.ref !== expected.ref) {
+    faults.push(`the ref is ${id.ref ?? "(not recorded)"} and ${expected.version} is released from ${expected.ref}`);
+  }
+  if (id.commit === null) {
+    faults.push("it does not record the commit it was built from, so nothing ties it to the other artifact of this release");
+  }
+  return faults;
+}
+
 const platformName = (m) => `${m.platform?.os ?? "?"}/${m.platform?.architecture ?? "?"}`;
 
-/** One line of the verdict table: a family, an artifact, a status and why. */
-const verdict = (family, artifact, status, detail) => ({ family, artifact, status, detail });
+/**
+ * One line of the verdict table: a family, an artifact, a status and why — and,
+ * when the check read one, the release identity the artifact claims, so the
+ * cross-artifact check further down compares what was actually verified rather
+ * than re-parsing the same documents with a second set of rules.
+ */
+const verdict = (family, artifact, status, detail, identity = null) => ({
+  family,
+  artifact,
+  status,
+  detail,
+  ...(identity === null ? {} : { identity }),
+});
 
-/** THE IMAGE'S SBOM: one per runtime platform, bound to that platform's digest. */
-function imageSbom(image, found) {
+/**
+ * THE IMAGE'S SBOM: one SPDX document per runtime platform, bound to that
+ * platform's digest, and listing something.
+ *
+ * SPDX AND NOTHING ELSE, ON PURPOSE. `--sbom=true` is what this project's
+ * release runs and BuildKit's SPDX predicate is what it produces; no step
+ * anywhere in this repository produces a CycloneDX attestation for an IMAGE. A
+ * format with no producer here is a format whose documents this gate has never
+ * seen and cannot schema-validate, so accepting one would mean accepting
+ * whatever a pusher chose to put under that name — and `{}` is a valid
+ * "whatever". The npm tarball's CycloneDX document is a different artifact,
+ * found on the release, and it IS validated against the tarball it names.
+ *
+ * ACCEPTING AN SBOM MEANS READING IT. A document that passes here declares an
+ * SPDX version and lists at least one package, because "the SBOM is present" is
+ * a claim an operator uses to answer "is that CVE in the thing we run", and an
+ * empty document answers no to every such question while looking like evidence.
+ */
+export function imageSbom(image, found) {
   if (found.runtime.length === 0) {
     return verdict("SBOM", image.ref, "MISSING", "the reference is a single-platform manifest, so it carries no attestation manifests at all — a digest that has an SBOM is the index digest buildx reported when it pushed");
   }
   const missing = [];
   const carried = [];
   for (const entry of found.runtime) {
-    const attached = (found.statements.get(entry.digest) ?? []).filter((s) => SBOM_PREDICATES.includes(s.predicateType));
+    const all = found.statements.get(entry.digest) ?? [];
+    const attached = all.filter((s) => s.predicateType === SPDX_PREDICATE);
     if (attached.length === 0) {
-      const other = (found.statements.get(entry.digest) ?? []).map((s) => s.predicateType);
-      missing.push(`${platformName(entry)} carries ${other.length === 0 ? "no attestation" : other.join(", ")}`);
+      const other = all.map((s) => s.predicateType);
+      const cyclonedx = other.includes(CYCLONEDX_PREDICATE)
+        ? ` — a CycloneDX attestation on an image is not accepted: nothing in this release produces one, so this gate has no producer to validate its shape against and would be taking the annotation's word for the contents`
+        : "";
+      missing.push(`${platformName(entry)} carries ${other.length === 0 ? "no attestation" : other.join(", ")}${cyclonedx}`);
       continue;
     }
-    const unbound = attached.filter((s) => !statementBinds(s.statement, entry.digest));
-    if (unbound.length > 0) {
-      missing.push(`${platformName(entry)}: the ${unbound[0].predicateType} attestation does not name ${entry.digest} as its subject`);
+    const fault = attached.map((s) => statementFault(s, entry.digest, SPDX_PREDICATE)).find((f) => f !== null);
+    if (fault !== undefined) {
+      missing.push(`${platformName(entry)}: ${fault}`);
       continue;
     }
-    const spdx = attached.find((s) => s.predicateType === "https://spdx.dev/Document");
-    const packages = spdx === undefined ? null : (spdx.statement.predicate?.packages ?? []).length;
-    if (spdx !== undefined && packages < 1) {
-      missing.push(`${platformName(entry)}: the SPDX document lists no packages`);
+    const predicate = attached[0].statement.predicate ?? null;
+    if (predicate === null || typeof predicate !== "object" || Array.isArray(predicate)) {
+      missing.push(`${platformName(entry)}: the SPDX statement's predicate is ${JSON.stringify(predicate)}, not a document`);
       continue;
     }
-    carried.push(`${platformName(entry)} ${attached.map((s) => s.predicateType).join("+")}${packages === null ? "" : ` (${packages} packages)`}`);
+    if (typeof predicate.spdxVersion !== "string" || !predicate.spdxVersion.startsWith("SPDX-")) {
+      missing.push(`${platformName(entry)}: the predicate declares \`spdxVersion\` ${JSON.stringify(predicate.spdxVersion ?? null)}, so it is not an SPDX document`);
+      continue;
+    }
+    if (!Array.isArray(predicate.packages) || predicate.packages.length < 1) {
+      missing.push(`${platformName(entry)}: the SPDX document lists no packages, and an SBOM nobody can look a package up in is not one`);
+      continue;
+    }
+    carried.push(`${platformName(entry)} ${predicate.spdxVersion} (${predicate.packages.length} packages)`);
   }
   if (missing.length > 0) {
     return verdict("SBOM", image.ref, "MISSING", `no SBOM attestation this gate can use: ${missing.join("; ")}. \`docker buildx build --sbom=true\` attaches one per platform.`);
@@ -1190,39 +1392,69 @@ function imageSbom(image, found) {
  * would pass on any image anyone built from any checkout, which is the property
  * provenance exists to deny — so the builder must be a run of this repository.
  */
-function imageProvenance(image, found, repo) {
+export function imageProvenance(image, found, expected) {
   if (found.runtime.length === 0) {
     return verdict("provenance", image.ref, "MISSING", "the reference is a single-platform manifest, so it carries no attestation manifests at all");
   }
   const problems = [];
   const attributed = [];
-  const builderRe = new RegExp(`^https://github\\.com/${escapeRe(repo)}/actions/runs/\\d+`);
+  const identities = [];
+  // ANCHORED AT BOTH ENDS. Without the `$` this pattern accepts
+  // `.../actions/runs/123/not-a-run-at-all`: the prefix matches, the tail is
+  // whatever the pusher appended, and a URL that reads like a run of this
+  // repository is exactly what a reader would click and believe.
+  const builderRe = new RegExp(`^https://github\\.com/${escapeRe(expected.repo)}/actions/runs/\\d+$`);
   for (const entry of found.runtime) {
-    const attached = (found.statements.get(entry.digest) ?? []).filter((s) => s.predicateType === PROVENANCE_PREDICATE);
+    const all = found.statements.get(entry.digest) ?? [];
+    const attached = all.filter((s) => s.predicateType === PROVENANCE_PREDICATE);
     if (attached.length === 0) {
-      const other = (found.statements.get(entry.digest) ?? []).map((s) => s.predicateType);
+      const other = all.map((s) => s.predicateType);
       problems.push(`${platformName(entry)} carries ${other.length === 0 ? "no attestation" : other.join(", ")}`);
       continue;
     }
-    const [{ statement }] = attached;
-    if (!statementBinds(statement, entry.digest)) {
-      problems.push(`${platformName(entry)}: the provenance does not name ${entry.digest} as its subject`);
+    const fault = statementFault(attached[0], entry.digest, PROVENANCE_PREDICATE);
+    if (fault !== null) {
+      problems.push(`${platformName(entry)}: ${fault}`);
       continue;
     }
+    const { statement } = attached[0];
     const builder = statement.predicate?.runDetails?.builder?.id ?? "";
     if (!builderRe.test(builder)) {
       problems.push(
-        `${platformName(entry)}: builder.id is ${builder === "" ? "empty (buildx `mode=min` provenance: a build happened, and it says nothing about whose)" : JSON.stringify(builder)}, not a run of ${repo}`,
+        `${platformName(entry)}: builder.id is ${builder === "" ? "empty (buildx `mode=min` provenance: a build happened, and it says nothing about whose)" : JSON.stringify(builder)}, not a run of ${expected.repo}`,
       );
       continue;
     }
-    attributed.push(`${platformName(entry)} ${builder}`);
+    // THE SAME RELEASE, NOT MERELY THE SAME REPOSITORY. An image built by a run
+    // of this repository from some other tag is a genuine artifact of a
+    // different release, and pairing it with this version's package is the
+    // substitution this check exists to refuse.
+    const id = provenanceIdentity(statement.predicate);
+    const faults = identityFaults(id, expected);
+    if (faults.length > 0) {
+      problems.push(`${platformName(entry)}: ${faults.join("; ")}`);
+      continue;
+    }
+    identities.push({ platform: platformName(entry), ...id });
+    attributed.push(`${platformName(entry)} ${builder} ${id.ref}@${id.commit}`);
   }
   if (problems.length > 0) {
     const anyPresent = found.runtime.some((e) => (found.statements.get(e.digest) ?? []).some((s) => s.predicateType === PROVENANCE_PREDICATE));
-    return verdict("provenance", image.ref, anyPresent ? "REFUSED" : "MISSING", `${problems.join("; ")}. \`--provenance=mode=max,builder-id=<run url>\` is what attaches an attributable one.`);
+    return verdict(
+      "provenance",
+      image.ref,
+      anyPresent ? "REFUSED" : "MISSING",
+      `${problems.join("; ")}. \`--provenance=mode=max,builder-id=<run url>\` over a source the build records ` +
+        `(a git context, or a \`configSource\`) is what attaches a provenance naming the run, the workflow, the tag and the commit.`,
+    );
   }
-  return verdict("provenance", image.ref, "OK", attributed.join(", "));
+  // Two platforms of one push are one build; if they disagree about the commit
+  // they are two builds that were pushed under one index.
+  const distinct = [...new Set(identities.map((i) => `${i.ref}@${i.commit}#${i.runId ?? "?"}`))];
+  if (distinct.length > 1) {
+    return verdict("provenance", image.ref, "REFUSED", `the platforms of this index name different builds: ${distinct.join(" vs ")}`);
+  }
+  return verdict("provenance", image.ref, "OK", attributed.join(", "), identities[0]);
 }
 
 /**
@@ -1235,7 +1467,7 @@ function imageProvenance(image, found, repo) {
  * Discovery is not verification. What makes the signature worth anything is the
  * Fulcio certificate's identity, and that is `cosign verify`'s job.
  */
-async function imageSignature(image, repo) {
+async function imageSignature(image, expected) {
   const hex = image.digest.slice("sha256:".length);
   const layouts = [
     [`sha256-${hex}.sig`, "the `.sig` tag"],
@@ -1246,6 +1478,20 @@ async function imageSignature(image, repo) {
     const manifest = await registryManifest(image, tag, `the signature under ${what}`);
     if (manifest !== null) present.push(`${what} ${tag}`);
   }
+  return cosignVerdict(image, expected, present);
+}
+
+/**
+ * THE IDENTITY IS THE EXACT TAG, AND NOT A PREFIX OF IT. `--certificate-identity-regexp`
+ * ending at `@refs/tags/` accepts a signature made by `release.yml` on ANY tag of
+ * this repository — which is a correct signature over a different release, and
+ * pairing one of those with this version's package is the substitution the
+ * identity check exists to deny. `--certificate-identity` takes the whole string
+ * and compares it, so `v0.1.2`'s package can only be deployed beside the image
+ * `release.yml` signed while running on `refs/tags/v0.1.2`.
+ */
+export function cosignVerdict(image, expected, present) {
+  const hex = image.digest.slice("sha256:".length);
   if (present.length === 0) {
     return verdict("signature", image.ref, "MISSING", `neither sha256-${hex}.sig nor sha256-${hex} is in ${image.host}/${image.repository} — nothing has signed this digest`);
   }
@@ -1253,16 +1499,15 @@ async function imageSignature(image, repo) {
   if (probe.error !== undefined) {
     return verdict("signature", image.ref, "UNVERIFIABLE", `${present.join(", ")} is published, and \`cosign\` is not on this machine's PATH. A published signature nobody verified is not a verified signature, so this gate refuses rather than reporting it as present.`);
   }
-  const identity = `^https://github\\.com/${escapeRe(repo)}/\\.github/workflows/release\\.yml@refs/tags/`;
   const r = spawnSync(
     "cosign",
-    ["verify", "--certificate-oidc-issuer", OIDC_ISSUER, "--certificate-identity-regexp", identity, image.ref],
+    ["verify", "--certificate-oidc-issuer", OIDC_ISSUER, "--certificate-identity", expected.certificateIdentity, image.ref],
     { encoding: "utf8" },
   );
   if (r.status !== 0) {
-    return verdict("signature", image.ref, "REFUSED", `${present.join(", ")} is published and \`cosign verify\` refused it against ${identity} at ${OIDC_ISSUER}:\n${redact(`${r.stdout ?? ""}${r.stderr ?? ""}`).trim()}`);
+    return verdict("signature", image.ref, "REFUSED", `${present.join(", ")} is published and \`cosign verify\` refused it against ${expected.certificateIdentity} at ${OIDC_ISSUER}:\n${redact(`${r.stdout ?? ""}${r.stderr ?? ""}`).trim()}`);
   }
-  return verdict("signature", image.ref, "OK", `${present.join(", ")}, verified against ${identity} at ${OIDC_ISSUER}`);
+  return verdict("signature", image.ref, "OK", `${present.join(", ")}, verified against ${expected.certificateIdentity} at ${OIDC_ISSUER}`);
 }
 
 /** `@scope/name@version` → its two halves, and nothing looser. */
@@ -1294,46 +1539,194 @@ async function npmRegistryVersion(pkg) {
  * here. So this check is also the one that says which of the two ways the
  * package on the registry was published.
  */
-async function npmProvenance(pkg, dist, repo) {
+async function npmProvenance(pkg, dist, expected) {
   const attestations = dist.attestations ?? null;
   if (attestations === null || attestations.url === undefined) {
     return verdict("provenance", pkg.spec, "MISSING", "the registry reports no `dist.attestations` for this version, which is what a publish with a long-lived token leaves behind; OIDC Trusted Publishing is what attaches provenance");
   }
   const res = await fetch(attestations.url, { headers: { "user-agent": UA } });
   if (!res.ok) return verdict("provenance", pkg.spec, "REFUSED", `the registry names an attestations bundle at ${attestations.url} and it answered ${res.status} ${res.statusText}`);
-  const bundles = (await res.json()).attestations ?? [];
+  return npmProvenanceFrom(pkg, dist, expected, (await res.json()).attestations ?? []);
+}
+
+/**
+ * WHAT THE BUNDLE SAYS, CHECKED AGAINST THIS RELEASE AND THIS TARBALL.
+ *
+ * A MALFORMED BUNDLE IS AN ANSWER. The envelope's payload is base64 of JSON, and
+ * a payload that is neither is not an error to crash the gate with — it is a
+ * bundle that proves nothing, reported as such, in the same table as everything
+ * else. So is a bundle with no certificate: what makes a DSSE envelope evidence
+ * is the key that signed it, and `verificationMaterial` is where that key is.
+ *
+ * BOTH ATTESTATIONS ARE ABOUT THIS TARBALL. The provenance says who built it and
+ * the npm publish attestation says the registry countersigned the upload — and
+ * both are checked against `dist.integrity`, because "a publish attestation
+ * exists in the bundle" is satisfied by an attestation about a DIFFERENT version
+ * of the same package, and the bundle is fetched by a URL the registry chose.
+ */
+export function npmProvenanceFrom(pkg, dist, expected, bundles) {
   const statements = bundles.map((b) => {
     const payload = b.bundle?.dsseEnvelope?.payload;
-    if (payload === undefined) return { predicateType: b.predicateType ?? null, statement: null, certified: false };
-    return {
-      predicateType: b.predicateType ?? null,
-      statement: JSON.parse(Buffer.from(payload, "base64").toString("utf8")),
-      certified: (b.bundle?.verificationMaterial?.certificate ?? b.bundle?.verificationMaterial?.x509CertificateChain ?? null) !== null,
-    };
+    const certified = (b.bundle?.verificationMaterial?.certificate ?? b.bundle?.verificationMaterial?.x509CertificateChain ?? null) !== null;
+    if (typeof payload !== "string") return { predicateType: b.predicateType ?? null, statement: null, certified, fault: "carries no `bundle.dsseEnvelope.payload`" };
+    let statement = null;
+    try {
+      statement = JSON.parse(Buffer.from(payload, "base64").toString("utf8"));
+    } catch {
+      return { predicateType: b.predicateType ?? null, statement: null, certified, fault: "has a `dsseEnvelope.payload` that is not base64 of JSON" };
+    }
+    if (statement === null || typeof statement !== "object" || Array.isArray(statement)) {
+      return { predicateType: b.predicateType ?? null, statement: null, certified, fault: `has a payload that decodes to ${JSON.stringify(statement)}, not a statement` };
+    }
+    return { predicateType: b.predicateType ?? null, statement, certified, fault: null };
   });
-  const provenance = statements.find((s) => s.statement?.predicateType === PROVENANCE_PREDICATE);
-  if (provenance === undefined) {
-    return verdict("provenance", pkg.spec, "REFUSED", `the bundle carries ${statements.map((s) => s.predicateType).join(", ") || "nothing"} and no ${PROVENANCE_PREDICATE}`);
+  const broken = statements.filter((s) => s.fault !== null);
+  if (broken.length > 0) {
+    return verdict("provenance", pkg.spec, "REFUSED", `the attestation bundle for ${dist.integrity} is not readable: ${broken.map((s) => `the ${s.predicateType ?? "(unlabelled)"} entry ${s.fault}`).join("; ")}`);
   }
   const want = integrityHex(dist.integrity);
-  const bound = (provenance.statement.subject ?? []).some((s) => (s.digest ?? {}).sha512 === want);
-  if (!bound) {
-    return verdict("provenance", pkg.spec, "REFUSED", `the provenance names ${JSON.stringify((provenance.statement.subject ?? []).map((s) => s.name))}, whose digest is not the ${dist.integrity} the registry serves for this version`);
+  /** The one entry of `predicateType` that is a statement about THIS tarball. */
+  const about = (predicateType) => {
+    const carried = statements.filter((s) => s.statement.predicateType === predicateType);
+    if (carried.length === 0) return { entry: null, fault: `the bundle carries ${statements.map((s) => s.statement.predicateType ?? s.predicateType).join(", ") || "nothing"} and no ${predicateType}` };
+    const entry = carried[0];
+    if (!IN_TOTO_STATEMENT_TYPES.includes(entry.statement._type)) {
+      return { entry: null, fault: `the ${predicateType} statement's \`_type\` is ${JSON.stringify(entry.statement._type ?? null)}, and an in-toto Statement is what carries a predicate` };
+    }
+    if (!entry.certified) {
+      return { entry: null, fault: `the ${predicateType} bundle carries no certificate in \`verificationMaterial\`, so nothing identifies who signed it` };
+    }
+    const subjects = entry.statement.subject ?? [];
+    if (!subjects.some((s) => (s.digest ?? {}).sha512 === want)) {
+      return {
+        entry: null,
+        fault:
+          `the ${predicateType} statement is about ${JSON.stringify(subjects.map((s) => s.name ?? "(unnamed)"))} ` +
+          `at sha512 ${JSON.stringify(subjects.map((s) => (s.digest ?? {}).sha512 ?? null))}, and the registry serves ${dist.integrity} for ${pkg.spec}`,
+      };
+    }
+    return { entry, fault: null };
+  };
+
+  const provenance = about(PROVENANCE_PREDICATE);
+  if (provenance.fault !== null) return verdict("provenance", pkg.spec, "REFUSED", provenance.fault);
+  const publish = about(NPM_PUBLISH_PREDICATE);
+  if (publish.fault !== null) {
+    return verdict("provenance", pkg.spec, "REFUSED", `${publish.fault} — without it the registry did not countersign THIS upload`);
   }
-  const workflow = provenance.statement.predicate?.buildDefinition?.externalParameters?.workflow ?? {};
-  if (workflow.repository !== `https://github.com/${repo}`) {
-    return verdict("provenance", pkg.spec, "REFUSED", `the provenance says it was built by ${workflow.repository ?? "(no repository)"}, and this deploy expects https://github.com/${repo}`);
-  }
-  if (!statements.some((s) => s.statement?.predicateType === NPM_PUBLISH_PREDICATE)) {
-    return verdict("provenance", pkg.spec, "REFUSED", "the bundle carries provenance and no npm publish attestation, so the registry did not countersign the upload");
-  }
+
+  const id = provenanceIdentity(provenance.entry.statement.predicate);
+  const faults = identityFaults(id, expected);
+  if (faults.length > 0) return verdict("provenance", pkg.spec, "REFUSED", faults.join("; "));
   return verdict(
     "provenance",
     pkg.spec,
     "OK",
-    `${workflow.repository} ${workflow.path ?? "?"}@${workflow.ref ?? "?"}, bound to ${dist.integrity}` +
-      `${provenance.certified ? "" : " (the bundle carries no certificate)"}`,
+    `${id.repository} ${id.workflow}@${id.ref} commit ${id.commit}${id.runId === null ? "" : ` run ${id.runId}`}, ` +
+      `provenance and npm publish attestation both bound to ${dist.integrity}`,
+    id,
   );
+}
+
+/**
+ * ONE RELEASE, OR TWO ARTIFACTS THAT EACH LOOK FINE. Everything above answers
+ * "is this artifact genuine". Nothing above answers "are these two the same
+ * release" — and a gate built out of per-artifact answers accepts last month's
+ * correctly signed image beside this month's correctly attested package, both
+ * genuine, both from this repository, and together a pairing no run ever
+ * produced. That is the one substitution an operator cannot see by reading the
+ * lines above, so it gets a line of its own.
+ *
+ * THE RUN IS COMPARED WHEN BOTH SIDES RECORD IT. The tag, the workflow and the
+ * commit are demanded of both provenances by `identityFaults`; the run id is
+ * demanded to AGREE, because `release.yml` publishes both artifacts from one
+ * run, and it is not demanded to EXIST, because whether a generator writes it is
+ * the generator's choice and the commit already pins the release.
+ */
+export function releaseIdentityVerdict(expected, image, npm) {
+  const missing = [image === null ? "the image" : null, npm === null ? "the npm package" : null].filter((x) => x !== null);
+  if (missing.length > 0) {
+    return verdict(
+      "identity",
+      `${expected.tag}`,
+      "REFUSED",
+      `${missing.join(" and ")} did not produce a readable provenance, so there is nothing to compare: two artifacts are one release only if both say so`,
+    );
+  }
+  if (image.commit !== npm.commit) {
+    return verdict("identity", expected.tag, "REFUSED", `the image was built from commit ${image.commit} and ${expected.version} was published from ${npm.commit} — genuine artifacts of two different releases`);
+  }
+  if (image.ref !== npm.ref) {
+    return verdict("identity", expected.tag, "REFUSED", `the image names ${image.ref} and the package names ${npm.ref}`);
+  }
+  if (image.runId !== null && npm.runId !== null && image.runId !== npm.runId) {
+    return verdict("identity", expected.tag, "REFUSED", `the image was built by run ${image.runId} and the package was published by run ${npm.runId}; \`${RELEASE_WORKFLOW}\` publishes both from one run`);
+  }
+  const run = image.runId ?? npm.runId;
+  return verdict(
+    "identity",
+    expected.tag,
+    "OK",
+    `both artifacts name ${expected.repositoryUrl} ${expected.workflow}@${expected.ref} at commit ${image.commit}` +
+      `${run === null ? " (neither provenance records a run id)" : `, run ${run}`}`,
+  );
+}
+
+/**
+ * THE CRYPTOGRAPHY, RUN HERE, ON THE EXACT PACKAGE THIS DEPLOY WAS HANDED.
+ *
+ * Reading a DSSE payload tells you what a bundle SAYS. It does not tell you that
+ * anybody signed it, and every check above this one is a check on the contents
+ * of a document the registry served over TLS and nothing more. `npm audit
+ * signatures` is the verifier: it fetches the registry's own signature and the
+ * Sigstore bundle for an installed tree and verifies both against npm's trust
+ * root — so it is run HERE, at the gate, and not only in the workflow that
+ * published. A workflow that verified is evidence about a job that already
+ * finished; a deploy needs evidence about the bytes it is about to run.
+ *
+ * A CLEAN DIRECTORY, AND ONLY THE PACKAGE. The install is done in a fresh
+ * temporary tree with its own cache, with `--ignore-scripts`, so what is audited
+ * is this specifier and not this repository's dependency tree — auditing the
+ * checkout would report on packages the deploy never installs and would pass
+ * whether or not the one package under test carries anything.
+ *
+ * A VERIFIED REGISTRY SIGNATURE IS NOT A VERIFIED ATTESTATION. npm exits 0 for a
+ * package that has a registry signature and no provenance at all, so the output
+ * is required to name a verified attestation: that sentence is what says the
+ * Sigstore bundle read above was cryptographically checked.
+ */
+export function npmSignature(pkg) {
+  const where = mkdtempSync(join(tmpdir(), "skillonomia-audit-"));
+  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  const opts = {
+    cwd: where,
+    encoding: "utf8",
+    env: { ...process.env, npm_config_cache: join(where, "cache"), npm_config_fund: "false", npm_config_update_notifier: "false" },
+  };
+  const say = (r) => redact(`${r.stdout ?? ""}${r.stderr ?? ""}`).trim();
+  try {
+    const init = spawnSync(npm, ["init", "-y"], opts);
+    if (init.error !== undefined) {
+      return verdict("signature", pkg.spec, "UNVERIFIABLE", "`npm` is not on this machine's PATH, and `npm audit signatures` is what verifies the registry signature and the Sigstore bundle. An unverified bundle is not a verified one, so this gate refuses rather than reporting the bundle as read.");
+    }
+    if (init.status !== 0) return verdict("signature", pkg.spec, "UNVERIFIABLE", `\`npm init -y\` failed in a clean directory, so nothing could be installed to verify:\n${say(init)}`);
+    const install = spawnSync(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", pkg.spec], opts);
+    if (install.status !== 0) return verdict("signature", pkg.spec, "REFUSED", `a clean install of ${pkg.spec} failed, so what a deploy would install is not installable:\n${say(install)}`);
+    const audit = spawnSync(npm, ["audit", "signatures"], opts);
+    const out = say(audit);
+    if (audit.status !== 0) return verdict("signature", pkg.spec, "REFUSED", `\`npm audit signatures\` refused ${pkg.spec}:\n${out}`);
+    if (!/verified attestations?/i.test(out)) {
+      return verdict(
+        "signature",
+        pkg.spec,
+        "REFUSED",
+        `\`npm audit signatures\` verified the registry signature and named no verified attestation, so the provenance bundle read above was never cryptographically checked:\n${out}`,
+      );
+    }
+    return verdict("signature", pkg.spec, "OK", `\`npm audit signatures\` on a clean install of ${pkg.spec}:\n${out}`);
+  } finally {
+    rmSync(where, { recursive: true, force: true });
+  }
 }
 
 /** `pkg:npm/%40scope/name@version` → `@scope/name@version`, or null. */
@@ -1354,8 +1747,8 @@ export function purlOf(component) {
  * SBOM OF THIS TARBALL is the hash the workflow records in it: the root
  * component's SHA-512 must be the integrity the registry serves.
  */
-async function npmSbom(pkg, dist, repo) {
-  const tag = `v${pkg.version}`;
+async function npmSbom(pkg, dist, expected) {
+  const { repo, tag } = expected;
   // `GITHUB_API_URL` is what a GitHub Enterprise host sets, and what a workflow
   // already carries; the public API is the default and not the only answer.
   const api = process.env.GITHUB_API_URL ?? "https://api.github.com";
@@ -1437,7 +1830,14 @@ async function hardening(argv) {
   const repo = opts.repo ?? repositorySlug();
   if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) usage(`--repo must be \`owner/name\`, not \`${repo}\``);
 
-  console.log(`[1/5] the published index of ${image.ref}`);
+  // THE RELEASE THIS GATE IS ABOUT IS THE NPM VERSION'S. One operator-supplied
+  // string decides the tag, the ref and the Fulcio identity, and the image is
+  // then measured against it — so an image digest from another release cannot
+  // define its own expectation and pass.
+  const expected = releaseIdentity(repo, pkg.version);
+  console.log(`[1/6] the release under test: ${expected.repositoryUrl} ${expected.workflow}@${expected.ref}`);
+
+  console.log(`[2/6] the published index of ${image.ref}`);
   image.token = await registryToken(image);
   const found = await imageStatements(image);
   console.log(
@@ -1445,24 +1845,32 @@ async function hardening(argv) {
       `${found.attestations.length} attestation manifest(s)`,
   );
 
-  console.log(`[2/5] the image's SBOM and provenance, by digest`);
-  const results = [imageSbom(image, found), imageProvenance(image, found, repo)];
+  console.log(`[3/6] the image's SBOM and provenance, by digest`);
+  const imageProv = imageProvenance(image, found, expected);
+  const results = [imageSbom(image, found), imageProv];
 
-  console.log(`[3/5] the keyless signature over ${image.digest}`);
-  results.push(await imageSignature(image, repo));
+  console.log(`[4/6] the keyless signature over ${image.digest}`);
+  results.push(await imageSignature(image, expected));
 
-  console.log(`[4/5] ${pkg.spec} on the npm registry`);
+  console.log(`[5/6] ${pkg.spec} on the npm registry`);
   const dist = (await npmRegistryVersion(pkg)).dist ?? {};
   if (dist.integrity === undefined) fail(`the npm registry reports no integrity for ${pkg.spec}`);
   console.log(`      ${dist.integrity}`);
-  results.push(await npmProvenance(pkg, dist, repo));
+  const npmProv = await npmProvenance(pkg, dist, expected);
+  results.push(npmProv);
+  console.log(`      \`npm audit signatures\` on a clean install of ${pkg.spec}`);
+  const npmSig = npmSignature(pkg);
+  results.push(npmSig);
 
-  console.log(`[5/5] the CycloneDX document published for the tarball`);
-  results.push(await npmSbom(pkg, dist, repo));
+  console.log(`[6/6] the CycloneDX document published for the tarball`);
+  results.push(await npmSbom(pkg, dist, expected));
+
+  // AND THEN THE ONE QUESTION NO PER-ARTIFACT LINE ASKS.
+  results.push(releaseIdentityVerdict(expected, imageProv.identity ?? null, npmProv.identity ?? null));
 
   // THE VERDICT, ONE LINE PER CHECK AND ONE PER FAMILY. A family is only OK if
   // every artifact that can answer for it did.
-  const families = ["SBOM", "signature", "provenance"];
+  const families = ["SBOM", "signature", "provenance", "identity"];
   console.log("");
   for (const family of families) {
     for (const r of results.filter((x) => x.family === family)) {
@@ -1471,16 +1879,21 @@ async function hardening(argv) {
     }
   }
   const failed = families.filter((f) => results.some((r) => r.family === f && r.status !== "OK"));
+  // THE FIELD IS A FACT ABOUT THIS RUN, NOT A CONSTANT. It is `true` when, and
+  // only when, `npm audit signatures` verified an attestation on the package
+  // this gate was handed — and the marker below is refused unless it is.
+  const cryptographicallyVerified = npmSig.status === "OK";
   const record = {
     check: "hardening",
-    marker: failed.length === 0 ? HARDENING_OK : null,
+    marker: failed.length === 0 && cryptographicallyVerified ? HARDENING_OK : null,
     image: image.ref,
     npm: pkg.spec,
     repository: repo,
+    release: { tag: expected.tag, ref: expected.ref, workflow: expected.workflow, certificate_identity: expected.certificateIdentity },
     families: Object.fromEntries(families.map((f) => [f, results.filter((r) => r.family === f).every((r) => r.status === "OK") ? "OK" : "REFUSED"])),
     checks: results,
     cosign_available: spawnSync("cosign", ["version"], { encoding: "utf8" }).error === undefined,
-    npm_bundle_cryptographically_verified: false,
+    npm_bundle_cryptographically_verified: cryptographicallyVerified,
   };
   if (opts.record !== null) {
     mkdirSync(dirname(opts.record), { recursive: true });
@@ -1490,14 +1903,17 @@ async function hardening(argv) {
   console.log("");
   if (failed.length > 0) {
     fail(
-      `this digest is not deployable: ${failed.join(", ")} ${failed.length === 1 ? "is" : "are"} not published, or not what a deploy of ${repo} may accept. ` +
+      `this digest is not deployable: ${failed.join(", ")} ${failed.length === 1 ? "is" : "are"} not published, or not what a deploy of ${repo} ${expected.tag} may accept. ` +
         "Each line above says which artifact and why.",
     );
   }
-  console.log(
-    "npm's Sigstore bundle was read, not cryptographically verified here — `npm audit signatures` in the publishing " +
-      "workflow is what verifies it.",
-  );
+  // The marker cannot be reached with an unverified bundle — but a second,
+  // explicit refusal here is what keeps that true if a future family stops
+  // carrying the npm signature check.
+  if (!cryptographicallyVerified) {
+    fail(`every family answered OK and \`npm audit signatures\` did not verify ${pkg.spec}; ${HARDENING_OK} is not printed for a bundle nobody verified`);
+  }
+  console.log(`npm's Sigstore bundle was verified here by \`npm audit signatures\`, on a clean install of ${pkg.spec}.`);
   console.log(HARDENING_OK);
 }
 
