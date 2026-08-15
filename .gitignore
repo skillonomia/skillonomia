@@ -4,5 +4,12 @@ node_modules/
 *.db-shm
 dist/
 dist-js/
-evidence/
+evidence/*
+# …except the pilot record SCHEMA, which is not evidence: it is the shape
+# `ci/run-pilot.mjs` writes a record in and checks one against, so it ships with
+# the runner. The records and transcripts themselves are produced on a pilot's
+# machine and stay ignored.
+!evidence/pilots/
+evidence/pilots/*
+!evidence/pilots/PILOT_TEMPLATE.json
 *.tgz

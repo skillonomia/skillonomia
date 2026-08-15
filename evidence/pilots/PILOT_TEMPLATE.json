@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skillonomia.dev/schema/pilot-record-v1.schema.json",
+  "title": "Skillonomia external pilot record",
+  "description": "The record `node ci/run-pilot.mjs run` writes and `node ci/run-pilot.mjs verify` reads. It carries what a reviewer needs to re-check a pilot from outside it: the platform and the official path, the artifact identity its registry can be asked about, the candidate SHA, the URL the owner reads the receipt back from, the /health hash, the timestamps, the terminal receipt and its read-back hash, the transcript hash, the time to the first `adopted` and the blockers the run reproduced. It carries no credential, no API key, no user name and no machine path: the read-back credential travels in a token file named on the command line, which is its only copy. `additionalProperties` is false everywhere, so a field nobody designed cannot arrive carrying one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record", "schema", "marker", "outcome", "rehearsal", "platform", "path", "artifact",
+    "candidate_sha", "verification_base_url", "health", "timestamps", "receipt", "skill",
+    "transcript", "time_to_first_adopted_ms", "time_to_health_ms", "blockers",
+    "instance_left_running", "trust_boundary", "record_hash"
+  ],
+  "properties": {
+    "record": { "const": "skillonomia-pilot" },
+    "schema": { "const": "evidence/pilots/PILOT_TEMPLATE.json" },
+    "marker": { "enum": ["PILOT_RUN_OK", "PILOT_RUN_STAGED_OK", "PILOT_RUN_BLOCKED"] },
+    "outcome": {
+      "description": "`adopted` is a run that reached a terminal receipt; `blocked` is one that reproduced a blocker and stopped. A blocked run still writes a record, and its exit code is not zero.",
+      "enum": ["adopted", "blocked"]
+    },
+    "rehearsal": {
+      "description": "True when the owner's verification URL is the runner's own loopback, so no external read-back was exercised. A rehearsal record never produces PILOTS_OK.",
+      "type": "boolean"
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch", "node"],
+      "properties": {
+        "os": { "enum": ["linux", "macos", "windows"] },
+        "arch": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+        "node": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+" }
+      }
+    },
+    "path": {
+      "description": "The one official path this pilot used. §C gives each pilot a choice of one, not both.",
+      "enum": ["npm", "docker"]
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "kind", "checksum", "digest", "version"],
+      "properties": {
+        "reference": { "type": "string", "pattern": "^(@[a-z0-9-~][a-z0-9-._~]*/[a-z0-9-._~]+@\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?|[a-z0-9.-]+(:\\d+)?/[a-z0-9._/-]+@sha256:[0-9a-f]{64})$" },
+        "kind": { "enum": ["npm-tarball", "container-image"] },
+        "checksum": {
+          "description": "The npm registry's own integrity string for the tarball that was installed, or null on the container path.",
+          "type": ["string", "null"],
+          "pattern": "^sha\\d{3}-[A-Za-z0-9+/=]+$"
+        },
+        "digest": {
+          "description": "The immutable image digest that was pulled, or null on the npm path.",
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "version": { "type": ["string", "null"], "pattern": "^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?$" }
+      }
+    },
+    "candidate_sha": {
+      "description": "The exact source commit the artifact was built from. Both pilot records name the same one.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "verification_base_url": {
+      "description": "Where the owner reaches this deployment for a read-only receipt read-back until acceptance.",
+      "type": "string",
+      "pattern": "^https?://"
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["body", "hash"],
+      "properties": {
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "service", "version"],
+          "properties": {
+            "status": { "const": "ok" },
+            "service": { "type": "string" },
+            "version": { "type": "string" }
+          }
+        },
+        "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "health_at", "adopted_at", "finished_at"],
+      "properties": {
+        "started_at": { "type": "string" },
+        "health_at": { "type": "string" },
+        "adopted_at": { "type": ["string", "null"] },
+        "finished_at": { "type": "string" }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "read_back_hash"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+        "state": { "type": "string" },
+        "read_back_hash": {
+          "description": "The hash of the receipt as the server read it back, over its keys in sorted order. The verifier re-reads the receipt and recomputes this.",
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "skill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "version_id", "content_hash", "risk_level", "compat"],
+      "properties": {
+        "slug": { "type": "string" },
+        "version_id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+        "content_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "risk_level": { "const": "low" },
+        "compat": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["result", "unmet"],
+          "properties": {
+            "result": { "type": "string" },
+            "unmet": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "transcript": {
+      "description": "The redacted runner transcript, named by file name and read from beside the record — a path would name somebody's machine.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "hash"],
+      "properties": {
+        "file": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.json$" },
+        "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "time_to_first_adopted_ms": {
+      "description": "From the first line of the run to the terminal receipt, in milliseconds. Null on a blocked run.",
+      "type": ["integer", "null"]
+    },
+    "time_to_health_ms": { "type": "integer" },
+    "blockers": {
+      "description": "Only what the run itself reproduced: each entry names the probe that was re-executed and how many times it answered the same way. There is no option for adding one by hand.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "symptom", "mitigation", "probe", "reproduced_times"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "symptom": { "type": "string" },
+          "mitigation": { "type": "string" },
+          "probe": { "type": "string" },
+          "reproduced_times": { "type": "integer" }
+        }
+      }
+    },
+    "instance_left_running": { "type": "boolean" },
+    "trust_boundary": { "type": "string" },
+    "record_hash": {
+      "description": "A checksum over this record's other fields, keys in sorted order. It detects an edit that did not recompute it; it is not a signature, and the checks that catch a recomputed edit are the transcript hash, the artifact read-back and the live receipt.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
