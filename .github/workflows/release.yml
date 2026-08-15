@@ -120,6 +120,32 @@ jobs:
   # a human needs a name to read, but the artifact of record is the digest
   # buildx reports and the read-back below re-resolves it from the registry: a
   # tag can be moved afterwards and a digest cannot.
+  #
+  # ------------------------------------------------------------------ (D)
+  #
+  # AND THE DIGEST NOW CARRIES ITS OWN EVIDENCE. Three things are attached to
+  # the push, and each one answers a question a digest alone cannot:
+  #
+  #   --sbom=true      WHAT IS IN IT. One SPDX document per platform, attached
+  #                    to that platform's manifest, so an operator reading a CVE
+  #                    advisory can answer "is that package in the thing we run"
+  #                    from the registry instead of from a rebuild.
+  #   --provenance     WHO BUILT IT, AND FROM WHAT. buildx attaches provenance by
+  #     mode=max       default in `mode=min`, and a min-mode statement has an
+  #                    EMPTY `builder.id`: it says a build happened and not whose.
+  #                    `builder-id` is set to THIS RUN's URL, so the provenance
+  #                    names a run of this repository that a reader can open.
+  #   cosign sign      THAT WE MEANT TO PUBLISH IT. Keyless: the signing identity
+  #                    is this workflow's OIDC token, certified by Fulcio for the
+  #                    few minutes the job holds it, and logged in Rekor. There is
+  #                    no long-lived signing key to leak, rotate or steal, and the
+  #                    identity a verifier pins is `release.yml on a tag of this
+  #                    repository` — a signature from any other workflow, branch
+  #                    or repository fails verification instead of passing quietly.
+  #
+  # `ci/mvp-release.mjs hardening` reads all three back OUT OF THE REGISTRY
+  # before a deploy, and the last job of this workflow runs it against exactly
+  # what was published here.
   publish-image:
     needs: publish-binary
     runs-on: ubuntu-latest
@@ -127,6 +153,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # the keyless signing identity: a token minted for this job, and nothing stored
+      id-token: write
+    outputs:
+      ref: ${{ steps.push.outputs.ref }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -134,6 +164,7 @@ jobs:
           node-version: "22"
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - run: npm ci --ignore-scripts
 
       - name: Sign in to GHCR
@@ -141,17 +172,34 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
 
-      - name: Build both architectures and push them under this version
+      - name: Build both architectures with an SBOM and attributable provenance, and push them
         id: push
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           docker buildx build --platform linux/amd64,linux/arm64 \
             --tag "${IMAGE}:${VERSION}" \
+            --sbom=true \
+            --provenance="mode=max,builder-id=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --metadata-file metadata.json \
             --push .
           DIGEST=$(node -p "require('./metadata.json')['containerimage.digest']")
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "ref=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # THE SIGNATURE, AND THEN THE VERIFICATION OF IT. `cosign sign` writes an
+      # artifact to the registry; that it wrote one is not the claim anybody
+      # cares about. The claim is that a verifier pinning THIS identity accepts
+      # it, so the same command an operator will run is run here, against the
+      # digest that was just pushed, before the release goes any further.
+      - name: Sign the published digest, keyless
+        run: cosign sign --yes "${{ steps.push.outputs.ref }}"
+
+      - name: Verify the signature that was just written
+        run: |
+          cosign verify \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/release\.yml@refs/tags/" \
+            "${{ steps.push.outputs.ref }}"
 
       # THE READ-BACK. The manifest is re-resolved FROM THE REGISTRY, then the
       # image is pulled by digest, run loopback-only, driven through the
@@ -171,16 +219,37 @@ jobs:
   #
   # THE NPM PUBLISH. Same environment, same owner approval, third artifact.
   #
-  # IT FAILS CLOSED ON A MISSING TOKEN, and that is deliberate. A publish step
-  # that skipped itself when `NPM_TOKEN` is unset would let a release go out
-  # announcing a CLI that is not on the registry, and nothing in the run would
-  # say so — the release notes, the documents and the qualification matrix would
-  # all describe a package a user cannot install. An absent credential is a
-  # blocked release, stated in one line, and not a quiet omission.
+  # ------------------------------------------------------------------ (D)
+  #
+  # THERE IS NO LONGER AN `NPM_TOKEN`. This job used to fail closed on a missing
+  # one; it now has no publish credential at all, because a token that can
+  # publish this package is a secret that exists between releases — in the
+  # environment, in whatever produced it, and in the memory of anyone who ever
+  # copied it — and every hour of that existence is an hour it can be stolen.
+  # OIDC Trusted Publishing replaces it with a token minted for THIS JOB, valid
+  # for minutes, that the registry accepts only from the repository, workflow
+  # and environment the package's trusted publisher names on npmjs.com.
+  #
+  # THE FAIL-CLOSED RULE SURVIVES, POINTED AT WHAT CAN NOW BE ABSENT. A missing
+  # secret used to be the way this job could publish nothing and say nothing;
+  # the equivalent today is an OIDC token this job cannot mint — `id-token:
+  # write` removed from the permissions, or the workflow renamed out of the
+  # trusted publisher's configuration. That is checked before the pack, in one
+  # line, and blocks the release rather than letting one go out announcing a CLI
+  # nobody can install.
+  #
+  # AND THE PUBLISH CARRIES PROVENANCE. A trusted publish signs a SLSA statement
+  # naming this repository, this workflow and this run, and npm countersigns the
+  # upload. `npm audit signatures` below verifies both cryptographically, from a
+  # clean install of what the registry now serves — not from what was uploaded.
   publish-npm:
     needs: publish-image
     runs-on: ubuntu-latest
     environment: release
+    permissions:
+      # the release the SBOM is uploaded to, and the OIDC token that publishes
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -190,14 +259,17 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: "1.3.14"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      # Node 22 ships npm 10, and Trusted Publishing is npm 11.5.1 and later.
+      # The version is pinned: "whatever is latest on the day of the release" is
+      # not a thing a release can be re-run against a year from now.
+      - run: npm install --global npm@11.19.0
       - run: npm ci
 
-      - name: A publish needs a publish token
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: A publish needs an identity to publish as
         run: |
-          if [ -z "${NPM_TOKEN}" ]; then
-            echo "::error::NPM_TOKEN is not configured for the release environment, so @skillonomia/cli cannot be published. This release is blocked rather than published without its CLI; add a granular publish-only token and re-run."
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL}" ]; then
+            echo "::error::this job cannot mint an OIDC token, so @skillonomia/cli cannot be published as a trusted publisher. Check that the job still declares \`permissions: id-token: write\` and that npmjs.com still names this workflow and the \`release\` environment as the package's trusted publisher. This release is blocked rather than published without its CLI."
             exit 1
           fi
 
@@ -206,12 +278,79 @@ jobs:
       # directory, which `npm publish .` would re-pack into a second tarball
       # nobody checked.
       - name: Pack, checksum, publish that file, and read the registry back
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION="v$(node -p "require('./package.json').version")"
           TARBALL=$(npm pack --silent | tail -1)
           sha256sum "$TARBALL" | tee "$TARBALL.sha256"
-          npm publish "$TARBALL" --access public
+          echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
+          npm publish "$TARBALL" --access public --provenance
           npm view "@skillonomia/cli@${VERSION#v}" dist.integrity version --json
           node ci/mvp-release.mjs npm --package "@skillonomia/cli@${VERSION#v}"
+
+      # THE SBOM OF THE TARBALL, AND WHAT TIES IT TO THE TARBALL. `npm sbom`
+      # describes the tree a consumer installs — production dependencies, which
+      # is what runs — and says nothing about WHICH archive it describes. The
+      # tarball's SHA-512 is written into the document's root component, and it
+      # is the same SHA-512 the registry serves as `dist.integrity`, so the gate
+      # can refuse an SBOM that belongs to some other build of the same version.
+      - name: The tarball's SBOM, bound to the tarball, published on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          npm sbom --sbom-format cyclonedx --sbom-type application --omit dev > sbom.cdx.json
+          node -e '
+            const { createHash } = require("node:crypto");
+            const fs = require("node:fs");
+            // `node -e` leaves no script path in argv: argv[1] is the first argument.
+            const [sbomPath, tarball] = process.argv.slice(1);
+            const sbom = JSON.parse(fs.readFileSync(sbomPath, "utf8"));
+            const hash = createHash("sha512").update(fs.readFileSync(tarball)).digest("hex");
+            sbom.metadata.component.hashes = [{ alg: "SHA-512", content: hash }];
+            fs.writeFileSync(sbomPath, `${JSON.stringify(sbom, null, 2)}\n`);
+            // the purl and not the name: npm sbom fills the root component name
+            // from the directory it ran in, and the gate matches on the purl
+            console.log(`${sbomPath}: ${sbom.metadata.component.purl} SHA-512 ${hash}`);
+          ' sbom.cdx.json "${TARBALL}"
+          ASSET="skillonomia-cli-${VERSION}.cdx.json"
+          mv sbom.cdx.json "$ASSET"
+          sha256sum "$ASSET"
+          # `v${VERSION}` and not the ref name: the gate in the first job has
+          # already refused any tag the two disagree about, and reading the
+          # version from one place keeps this step out of the guard that reads
+          # that gate — which finds it by what it mentions, not by its name.
+          gh release upload "v${VERSION}" "$ASSET"
+
+      # THE CRYPTOGRAPHY, ON WHAT THE REGISTRY NOW SERVES. `npm audit
+      # signatures` fetches the registry's signature and the Sigstore bundle for
+      # an installed tree and verifies both. It runs on a clean install of the
+      # PUBLISHED version, in a directory of its own, so what is verified is
+      # what a user would download.
+      - name: Verify the published registry signature and provenance
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          WHERE="$(mktemp -d)"
+          cd "$WHERE"
+          npm init -y >/dev/null
+          npm install --ignore-scripts "@skillonomia/cli@${VERSION}"
+          npm audit signatures
+
+      # THE PRE-DEPLOY GATE, AGAINST WHAT THIS RUN PUBLISHED. Everything above
+      # proves the commands were issued. This reads the SBOM, the signature and
+      # the provenance back out of the registries, by digest, the way a deploy
+      # will — and it is the same command the hosted deploy runs before it
+      # starts anything. A release whose evidence is not on the registries fails
+      # HERE, where a maintainer is looking, and not later on a server.
+      - name: The published SBOM, signature and provenance, read back
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node ci/mvp-release.mjs hardening \
+            --image "${{ needs.publish-image.outputs.ref }}" \
+            --npm "@skillonomia/cli@$(node -p "require('./package.json').version")" \
+            --record hardening.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: supply-chain-hardening-record
+          path: hardening.json

@@ -6,13 +6,14 @@
 //   node ci/mvp-release.mjs ghcr --digest <ref@sha256:> # pull one published image and drive it
 //   node ci/mvp-release.mjs npm --package <tgz|spec>    # install as a consumer, with no Bun
 //   node ci/mvp-release.mjs platform --package <tgz> --sha256 <hex>   # the qualification contract
+//   node ci/mvp-release.mjs hardening --image <ref@sha256:> --npm <spec>  # the pre-deploy gate
 //
-// FOUR SUBCOMMANDS AND NOT FOUR SCRIPTS. §7 allows this project four new
+// FIVE SUBCOMMANDS AND NOT FIVE SCRIPTS. §7 allows this project four new
 // acceptance scripts before the pilots and two are already spent
 // (`ci/high-risk-exercise.mjs`, this file). Each published thing needs its own
 // checks and they share nearly all of their machinery — a free port, a `/health`
 // wait, the credential capture, the restart on the same database, the receipt
-// read-back — so they are subcommands here rather than three more files that
+// read-back — so they are subcommands here rather than four more files that
 // would each grow their own answer to the same question.
 //
 // WHAT THEY HAVE IN COMMON. Every one of them takes the artifact from where a
@@ -74,6 +75,7 @@ const GHCR_OK = "GHCR_SMOKE_OK";
 const NPM_OK = "NPM_CLI_OK";
 const NPM_STAGED = "NPM_CLI_STAGED_OK";
 const PLATFORM_OK = "PLATFORM_QUALIFICATION_OK";
+const HARDENING_OK = "SUPPLY_CHAIN_HARDENING_OK";
 /** §7 performance budget: `/health` answers within this after a start. */
 const HEALTH_TIMEOUT_MS = 120_000;
 /** §7 performance budget: a clean quickstart reaches `adopted` within this. */
@@ -88,12 +90,17 @@ const USAGE = `usage:
                                                install it as a consumer with no Bun in PATH, then drive the quickstart
   node ci/mvp-release.mjs platform --package <file.tgz> --sha256 <hex>
                                                the OS-neutral qualification contract for one platform job
+  node ci/mvp-release.mjs hardening --image ghcr.io/<owner>/<image>@sha256:<64 hex> --npm <@scope/name@version>
+                                               read the PUBLISHED SBOM, signature and provenance of both
+                                               artifacts back out of the registries, before a deploy
 
 options:
   --out <dir>          binary: where the packaged assets are written (default: dist/release)
   --keep               do not remove the temporary directories that were created
   --expect-host <id>   ghcr: the host this job claims to be, as <platform>-<arch> (e.g. darwin-arm64)
-  --record <file>      ghcr/platform: write the machine-readable record here
+  --record <file>      ghcr/platform/hardening: write the machine-readable record here
+  --repo <owner/name>  hardening: the GitHub repository the release and the signing identity belong to
+                       (default: GITHUB_REPOSITORY, or the origin remote)
 `;
 
 function fail(message) {
@@ -963,6 +970,537 @@ async function platform(argv) {
   console.log(PLATFORM_OK);
 }
 
+// ------------------------------------------------------------------ hardening
+//
+// THE GATE A DEPLOY PASSES THROUGH, AND IT READS THE REGISTRIES, NOT THE BUILD.
+//
+//   node ci/mvp-release.mjs hardening --image "${SKILLONOMIA_IMAGE_DIGEST}" \
+//        --npm "@skillonomia/cli@${SKILLONOMIA_VERSION}"
+//
+// A release job that ran `--sbom=true`, `cosign sign` and a trusted-publisher
+// `npm publish` has evidence that those COMMANDS were issued. It has none that
+// the SBOM, the signature and the provenance are on the registries a deploy will
+// pull from — a step can be reordered, a job can be skipped on a re-run, a
+// registry can garbage-collect, and a digest can be handed to a deploy by a
+// human who copied it from the wrong run. So this subcommand asks the
+// registries, from wherever it is run, with nothing but the digest and the
+// package specifier a deploy was given.
+//
+// EVERYTHING HANGS OFF THE DIGEST THE OPERATOR TYPED. The index is fetched by
+// `--image`'s digest and re-hashed; every manifest and every blob reached from
+// it is re-hashed against the digest that referenced it. So an SBOM this gate
+// accepts is an SBOM the named image's own index points at, and not a document
+// that happens to sit in the same repository under a movable tag.
+//
+// THREE FAMILIES, REPORTED SEPARATELY. `SBOM`, `signature` and `provenance` are
+// three different questions, they fail for three different reasons, and a gate
+// that answered "supply chain: no" would send an operator to read a workflow
+// instead of to the one thing that is missing. Each family is reported with its
+// own verdict and its own sentence, and each artifact — the image and the npm
+// package — contributes to the families it can:
+//
+//   SBOM        the image's per-platform SPDX/CycloneDX attestation, and the
+//               CycloneDX document published for the npm tarball on the release
+//   signature   the keyless cosign signature over the image index digest
+//   provenance  the image's SLSA provenance attestation, attributed to a run of
+//               THIS repository's workflow, and npm's own publish provenance
+//
+// WHAT THIS GATE VERIFIES ITSELF AND WHAT IT DELEGATES. The digest chain above
+// is verified here, in this file. The CRYPTOGRAPHY is not re-implemented here:
+// the image signature is verified by `cosign verify` against a Fulcio identity,
+// and if `cosign` is not installed the signature check reports `UNVERIFIABLE`
+// and the gate refuses — a check that downgraded to "present" when its verifier
+// was missing would be the exact failure this stage exists to prevent. npm's
+// provenance bundle is checked for its published payload, its binding to the
+// tarball the registry serves and the workflow identity that payload claims;
+// its Sigstore bundle is verified cryptographically by `npm audit signatures` in
+// the publishing workflow, and that verification is NOT repeated here. Both
+// facts are printed, so a reader of the output is never left to assume either.
+
+const UA = "skillonomia-mvp-release";
+/** Every media type a manifest this gate reads may be served as. */
+const OCI_ACCEPT = [
+  "application/vnd.oci.image.index.v1+json",
+  "application/vnd.oci.image.manifest.v1+json",
+  "application/vnd.docker.distribution.manifest.list.v2+json",
+  "application/vnd.docker.distribution.manifest.v2+json",
+].join(", ");
+const OIDC_ISSUER = "https://token.actions.githubusercontent.com";
+const SBOM_PREDICATES = ["https://spdx.dev/Document", "https://cyclonedx.org/bom"];
+const PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
+const NPM_PUBLISH_PREDICATE = "https://github.com/npm/attestation/tree/main/specs/publish/v0.1";
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function parseImageRef(ref) {
+  if (!DIGEST_REF.test(ref)) {
+    usage(`--image must be an immutable reference \`<registry>/<image>@sha256:<64 hex>\`, not \`${ref}\``);
+  }
+  const path = ref.slice(0, ref.indexOf("@"));
+  return {
+    ref,
+    host: path.slice(0, path.indexOf("/")),
+    // `docker.io` is the name a REFERENCE uses; it is not the host the API answers on.
+    api: path.startsWith("docker.io/") ? "registry-1.docker.io" : path.slice(0, path.indexOf("/")),
+    repository: path.slice(path.indexOf("/") + 1),
+    digest: ref.slice(ref.indexOf("@") + 1),
+    token: null,
+  };
+}
+
+/** The registry's own anonymous pull token, taken from its `WWW-Authenticate`. */
+async function registryToken(image) {
+  const probe = await fetch(`https://${image.api}/v2/`, { headers: { "user-agent": UA } });
+  if (probe.status !== 401) return null;
+  const challenge = probe.headers.get("www-authenticate") ?? "";
+  const field = (name) => new RegExp(`${name}="([^"]+)"`).exec(challenge)?.[1] ?? null;
+  const realm = field("realm");
+  if (realm === null) return null;
+  const url = new URL(realm);
+  const service = field("service");
+  if (service !== null) url.searchParams.set("service", service);
+  url.searchParams.set("scope", `repository:${image.repository}:pull`);
+  const res = await fetch(url, { headers: { "user-agent": UA } });
+  if (!res.ok) return null;
+  const body = await res.json();
+  return body.token ?? body.access_token ?? null;
+}
+
+function registryGet(image, kind, reference, accept) {
+  return fetch(`https://${image.api}/v2/${image.repository}/${kind}/${reference}`, {
+    headers: {
+      accept,
+      "user-agent": UA,
+      ...(image.token === null ? {} : { authorization: `Bearer ${image.token}` }),
+    },
+  });
+}
+
+/**
+ * A manifest, re-hashed against the digest that referenced it. `null` when the
+ * registry does not have it — a missing signature is an answer, not an error.
+ */
+async function registryManifest(image, reference, what) {
+  const res = await registryGet(image, "manifests", reference, OCI_ACCEPT);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${what}: ${reference} answered ${res.status} ${res.statusText}`);
+  const raw = Buffer.from(await res.arrayBuffer());
+  if (reference.startsWith("sha256:") && `sha256:${sha256(raw)}` !== reference) {
+    throw new Error(`${what}: ${reference} was served as sha256:${sha256(raw)} — the registry answered with other bytes`);
+  }
+  return JSON.parse(raw.toString("utf8"));
+}
+
+/** A blob, re-hashed against the digest its manifest gave it. */
+async function registryBlob(image, digest, what) {
+  const res = await registryGet(image, "blobs", digest, "application/octet-stream");
+  if (!res.ok) throw new Error(`${what}: blob ${digest} answered ${res.status} ${res.statusText}`);
+  const raw = Buffer.from(await res.arrayBuffer());
+  if (`sha256:${sha256(raw)}` !== digest) {
+    throw new Error(`${what}: blob ${digest} was served as sha256:${sha256(raw)}`);
+  }
+  return raw;
+}
+
+/**
+ * The in-toto statements buildx attaches to an index, indexed BY THE PLATFORM
+ * MANIFEST THEY ARE ABOUT. The link is the attestation manifest's
+ * `vnd.docker.reference.digest` annotation, and the statement's own `subject`
+ * is checked against it afterwards: an attestation that names a different image
+ * is a document about something else that was filed in the right drawer.
+ */
+async function imageStatements(image) {
+  const index = await registryManifest(image, image.digest, "the image index");
+  if (index === null) fail(`${image.ref} is not in the registry, or is not readable anonymously`);
+  const entries = index.manifests ?? [];
+  const runtime = entries.filter((m) => (m.annotations?.["vnd.docker.reference.type"] ?? null) === null);
+  const attestations = entries.filter((m) => m.annotations?.["vnd.docker.reference.type"] === "attestation-manifest");
+  const statements = new Map(runtime.map((m) => [m.digest, []]));
+  for (const entry of attestations) {
+    const subject = entry.annotations["vnd.docker.reference.digest"];
+    const bucket = statements.get(subject);
+    // an attestation about a manifest this index does not list is about something else
+    if (bucket === undefined) continue;
+    const manifest = await registryManifest(image, entry.digest, "an attestation manifest");
+    if (manifest === null) continue;
+    for (const layer of manifest.layers ?? []) {
+      const predicateType = layer.annotations?.["in-toto.io/predicate-type"] ?? null;
+      if (predicateType === null) continue;
+      const raw = await registryBlob(image, layer.digest, `the ${predicateType} attestation`);
+      let statement;
+      try {
+        statement = JSON.parse(raw.toString("utf8"));
+      } catch {
+        throw new Error(`the ${predicateType} attestation of ${subject} is not JSON`);
+      }
+      bucket.push({ predicateType, statement, blob: layer.digest });
+    }
+  }
+  return { index, runtime, attestations, statements };
+}
+
+/** Does an in-toto statement say it is about this exact manifest digest? */
+function statementBinds(statement, digest) {
+  const want = digest.slice("sha256:".length);
+  return (statement.subject ?? []).some((s) => (s.digest ?? {}).sha256 === want);
+}
+
+const platformName = (m) => `${m.platform?.os ?? "?"}/${m.platform?.architecture ?? "?"}`;
+
+/** One line of the verdict table: a family, an artifact, a status and why. */
+const verdict = (family, artifact, status, detail) => ({ family, artifact, status, detail });
+
+/** THE IMAGE'S SBOM: one per runtime platform, bound to that platform's digest. */
+function imageSbom(image, found) {
+  if (found.runtime.length === 0) {
+    return verdict("SBOM", image.ref, "MISSING", "the reference is a single-platform manifest, so it carries no attestation manifests at all — a digest that has an SBOM is the index digest buildx reported when it pushed");
+  }
+  const missing = [];
+  const carried = [];
+  for (const entry of found.runtime) {
+    const attached = (found.statements.get(entry.digest) ?? []).filter((s) => SBOM_PREDICATES.includes(s.predicateType));
+    if (attached.length === 0) {
+      const other = (found.statements.get(entry.digest) ?? []).map((s) => s.predicateType);
+      missing.push(`${platformName(entry)} carries ${other.length === 0 ? "no attestation" : other.join(", ")}`);
+      continue;
+    }
+    const unbound = attached.filter((s) => !statementBinds(s.statement, entry.digest));
+    if (unbound.length > 0) {
+      missing.push(`${platformName(entry)}: the ${unbound[0].predicateType} attestation does not name ${entry.digest} as its subject`);
+      continue;
+    }
+    const spdx = attached.find((s) => s.predicateType === "https://spdx.dev/Document");
+    const packages = spdx === undefined ? null : (spdx.statement.predicate?.packages ?? []).length;
+    if (spdx !== undefined && packages < 1) {
+      missing.push(`${platformName(entry)}: the SPDX document lists no packages`);
+      continue;
+    }
+    carried.push(`${platformName(entry)} ${attached.map((s) => s.predicateType).join("+")}${packages === null ? "" : ` (${packages} packages)`}`);
+  }
+  if (missing.length > 0) {
+    return verdict("SBOM", image.ref, "MISSING", `no SBOM attestation this gate can use: ${missing.join("; ")}. \`docker buildx build --sbom=true\` attaches one per platform.`);
+  }
+  return verdict("SBOM", image.ref, "OK", carried.join(", "));
+}
+
+/**
+ * THE IMAGE'S PROVENANCE, AND WHO IS IN IT. buildx attaches SLSA provenance by
+ * DEFAULT in `mode=min`, and a min-mode statement has an EMPTY `builder.id`: it
+ * says a build happened and not whose build it was. A gate that accepted it
+ * would pass on any image anyone built from any checkout, which is the property
+ * provenance exists to deny — so the builder must be a run of this repository.
+ */
+function imageProvenance(image, found, repo) {
+  if (found.runtime.length === 0) {
+    return verdict("provenance", image.ref, "MISSING", "the reference is a single-platform manifest, so it carries no attestation manifests at all");
+  }
+  const problems = [];
+  const attributed = [];
+  const builderRe = new RegExp(`^https://github\\.com/${escapeRe(repo)}/actions/runs/\\d+`);
+  for (const entry of found.runtime) {
+    const attached = (found.statements.get(entry.digest) ?? []).filter((s) => s.predicateType === PROVENANCE_PREDICATE);
+    if (attached.length === 0) {
+      const other = (found.statements.get(entry.digest) ?? []).map((s) => s.predicateType);
+      problems.push(`${platformName(entry)} carries ${other.length === 0 ? "no attestation" : other.join(", ")}`);
+      continue;
+    }
+    const [{ statement }] = attached;
+    if (!statementBinds(statement, entry.digest)) {
+      problems.push(`${platformName(entry)}: the provenance does not name ${entry.digest} as its subject`);
+      continue;
+    }
+    const builder = statement.predicate?.runDetails?.builder?.id ?? "";
+    if (!builderRe.test(builder)) {
+      problems.push(
+        `${platformName(entry)}: builder.id is ${builder === "" ? "empty (buildx `mode=min` provenance: a build happened, and it says nothing about whose)" : JSON.stringify(builder)}, not a run of ${repo}`,
+      );
+      continue;
+    }
+    attributed.push(`${platformName(entry)} ${builder}`);
+  }
+  if (problems.length > 0) {
+    const anyPresent = found.runtime.some((e) => (found.statements.get(e.digest) ?? []).some((s) => s.predicateType === PROVENANCE_PREDICATE));
+    return verdict("provenance", image.ref, anyPresent ? "REFUSED" : "MISSING", `${problems.join("; ")}. \`--provenance=mode=max,builder-id=<run url>\` is what attaches an attributable one.`);
+  }
+  return verdict("provenance", image.ref, "OK", attributed.join(", "));
+}
+
+/**
+ * THE KEYLESS SIGNATURE. Discovery covers both layouts a cosign release may
+ * have written — the `sha256-<hex>.sig` tag of the classic layout and the
+ * `sha256-<hex>` referrers-fallback tag of the OCI 1.1 bundle layout — because
+ * which one exists is a property of the cosign version that signed, and an
+ * operator reading this output cares whether a signature is THERE.
+ *
+ * Discovery is not verification. What makes the signature worth anything is the
+ * Fulcio certificate's identity, and that is `cosign verify`'s job.
+ */
+async function imageSignature(image, repo) {
+  const hex = image.digest.slice("sha256:".length);
+  const layouts = [
+    [`sha256-${hex}.sig`, "the `.sig` tag"],
+    [`sha256-${hex}`, "the referrers-fallback tag"],
+  ];
+  const present = [];
+  for (const [tag, what] of layouts) {
+    const manifest = await registryManifest(image, tag, `the signature under ${what}`);
+    if (manifest !== null) present.push(`${what} ${tag}`);
+  }
+  if (present.length === 0) {
+    return verdict("signature", image.ref, "MISSING", `neither sha256-${hex}.sig nor sha256-${hex} is in ${image.host}/${image.repository} — nothing has signed this digest`);
+  }
+  const probe = spawnSync("cosign", ["version"], { encoding: "utf8" });
+  if (probe.error !== undefined) {
+    return verdict("signature", image.ref, "UNVERIFIABLE", `${present.join(", ")} is published, and \`cosign\` is not on this machine's PATH. A published signature nobody verified is not a verified signature, so this gate refuses rather than reporting it as present.`);
+  }
+  const identity = `^https://github\\.com/${escapeRe(repo)}/\\.github/workflows/release\\.yml@refs/tags/`;
+  const r = spawnSync(
+    "cosign",
+    ["verify", "--certificate-oidc-issuer", OIDC_ISSUER, "--certificate-identity-regexp", identity, image.ref],
+    { encoding: "utf8" },
+  );
+  if (r.status !== 0) {
+    return verdict("signature", image.ref, "REFUSED", `${present.join(", ")} is published and \`cosign verify\` refused it against ${identity} at ${OIDC_ISSUER}:\n${redact(`${r.stdout ?? ""}${r.stderr ?? ""}`).trim()}`);
+  }
+  return verdict("signature", image.ref, "OK", `${present.join(", ")}, verified against ${identity} at ${OIDC_ISSUER}`);
+}
+
+/** `@scope/name@version` → its two halves, and nothing looser. */
+function parseNpmSpec(spec) {
+  const at = spec.lastIndexOf("@");
+  if (at <= 0) usage(`--npm must be \`<name>@<version>\`, not \`${spec}\``);
+  const name = spec.slice(0, at);
+  const version = spec.slice(at + 1);
+  if (!/^\d+\.\d+\.\d+/.test(version)) usage(`--npm must name an exact version, not \`${version}\``);
+  return { spec, name, version };
+}
+
+const integrityHex = (integrity) => Buffer.from(integrity.slice(integrity.indexOf("-") + 1), "base64").toString("hex");
+
+/** What the registry says it is serving under this exact version. */
+async function npmRegistryVersion(pkg) {
+  const res = await fetch(`https://registry.npmjs.org/${pkg.name}`, { headers: { "user-agent": UA } });
+  if (!res.ok) fail(`the npm registry answered ${res.status} ${res.statusText} for ${pkg.name}`);
+  const packument = await res.json();
+  const version = (packument.versions ?? {})[pkg.version];
+  if (version === undefined) fail(`the npm registry has no ${pkg.spec} — it carries ${Object.keys(packument.versions ?? {}).join(", ") || "no versions"}`);
+  return version;
+}
+
+/**
+ * NPM'S OWN PROVENANCE, WHICH ONLY EXISTS IF THE PUBLISH WAS A TRUSTED ONE. A
+ * long-lived `NPM_TOKEN` publish produces a package with registry signatures and
+ * NO attestations; OIDC Trusted Publishing produces the SLSA provenance read
+ * here. So this check is also the one that says which of the two ways the
+ * package on the registry was published.
+ */
+async function npmProvenance(pkg, dist, repo) {
+  const attestations = dist.attestations ?? null;
+  if (attestations === null || attestations.url === undefined) {
+    return verdict("provenance", pkg.spec, "MISSING", "the registry reports no `dist.attestations` for this version, which is what a publish with a long-lived token leaves behind; OIDC Trusted Publishing is what attaches provenance");
+  }
+  const res = await fetch(attestations.url, { headers: { "user-agent": UA } });
+  if (!res.ok) return verdict("provenance", pkg.spec, "REFUSED", `the registry names an attestations bundle at ${attestations.url} and it answered ${res.status} ${res.statusText}`);
+  const bundles = (await res.json()).attestations ?? [];
+  const statements = bundles.map((b) => {
+    const payload = b.bundle?.dsseEnvelope?.payload;
+    if (payload === undefined) return { predicateType: b.predicateType ?? null, statement: null, certified: false };
+    return {
+      predicateType: b.predicateType ?? null,
+      statement: JSON.parse(Buffer.from(payload, "base64").toString("utf8")),
+      certified: (b.bundle?.verificationMaterial?.certificate ?? b.bundle?.verificationMaterial?.x509CertificateChain ?? null) !== null,
+    };
+  });
+  const provenance = statements.find((s) => s.statement?.predicateType === PROVENANCE_PREDICATE);
+  if (provenance === undefined) {
+    return verdict("provenance", pkg.spec, "REFUSED", `the bundle carries ${statements.map((s) => s.predicateType).join(", ") || "nothing"} and no ${PROVENANCE_PREDICATE}`);
+  }
+  const want = integrityHex(dist.integrity);
+  const bound = (provenance.statement.subject ?? []).some((s) => (s.digest ?? {}).sha512 === want);
+  if (!bound) {
+    return verdict("provenance", pkg.spec, "REFUSED", `the provenance names ${JSON.stringify((provenance.statement.subject ?? []).map((s) => s.name))}, whose digest is not the ${dist.integrity} the registry serves for this version`);
+  }
+  const workflow = provenance.statement.predicate?.buildDefinition?.externalParameters?.workflow ?? {};
+  if (workflow.repository !== `https://github.com/${repo}`) {
+    return verdict("provenance", pkg.spec, "REFUSED", `the provenance says it was built by ${workflow.repository ?? "(no repository)"}, and this deploy expects https://github.com/${repo}`);
+  }
+  if (!statements.some((s) => s.statement?.predicateType === NPM_PUBLISH_PREDICATE)) {
+    return verdict("provenance", pkg.spec, "REFUSED", "the bundle carries provenance and no npm publish attestation, so the registry did not countersign the upload");
+  }
+  return verdict(
+    "provenance",
+    pkg.spec,
+    "OK",
+    `${workflow.repository} ${workflow.path ?? "?"}@${workflow.ref ?? "?"}, bound to ${dist.integrity}` +
+      `${provenance.certified ? "" : " (the bundle carries no certificate)"}`,
+  );
+}
+
+/** `pkg:npm/%40scope/name@version` → `@scope/name@version`, or null. */
+export function purlOf(component) {
+  const purl = component.purl ?? null;
+  if (purl === null || !purl.startsWith("pkg:npm/")) return null;
+  const body = purl.slice("pkg:npm/".length).split("?")[0];
+  const at = body.lastIndexOf("@");
+  if (at <= 0) return null;
+  return `${decodeURIComponent(body.slice(0, at))}@${body.slice(at + 1)}`;
+}
+
+/**
+ * THE NPM TARBALL'S SBOM, ON THE RELEASE. An image's SBOM rides in the registry
+ * beside the image; npm has no such place, so the CycloneDX document is a
+ * release asset — and it is found BY ITS CONTENT, not by a filename this file
+ * and the workflow would each have to spell the same way. What makes it the
+ * SBOM OF THIS TARBALL is the hash the workflow records in it: the root
+ * component's SHA-512 must be the integrity the registry serves.
+ */
+async function npmSbom(pkg, dist, repo) {
+  const tag = `v${pkg.version}`;
+  // `GITHUB_API_URL` is what a GitHub Enterprise host sets, and what a workflow
+  // already carries; the public API is the default and not the only answer.
+  const api = process.env.GITHUB_API_URL ?? "https://api.github.com";
+  const res = await fetch(`${api}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, {
+    headers: {
+      "user-agent": UA,
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28",
+      ...(process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ? { authorization: `Bearer ${process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN}` } : {}),
+    },
+  });
+  if (!res.ok) return verdict("SBOM", pkg.spec, "MISSING", `${repo} has no release tagged ${tag} to carry an SBOM (the API answered ${res.status} ${res.statusText})`);
+  const release = await res.json();
+  const candidates = (release.assets ?? []).filter((a) => a.name.endsWith(".cdx.json"));
+  if (candidates.length === 0) {
+    return verdict("SBOM", pkg.spec, "MISSING", `release ${tag} carries [${(release.assets ?? []).map((a) => a.name).join(", ")}] and no CycloneDX document`);
+  }
+  const want = integrityHex(dist.integrity);
+  const rejected = [];
+  for (const asset of candidates) {
+    const body = await (await fetchOrFail(asset.url, `the SBOM asset ${asset.name} of ${tag}`, { accept: "application/octet-stream" })).arrayBuffer();
+    let document;
+    try {
+      document = JSON.parse(Buffer.from(body).toString("utf8"));
+    } catch {
+      rejected.push(`${asset.name} is not JSON`);
+      continue;
+    }
+    if (document.bomFormat !== "CycloneDX") {
+      rejected.push(`${asset.name} is not a CycloneDX document`);
+      continue;
+    }
+    const root = document.metadata?.component ?? {};
+    // THE PACKAGE URL AND NOT THE NAME. `npm sbom` fills the root component's
+    // `name` from the directory it ran in — "skillonomia", not
+    // "@skillonomia/cli" — and puts the registry's own identifier in `purl`.
+    // Comparing the field a human would reach for first would refuse every
+    // document this project publishes.
+    if (purlOf(root) !== `${pkg.name}@${pkg.version}`) {
+      rejected.push(`${asset.name} describes ${purlOf(root) ?? `${root.name ?? "?"}@${root.version ?? "?"}`}`);
+      continue;
+    }
+    const hash = (root.hashes ?? []).find((h) => h.alg === "SHA-512");
+    if (hash === undefined || hash.content.toLowerCase() !== want) {
+      rejected.push(`${asset.name} records ${hash === undefined ? "no SHA-512 for the tarball" : `SHA-512 ${hash.content}`}, and the registry serves ${dist.integrity}`);
+      continue;
+    }
+    return verdict(
+      "SBOM",
+      pkg.spec,
+      "OK",
+      `${asset.name} (CycloneDX ${document.specVersion}, ${(document.components ?? []).length} components), bound to ${dist.integrity}`,
+    );
+  }
+  return verdict("SBOM", pkg.spec, "REFUSED", `release ${tag} carries a CycloneDX document that is not this package's: ${rejected.join("; ")}`);
+}
+
+async function hardening(argv) {
+  const opts = { image: null, npm: null, repo: null, record: null };
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === "--image" || a === "--npm" || a === "--repo" || a === "--record") {
+      const v = argv[i + 1];
+      if (v === undefined) usage(`${a} needs a value`);
+      if (a === "--image") opts.image = v;
+      else if (a === "--npm") opts.npm = v;
+      else if (a === "--repo") opts.repo = v;
+      else opts.record = resolve(v);
+      i += 1;
+    } else usage(`unknown option ${a}`);
+  }
+  if (opts.image === null) usage("`hardening` needs --image <registry>/<image>@sha256:<64 hex>");
+  if (opts.npm === null) usage("`hardening` needs --npm <@scope/name@version>");
+
+  const image = parseImageRef(opts.image);
+  const pkg = parseNpmSpec(opts.npm);
+  // WITHOUT A REPOSITORY THERE IS NO IDENTITY TO CHECK AGAINST, and a signature
+  // verified against no identity is a signature by anybody.
+  const repo = opts.repo ?? repositorySlug();
+  if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) usage(`--repo must be \`owner/name\`, not \`${repo}\``);
+
+  console.log(`[1/5] the published index of ${image.ref}`);
+  image.token = await registryToken(image);
+  const found = await imageStatements(image);
+  console.log(
+    `      ${found.runtime.length} runtime manifest(s) [${found.runtime.map(platformName).join(", ")}], ` +
+      `${found.attestations.length} attestation manifest(s)`,
+  );
+
+  console.log(`[2/5] the image's SBOM and provenance, by digest`);
+  const results = [imageSbom(image, found), imageProvenance(image, found, repo)];
+
+  console.log(`[3/5] the keyless signature over ${image.digest}`);
+  results.push(await imageSignature(image, repo));
+
+  console.log(`[4/5] ${pkg.spec} on the npm registry`);
+  const dist = (await npmRegistryVersion(pkg)).dist ?? {};
+  if (dist.integrity === undefined) fail(`the npm registry reports no integrity for ${pkg.spec}`);
+  console.log(`      ${dist.integrity}`);
+  results.push(await npmProvenance(pkg, dist, repo));
+
+  console.log(`[5/5] the CycloneDX document published for the tarball`);
+  results.push(await npmSbom(pkg, dist, repo));
+
+  // THE VERDICT, ONE LINE PER CHECK AND ONE PER FAMILY. A family is only OK if
+  // every artifact that can answer for it did.
+  const families = ["SBOM", "signature", "provenance"];
+  console.log("");
+  for (const family of families) {
+    for (const r of results.filter((x) => x.family === family)) {
+      const indent = " ".repeat(27);
+      console.log(`  ${family.padEnd(10)} ${r.status.padEnd(13)} ${r.artifact}\n${indent}${r.detail.split("\n").join(`\n${indent}`)}`);
+    }
+  }
+  const failed = families.filter((f) => results.some((r) => r.family === f && r.status !== "OK"));
+  const record = {
+    check: "hardening",
+    marker: failed.length === 0 ? HARDENING_OK : null,
+    image: image.ref,
+    npm: pkg.spec,
+    repository: repo,
+    families: Object.fromEntries(families.map((f) => [f, results.filter((r) => r.family === f).every((r) => r.status === "OK") ? "OK" : "REFUSED"])),
+    checks: results,
+    cosign_available: spawnSync("cosign", ["version"], { encoding: "utf8" }).error === undefined,
+    npm_bundle_cryptographically_verified: false,
+  };
+  if (opts.record !== null) {
+    mkdirSync(dirname(opts.record), { recursive: true });
+    writeFileSync(opts.record, `${JSON.stringify(record, null, 2)}\n`);
+    console.log(`\n      record written: ${opts.record}`);
+  }
+  console.log("");
+  if (failed.length > 0) {
+    fail(
+      `this digest is not deployable: ${failed.join(", ")} ${failed.length === 1 ? "is" : "are"} not published, or not what a deploy of ${repo} may accept. ` +
+        "Each line above says which artifact and why.",
+    );
+  }
+  console.log(
+    "npm's Sigstore bundle was read, not cryptographically verified here — `npm audit signatures` in the publishing " +
+      "workflow is what verifies it.",
+  );
+  console.log(HARDENING_OK);
+}
+
 // --------------------------------------------------------------------- main
 
 // RUN ONLY WHEN RUN. `ci/windows-security.ps1` imports `ustar` and
@@ -975,7 +1513,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
     process.stdout.write(USAGE);
     process.exit(subcommand === undefined ? 2 : 0);
   }
-  const SUBCOMMANDS = { binary, ghcr, npm: npmCli, platform };
+  const SUBCOMMANDS = { binary, ghcr, npm: npmCli, platform, hardening };
   const chosen = SUBCOMMANDS[subcommand];
   if (chosen === undefined) usage(`unknown subcommand \`${subcommand}\` — one of ${Object.keys(SUBCOMMANDS).join(", ")}`);
   await chosen(rest);
