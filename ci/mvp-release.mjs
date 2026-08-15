@@ -1290,22 +1290,52 @@ export function provenanceIdentity(predicate) {
   return out;
 }
 
-/** What an identity read out of a provenance must say, or the sentence saying it did not. */
-function identityFaults(id, expected) {
-  const faults = [];
-  if (id.repository !== expected.repositoryUrl) {
-    faults.push(`it was built by ${id.repository ?? "(no repository)"} and this deploy expects ${expected.repositoryUrl}`);
-  }
-  if (id.workflow !== expected.workflow) {
-    faults.push(`the workflow is ${id.workflow ?? "(not recorded)"} and only ${expected.workflow} publishes this project`);
-  }
-  if (id.ref !== expected.ref) {
-    faults.push(`the ref is ${id.ref ?? "(not recorded)"} and ${expected.version} is released from ${expected.ref}`);
-  }
-  if (id.commit === null) {
-    faults.push("it does not record the commit it was built from, so nothing ties it to the other artifact of this release");
-  }
-  return faults;
+/**
+ * What an identity read out of a provenance must say, or the sentence saying it
+ * did not.
+ *
+ * THE ONE FIELD A BUILDKIT PROVENANCE CANNOT CARRY. `workflow` comes out of
+ * `externalParameters.workflow.path`, which is what GitHub's and npm's generator
+ * writes. BuildKit does not write it under any build mode: its
+ * `externalParameters` are `{configSource, request}`, and `configSource.path` is
+ * `Dockerfile` — the file the build read, not the workflow that ran it.
+ * (`entryPoint` is the SLSA v0.2 spelling of the same field and is likewise a
+ * Dockerfile here.) So demanding `workflow` of an IMAGE provenance demands a
+ * field this project's producer does not emit, and no image this pipeline builds
+ * can ever satisfy it.
+ *
+ * `workflowMayBeAbsent` is that carve-out, and it is exactly one field wide:
+ *
+ *   * ABSENCE ONLY. A provenance that records SOME workflow which is not
+ *     `release.yml` is refused as before — the excuse is for a producer that has
+ *     nothing to say, not for one that says the wrong thing.
+ *   * EVERY OTHER BINDING MUST HOLD. If the repository, the ref or the commit
+ *     does not bind, the absent workflow is reported as a fault too: the excuse
+ *     is granted only to a provenance that is otherwise exactly this release's.
+ *   * IMAGE ONLY. npm's provenance comes from a generator that DOES write the
+ *     field, so `npmProvenanceFrom` keeps demanding `.github/workflows/release.yml`
+ *     and this parameter stays at its default there.
+ *
+ * What replaces the missing field for the image is named in the verdict rather
+ * than assumed: the subject digest and the `builder.id` run URL checked by
+ * `imageProvenance` before this function is reached, and the Fulcio identity
+ * `cosign verify` checks in the `signature` family — which is why
+ * `releaseIdentityVerdict` refuses a workflow-less image whose signature was not
+ * verified.
+ */
+function identityFaults(id, expected, { workflowMayBeAbsent = false } = {}) {
+  const repository =
+    id.repository !== expected.repositoryUrl
+      ? `it was built by ${id.repository ?? "(no repository)"} and this deploy expects ${expected.repositoryUrl}`
+      : null;
+  const workflow =
+    id.workflow !== expected.workflow
+      ? `the workflow is ${id.workflow ?? "(not recorded)"} and only ${expected.workflow} publishes this project`
+      : null;
+  const ref = id.ref !== expected.ref ? `the ref is ${id.ref ?? "(not recorded)"} and ${expected.version} is released from ${expected.ref}` : null;
+  const commit = id.commit === null ? "it does not record the commit it was built from, so nothing ties it to the other artifact of this release" : null;
+  const excused = workflowMayBeAbsent && id.workflow === null && [repository, ref, commit].every((f) => f === null);
+  return [repository, excused ? null : workflow, ref, commit].filter((f) => f !== null);
 }
 
 const platformName = (m) => `${m.platform?.os ?? "?"}/${m.platform?.architecture ?? "?"}`;
@@ -1430,7 +1460,12 @@ export function imageProvenance(image, found, expected) {
     // different release, and pairing it with this version's package is the
     // substitution this check exists to refuse.
     const id = provenanceIdentity(statement.predicate);
-    const faults = identityFaults(id, expected);
+    // THE IMAGE IS THE SIDE WHOSE GENERATOR HAS NO WORKFLOW FIELD. Everything
+    // else this line demands — the repository, the tag, the commit — BuildKit
+    // does write, and the subject digest and the run URL above were already
+    // checked; see `identityFaults` for why the workflow alone is excused, and
+    // only when nothing else is.
+    const faults = identityFaults(id, expected, { workflowMayBeAbsent: true });
     if (faults.length > 0) {
       problems.push(`${platformName(entry)}: ${faults.join("; ")}`);
       continue;
@@ -1637,13 +1672,25 @@ export function npmProvenanceFrom(pkg, dist, expected, bundles) {
  * produced. That is the one substitution an operator cannot see by reading the
  * lines above, so it gets a line of its own.
  *
- * THE RUN IS COMPARED WHEN BOTH SIDES RECORD IT. The tag, the workflow and the
- * commit are demanded of both provenances by `identityFaults`; the run id is
- * demanded to AGREE, because `release.yml` publishes both artifacts from one
- * run, and it is not demanded to EXIST, because whether a generator writes it is
- * the generator's choice and the commit already pins the release.
+ * THE RUN IS COMPARED WHEN BOTH SIDES RECORD IT. The tag and the commit are
+ * demanded of both provenances by `identityFaults`; the run id is demanded to
+ * AGREE, because `release.yml` publishes both artifacts from one run, and it is
+ * not demanded to EXIST, because whether a generator writes it is the
+ * generator's choice and the commit already pins the release.
+ *
+ * AND THE LINE SAYS ONLY WHAT WAS CHECKED. The workflow is demanded of the
+ * package's provenance and CANNOT be demanded of the image's, because BuildKit
+ * writes no such field (`identityFaults`). So the sentence this returns does not
+ * claim the image named `release.yml`: it names what actually binds the image to
+ * this release — the repository, the tag and the commit in its provenance, the
+ * `builder.id` run URL `imageProvenance` checked, and the Fulcio identity on the
+ * signature. That last one is the only thing that names the WORKFLOW for the
+ * image, so `imageSignatureStatus` is required to be `OK` before the sentence is
+ * printed: a workflow-less provenance beside an unverified certificate is a
+ * release nobody demonstrated, and it is refused here rather than described.
+ * The parameter defaults to `null` so that a caller which forgets it refuses.
  */
-export function releaseIdentityVerdict(expected, image, npm) {
+export function releaseIdentityVerdict(expected, image, npm, imageSignatureStatus = null) {
   const missing = [image === null ? "the image" : null, npm === null ? "the npm package" : null].filter((x) => x !== null);
   if (missing.length > 0) {
     return verdict(
@@ -1663,12 +1710,28 @@ export function releaseIdentityVerdict(expected, image, npm) {
     return verdict("identity", expected.tag, "REFUSED", `the image was built by run ${image.runId} and the package was published by run ${npm.runId}; \`${RELEASE_WORKFLOW}\` publishes both from one run`);
   }
   const run = image.runId ?? npm.runId;
+  const both = `${expected.repositoryUrl} at ${expected.ref}, commit ${image.commit}${run === null ? " (neither provenance records a run id)" : `, run ${run}`}`;
+  if (image.workflow === expected.workflow) {
+    return verdict("identity", expected.tag, "OK", `both artifacts name ${expected.repositoryUrl} ${expected.workflow}@${expected.ref} at commit ${image.commit}${run === null ? " (neither provenance records a run id)" : `, run ${run}`}`);
+  }
+  if (imageSignatureStatus !== "OK") {
+    return verdict(
+      "identity",
+      expected.tag,
+      "REFUSED",
+      `the image's provenance does not name a workflow — BuildKit writes none — so the only thing that names ${expected.workflow} for this image is ` +
+        `the Fulcio identity ${expected.certificateIdentity} on its signature, and the signature check answered ${imageSignatureStatus ?? "nothing"}. ` +
+        `Both artifacts do name ${both}, and that is not by itself the claim that ${expected.workflow} built them.`,
+    );
+  }
   return verdict(
     "identity",
     expected.tag,
     "OK",
-    `both artifacts name ${expected.repositoryUrl} ${expected.workflow}@${expected.ref} at commit ${image.commit}` +
-      `${run === null ? " (neither provenance records a run id)" : `, run ${run}`}`,
+    `both artifacts were built from ${both}. The package's provenance names ${expected.workflow}; the image's provenance names no workflow, ` +
+      `because BuildKit records \`configSource\`/\`request\` and has no such field — what ties the image to this release is the repository, ` +
+      `the ref and the commit above, the \`builder.id\` run of ${expected.repo} in its provenance, and the Fulcio identity ` +
+      `${expected.certificateIdentity}, which \`cosign verify\` accepted (see the signature line).`,
   );
 }
 
@@ -1850,7 +1913,11 @@ async function hardening(argv) {
   const results = [imageSbom(image, found), imageProv];
 
   console.log(`[4/6] the keyless signature over ${image.digest}`);
-  results.push(await imageSignature(image, expected));
+  // KEPT, BECAUSE THE IDENTITY LINE DEPENDS ON IT. The image's provenance names
+  // no workflow, so the certificate is what does; `releaseIdentityVerdict` is
+  // handed this verdict's status and refuses unless it was verified here.
+  const imageSig = await imageSignature(image, expected);
+  results.push(imageSig);
 
   console.log(`[5/6] ${pkg.spec} on the npm registry`);
   const dist = (await npmRegistryVersion(pkg)).dist ?? {};
@@ -1866,7 +1933,7 @@ async function hardening(argv) {
   results.push(await npmSbom(pkg, dist, expected));
 
   // AND THEN THE ONE QUESTION NO PER-ARTIFACT LINE ASKS.
-  results.push(releaseIdentityVerdict(expected, imageProv.identity ?? null, npmProv.identity ?? null));
+  results.push(releaseIdentityVerdict(expected, imageProv.identity ?? null, npmProv.identity ?? null, imageSig.status));
 
   // THE VERDICT, ONE LINE PER CHECK AND ONE PER FAMILY. A family is only OK if
   // every artifact that can answer for it did.

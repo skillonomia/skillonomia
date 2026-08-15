@@ -210,7 +210,7 @@ const gate = (await import(new URL("../ci/mvp-release.mjs", import.meta.url).hre
   imageSbom: (image: unknown, found: unknown) => Verdict;
   imageProvenance: (image: unknown, found: unknown, expected: Expected) => Verdict;
   npmProvenanceFrom: (pkg: unknown, dist: unknown, expected: Expected, bundles: unknown[]) => Verdict;
-  releaseIdentityVerdict: (expected: Expected, image: unknown, npm: unknown) => Verdict;
+  releaseIdentityVerdict: (expected: Expected, image: unknown, npm: unknown, imageSignatureStatus?: string | null) => Verdict;
   cosignVerdict: (image: unknown, expected: Expected, present: string[]) => Verdict;
 };
 
@@ -544,6 +544,203 @@ test("[D-F3] an unreadable provenance on either side is a refusal, not a skipped
   const r = gate.releaseIdentityVerdict(EXPECTED, null, npm);
   assert.equal(r.status, "REFUSED", r.detail);
   assert.match(r.detail, /two artifacts are one release only if both say so/);
+});
+
+// --- G: the one field BuildKit does not write ------------------------------
+//
+// `identityFaults` demanded `workflow` of BOTH provenances. npm's generator
+// writes it; BuildKit's does not, under any build mode: its `externalParameters`
+// are `{configSource, request}` and `configSource.path` is `Dockerfile` — the
+// file the build read, not the workflow that ran it. So the image side of the
+// gate demanded a field its own producer cannot emit, and no image this pipeline
+// builds could ever pass.
+//
+// The carve-out below is exactly one field wide, and these tests are what say
+// so: the workflow may be ABSENT from an image provenance whose repository, ref,
+// commit, subject digest and `builder.id` all bind to this release, and nothing
+// else is forgiven — not a wrong workflow, not a wrong anything-else, not the
+// npm side, and not an image whose certificate went unverified.
+//
+// EACH TEST CARRIES ITS OWN CONTROL. A bare negative here ("a broken ref is
+// refused") passes on ca6baf0a too — that gate refused everything — so it would
+// prove nothing about the carve-out. What discriminates is the pair: the
+// workflow-less provenance is ACCEPTED here and the same document with one
+// binding broken is REFUSED. The accepting half is the half ca6baf0a fails.
+
+/**
+ * The provenance BuildKit actually attaches to an image built from a git
+ * context: a `configSource` naming the repository, the tag and the commit, a
+ * `request`, `path: "Dockerfile"` — and no `workflow` anywhere. The shape is the
+ * one observed on a locally built and pushed index (§3 of the D report).
+ */
+const buildkit = (over: Record<string, unknown> = {}, configOver: Record<string, unknown> = {}) => ({
+  predicateType: "https://slsa.dev/provenance/v1",
+  blob: `sha256:${"6".repeat(64)}`,
+  statement: {
+    _type: "https://in-toto.io/Statement/v1",
+    predicateType: "https://slsa.dev/provenance/v1",
+    subject: [{ name: "ghcr.io/skillonomia/skillonomia", digest: { sha256: AMD64.slice("sha256:".length) } }],
+    predicate: {
+      buildDefinition: {
+        externalParameters: {
+          configSource: {
+            uri: `https://github.com/${REPO}.git#refs/tags/v0.1.2`,
+            digest: { sha1: COMMIT },
+            path: "Dockerfile",
+            ...configOver,
+          },
+          request: { frontend: "dockerfile.v0", args: { "build-arg:VERSION": "0.1.2" } },
+        },
+      },
+      runDetails: { builder: { id: `https://github.com/${REPO}/actions/runs/${RUN}` } },
+    },
+    ...over,
+  },
+});
+
+/**
+ * What `imageProvenance` reads out of the document above — asserted against the
+ * real fixture in [D-G1], and driven directly into `releaseIdentityVerdict` in
+ * [D-G5] and [D-G6] so that those two test the SENTENCE and not the reader.
+ */
+const IMAGE_IDENTITY = { repository: EXPECTED.repositoryUrl, ref: EXPECTED.ref, commit: COMMIT, workflow: null, runId: RUN };
+
+/** npm's provenance with the one field npm's generator does write taken out. */
+const npmWithoutWorkflow = () => {
+  const s = npmProvenanceStatement();
+  (s.predicate.buildDefinition as { externalParameters: Record<string, unknown> }).externalParameters = {};
+  return s;
+};
+
+test("[D-G1] an image provenance that records no workflow, and binds everything else, is accepted", () => {
+  // On ca6baf0a this is REFUSED with `the workflow is (not recorded)` — the
+  // refusal a BuildKit image can never talk its way out of, because the field
+  // does not exist at the producer.
+  const r = gate.imageProvenance(IMAGE, published([buildkit()]), EXPECTED);
+  assert.equal(r.status, "OK", `a BuildKit provenance was refused for a field BuildKit does not write: ${r.detail}`);
+  assert.equal(r.identity?.repository, EXPECTED.repositoryUrl);
+  assert.equal(r.identity?.ref, EXPECTED.ref);
+  assert.equal(r.identity?.commit, COMMIT);
+  assert.equal(r.identity?.runId, RUN);
+  // and the field is reported as what it is: absent, not satisfied.
+  assert.equal(r.identity?.workflow, null);
+  // this is also what ties [D-G5] and [D-G6] to a real document: the identity
+  // they hand to the verdict is the one this reader produces, field for field.
+  const { repository, ref, commit, workflow, runId } = r.identity!;
+  assert.deepEqual({ repository, ref, commit, workflow, runId }, IMAGE_IDENTITY);
+});
+
+test("[D-G2] the absent workflow is excused only while the repository, the ref and the commit all bind", () => {
+  assert.equal(gate.imageProvenance(IMAGE, published([buildkit()]), EXPECTED).status, "OK", "the control: the carve-out exists");
+
+  const otherRepo = gate.imageProvenance(IMAGE, published([buildkit({}, { uri: "https://github.com/someone-else/skillonomia.git#refs/tags/v0.1.2" })]), EXPECTED);
+  assert.notEqual(otherRepo.status, "OK", `another repository was accepted: ${otherRepo.detail}`);
+  assert.match(otherRepo.detail, /it was built by https:\/\/github\.com\/someone-else\/skillonomia and this deploy expects/);
+  assert.match(otherRepo.detail, /the workflow is \(not recorded\)/, "the excuse is withdrawn as soon as anything else fails");
+
+  const otherTag = gate.imageProvenance(IMAGE, published([buildkit({}, { uri: `https://github.com/${REPO}.git#refs/tags/v0.1.1` })]), EXPECTED);
+  assert.notEqual(otherTag.status, "OK", `an image of another tag was accepted: ${otherTag.detail}`);
+  assert.match(otherTag.detail, /the ref is refs\/tags\/v0\.1\.1 and 0\.1\.2 is released from refs\/tags\/v0\.1\.2/);
+
+  const noCommit = gate.imageProvenance(IMAGE, published([buildkit({}, { digest: {} })]), EXPECTED);
+  assert.notEqual(noCommit.status, "OK", `a provenance naming no commit was accepted: ${noCommit.detail}`);
+  assert.match(noCommit.detail, /does not record the commit it was built from/);
+
+  // and a workflow that IS recorded is still compared, because the carve-out is
+  // for a producer with nothing to say, not for one that says the wrong thing.
+  const wrong = buildkit();
+  (wrong.statement.predicate.buildDefinition.externalParameters.configSource as { entryPoint?: string }).entryPoint = ".github/workflows/npm-v012-recovery.yml";
+  const named = gate.imageProvenance(IMAGE, published([wrong]), EXPECTED);
+  assert.notEqual(named.status, "OK", `a wrong workflow rode in on the carve-out: ${named.detail}`);
+  assert.match(named.detail, /the workflow is \.github\/workflows\/npm-v012-recovery\.yml/);
+});
+
+test("[D-G3] the absent workflow is excused only while builder.id is a run of this repository", () => {
+  assert.equal(gate.imageProvenance(IMAGE, published([buildkit()]), EXPECTED).status, "OK", "the control: the carve-out exists");
+
+  const forged = buildkit();
+  forged.statement.predicate.runDetails.builder.id = "https://github.com/someone-else/skillonomia/actions/runs/17";
+  const r = gate.imageProvenance(IMAGE, published([forged]), EXPECTED);
+  assert.notEqual(r.status, "OK", `a run of another repository was accepted: ${r.detail}`);
+  assert.match(r.detail, /not a run of skillonomia\/skillonomia/);
+
+  // min-mode provenance — an empty builder — is the other half of the same
+  // check, and the carve-out must not have reopened it.
+  const min = buildkit();
+  min.statement.predicate.runDetails.builder.id = "";
+  const m = gate.imageProvenance(IMAGE, published([min]), EXPECTED);
+  assert.notEqual(m.status, "OK", `mode=min provenance was accepted: ${m.detail}`);
+  assert.match(m.detail, /a build happened, and it says nothing about whose/);
+
+  // the subject binding, likewise: an attestation about some other platform's
+  // digest is not this image's, carve-out or no carve-out.
+  const elsewhere = buildkit();
+  elsewhere.statement.subject = [{ name: "ghcr.io/skillonomia/skillonomia", digest: { sha256: "f".repeat(64) } }];
+  const s = gate.imageProvenance(IMAGE, published([elsewhere]), EXPECTED);
+  assert.notEqual(s.status, "OK", `an attestation about another digest was accepted: ${s.detail}`);
+  assert.match(s.detail, /does not name sha256:1{64} among its subjects/);
+});
+
+test("[D-G4] the carve-out is the image's alone: an npm provenance with no workflow is still refused", () => {
+  // The npm side comes out of a generator that writes `externalParameters.workflow`,
+  // so a bundle without it is not a producer's limitation — it is a publish this
+  // gate cannot attribute to `release.yml`, and `0.1.2` went out of another
+  // workflow (see [D-D4]). Nothing about the image's missing field weakens this.
+  assert.equal(gate.imageProvenance(IMAGE, published([buildkit()]), EXPECTED).status, "OK", "the control: the image's absent workflow is excused");
+
+  const r = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, npmWithoutWorkflow()), bundle(NPM_PUBLISH, npmPublishStatement())]);
+  assert.notEqual(r.status, "OK", `an unattributed npm publish was accepted: ${r.detail}`);
+  assert.match(r.detail, /the workflow is \(not recorded\) and only \.github\/workflows\/release\.yml publishes this project/);
+});
+
+test("[D-G5] a workflow-less image whose signature was not verified is refused by the identity line", () => {
+  // What names `release.yml` for an image whose provenance cannot is the Fulcio
+  // identity on its signature. If `cosign verify` did not accept it — refused,
+  // or UNVERIFIABLE because cosign is not installed — then nothing named the
+  // workflow at all, and the identity line says so instead of passing.
+  const npm = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, npmProvenanceStatement()), bundle(NPM_PUBLISH, npmPublishStatement())]);
+  assert.equal(npm.status, "OK", npm.detail);
+
+  for (const status of ["REFUSED", "UNVERIFIABLE", "MISSING", null]) {
+    const r = gate.releaseIdentityVerdict(EXPECTED, IMAGE_IDENTITY, npm.identity, status);
+    assert.equal(r.status, "REFUSED", `signature ${status ?? "(not passed)"} and the identity line still passed: ${r.detail}`);
+    assert.match(r.detail, /does not name a workflow/);
+    assert.ok(r.detail.includes(EXPECTED.certificateIdentity), `the refusal names the certificate that would have carried it: ${r.detail}`);
+  }
+
+  const ok = gate.releaseIdentityVerdict(EXPECTED, IMAGE_IDENTITY, npm.identity, "OK");
+  assert.equal(ok.status, "OK", `a verified signature is what the carve-out rests on: ${ok.detail}`);
+});
+
+test("[D-G6] the successful verdict does not claim the image named the workflow", () => {
+  // THIS IS THE POINT OF THE WHOLE CHANGE. The old sentence — `both artifacts
+  // name <repo> <workflow>@<ref> at commit <sha>` — was true while both
+  // provenances were required to carry the workflow. After the carve-out it
+  // would be a gate asserting a fact it did not check, about the one field it
+  // stopped checking, in the line an operator reads to decide a deploy.
+  const npm = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, npmProvenanceStatement()), bundle(NPM_PUBLISH, npmPublishStatement())]);
+  const r = gate.releaseIdentityVerdict(EXPECTED, IMAGE_IDENTITY, npm.identity, "OK");
+  assert.equal(r.status, "OK", r.detail);
+
+  assert.doesNotMatch(
+    r.detail,
+    /both artifacts name .*\.github\/workflows\/release\.yml/,
+    `the verdict claims both artifacts name the workflow, and the image's provenance does not: ${r.detail}`,
+  );
+  // what it says instead, and every clause of it was checked above:
+  assert.match(r.detail, /The package's provenance names \.github\/workflows\/release\.yml/);
+  assert.match(r.detail, /the image's provenance names no workflow/);
+  assert.match(r.detail, /`builder\.id` run of skillonomia\/skillonomia/);
+  assert.ok(r.detail.includes(EXPECTED.certificateIdentity), `the verdict names the identity cosign checked: ${r.detail}`);
+  assert.match(r.detail, new RegExp(`commit ${COMMIT}`));
+  assert.match(r.detail, new RegExp(`run ${RUN}`));
+
+  // and when a generator DOES name the workflow on both sides, the old sentence
+  // is still the true one and is still what gets printed.
+  const named = gate.imageProvenance(IMAGE, published([provenance()]), EXPECTED);
+  const both = gate.releaseIdentityVerdict(EXPECTED, named.identity, npm.identity, "OK");
+  assert.equal(both.status, "OK", both.detail);
+  assert.match(both.detail, /both artifacts name https:\/\/github\.com\/skillonomia\/skillonomia \.github\/workflows\/release\.yml@refs\/tags\/v0\.1\.2/);
 });
 
 test("[D-F4] the expected tag is derived from the npm version and nothing else", () => {
