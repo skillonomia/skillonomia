@@ -81,6 +81,31 @@ jobs:
             exit 1
           fi
 
+      # THE TAG RESOLVES TO THE COMMIT THIS RUN PUBLISHES, AND NOT TO AN OBJECT
+      # IN FRONT OF IT. The image below is built from a git context at this ref,
+      # and BuildKit records in the provenance the sha THAT REF RESOLVES TO;
+      # npm's trusted publish records `GITHUB_SHA`. For a lightweight tag those
+      # are one commit and the two provenances agree. For an ANNOTATED tag the
+      # ref resolves to the TAG OBJECT, which is a different sha — and
+      # `ci/mvp-release.mjs hardening` then reads two different commits out of
+      # two genuine provenances and refuses the pair as "artifacts of two
+      # different releases", AFTER both have been published and cannot be
+      # unpublished. So the disagreement is settled here, where the only cost is
+      # a re-tag, rather than at the gate, where the cost is a burnt version.
+      - name: The tag resolves to the commit this run publishes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          OBJECT=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')
+          KIND="${OBJECT%% *}"
+          SHA="${OBJECT##* }"
+          if [ "$SHA" != "${GITHUB_SHA}" ]; then
+            echo "::error::refs/tags/$TAG resolves to the $KIND $SHA, and this run is publishing ${GITHUB_SHA}. The image's provenance records what the ref resolves to and npm's records the commit, so both artifacts would be published and then refused as different releases. Re-tag this commit with a lightweight tag: \`git tag -d $TAG && git tag $TAG ${GITHUB_SHA} && git push --force origin $TAG\`."
+            exit 1
+          fi
+          echo "refs/tags/$TAG -> $KIND $SHA"
+
       # The same packaging the candidate stage ran, on the commit the tag points
       # at. `build:binary` is byte-reproducible (the `supply-chain` job in
       # `ci.yml` proves it on every push), so this produces the reviewed bytes.
@@ -172,16 +197,43 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
 
+      # THE CONTEXT IS THE TAG, FETCHED — NOT THIS CHECKOUT. `docker buildx build
+      # … .` sends a LOCAL DIRECTORY, and a local directory has no name a build
+      # can record: BuildKit writes `configSource: {"path": "Dockerfile"}` and
+      # the provenance then says which Dockerfile was used and NOTHING about the
+      # repository, the ref or the commit it came from. Those three fields are
+      # exactly what the gate reads, so `--provenance=mode=max` over a local
+      # context produces a provenance the gate refuses — "it was built by (no
+      # repository)", "the ref is (not recorded)", "it does not record the commit
+      # it was built from" — on a real release, after the push, with the version
+      # already spent. `builder-id` does not save it: that names the run and the
+      # gate demands the source as well.
+      #
+      # A GIT CONTEXT is a source a build can record. BuildKit resolves the ref
+      # itself and writes the URL and the sha it resolved into
+      # `externalParameters.configSource` and into `resolvedDependencies` — the
+      # two places `provenanceIdentity()` reads — so the provenance names
+      # `https://github.com/<owner>/<repo>`, `refs/tags/v<version>` and the
+      # commit. The tree that is built is the tag's, which is the tree the
+      # candidate stage reviewed; the checkout above stays for the steps that
+      # read `package.json` and write `metadata.json`, not for the build.
+      #
+      # `GIT_AUTH_TOKEN` is what BuildKit fetches that context with. It is this
+      # run's own token — the build does not depend on the repository being
+      # readable without one.
       - name: Build both architectures with an SBOM and attributable provenance, and push them
         id: push
+        env:
+          GIT_AUTH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           docker buildx build --platform linux/amd64,linux/arm64 \
             --tag "${IMAGE}:${VERSION}" \
             --sbom=true \
             --provenance="mode=max,builder-id=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --secret id=GIT_AUTH_TOKEN,env=GIT_AUTH_TOKEN \
             --metadata-file metadata.json \
-            --push .
+            --push "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git#${GITHUB_REF}"
           DIGEST=$(node -p "require('./metadata.json')['containerimage.digest']")
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "ref=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
