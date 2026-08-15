@@ -1,6 +1,6 @@
 {
   "name": "@skillonomia/cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Skillonomia V1 — self-hosted registry of Verified Skill Packages: signed skill packages, safety gates, review workflow, adoption receipts and evidence-backed reputation.",
   "type": "module",
   "license": "Apache-2.0",
