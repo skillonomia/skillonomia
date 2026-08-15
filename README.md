@@ -223,7 +223,7 @@ path):
 <!-- doc-test: health -->
 ```bash
 curl -s localhost:7431/health
-# → {"status":"ok","service":"skillonomia","version":"0.1.3"}
+# → {"status":"ok","service":"skillonomia","version":"0.1.4"}
 ```
 
 In a second terminal, export the two credentials the first start printed — this
@@ -502,7 +502,7 @@ that is also published, as a release asset a tag away from this table (see
 |---|---|---|
 | Docker | `docker build -t skillonomia:local .` → `docker run -p 127.0.0.1:7431:7431 -v skillonomia-data:/data skillonomia:local` | the normative quickstart target; the publish is loopback-only |
 | Node | `npm ci` → `npm start -- --port 7431 --data ./skillonomia-data` | needs Node ≥22.6 |
-| npm tarball | `npm pack` → `npm install -g ./skillonomia-cli-0.1.3.tgz` → `skillonomia serve` | the `@skillonomia/cli` package, packed here and installed **from the file** until a version is published; `prepack` builds the plain-JS entry point the installed package runs, and it is the maintainer's step — a consumer install runs no Bun |
+| npm tarball | `npm pack` → `npm install -g ./skillonomia-cli-0.1.4.tgz` → `skillonomia serve` | the `@skillonomia/cli` package, packed here and installed **from the file** until a version is published; `prepack` builds the plain-JS entry point the installed package runs, and it is the maintainer's step — a consumer install runs no Bun |
 | Linux x86_64 binary | `npm run build:binary` → `dist/skillonomia serve`, or the released `skillonomia-linux-x86_64.tar.gz` | ships `migrations/`, `schema/` and `seed/` next to the executable |
 
 All four rows are **local**: each one puts a plain-HTTP listener on the

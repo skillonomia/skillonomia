@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 // THE RELEASE-ARTIFACT CHECKS — one script, one subcommand per published thing.
 //
-//   node ci/mvp-release.mjs binary --tag v0.1.3         # the release path: download, then smoke
+//   node ci/mvp-release.mjs binary --tag v0.1.4         # the release path: download, then smoke
 //   node ci/mvp-release.mjs binary --local              # the rehearsal: package, then smoke
 //   node ci/mvp-release.mjs ghcr --digest <ref@sha256:> # pull one published image and drive it
 //   node ci/mvp-release.mjs npm --package <tgz|spec>    # install as a consumer, with no Bun
 //   node ci/mvp-release.mjs platform --package <tgz> --sha256 <hex>   # the qualification contract
 //   node ci/mvp-release.mjs hardening --image <ref@sha256:> --npm <spec>  # the pre-deploy gate
+//   node ci/mvp-release.mjs preflight --tag v0.1.4      # BEFORE the tag: can this release happen at all
 //
-// FIVE SUBCOMMANDS AND NOT FIVE SCRIPTS. §7 allows this project four new
+// SIX SUBCOMMANDS AND NOT SIX SCRIPTS. §7 allows this project four new
 // acceptance scripts before the pilots and two are already spent
 // (`ci/high-risk-exercise.mjs`, this file). Each published thing needs its own
 // checks and they share nearly all of their machinery — a free port, a `/health`
@@ -16,12 +17,23 @@
 // read-back — so they are subcommands here rather than four more files that
 // would each grow their own answer to the same question.
 //
-// WHAT THEY HAVE IN COMMON. Every one of them takes the artifact from where a
-// USER would get it (a release, a registry, a tarball), refuses to consult the
-// build directory instead, drives the shipped `demo` subcommand to a terminal
-// `adopted` receipt, restarts on the same SQLite file and reads the receipt back
-// from the server afterwards. And every one of them prints a marker that says
-// WHICH path was exercised: a rehearsal never prints an acceptance marker.
+// WHAT THE FIRST FIVE HAVE IN COMMON. Every one of them takes the artifact from
+// where a USER would get it (a release, a registry, a tarball), refuses to
+// consult the build directory instead, drives the shipped `demo` subcommand to a
+// terminal `adopted` receipt, restarts on the same SQLite file and reads the
+// receipt back from the server afterwards. And every one of them prints a marker
+// that says WHICH path was exercised: a rehearsal never prints an acceptance
+// marker.
+//
+// AND THAT IS EXACTLY WHY THE SIXTH EXISTS. All five read something PUBLISHED,
+// so not one of them can run before the release exists — which left the
+// PRECONDITIONS of a publish checked by nobody until the registry checked them,
+// and the registry checks them after two of the three artifacts are already out
+// and irreversible. `preflight` is the one subcommand that reads no published
+// artifact of its own release: it asks, from a checkout, everything the npm
+// registry and GitHub will ask later. It shares the repository slug, the release
+// identity and the verdict table with `hardening`, which is why it lives here
+// too.
 //
 // `binary` is the Linux x86_64 release asset and nothing else. It packages the
 // compiled binary with the runtime data it needs, writes the checksum file,
@@ -93,14 +105,20 @@ const USAGE = `usage:
   node ci/mvp-release.mjs hardening --image ghcr.io/<owner>/<image>@sha256:<64 hex> --npm <@scope/name@version>
                                                read the PUBLISHED SBOM, signature and provenance of both
                                                artifacts back out of the registries, before a deploy
+  node ci/mvp-release.mjs preflight [--tag v<version>]
+                                               BEFORE the tag and before any publish: the manifest names the
+                                               repository the provenance will name, the version and the tag
+                                               agree, neither the registry nor the release exists yet, the
+                                               packed tarball carries both, and the tag is this commit
 
 options:
   --out <dir>          binary: where the packaged assets are written (default: dist/release)
   --keep               do not remove the temporary directories that were created
   --expect-host <id>   ghcr: the host this job claims to be, as <platform>-<arch> (e.g. darwin-arm64)
-  --record <file>      ghcr/platform/hardening: write the machine-readable record here
-  --repo <owner/name>  hardening: the GitHub repository the release and the signing identity belong to
-                       (default: GITHUB_REPOSITORY, or the origin remote)
+  --record <file>      ghcr/platform/hardening/preflight: write the machine-readable record here
+  --repo <owner/name>  hardening/preflight: the GitHub repository the release and the signing identity
+                       belong to (default: GITHUB_REPOSITORY, or the origin remote)
+  --tag <tag>          preflight: the tag this release will be made from (default: GITHUB_REF_NAME)
 `;
 
 function fail(message) {
@@ -1984,6 +2002,497 @@ async function hardening(argv) {
   console.log(HARDENING_OK);
 }
 
+// ------------------------------------------------------------------ preflight
+//
+// THE GATE THAT RUNS BEFORE THE TAG, BECAUSE EVERY OTHER GATE RUNS TOO LATE.
+//
+//   node ci/mvp-release.mjs preflight --tag v0.1.4 --repo skillonomia/skillonomia
+//
+// WHAT HAPPENED. `v0.1.3` published its binary, published its image, and then
+// `publish-npm` failed:
+//
+//     npm error code E422
+//     Error verifying sigstore provenance bundle: Failed to validate repository
+//     information: package.json: "repository.url" is "", expected to match
+//     "https://github.com/skillonomia/skillonomia" from provenance
+//
+// Trusted publishing worked — the job's log carries `npm notice publish Signed
+// provenance statement with source and build information from GitHub Actions`.
+// The REGISTRY refused, because `package.json` carried no `repository` at all
+// and the registry compares that field with the repository the provenance names.
+// The cost was a version: a release and an image were already published under
+// `v0.1.3` and neither can be withdrawn, so the fix ships as `0.1.4`.
+//
+// THE DEFECT IS NOT THE MISSING FIELD. Every check in this file reads a
+// PUBLISHED artifact — `binary --tag` downloads a release, `ghcr` pulls an
+// image, `npm --package <spec>` installs from the registry, `hardening` reads
+// both registries back. That is the right thing for each of them to do and it
+// means none of them can run until the release exists. So the PRECONDITIONS of
+// a publish were examined by nobody until the registry examined them, and by
+// then failing is not free: `release.yml` runs `publish-binary`, then
+// `publish-image`, then `publish-npm`, and a refusal in the third arrives after
+// the first two are irreversible.
+//
+// WHAT IS ASKED, AND BY WHOM IT WOULD OTHERWISE BE ASKED:
+//
+//   repository      `package.json`'s repository resolves to the SAME repository
+//                   the provenance will name. Otherwise: the npm registry,
+//                   E422, after the image is out.
+//   version         `package.json`'s version is the tag without its leading
+//                   `v`. Otherwise: `release.yml`'s own first step — which is
+//                   already correct, and is re-asked here so that ONE command
+//                   answers "can this tag be released" for a maintainer holding
+//                   an untagged commit.
+//   npm-version     the registry does not already serve this version.
+//                   Otherwise: `npm publish`, E403, after the image is out.
+//   github-release  no release carries this tag yet. Otherwise: `gh release
+//                   create`, in the first job — cheap, but it is the same
+//                   question and this is where the answer belongs.
+//   pack            `npm pack` succeeds at all.
+//   tarball         and THE ARCHIVE IT PRODUCED carries that repository and that
+//                   version. The registry reads the manifest INSIDE the tarball,
+//                   not the working tree, and `files`, `prepack` and a packing
+//                   bug are three ways for a tree to be right and an archive to
+//                   be wrong. A gate that read the tree would have been
+//                   satisfied by a tree that packs to something else.
+//   tag-object      the tag resolves to THIS commit and is lightweight.
+//                   Otherwise: `hardening`, at the very end, refusing two
+//                   genuine artifacts as different releases — see the step of
+//                   the same name in `release.yml`, which settles it where the
+//                   only cost is a re-tag.
+//
+// EACH REFUSAL IS ITS OWN LINE WITH ITS OWN REASON, as in `hardening`. A gate
+// that answered "not releasable" would send a maintainer to read a workflow
+// instead of to the one thing that is wrong.
+//
+// AND A CHECK THAT COULD NOT BE RUN IS NOT A PASS. A registry that answers 500,
+// a network that is not there, a `--repo` that cannot be worked out — each is
+// `UNVERIFIABLE` and refuses, for the same reason `cosign` missing refuses in
+// `hardening`: the whole content of this stage is that the questions were
+// actually asked.
+
+const PREFLIGHT_OK = "RELEASE_PREFLIGHT_OK";
+const PREFLIGHT_STAGED = "RELEASE_PREFLIGHT_STAGED_OK";
+
+/**
+ * NPM'S RULE, REPRODUCED RATHER THAN APPROXIMATED.
+ *
+ * Two halves have to agree, and both are readable in npm's own source:
+ *
+ *   what the provenance says   `libnpmpublish/lib/provenance.js` writes
+ *                              `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}` into
+ *                              `externalParameters.workflow.repository` — which
+ *                              is the `https://github.com/skillonomia/skillonomia`
+ *                              the E422 above quoted back at us.
+ *   what the manifest says     `repository`, resolved the way `hosted-git-info`
+ *                              resolves it: the GitHub shorthand (`owner/name`),
+ *                              the shortcut (`github:owner/name`), the scp form
+ *                              (`git@github.com:owner/name.git`) and the six
+ *                              protocols `hosts.github.protocols` lists, each
+ *                              with or without `.git`, with or without a
+ *                              `#committish`.
+ *
+ * The three functions below are that library's `from-url.js` and `parse-url.js`,
+ * narrowed to the one host this project publishes from. They are copied because
+ * `hosted-git-info` is not a dependency of this package and adding one to run a
+ * pre-tag check would put a package in every consumer's install tree.
+ *
+ * THE ASYMMETRY IS DELIBERATE. A form this parser refuses and npm would have
+ * accepted costs a maintainer one edit before a tag. A form this parser accepts
+ * and npm refuses costs a version. So anything that does not resolve to
+ * github.com through one of those shapes is refused and named, rather than
+ * passed through on the chance that the registry is more forgiving.
+ */
+const GITHUB_PROTOCOLS = ["git:", "http:", "git+ssh:", "git+https:", "ssh:", "https:"];
+/** Every scheme hosted-git-info recognises; used only to decide URL repair. */
+const KNOWN_PROTOCOLS = [
+  "git+ssh:", "ssh:", "git+https:", "git:", "http:", "https:", "git+http:",
+  "github:", "bitbucket:", "gitlab:", "gist:", "sourcehut:",
+];
+
+/** `owner/name` with no protocol, no space, no second slash — `from-url.js`. */
+function isGitHubShorthand(arg) {
+  const firstHash = arg.indexOf("#");
+  const firstSlash = arg.indexOf("/");
+  const secondSlash = arg.indexOf("/", firstSlash + 1);
+  const firstColon = arg.indexOf(":");
+  const firstSpace = /\s/.exec(arg);
+  const firstAt = arg.indexOf("@");
+  const spaceOnlyAfterHash = !firstSpace || (firstHash > -1 && firstSpace.index > firstHash);
+  const atOnlyAfterHash = firstAt === -1 || (firstHash > -1 && firstAt > firstHash);
+  const colonOnlyAfterHash = firstColon === -1 || (firstHash > -1 && firstColon > firstHash);
+  const secondSlashOnlyAfterHash = secondSlash === -1 || (firstHash > -1 && secondSlash > firstHash);
+  const doesNotEndWithSlash = firstHash > -1 ? arg[firstHash - 1] !== "/" : !arg.endsWith("/");
+  return (
+    spaceOnlyAfterHash && firstSlash > 0 && doesNotEndWithSlash && !arg.startsWith(".") &&
+    atOnlyAfterHash && colonOnlyAfterHash && secondSlashOnlyAfterHash
+  );
+}
+
+/** `parse-url.js`: the two repairs that make an scp-style ref parse as a URL. */
+function looseUrl(giturl) {
+  const safe = (u) => {
+    try {
+      return new URL(u);
+    } catch {
+      return null;
+    }
+  };
+  const lastIndexOfBefore = (str, char, before) => {
+    const at = str.indexOf(before);
+    return str.lastIndexOf(char, at > -1 ? at : Infinity);
+  };
+  const firstColon = giturl.indexOf(":");
+  let withProtocol;
+  if (KNOWN_PROTOCOLS.includes(giturl.slice(0, firstColon + 1))) withProtocol = giturl;
+  else if (giturl.indexOf("@") > -1) withProtocol = giturl.indexOf("@") > firstColon ? `git+ssh://${giturl}` : giturl;
+  else if (giturl.indexOf("//") === firstColon + 1) withProtocol = giturl;
+  else withProtocol = `${giturl.slice(0, firstColon + 1)}//${giturl.slice(firstColon + 1)}`;
+
+  const direct = safe(withProtocol);
+  if (direct !== null) return direct;
+  let repaired = withProtocol;
+  const firstAt = lastIndexOfBefore(repaired, "@", "#");
+  const lastColon = lastIndexOfBefore(repaired, ":", "#");
+  if (lastColon > firstAt) repaired = `${repaired.slice(0, lastColon)}/${repaired.slice(lastColon + 1)}`;
+  if (lastIndexOfBefore(repaired, ":", "#") === -1 && repaired.indexOf("//") === -1) repaired = `git+ssh://${repaired}`;
+  return safe(repaired);
+}
+
+/**
+ * A manifest's `repository` → `https://github.com/<owner>/<name>`, or the
+ * sentence that says why it is not one. `repository` may be the object form or
+ * the string form; both are what npm reads.
+ */
+export function repositoryOf(repository) {
+  const raw =
+    typeof repository === "string"
+      ? repository
+      : repository !== null && typeof repository === "object" && !Array.isArray(repository)
+        ? repository.url
+        : undefined;
+  if (repository === undefined || repository === null) {
+    return { raw: null, url: null, fault: "there is no `repository` field at all" };
+  }
+  if (typeof raw !== "string") {
+    return { raw: null, url: null, fault: `\`repository\` is ${JSON.stringify(repository)}, which carries no \`url\` string` };
+  }
+  if (raw.trim() === "") {
+    return { raw, url: null, fault: '`repository.url` is ""' };
+  }
+  const corrected = isGitHubShorthand(raw) ? `github:${raw}` : raw;
+  const parsed = looseUrl(corrected);
+  if (parsed === null) {
+    return { raw, url: null, fault: `\`repository.url\` is ${JSON.stringify(raw)}, which is not a URL npm can resolve` };
+  }
+  const host = parsed.hostname.startsWith("www.") ? parsed.hostname.slice(4) : parsed.hostname;
+  let user;
+  let project;
+  if (parsed.protocol === "github:") {
+    // the shortcut: everything after any auth, and the last slash splits it
+    let pathname = parsed.pathname.startsWith("/") ? parsed.pathname.slice(1) : parsed.pathname;
+    const at = pathname.indexOf("@");
+    if (at > -1) pathname = pathname.slice(at + 1);
+    const lastSlash = pathname.lastIndexOf("/");
+    if (lastSlash === -1) return { raw, url: null, fault: `\`repository.url\` is ${JSON.stringify(raw)}, which names no owner` };
+    user = decodeURIComponent(pathname.slice(0, lastSlash));
+    project = decodeURIComponent(pathname.slice(lastSlash + 1));
+  } else {
+    if (host !== "github.com") {
+      return { raw, url: null, fault: `\`repository.url\` is ${JSON.stringify(raw)}, whose host is ${parsed.hostname}; the provenance names a github.com repository` };
+    }
+    if (!GITHUB_PROTOCOLS.includes(parsed.protocol)) {
+      return { raw, url: null, fault: `\`repository.url\` is ${JSON.stringify(raw)}, and \`${parsed.protocol}\` is not one of the schemes npm resolves for github.com (${GITHUB_PROTOCOLS.join(" ")})` };
+    }
+    // `hosts.github.extract`: /<user>/<project>[/tree/<committish>]
+    const [, u, p, type] = parsed.pathname.split("/", 5);
+    if (type !== undefined && type !== "" && type !== "tree") {
+      return { raw, url: null, fault: `\`repository.url\` is ${JSON.stringify(raw)}, whose path is not \`/<owner>/<name>\`` };
+    }
+    user = u === undefined ? "" : decodeURIComponent(u);
+    project = p === undefined ? "" : decodeURIComponent(p);
+  }
+  if (project.endsWith(".git")) project = project.slice(0, -4);
+  if (!user || !project) {
+    return { raw, url: null, fault: `\`repository.url\` is ${JSON.stringify(raw)}, which does not name both an owner and a repository` };
+  }
+  return { raw, url: `https://github.com/${user}/${project}`, fault: null };
+}
+
+/** One line of the preflight table. Same shape as `hardening`'s verdicts. */
+const check = (name, status, detail) => ({ check: name, status, detail });
+
+/**
+ * THE ONE THAT COST A VERSION. `expected` is the repository URL the provenance
+ * will carry, so this compares exactly the two strings the registry compares.
+ */
+export function repositoryCheck(manifest, expected, where) {
+  const r = repositoryOf(manifest.repository);
+  if (r.url === null) {
+    return check(
+      "repository",
+      "REFUSED",
+      `${where}: ${r.fault}. The npm registry compares this field with ${expected} from the provenance and refuses ` +
+        "the publish with `E422 Error verifying sigstore provenance bundle: Failed to validate repository information` " +
+        '— add `"repository": { "type": "git", "url": "git+' + `${expected}.git" }\`.`,
+    );
+  }
+  if (r.url !== expected) {
+    return check(
+      "repository",
+      "REFUSED",
+      `${where}: \`repository.url\` is ${JSON.stringify(r.raw)}, which resolves to ${r.url}; the provenance will say ${expected}. ` +
+        "Two different repositories is what E422 reports, and it reports it after the other artifacts are published.",
+    );
+  }
+  return check("repository", "OK", `${where}: ${JSON.stringify(r.raw)} resolves to ${r.url}`);
+}
+
+/** The tag is `v` and the version, and the version is the manifest's. */
+export function versionCheck(version, tag) {
+  if (tag === null) {
+    return check("version", "SKIPPED", `no tag was given and none is in the environment, so \`${version}\` was not compared with one`);
+  }
+  if (!/^v\d+\.\d+\.\d+/.test(tag)) {
+    return check("version", "REFUSED", `\`${tag}\` is not a version tag; \`release.yml\` runs on \`v*.*.*\` and on nothing else`);
+  }
+  if (tag.slice(1) !== version) {
+    return check("version", "REFUSED", `the tag is \`${tag}\` and \`package.json\` declares \`${version}\`; a release cannot carry a version its own manifest disagrees with`);
+  }
+  return check("version", "OK", `\`${tag}\` is \`${version}\``);
+}
+
+/**
+ * A VERSION IS SPENT ONCE. `packument` is the registry's document for the
+ * package, or `null` when the registry has never heard of it — which is the
+ * commonest passing answer for a package's first release and is not an error.
+ */
+export function npmVersionCheck(spec, version, packument) {
+  if (packument === null) return check("npm-version", "OK", `the registry serves no ${spec} at all, so ${version} is free`);
+  const versions = Object.keys(packument.versions ?? {});
+  if (versions.includes(version)) {
+    return check(
+      "npm-version",
+      "REFUSED",
+      `the registry already serves ${spec}@${version} — npm refuses a second publish of a version with \`E403 You cannot publish over the previously published versions\`. ` +
+        `Published: ${versions.join(", ")}.`,
+    );
+  }
+  return check("npm-version", "OK", `the registry serves ${versions.join(", ") || "no versions"}, and not ${version}`);
+}
+
+/** A release is created, never amended — so the tag must carry none yet. */
+export function releaseCheck(repo, tag, status) {
+  if (status === 404) return check("github-release", "OK", `${repo} has no release tagged ${tag}`);
+  if (status === 200) {
+    return check(
+      "github-release",
+      "REFUSED",
+      `${repo} already has a release tagged ${tag}. \`release.yml\` creates releases and never amends them, and a tag whose release exists is a version that has been spent.`,
+    );
+  }
+  return check(
+    "github-release",
+    "UNVERIFIABLE",
+    `asking whether ${repo} has a release tagged ${tag} answered ${status}. Whether this tag is free was not established, and a question that was not answered is not a pass.`,
+  );
+}
+
+/** What the archive says, which is what the registry will read. */
+export function tarballCheck(manifest, expected, version, name) {
+  const faults = [];
+  const repository = repositoryCheck(manifest, expected, `${name}: package/package.json`);
+  if (repository.status !== "OK") faults.push(repository.detail);
+  if (manifest.version !== version) {
+    faults.push(`${name}: package/package.json declares version ${JSON.stringify(manifest.version ?? null)} and the working tree declares ${version}`);
+  }
+  if (faults.length > 0) return check("tarball", "REFUSED", faults.join("; "));
+  return check("tarball", "OK", `${name} carries ${JSON.stringify(manifest.repository)} and version ${manifest.version}`);
+}
+
+/**
+ * A LIGHTWEIGHT TAG ON THIS COMMIT, AND NOTHING ELSE. `kind` and `sha` are what
+ * git said the tag resolves to; `head` is this checkout's commit. Both the
+ * annotated case and the wrong-commit case end the same way — two provenances
+ * naming two shas, refused by `hardening` after everything is published.
+ */
+export function tagObjectCheck(tag, kind, sha, head) {
+  if (kind === null) {
+    return check("tag-object", "SKIPPED", `this checkout has no \`refs/tags/${tag}\`, so what it resolves to could not be read here`);
+  }
+  if (kind !== "commit") {
+    return check(
+      "tag-object",
+      "REFUSED",
+      `\`refs/tags/${tag}\` is a ${kind} object (${sha}), not a commit. The image's provenance records what the ref resolves to and npm's records the commit, so both artifacts would be published and then refused as different releases. ` +
+        `Re-tag with a lightweight tag: \`git tag -d ${tag} && git tag ${tag} ${head} && git push --force origin ${tag}\`.`,
+    );
+  }
+  if (sha !== head) {
+    return check("tag-object", "REFUSED", `\`refs/tags/${tag}\` is commit ${sha} and this checkout is at ${head}; the release would publish a tree nobody checked here`);
+  }
+  return check("tag-object", "OK", `\`refs/tags/${tag}\` is the lightweight tag of ${sha}, which is HEAD`);
+}
+
+/** The registry's document for a package, or null when it has none. */
+async function packumentOf(name) {
+  const res = await fetch(`https://registry.npmjs.org/${name.replace("/", "%2f")}`, { headers: { "user-agent": UA } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`the npm registry answered ${res.status} ${res.statusText} for ${name}`);
+  return await res.json();
+}
+
+/** `npm pack`, into a directory of its own, and the manifest it produced. */
+function packed(expected, version) {
+  const where = mkdtempSync(join(tmpdir(), "skillonomia-preflight-"));
+  try {
+    const r = spawnSync("npm", ["pack", "--pack-destination", where], { cwd: ROOT, encoding: "utf8" });
+    if (r.error !== undefined) return [check("pack", "UNVERIFIABLE", `\`npm pack\` could not be run: ${r.error.message}`), check("tarball", "UNVERIFIABLE", "there is no tarball to read")];
+    if (r.status !== 0) {
+      return [
+        check("pack", "REFUSED", `\`npm pack\` exited ${r.status}, so there is nothing for \`npm publish\` to upload:\n${redact(`${r.stdout ?? ""}${r.stderr ?? ""}`).trim()}`),
+        check("tarball", "UNVERIFIABLE", "there is no tarball to read"),
+      ];
+    }
+    const made = readdirSync(where).filter((f) => f.endsWith(".tgz"));
+    if (made.length !== 1) {
+      return [check("pack", "REFUSED", `\`npm pack\` left [${made.join(", ")}] and a publish uploads exactly one tarball`), check("tarball", "UNVERIFIABLE", "there is no single tarball to read")];
+    }
+    const tgz = join(where, made[0]);
+    const listed = spawnSync("tar", ["-xzOf", tgz, "package/package.json"], { encoding: "utf8" });
+    if (listed.status !== 0) {
+      return [
+        check("pack", "OK", `${made[0]}, sha256 ${sha256File(tgz)}`),
+        check("tarball", "REFUSED", `${made[0]} carries no \`package/package.json\`, which is the manifest the registry reads`),
+      ];
+    }
+    let manifest;
+    try {
+      manifest = JSON.parse(listed.stdout);
+    } catch {
+      return [check("pack", "OK", `${made[0]}, sha256 ${sha256File(tgz)}`), check("tarball", "REFUSED", `${made[0]}'s \`package/package.json\` is not JSON`)];
+    }
+    return [check("pack", "OK", `${made[0]}, sha256 ${sha256File(tgz)}`), tarballCheck(manifest, expected, version, made[0])];
+  } finally {
+    rmSync(where, { recursive: true, force: true });
+  }
+}
+
+/** What `refs/tags/<tag>` is in this checkout, or nulls when it is not here. */
+function tagObject(tag) {
+  const head = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" });
+  if (head.status !== 0) return { kind: null, sha: null, head: null };
+  const ref = spawnSync("git", ["-C", ROOT, "rev-parse", "--verify", "--quiet", `refs/tags/${tag}`], { encoding: "utf8" });
+  if (ref.status !== 0) return { kind: null, sha: null, head: head.stdout.trim() };
+  const sha = ref.stdout.trim();
+  const kind = spawnSync("git", ["-C", ROOT, "cat-file", "-t", sha], { encoding: "utf8" });
+  return { kind: kind.status === 0 ? kind.stdout.trim() : null, sha, head: head.stdout.trim() };
+}
+
+async function preflight(argv) {
+  const opts = { tag: null, repo: null, record: null };
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === "--tag" || a === "--repo" || a === "--record") {
+      const v = argv[i + 1];
+      if (v === undefined) usage(`${a} needs a value`);
+      if (a === "--tag") opts.tag = v;
+      else if (a === "--repo") opts.repo = v;
+      else opts.record = resolve(v);
+      i += 1;
+    } else usage(`unknown option ${a}`);
+  }
+  const repo = opts.repo ?? repositorySlug();
+  if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) usage(`--repo must be \`owner/name\`, not \`${repo}\``);
+  // The provenance's `workflow.repository` is `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}`,
+  // and that whole string — not the slug — is what the registry compares.
+  const server = process.env.GITHUB_SERVER_URL ?? "https://github.com";
+  const expected = `${server}/${repo}`;
+  // A workflow that forgot `--tag` would otherwise rehearse instead of check.
+  const fromEnv = process.env.GITHUB_REF_NAME ?? "";
+  const tag = opts.tag ?? (/^v\d+\.\d+\.\d+/.test(fromEnv) ? fromEnv : null);
+
+  const manifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+  const version = manifest.version;
+  const results = [];
+
+  console.log(`[1/5] \`package.json\` names the repository the provenance will name`);
+  results.push(repositoryCheck(manifest, expected, "package.json"));
+
+  console.log(`[2/5] the tag and the version are one release`);
+  results.push(versionCheck(version, tag));
+
+  console.log(`[3/5] nothing has been published as ${manifest.name}@${version} yet`);
+  try {
+    results.push(npmVersionCheck(manifest.name, version, await packumentOf(manifest.name)));
+  } catch (err) {
+    results.push(check("npm-version", "UNVERIFIABLE", `whether ${manifest.name}@${version} is already published was not established: ${err.message}`));
+  }
+  const releaseTag = tag ?? `v${version}`;
+  try {
+    const api = process.env.GITHUB_API_URL ?? "https://api.github.com";
+    const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+    const res = await fetch(`${api}/repos/${repo}/releases/tags/${encodeURIComponent(releaseTag)}`, {
+      headers: {
+        "user-agent": UA,
+        accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    results.push(releaseCheck(repo, releaseTag, res.status));
+  } catch (err) {
+    results.push(check("github-release", "UNVERIFIABLE", `asking whether ${repo} has a release tagged ${releaseTag} failed: ${err.message}`));
+  }
+
+  console.log(`[4/5] \`npm pack\`, and the manifest inside the tarball it made`);
+  results.push(...packed(expected, version));
+
+  console.log(`[5/5] \`refs/tags/${releaseTag}\``);
+  const at = tagObject(releaseTag);
+  results.push(tagObjectCheck(releaseTag, at.kind, at.sha, at.head));
+
+  console.log("");
+  for (const r of results) {
+    const indent = " ".repeat(27);
+    console.log(`  ${r.check.padEnd(15)} ${r.status.padEnd(9)} ${r.detail.split("\n").join(`\n${indent}`)}`);
+  }
+  console.log("");
+
+  const failed = results.filter((r) => r.status !== "OK" && r.status !== "SKIPPED");
+  const skipped = results.filter((r) => r.status === "SKIPPED");
+  const record = {
+    check: "preflight",
+    marker: failed.length === 0 ? (skipped.length === 0 ? PREFLIGHT_OK : PREFLIGHT_STAGED) : null,
+    repository: repo,
+    expected_repository_url: expected,
+    package: `${manifest.name}@${version}`,
+    tag: releaseTag,
+    tag_given: tag,
+    checks: results,
+  };
+  if (opts.record !== null) {
+    mkdirSync(dirname(opts.record), { recursive: true });
+    writeFileSync(opts.record, `${JSON.stringify(record, null, 2)}\n`);
+    console.log(`      record written: ${opts.record}`);
+  }
+  if (failed.length > 0) {
+    fail(
+      `this tree cannot be released as ${releaseTag}: ${failed.map((r) => r.check).join(", ")} ${failed.length === 1 ? "is" : "are"} not what a publish needs. ` +
+        "Each line above says which one and why — and every one of them is free to fix here, which is the point of asking before the tag.",
+    );
+  }
+  if (skipped.length > 0) {
+    // A rehearsal never prints an acceptance marker: the same rule `binary
+    // --local` follows. What was not asked is named, so the marker cannot be
+    // read as "everything was checked".
+    console.log(`not asked here: ${skipped.map((r) => r.check).join(", ")}. The release runs this with a tag, where they are.`);
+    console.log(PREFLIGHT_STAGED);
+    return;
+  }
+  console.log(PREFLIGHT_OK);
+}
+
 // --------------------------------------------------------------------- main
 
 // RUN ONLY WHEN RUN. `ci/windows-security.ps1` imports `ustar` and
@@ -1996,7 +2505,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
     process.stdout.write(USAGE);
     process.exit(subcommand === undefined ? 2 : 0);
   }
-  const SUBCOMMANDS = { binary, ghcr, npm: npmCli, platform, hardening };
+  const SUBCOMMANDS = { binary, ghcr, npm: npmCli, platform, hardening, preflight };
   const chosen = SUBCOMMANDS[subcommand];
   if (chosen === undefined) usage(`unknown subcommand \`${subcommand}\` — one of ${Object.keys(SUBCOMMANDS).join(", ")}`);
   await chosen(rest);

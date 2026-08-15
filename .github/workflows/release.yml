@@ -62,6 +62,55 @@ jobs:
           bun-version: "1.3.14"
       - run: bun install --frozen-lockfile
 
+      # THE FIRST THING THIS WORKFLOW DOES, AND IT PUBLISHES NOTHING.
+      #
+      # `v0.1.3` published its binary, published its image, and then the npm
+      # registry refused the manifest:
+      #
+      #     npm error code E422
+      #     Error verifying sigstore provenance bundle: Failed to validate
+      #     repository information: package.json: "repository.url" is "",
+      #     expected to match "https://github.com/skillonomia/skillonomia"
+      #     from provenance
+      #
+      # The signing had worked. What was missing was a `repository` field, and
+      # the field is a precondition of the publish — a fact about THIS TREE that
+      # was true or false before the tag was pushed and that nothing asked
+      # until the registry asked, by which time two artifacts were out and a
+      # version was spent. Every check this repository had read a PUBLISHED
+      # artifact, so none of them could run before the release existed.
+      #
+      # `preflight` asks all of it here: the manifest's repository resolves to
+      # the repository the provenance will name, the version and the tag are one
+      # release, the registry does not already serve this version, no release
+      # carries this tag, `npm pack` succeeds and THE TARBALL it produced carries
+      # the same repository and version, and the tag is a lightweight tag of this
+      # commit. It runs before `gh release create`, before the image build and
+      # before the publish, so a release that cannot finish fails in the first
+      # seconds instead of after two thirds of it is irreversible.
+      #
+      # THE MARKER IS GREPPED, not merely awaited. `preflight` prints
+      # `RELEASE_PREFLIGHT_STAGED_OK` when something could not be asked — a
+      # missing tag object, for instance — and a staged run is not the run this
+      # step is here to demand.
+      #
+      # The two steps below stay. They overlap this one on purpose: they are
+      # what `test/source-only.test.ts` and `test/version.test.ts` read the
+      # release rules out of, and a gate that moved into a script would leave
+      # those guards reading a file that no longer refuses anything.
+      #
+      # The record and the log go to `RUNNER_TEMP`: this job packages the
+      # release asset out of this checkout two steps later, and a check that
+      # left files in the tree it is checking would be changing what it packs.
+      - name: Preflight — everything the registries will ask, asked before anything is published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node ci/mvp-release.mjs preflight --tag "${GITHUB_REF_NAME}" \
+            --record "${RUNNER_TEMP}/preflight.json" | tee "${RUNNER_TEMP}/preflight.log"
+          grep -qx 'RELEASE_PREFLIGHT_OK' "${RUNNER_TEMP}/preflight.log"
+
       - name: The tag is a new version, and not the baseline
         env:
           GH_TOKEN: ${{ github.token }}

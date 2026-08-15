@@ -212,7 +212,16 @@ const gate = (await import(new URL("../ci/mvp-release.mjs", import.meta.url).hre
   npmProvenanceFrom: (pkg: unknown, dist: unknown, expected: Expected, bundles: unknown[]) => Verdict;
   releaseIdentityVerdict: (expected: Expected, image: unknown, npm: unknown, imageSignatureStatus?: string | null) => Verdict;
   cosignVerdict: (image: unknown, expected: Expected, present: string[]) => Verdict;
+  repositoryOf: (repository: unknown) => { raw: string | null; url: string | null; fault: string | null };
+  repositoryCheck: (manifest: unknown, expected: string, where: string) => Check;
+  versionCheck: (version: string, tag: string | null) => Check;
+  npmVersionCheck: (spec: string, version: string, packument: unknown) => Check;
+  releaseCheck: (repo: string, tag: string, status: number) => Check;
+  tarballCheck: (manifest: unknown, expected: string, version: string, name: string) => Check;
+  tagObjectCheck: (tag: string, kind: string | null, sha: string | null, head: string | null) => Check;
 };
+
+type Check = { check: string; status: string; detail: string };
 
 const REPO = "skillonomia/skillonomia";
 const EXPECTED = gate.releaseIdentity(REPO, "0.1.2");
@@ -750,4 +759,213 @@ test("[D-F4] the expected tag is derived from the npm version and nothing else",
   assert.equal(other.certificateIdentity, `https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/v9.9.9`);
   const r = gate.imageProvenance(IMAGE, published([provenance()]), other);
   assert.notEqual(r.status, "OK", "an image of v0.1.2 must not pass the gate for v9.9.9");
+});
+
+// ---------------------------------------------------------------------------
+// THE PREFLIGHT'S REFUSALS — THE GATE THAT RUNS BEFORE THE TAG.
+//
+// `v0.1.3` published a binary and an image and then the npm registry refused
+// the third artifact:
+//
+//     npm error code E422
+//     Error verifying sigstore provenance bundle: Failed to validate repository
+//     information: package.json: "repository.url" is "", expected to match
+//     "https://github.com/skillonomia/skillonomia" from provenance
+//
+// The signing worked. `package.json` carried no `repository`, and the registry
+// compares that field with the repository the provenance names. One line, and
+// it cost a version — because the release had already published two artifacts
+// that cannot be withdrawn by the time the third was refused.
+//
+// EVERY CHECK IN THIS PROJECT READ SOMETHING PUBLISHED. `binary --tag`
+// downloads a release, `ghcr` pulls an image, `hardening` reads both
+// registries — correct for each of them, and between them they left the
+// PRECONDITIONS of a publish examined by nobody until the registry examined
+// them. `preflight` is the check that runs first and reads none of them.
+//
+// [P-A] IS THE REGRESSION ITSELF, and it is the only test here that reads this
+// tree rather than a fixture: it takes THIS `package.json` and asks the
+// question the registry asked. On `5206dbbc` — the tree `v0.1.3` was cut from —
+// it fails, with the same sentence the registry answered with.
+
+const PREFLIGHT_REPO = "https://github.com/skillonomia/skillonomia";
+const manifestOf = (over: Record<string, unknown> = {}) => ({ name: "@skillonomia/cli", version: "0.1.4", ...over });
+
+test("[P-A] this tree's package.json names the repository the provenance will name", () => {
+  // THE REGRESSION ON v0.1.3. This assertion fails on 5206dbbc, whose
+  // package.json has no `repository` at all, and the failure message is the
+  // registry's own complaint.
+  const manifest = JSON.parse(read("package.json"));
+  const r = gate.repositoryCheck(manifest, PREFLIGHT_REPO, "package.json");
+  assert.equal(r.status, "OK", r.detail);
+  assert.equal(gate.repositoryOf(manifest.repository).url, PREFLIGHT_REPO);
+});
+
+test("[P-B] every form npm resolves to this repository is accepted, and resolves to one string", () => {
+  // The positive control the refusals below need: a parser that refused
+  // everything would pass all of them. These are the shapes `hosted-git-info`
+  // accepts for github — the shorthand, the shortcut, the scp form and the six
+  // protocols — each with and without `.git`.
+  const forms = [
+    "git+https://github.com/skillonomia/skillonomia.git",
+    "https://github.com/skillonomia/skillonomia.git",
+    "https://github.com/skillonomia/skillonomia",
+    "http://github.com/skillonomia/skillonomia",
+    "https://www.github.com/skillonomia/skillonomia",
+    "git://github.com/skillonomia/skillonomia.git",
+    "ssh://git@github.com/skillonomia/skillonomia.git",
+    "git+ssh://git@github.com/skillonomia/skillonomia.git",
+    "git@github.com:skillonomia/skillonomia.git",
+    "github:skillonomia/skillonomia",
+    "skillonomia/skillonomia",
+    "https://github.com/skillonomia/skillonomia.git#v0.1.4",
+  ];
+  for (const url of forms) {
+    assert.equal(gate.repositoryOf(url).url, PREFLIGHT_REPO, `the string form ${url}`);
+    assert.equal(gate.repositoryOf({ type: "git", url }).url, PREFLIGHT_REPO, `the object form ${url}`);
+  }
+});
+
+test("[P-1] a manifest with no repository field at all is refused", () => {
+  // The v0.1.3 tree, exactly.
+  const r = gate.repositoryCheck(manifestOf(), PREFLIGHT_REPO, "package.json");
+  assert.equal(r.status, "REFUSED", r.detail);
+  assert.match(r.detail, /there is no `repository` field at all/);
+  assert.match(r.detail, /Failed to validate repository information/);
+});
+
+test("[P-2] `repository.url` is the empty string — the field the registry quoted back", () => {
+  const r = gate.repositoryCheck(manifestOf({ repository: { type: "git", url: "" } }), PREFLIGHT_REPO, "package.json");
+  assert.equal(r.status, "REFUSED", r.detail);
+  assert.match(r.detail, /`repository\.url` is ""/);
+});
+
+test("[P-3] a repository object that carries no url is refused", () => {
+  const r = gate.repositoryCheck(manifestOf({ repository: { type: "git" } }), PREFLIGHT_REPO, "package.json");
+  assert.equal(r.status, "REFUSED", r.detail);
+  assert.match(r.detail, /carries no `url` string/);
+});
+
+test("[P-4] somebody else's repository, and a one-character typo in this one, are refused", () => {
+  // Both resolve; neither is the repository the provenance will name, which is
+  // the whole of what the registry compares.
+  for (const url of [
+    "git+https://github.com/someone-else/skillonomia.git",
+    "git+https://github.com/skillonomia/skillonomiaa.git",
+    "git+https://github.com/skillonomia.git",
+  ]) {
+    const r = gate.repositoryCheck(manifestOf({ repository: { type: "git", url } }), PREFLIGHT_REPO, "package.json");
+    assert.equal(r.status, "REFUSED", `${url} was accepted: ${r.detail}`);
+  }
+  const typo = gate.repositoryCheck(
+    manifestOf({ repository: { type: "git", url: "git+https://github.com/skillonomia/skillonomiaa.git" } }),
+    PREFLIGHT_REPO,
+    "package.json",
+  );
+  assert.match(typo.detail, /resolves to https:\/\/github\.com\/skillonomia\/skillonomiaa; the provenance will say/);
+});
+
+test("[P-5] a repository on another host, and a string that is not a repository, are refused", () => {
+  const elsewhere = gate.repositoryOf("git+https://gitlab.com/skillonomia/skillonomia.git");
+  assert.equal(elsewhere.url, null, "a gitlab URL resolved to a github repository");
+  assert.match(elsewhere.fault!, /whose host is gitlab\.com/);
+
+  for (const url of ["not a url at all", "https://github.com/", "https://example.com/skillonomia/skillonomia"]) {
+    assert.equal(gate.repositoryOf(url).url, null, `${url} resolved to something`);
+  }
+});
+
+test("[P-6] the version and the tag are compared, and a missing tag is not a pass", () => {
+  assert.equal(gate.versionCheck("0.1.4", "v0.1.4").status, "OK");
+  const wrong = gate.versionCheck("0.1.4", "v0.1.3");
+  assert.equal(wrong.status, "REFUSED", wrong.detail);
+  assert.match(wrong.detail, /a release cannot carry a version its own manifest disagrees with/);
+  assert.equal(gate.versionCheck("0.1.4", "0.1.4").status, "REFUSED", "a tag without its `v` is not the tag release.yml runs on");
+  // absent is SKIPPED, and a SKIPPED line is what keeps the acceptance marker
+  // from being printed — it is never counted as an answer.
+  const none = gate.versionCheck("0.1.4", null);
+  assert.equal(none.status, "SKIPPED", none.detail);
+  assert.notEqual(none.status, "OK");
+});
+
+test("[P-7] a version the registry already serves is refused", () => {
+  // `npm publish` answers E403 for this, in the third job, after the binary and
+  // the image are published.
+  const packument = { versions: { "0.1.2": {}, "0.1.4": {} } };
+  const spent = gate.npmVersionCheck("@skillonomia/cli", "0.1.4", packument);
+  assert.equal(spent.status, "REFUSED", spent.detail);
+  assert.match(spent.detail, /already serves @skillonomia\/cli@0\.1\.4/);
+
+  assert.equal(gate.npmVersionCheck("@skillonomia/cli", "0.1.5", packument).status, "OK");
+  // a package the registry has never heard of is the commonest passing answer
+  assert.equal(gate.npmVersionCheck("@skillonomia/cli", "0.1.4", null).status, "OK");
+});
+
+test("[P-8] a tag whose release already exists is refused, and an unanswered question is not a pass", () => {
+  assert.equal(gate.releaseCheck(REPO, "v0.1.4", 404).status, "OK");
+  const exists = gate.releaseCheck(REPO, "v0.1.3", 200);
+  assert.equal(exists.status, "REFUSED", exists.detail);
+  assert.match(exists.detail, /creates releases and never amends them/);
+  for (const status of [403, 500, 0]) {
+    const r = gate.releaseCheck(REPO, "v0.1.4", status);
+    assert.equal(r.status, "UNVERIFIABLE", `${status} was treated as an answer: ${r.detail}`);
+    assert.notEqual(r.status, "OK");
+  }
+});
+
+test("[P-9] the tarball is read, not the tree — the registry reads the manifest inside the archive", () => {
+  // A tree can be right and the archive wrong: `files`, `prepack` and a packing
+  // bug are three ways. The registry never sees the tree.
+  const good = manifestOf({ repository: { type: "git", url: "git+https://github.com/skillonomia/skillonomia.git" } });
+  assert.equal(gate.tarballCheck(good, PREFLIGHT_REPO, "0.1.4", "skillonomia-cli-0.1.4.tgz").status, "OK");
+
+  const stripped = gate.tarballCheck(manifestOf(), PREFLIGHT_REPO, "0.1.4", "skillonomia-cli-0.1.4.tgz");
+  assert.equal(stripped.status, "REFUSED", stripped.detail);
+  assert.match(stripped.detail, /package\/package\.json: there is no `repository` field at all/);
+
+  const stale = gate.tarballCheck({ ...good, version: "0.1.3" }, PREFLIGHT_REPO, "0.1.4", "skillonomia-cli-0.1.4.tgz");
+  assert.equal(stale.status, "REFUSED", stale.detail);
+  assert.match(stale.detail, /declares version "0\.1\.3" and the working tree declares 0\.1\.4/);
+});
+
+test("[P-10] an annotated tag is refused before it is pushed, not after both artifacts are published", () => {
+  const head = "c".repeat(40);
+  const ok = gate.tagObjectCheck("v0.1.4", "commit", head, head);
+  assert.equal(ok.status, "OK", ok.detail);
+
+  const annotated = gate.tagObjectCheck("v0.1.4", "tag", "e".repeat(40), head);
+  assert.equal(annotated.status, "REFUSED", annotated.detail);
+  assert.match(annotated.detail, /is a tag object/);
+  assert.match(annotated.detail, /refused as different releases/);
+
+  const elsewhere = gate.tagObjectCheck("v0.1.4", "commit", "f".repeat(40), head);
+  assert.equal(elsewhere.status, "REFUSED", elsewhere.detail);
+
+  // absent is SKIPPED — the same rule as [P-6]: not an answer, and not a pass.
+  const absent = gate.tagObjectCheck("v0.1.4", null, null, head);
+  assert.equal(absent.status, "SKIPPED", absent.detail);
+  assert.notEqual(absent.status, "OK");
+});
+
+test("[P-11] release.yml runs preflight before it publishes anything, and demands the acceptance marker", () => {
+  // comments removed, as in `test/source-only.test.ts`: a step is what RUNS,
+  // and the prose above this one names `gh release create` while explaining
+  // what it comes before.
+  const release = read(".github/workflows/release.yml").split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  const preflight = release.indexOf("ci/mvp-release.mjs preflight");
+  assert.ok(preflight > -1, "release.yml no longer runs the preflight");
+  for (const verb of ["gh release create", "npm publish", "--push", "ci/mvp-release.mjs binary", "docker buildx build"]) {
+    const at = release.indexOf(verb);
+    assert.ok(at > -1, `release.yml no longer runs \`${verb}\` — this guard is reading the wrong file`);
+    assert.ok(preflight < at, `\`${verb}\` runs before the preflight, so a release that cannot finish would still publish through it`);
+  }
+  // a STAGED run is not the run this step demands
+  assert.match(
+    release,
+    /grep -qx 'RELEASE_PREFLIGHT_OK'/,
+    "release.yml awaits the preflight's exit status and not its marker; a staged run answers 0 with checks unasked",
+  );
+  const src = read("ci/mvp-release.mjs");
+  assert.match(src, /const PREFLIGHT_OK = "RELEASE_PREFLIGHT_OK"/);
+  assert.match(src, /const PREFLIGHT_STAGED = "RELEASE_PREFLIGHT_STAGED_OK"/);
 });
