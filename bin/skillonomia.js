@@ -41,7 +41,48 @@ const [entry, flags] = existsSync(built)
   : [join(root, "src", "cli.ts"), ["--experimental-strip-types", "--no-warnings"]];
 
 const child = spawn(process.execPath, [...flags, entry, ...args], { stdio: "inherit" });
+
+// A SIGNAL SENT TO THIS LAUNCHER HAS TO REACH THE PROCESS THAT IS SERVING.
+//
+// This file is a shim: the thing that listens, holds the database and handles
+// SIGTERM is the CHILD, and it inherits this process's stdio. Without the loop
+// below, a SIGTERM aimed at `skillonomia` killed the shim on the DEFAULT
+// disposition and left the child running, reparented to init, still holding
+// the stdout and stderr the caller gave the shim. A supervisor that had just
+// "stopped" the server was then left reading a pipe that would never reach EOF.
+//
+// That is not a hypothetical: it is how `v0.1.4`'s release hung. The release
+// gate starts `serve` through this launcher, signals it, and then waits for the
+// process to be gone; the orphaned child kept the gate's pipes open, so the gate
+// finished all of its work, printed `NPM_CLI_OK`, and never exited. The step
+// waited 2h21m and was cancelled by hand — and the three steps that publish the
+// tarball's SBOM and read the registries back never ran.
+//
+// So the signal is FORWARDED and this process stays alive until the child is
+// actually gone, which is what makes `exit` below the child's exit and not a
+// guess about it. `SIGKILL` cannot be forwarded by anyone, which is why the
+// caller must also kill the process GROUP — but a caller that sends SIGTERM and
+// waits now gets a clean stop instead of an orphan.
+const FORWARDED = ["SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"];
+for (const signal of FORWARDED) {
+  process.on(signal, () => {
+    try {
+      child.kill(signal);
+    } catch {
+      // the child is already gone; `exit` below is what ends this process
+    }
+  });
+}
+
 child.on("exit", (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
+  if (signal) {
+    // Re-raise with the DEFAULT disposition, so a supervisor sees the signal
+    // that killed the child and not a synthesised exit code. The handlers above
+    // have to go first, or this process would forward the signal to a child
+    // that is already dead and then outlive it — which is the failure this
+    // whole block exists to remove.
+    for (const s of FORWARDED) process.removeAllListeners(s);
+    process.kill(process.pid, signal);
+  }
   process.exit(code ?? 0);
 });

@@ -313,6 +313,71 @@ test("SIGTERM on the banner line neither kills `serve` outright nor loses the cr
   }
 });
 
+// ---------------------------------------------------- the launcher and signals
+
+/**
+ * `bin/skillonomia.js` IS NOT THE PROCESS THAT SERVES, AND STOPPING IT HAS TO
+ * STOP THE ONE THAT DOES.
+ *
+ * The launcher spawns the real entry point with `stdio: "inherit"`, so a caller
+ * that pipes the launcher's output is handing those pipes to a GRANDCHILD. Until
+ * this test existed, a SIGTERM aimed at the launcher killed the launcher on the
+ * default disposition and left the grandchild running, reparented to init, still
+ * holding the write ends. A caller reading those pipes then waited for an EOF
+ * that would never come.
+ *
+ * That is how `v0.1.4`'s `publish-npm` job ran 2h21m and had to be cancelled:
+ * `ci/mvp-release.mjs npm` starts `serve` through this launcher, stops it, does
+ * the rest of its work, prints `NPM_CLI_OK` — and then could not exit, because
+ * it held the read end of two socketpairs an orphaned server still had open. The
+ * three steps that publish the tarball's SBOM and read the registries back never
+ * ran, which is why that release has no CycloneDX document.
+ *
+ * THE ASSERTION IS `close`, NOT `exit`. `exit` fires when the launcher is gone,
+ * which it was on the broken tree too. `close` fires when the pipes have been
+ * drained AND closed, and that only happens when nothing is left holding them —
+ * which is the actual contract, and the thing that hung.
+ */
+test("SIGTERM to the launcher stops the server it spawned, and closes the pipes it was given", async () => {
+  const launcher = join(root, "bin", "skillonomia.js");
+  const child = spawn(process.execPath, [launcher, "serve", "--port", "0", "--data", tmp("sklo-launcher-")], {
+    cwd: root,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, SKILLONOMIA_WORKER_MS: "0" },
+  });
+  let out = "";
+  const closed = new Promise<{ code: number | null; signal: string | null }>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      // the orphan, if there is one, is not this test's to leave behind
+      try {
+        process.kill(-child.pid!, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+      reject(new Error(`the launcher's pipes never closed after SIGTERM — something it spawned is still holding them. Output so far: ${JSON.stringify(out)}`));
+    }, 30_000);
+    let signalled = false;
+    const read = (c: Buffer) => {
+      out += c.toString("utf8");
+      if (!signalled && out.includes("listening on")) {
+        signalled = true;
+        child.kill("SIGTERM");
+      }
+    };
+    child.stdout.on("data", read);
+    child.stderr.on("data", read);
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal });
+    });
+  });
+  const r = await closed;
+  assert.match(out, /listening on http:\/\//, `the launcher never started a server: ${JSON.stringify(out)}`);
+  assert.equal(r.signal, null, `the launcher was killed by ${r.signal} instead of forwarding SIGTERM and relaying the exit`);
+  assert.equal(r.code, EXIT_OK, `the launcher exited ${r.code} after a clean stop: ${JSON.stringify(out)}`);
+});
+
 test("`serve` argument errors are USAGE errors (2), not stack traces", () => {
   for (const args of [
     ["serve", "--nonsense", "1"],

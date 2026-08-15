@@ -49,9 +49,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # THE CEILING NOBODY HAS TO WATCH. `v0.1.4` sat in `publish-npm` for 2h21m
+  # because no job in this file had one — the default is six hours, and a
+  # release that is stuck is stuck within a minute of the command that stuck.
+  # These are sized above the slowest honest run of each job with room to
+  # spare, so a release never fails here for being slow; what they end is a
+  # release that is not running at all.
   publish-binary:
     runs-on: ubuntu-latest
     environment: release
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -224,6 +231,8 @@ jobs:
     needs: publish-binary
     runs-on: ubuntu-latest
     environment: release
+    # two architectures under QEMU, then sign, verify and smoke
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
@@ -347,6 +356,9 @@ jobs:
     needs: publish-image
     runs-on: ubuntu-latest
     environment: release
+    # 20m of consumer contract + 15m of publish + the SBOM, the audit and the
+    # gate below it — see the budgets on `Pack, checksum, publish that file`.
+    timeout-minutes: 75
     permissions:
       # the release the SBOM is uploaded to, and the OIDC token that publishes
       contents: write
@@ -378,15 +390,67 @@ jobs:
       # given the exact bytes that were just checksummed — not the working
       # directory, which `npm publish .` would re-pack into a second tarball
       # nobody checked.
+      #
+      # AND NOTHING HERE WAITS FOREVER, BECAUSE THIS IS THE STEP THAT DID.
+      #
+      # `v0.1.4` held this step for 2h21m and was cancelled by hand, and the
+      # three steps below it never ran — which is the whole reason that release
+      # has no CycloneDX document: not a gate that refused one, a step that never
+      # reached the one that attaches it.
+      #
+      # THE PUBLISH WAS NOT WHAT WAITED. The registry records `0.1.4` at
+      # 17:32:35Z and the step started at 17:32:15Z, so `npm publish` finished
+      # its upload twenty-one seconds in and the remaining 8,464 seconds were
+      # spent in the two commands after it. That also rules out the obvious
+      # suspect: an OTP prompt blocks BEFORE the registry accepts an upload, and
+      # this upload was accepted, so nothing here was waiting for a one-time
+      # password. What was wrong is duller and worse — a registry read and a
+      # consumer contract, neither with a deadline, in a step with no ceiling, in
+      # a job with no `timeout-minutes`, on a runner that never closes a step's
+      # stdin. "Forever" was simply an available outcome.
+      #
+      # So every command below is given a budget and a mouth: `timeout` kills it
+      # and `bounded` says which command ran out and how long it had, instead of
+      # leaving exit 124 in a log. `< /dev/null` means a prompt npm decides to
+      # print is an instant EOF and an error, not a wait for a keystroke that is
+      # never coming. npm's own retries are bounded well inside each budget, so a
+      # stalled registry surfaces as an npm error rather than as silence. And the
+      # job carries `timeout-minutes`, so a hang that gets past all of this ends
+      # by itself rather than when somebody happens to look.
       - name: Pack, checksum, publish that file, and read the registry back
+        # the budgets below sum to 45m; this is the runner's own answer if a
+        # command finds a way to outlive `timeout` (an orphaned grandchild, say)
+        timeout-minutes: 50
+        env:
+          # nobody is at this terminal: answer what can be answered, ask nothing
+          npm_config_yes: "true"
+          npm_config_fund: "false"
+          npm_config_audit: "false"
+          npm_config_update_notifier: "false"
+          # npm's network waits, bounded under every per-command budget below
+          npm_config_fetch_timeout: "60000"
+          npm_config_fetch_retries: "2"
+          npm_config_fetch_retry_maxtimeout: "20000"
         run: |
+          # `|| rc=$?` and not a bare call: `set -e` would take the exit before
+          # this could say what ran out of time.
+          bounded() {
+            local budget="$1" what="$2"; shift 2
+            local rc=0
+            timeout --signal=TERM --kill-after=30s "$budget" "$@" < /dev/null || rc=$?
+            if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+              echo "::error::${what} did not finish within ${budget} and was killed. This step is the one that hung for 2h21m on v0.1.4; it now refuses instead of waiting." >&2
+            fi
+            return "$rc"
+          }
           VERSION="v$(node -p "require('./package.json').version")"
-          TARBALL=$(npm pack --silent | tail -1)
+          TARBALL=$(bounded 5m "npm pack" npm pack --silent | tail -1)
           sha256sum "$TARBALL" | tee "$TARBALL.sha256"
           echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
-          npm publish "$TARBALL" --access public --provenance
-          npm view "@skillonomia/cli@${VERSION#v}" dist.integrity version --json
-          node ci/mvp-release.mjs npm --package "@skillonomia/cli@${VERSION#v}"
+          bounded 15m "npm publish" npm publish "$TARBALL" --access public --provenance
+          bounded 5m "npm view" npm view "@skillonomia/cli@${VERSION#v}" dist.integrity version --json
+          bounded 20m "the consumer contract against the published package" \
+            node ci/mvp-release.mjs npm --package "@skillonomia/cli@${VERSION#v}"
 
       # THE SBOM OF THE TARBALL, AND WHAT TIES IT TO THE TARBALL. `npm sbom`
       # describes the tree a consumer installs — production dependencies, which
@@ -395,8 +459,13 @@ jobs:
       # is the same SHA-512 the registry serves as `dist.integrity`, so the gate
       # can refuse an SBOM that belongs to some other build of the same version.
       - name: The tarball's SBOM, bound to the tarball, published on the release
+        timeout-minutes: 10
         env:
           GH_TOKEN: ${{ github.token }}
+          npm_config_yes: "true"
+          npm_config_fetch_timeout: "60000"
+          npm_config_fetch_retries: "2"
+          npm_config_fetch_retry_maxtimeout: "20000"
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           npm sbom --sbom-format cyclonedx --sbom-type application --omit dev > sbom.cdx.json
@@ -427,14 +496,25 @@ jobs:
       # an installed tree and verifies both. It runs on a clean install of the
       # PUBLISHED version, in a directory of its own, so what is verified is
       # what a user would download.
+      #
+      # Bounded like everything else in this job: this is a clean install from a
+      # registry, and a registry that stops answering is the one thing it cannot
+      # do anything about. `< /dev/null` for the same reason as above — there is
+      # nobody here to answer a prompt.
       - name: Verify the published registry signature and provenance
+        timeout-minutes: 15
+        env:
+          npm_config_yes: "true"
+          npm_config_fetch_timeout: "60000"
+          npm_config_fetch_retries: "2"
+          npm_config_fetch_retry_maxtimeout: "20000"
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           WHERE="$(mktemp -d)"
           cd "$WHERE"
-          npm init -y >/dev/null
-          npm install --ignore-scripts "@skillonomia/cli@${VERSION}"
-          npm audit signatures
+          npm init -y >/dev/null < /dev/null
+          timeout --kill-after=30s 8m npm install --ignore-scripts "@skillonomia/cli@${VERSION}" < /dev/null
+          timeout --kill-after=30s 5m npm audit signatures < /dev/null
 
       # THE PRE-DEPLOY GATE, AGAINST WHAT THIS RUN PUBLISHED. Everything above
       # proves the commands were issued. This reads the SBOM, the signature and
@@ -443,6 +523,7 @@ jobs:
       # starts anything. A release whose evidence is not on the registries fails
       # HERE, where a maintainer is looking, and not later on a server.
       - name: The published SBOM, signature and provenance, read back
+        timeout-minutes: 20
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}

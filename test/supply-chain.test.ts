@@ -209,7 +209,7 @@ const gate = (await import(new URL("../ci/mvp-release.mjs", import.meta.url).hre
   };
   imageSbom: (image: unknown, found: unknown) => Verdict;
   imageProvenance: (image: unknown, found: unknown, expected: Expected) => Verdict;
-  npmProvenanceFrom: (pkg: unknown, dist: unknown, expected: Expected, bundles: unknown[]) => Verdict;
+  npmProvenanceFrom: (pkg: unknown, dist: unknown, expected: Expected, bundles: unknown[], registryKeyIds?: string[] | null) => Verdict;
   releaseIdentityVerdict: (expected: Expected, image: unknown, npm: unknown, imageSignatureStatus?: string | null) => Verdict;
   cosignVerdict: (image: unknown, expected: Expected, present: string[]) => Verdict;
   repositoryOf: (repository: unknown) => { raw: string | null; url: string | null; fault: string | null };
@@ -279,12 +279,43 @@ const DIST = { integrity: `sha512-${TARBALL.toString("base64")}` };
 const PKG = { spec: "@skillonomia/cli@0.1.2", name: "@skillonomia/cli", version: "0.1.2" };
 const subjectOf = (sha512: string) => [{ name: "@skillonomia/cli", digest: { sha512 } }];
 
-/** One entry of what `dist.attestations.url` serves, in npm's bundle shape. */
-const bundle = (predicateType: string, statement: Record<string, unknown>, material: unknown = { certificate: { rawBytes: "MII..." } }) => ({
+/**
+ * THE TWO SHAPES `dist.attestations.url` ACTUALLY SERVES.
+ *
+ * `@skillonomia/cli@0.1.4`'s bundle carries one of each, and they are not the
+ * same document. The SLSA provenance is Fulcio-certified, `sigstore.bundle
+ * .v0.3+json`, and its DSSE signature carries an empty `keyid`. The npm publish
+ * attestation is `sigstore.bundle+json;version=0.2`, its `verificationMaterial`
+ * is `publicKey` + `tlogEntries` + `timestampVerificationData` with NO
+ * certificate anywhere, and its signature's `keyid` is the registry key id the
+ * `publicKey.hint` names. `CERTIFIED` and `KEYED` below are those two, and the
+ * key id is the real one npm serves at `/-/npm/v1/keys`.
+ */
+const NPM_REGISTRY_KEY = "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U";
+const REGISTRY_KEY_IDS = ["SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA", NPM_REGISTRY_KEY];
+const CERTIFIED = { certificate: { rawBytes: "MII..." } };
+const KEYED = (over: Record<string, unknown> = {}) => ({
+  publicKey: { hint: NPM_REGISTRY_KEY },
+  tlogEntries: [{ logIndex: "2478008129", logId: { keyId: "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0=" }, kindVersion: { kind: "dsse", version: "0.0.1" } }],
+  timestampVerificationData: {},
+  ...over,
+});
+
+/**
+ * One entry of what `dist.attestations.url` serves, in npm's bundle shape. The
+ * signature's `keyid` follows the material by default — that is what a real
+ * bundle looks like — so a test that wants the two to disagree says so.
+ */
+const bundle = (
+  predicateType: string,
+  statement: Record<string, unknown>,
+  material: unknown = CERTIFIED,
+  signatures: unknown[] = [{ keyid: (material as { publicKey?: { hint?: string } } | null)?.publicKey?.hint ?? "", sig: "MEUCIQ..." }],
+) => ({
   predicateType,
   bundle: {
     verificationMaterial: material,
-    dsseEnvelope: { payload: Buffer.from(JSON.stringify(statement), "utf8").toString("base64"), payloadType: "application/vnd.in-toto+json" },
+    dsseEnvelope: { payload: Buffer.from(JSON.stringify(statement), "utf8").toString("base64"), payloadType: "application/vnd.in-toto+json", signatures },
   },
 });
 
@@ -503,13 +534,147 @@ test("[D-D1] a publish attestation about another version of the same package is 
   assert.match(r.detail, /the registry did not countersign THIS upload/);
 });
 
-test("[D-D2] a bundle with no certificate is refused", () => {
+test("[D-D2] a bundle that identifies nobody is refused, and the refusal names both materials", () => {
+  // The sentence matters as much as the refusal: the old one said "carries no
+  // certificate", which is why the shape npm actually publishes looked like a
+  // missing field instead of a different kind of signer.
+  const r = gate.npmProvenanceFrom(
+    PKG,
+    DIST,
+    EXPECTED,
+    [bundle(NPM_PROVENANCE, npmProvenanceStatement(), null), bundle(NPM_PUBLISH, npmPublishStatement(), KEYED())],
+    REGISTRY_KEY_IDS,
+  );
+  assert.notEqual(r.status, "OK", `a bundle identifying nobody was accepted with a parenthetical: ${r.detail}`);
+  assert.match(r.detail, /carries neither a certificate nor a `publicKey\.hint` in `verificationMaterial`/);
+  assert.match(r.detail, /nothing identifies who signed it/);
+});
+
+// --- E: the two attestations are signed by two different parties -------------
+//
+// `@skillonomia/cli@0.1.4` was published correctly, by `release.yml`, from the
+// tagged commit, with provenance — and this gate refused it and then refused
+// `identity` for want of a provenance to compare. The reason was the shape of
+// ONE field. `verificationMaterial.certificate` was demanded of both
+// attestations in the bundle, and only one of them ever has it: the SLSA
+// provenance is signed by a GitHub Actions run, keyless, so its identity IS the
+// Fulcio certificate; the npm PUBLISH attestation is signed by the REGISTRY,
+// with the registry's own long-lived key, so it carries `publicKey.hint` and no
+// certificate at all. There is no version of npm that writes one. This is the
+// same class of defect as demanding `workflow` of a BuildKit provenance: a
+// field the producer does not write, read as evidence of a producer that lied.
+//
+// The tests below are the two shapes and the four ways the key can be wrong.
+// Each of them fails on 8f44ae8 — the accepting ones because the gate refused
+// the real bundle, the refusing ones because the gate refused it for the wrong
+// reason and said so in a sentence that sent a reader looking for a certificate
+// npm was never going to write.
+
+test("[D-E1] the publish attestation npm actually writes — a registry key, no certificate — is accepted", () => {
+  const r = gate.npmProvenanceFrom(
+    PKG,
+    DIST,
+    EXPECTED,
+    [bundle(NPM_PROVENANCE, npmProvenanceStatement(), CERTIFIED), bundle(NPM_PUBLISH, npmPublishStatement(), KEYED())],
+    REGISTRY_KEY_IDS,
+  );
+  assert.equal(r.status, "OK", `the shape npm publishes was refused: ${r.detail}`);
+  assert.equal(r.identity?.commit, COMMIT);
+  assert.equal(r.identity?.runId, RUN);
+  // and the line says which material each side was signed with, so nobody has
+  // to re-derive it from the registry to know what was read
+  assert.match(r.detail, /provenance \(a Fulcio certificate\)/);
+  assert.match(r.detail, new RegExp(`npm publish attestation \\(the npm registry key ${NPM_REGISTRY_KEY.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}, log index 2478008129\\)`));
+});
+
+test("[D-E2] a SLSA provenance signed with the registry key instead of a certificate is refused", () => {
+  // The relaxation is for the registry's own attestation and for nothing else.
+  // A provenance is produced by a workflow; a workflow's identity is its Fulcio
+  // certificate, and a provenance that arrives keyed by the registry is a
+  // provenance nobody in a workflow signed.
+  const r = gate.npmProvenanceFrom(
+    PKG,
+    DIST,
+    EXPECTED,
+    [bundle(NPM_PROVENANCE, npmProvenanceStatement(), KEYED()), bundle(NPM_PUBLISH, npmPublishStatement(), KEYED())],
+    REGISTRY_KEY_IDS,
+  );
+  assert.notEqual(r.status, "OK", `a provenance with no certificate was accepted: ${r.detail}`);
+  assert.match(r.detail, /is signed with the npm registry key/);
+  assert.match(r.detail, /certificate is what may sign it/);
+});
+
+test("[D-E3] a publish attestation keyed to something the registry does not publish is refused", () => {
+  const r = gate.npmProvenanceFrom(
+    PKG,
+    DIST,
+    EXPECTED,
+    [
+      bundle(NPM_PROVENANCE, npmProvenanceStatement(), CERTIFIED),
+      bundle(NPM_PUBLISH, npmPublishStatement(), KEYED({ publicKey: { hint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } })),
+    ],
+    REGISTRY_KEY_IDS,
+  );
+  assert.notEqual(r.status, "OK", `a key the registry never published was accepted: ${r.detail}`);
+  assert.match(r.detail, /a key the registry does not publish signs for nobody/);
+});
+
+test("[D-E4] a publish attestation that announces npm's key and is signed under another is refused", () => {
+  const r = gate.npmProvenanceFrom(
+    PKG,
+    DIST,
+    EXPECTED,
+    [
+      bundle(NPM_PROVENANCE, npmProvenanceStatement(), CERTIFIED),
+      bundle(NPM_PUBLISH, npmPublishStatement(), KEYED(), [{ keyid: "SHA256:somebody-else", sig: "MEUCIQ..." }]),
+    ],
+    REGISTRY_KEY_IDS,
+  );
+  assert.notEqual(r.status, "OK", `a bundle signed under a key it does not name was accepted: ${r.detail}`);
+  assert.match(r.detail, /the key it announces is not the key it was signed with/);
+});
+
+test("[D-E5] a keyed publish attestation with no transparency-log entry is refused", () => {
+  const r = gate.npmProvenanceFrom(
+    PKG,
+    DIST,
+    EXPECTED,
+    [bundle(NPM_PROVENANCE, npmProvenanceStatement(), CERTIFIED), bundle(NPM_PUBLISH, npmPublishStatement(), KEYED({ tlogEntries: [] }))],
+    REGISTRY_KEY_IDS,
+  );
+  assert.notEqual(r.status, "OK", `a signature nobody can find was accepted: ${r.detail}`);
+  assert.match(r.detail, /carries no `tlogEntries` with a log index/);
+});
+
+test("[D-E6] a keyed publish attestation is refused when the registry's key ids were not read", () => {
+  // `npmProvenance` reads `/-/npm/v1/keys` before the bundle and reports
+  // UNVERIFIABLE if it cannot. A caller that supplies no key ids has attributed
+  // nothing, and an unattributed key is not an accepted one.
   const r = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [
-    bundle(NPM_PROVENANCE, npmProvenanceStatement(), null),
-    bundle(NPM_PUBLISH, npmPublishStatement()),
+    bundle(NPM_PROVENANCE, npmProvenanceStatement(), CERTIFIED),
+    bundle(NPM_PUBLISH, npmPublishStatement(), KEYED()),
   ]);
-  assert.notEqual(r.status, "OK", `an uncertified bundle was accepted with a parenthetical: ${r.detail}`);
-  assert.match(r.detail, /carries no certificate in `verificationMaterial`/);
+  assert.notEqual(r.status, "OK", `an unattributed key was accepted: ${r.detail}`);
+  assert.match(r.detail, /the npm registry's own key ids were not read/);
+});
+
+test("[D-E7] a correctly keyed publish attestation about ANOTHER tarball is still refused", () => {
+  // The binding to `dist.integrity` is what the key check must not have
+  // displaced: a genuine registry countersignature of a different upload is
+  // still not a countersignature of this one.
+  const r = gate.npmProvenanceFrom(
+    PKG,
+    DIST,
+    EXPECTED,
+    [
+      bundle(NPM_PROVENANCE, npmProvenanceStatement(), CERTIFIED),
+      bundle(NPM_PUBLISH, npmPublishStatement(createHash("sha512").update("some other tarball").digest("hex")), KEYED()),
+    ],
+    REGISTRY_KEY_IDS,
+  );
+  assert.notEqual(r.status, "OK", `a genuinely signed attestation of another upload was accepted: ${r.detail}`);
+  assert.match(r.detail, /and the registry serves sha512-/);
+  assert.match(r.detail, /the registry did not countersign THIS upload/);
 });
 
 test("[D-D3] a bundle whose payload is not base64 of JSON is refused, and does not throw", () => {
@@ -968,4 +1133,38 @@ test("[P-11] release.yml runs preflight before it publishes anything, and demand
   const src = read("ci/mvp-release.mjs");
   assert.match(src, /const PREFLIGHT_OK = "RELEASE_PREFLIGHT_OK"/);
   assert.match(src, /const PREFLIGHT_STAGED = "RELEASE_PREFLIGHT_STAGED_OK"/);
+});
+
+test("[P-12] every publishing job has a ceiling, and every command in the publish step has a deadline", () => {
+  // `v0.1.4`'s publish-npm job ran 2h21m in `Pack, checksum, publish that file,
+  // and read the registry back` and was cancelled by hand; the three steps that
+  // attach the tarball's SBOM and read the registries back never ran, which is
+  // why that release has no CycloneDX document. The publish itself had finished
+  // in 21 seconds. What was missing was not a check — it was a deadline, on
+  // every command in that step and on the jobs around it.
+  const release = read(".github/workflows/release.yml");
+  const jobs = ["publish-binary:", "publish-image:", "publish-npm:"];
+  for (const job of jobs) {
+    const at = release.indexOf(`\n  ${job}`);
+    assert.ok(at > -1, `release.yml no longer defines \`${job}\` — this guard is reading the wrong file`);
+    const block = release.slice(at, at + 900);
+    assert.match(block, /^\s{4}timeout-minutes: \d+$/m, `\`${job}\` has no timeout-minutes: a stuck job runs to GitHub's six-hour default`);
+  }
+  // the step that hung: every command it runs goes through `bounded`, which is
+  // `timeout` plus a sentence, and every one of them reads from /dev/null so a
+  // prompt is an error rather than a wait
+  const body = release.slice(release.indexOf("- name: Pack, checksum, publish that file"));
+  const step = body.slice(0, body.indexOf("\n      - name: The tarball's SBOM"));
+  assert.match(step, /timeout --signal=TERM --kill-after=30s "\$budget" "\$@" < \/dev\/null/, "the publish step's commands are no longer bounded by `timeout`");
+  for (const command of ["npm pack", "npm publish", "npm view", "node ci/mvp-release.mjs npm"]) {
+    assert.match(
+      step,
+      new RegExp(`bounded \\d+m "[^"]*"[\\s\\\\]+${command.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}`),
+      `\`${command}\` runs in the publish step without a budget — this is the step that waited 8,464 seconds`,
+    );
+  }
+  assert.match(step, /npm_config_yes: "true"/, "npm may still stop to ask a question nobody is there to answer");
+  assert.match(step, /npm_config_fetch_timeout: "60000"/, "npm's own network waits are unbounded again");
+  // and the file's own account of it, so the next reader does not re-derive it
+  assert.match(release, /2h21m/, "release.yml no longer records what the deadlines are for");
 });

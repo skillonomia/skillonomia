@@ -142,8 +142,25 @@ function redact(text) {
   return text.replace(/(BOOTSTRAP_OWNER_TOKEN|DEMO_ADOPTER_TOKEN)=\S+/g, "$1=[redacted]");
 }
 
+/**
+ * A DEADLINE THAT WAS REACHED, TOLD APART FROM A COMMAND THAT WOULD NOT START.
+ * `spawnSync` reports both through `error`, and on some platforms a killed
+ * child arrives only as a signal — so both are read, and only when a timeout
+ * was actually asked for.
+ */
+function timedOut(r, opts = {}) {
+  if ((opts.timeout ?? 0) <= 0) return false;
+  return r.error?.code === "ETIMEDOUT" || (r.status === null && r.signal !== null);
+}
+
+/** What a reached deadline says. It names the command and the budget it had. */
+function deadline(what, ms) {
+  return `${what} did not finish within ${Math.round(ms / 1000)}s and was killed. A step that waits without a deadline is how \`v0.1.4\` spent two hours and twenty-one minutes after its publish had already succeeded; this refuses instead.`;
+}
+
 function run(file, args, opts = {}) {
   const r = spawnSync(file, args, { encoding: "utf8", ...opts });
+  if (timedOut(r, opts)) fail(deadline(`${file} ${args.join(" ")}`, opts.timeout));
   if (r.error) fail(`${file} could not be run: ${r.error.message}`);
   if (r.status !== 0) {
     fail(`${file} ${args.join(" ")} exited ${r.status}\n${redact(`${r.stdout ?? ""}${r.stderr ?? ""}`)}`);
@@ -205,6 +222,7 @@ async function fetchOrFail(url, what, headers = {}) {
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...headers,
     },
+    signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
   });
   if (!res.ok) fail(`${what}: ${url} answered ${res.status} ${res.statusText}`);
   return res;
@@ -315,7 +333,13 @@ async function smoke(dir, keep) {
     }
     console.log(`      /health ${JSON.stringify(body)}`);
     child.kill("SIGTERM");
-    await exited;
+    // a stop that is awaited without a deadline is a release step that can wait
+    // forever; the archive is one process, so SIGKILL after 10s ends it
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 10_000))]);
+    child.kill("SIGKILL");
+    child.stdout.destroy();
+    child.stderr.destroy();
+    child.unref();
     if (!/listening on/.test(log)) fail(`the unpacked server never announced a listener\n${redact(log)}`);
   } finally {
     if (keep) console.log(`      kept ${where}`);
@@ -419,7 +443,7 @@ function bunFreePath(where) {
 
 /** Is `name` runnable under `path`? Used to PROVE bun is gone, not to find it. */
 function resolvesUnder(name, path) {
-  const probe = spawnSync(name, ["--version"], { env: { ...process.env, PATH: path }, stdio: "ignore" });
+  const probe = spawnSync(name, ["--version"], { env: { ...process.env, PATH: path }, stdio: "ignore", timeout: LOCAL_SUBPROCESS_TIMEOUT_MS });
   return probe.error === undefined;
 }
 
@@ -427,18 +451,56 @@ function resolvesUnder(name, path) {
  * Start a long-running command, collect everything it prints, and wait for
  * `/health`. Returns the §9.1 credentials when this was a first start and null
  * when it was not — which is the whole assertion the restart step makes.
+ *
+ * THE THING THAT WAS STARTED IS NOT ALWAYS THE THING THAT SERVES, AND STOPPING
+ * IT HAS TO REACH BOTH. `bin/skillonomia.js` is a shim that spawns the real CLI
+ * with `stdio: "inherit"`, so the process this function signals and the process
+ * holding these pipes were two different processes. Signalling only the shim
+ * left the server reparented to init with the write ends of `stdout` and
+ * `stderr` still open — and a Node process cannot exit while it holds the read
+ * end of a pipe nobody will close. That is exactly how `v0.1.4`'s `publish-npm`
+ * ran 2h21m: `node ci/mvp-release.mjs npm` did all of its work, printed
+ * `NPM_CLI_OK`, and then sat there holding two socketpairs until a human
+ * cancelled the job.
+ *
+ * So the child is its own PROCESS GROUP and the group is what gets signalled —
+ * `SIGKILL` cannot be forwarded by any shim, and a group kill does not need it
+ * to be. And after the kill the streams are destroyed and the handle unref'd,
+ * so a survivor this cannot reach is still not something that can keep this
+ * process alive: the gate ends by refusing or by finishing, never by waiting.
  */
 async function startAndWait(file, args, opts, port, what) {
-  const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"], ...opts });
+  // `detached` makes the child a process-group leader on POSIX; Windows has no
+  // such thing, and `taskkill /T` is how a tree is ended there.
+  const group = process.platform !== "win32";
+  const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"], detached: group, ...opts });
   let log = "";
   child.stdout.on("data", (b) => (log += b));
   child.stderr.on("data", (b) => (log += b));
   let died = null;
   child.on("exit", (code, signal) => (died = `${what} exited ${code}/${signal}`));
 
+  /** Signal the whole tree, not the process that happens to be its root. */
+  const signalTree = (signal) => {
+    try {
+      if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      else if (group) process.kill(-child.pid, signal);
+      else child.kill(signal);
+    } catch {
+      // ESRCH: the group is already gone, which is the outcome being asked for
+    }
+  };
+  /** Nothing this process holds may outlive this function's interest in it. */
+  const release = () => {
+    child.stdout.destroy();
+    child.stderr.destroy();
+    child.unref();
+  };
+
   const body = await health(port);
   if (body === null) {
-    child.kill("SIGKILL");
+    signalTree("SIGKILL");
+    release();
     fail(`${what}: no \`status=ok\` from /health within ${HEALTH_TIMEOUT_MS / 1000}s${died ? ` (${died})` : ""}\n${redact(log)}`);
   }
   const token = (name) => new RegExp(`^${name}=(\\S+)$`, "m").exec(log)?.[1] ?? null;
@@ -451,16 +513,18 @@ async function startAndWait(file, args, opts, port, what) {
     credentials,
     log: () => log,
     stop: async () => {
-      child.kill("SIGTERM");
+      signalTree("SIGTERM");
       await Promise.race([once(child, "exit"), new Promise((r) => setTimeout(r, 10_000))]);
-      child.kill("SIGKILL");
+      signalTree("SIGKILL");
+      await Promise.race([once(child, "exit"), new Promise((r) => setTimeout(r, 5_000))]);
+      release();
     },
   };
 }
 
 /** The receipt, from the server, after everything else has happened. */
 async function readReceipt(base, receiptId, key) {
-  const res = await fetch(`${base}/v1/receipts/${receiptId}`, { headers: { authorization: `Bearer ${key}` } });
+  const res = await fetch(`${base}/v1/receipts/${receiptId}`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
   if (!res.ok) fail(`the receipt read-back answered ${res.status} ${res.statusText}`);
   const body = await res.json();
   if (body.derived_state !== "adopted") {
@@ -555,11 +619,14 @@ function checkArchiveVectors(cli, dbPath, where) {
   for (const [name, members] of ARCHIVE_VECTORS) {
     const file = join(where, `vector-${name}.tar`);
     writeFileSync(file, ustar(members));
-    const r = spawnSync(cli.file, [...cli.args, "verify", file, "--db", dbPath, "--json"], {
+    const opts = {
       encoding: "utf8",
       shell: cli.shell === true,
       env: { ...process.env, PATH: cli.path ?? process.env.PATH },
-    });
+      timeout: LOCAL_SUBPROCESS_TIMEOUT_MS,
+    };
+    const r = spawnSync(cli.file, [...cli.args, "verify", file, "--db", dbPath, "--json"], opts);
+    if (timedOut(r, opts)) fail(deadline(`the ${name} vector`, opts.timeout));
     const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     if (r.status !== 1) fail(`the ${name} vector exited ${r.status}; a refused archive is exit 1\n${redact(out)}`);
     if (!out.includes("MALFORMED_ARCHIVE")) {
@@ -575,7 +642,9 @@ function checkArchiveVectors(cli, dbPath, where) {
 const DIGEST_REF = /^[a-z0-9][a-z0-9.\-_/]*(?::[0-9]+)?\/[a-z0-9][a-z0-9.\-_/]*@sha256:[0-9a-f]{64}$/;
 
 function docker(args, opts = {}) {
-  const r = spawnSync("docker", args, { encoding: "utf8", ...opts });
+  const all = { encoding: "utf8", timeout: REGISTRY_SUBPROCESS_TIMEOUT_MS, ...opts };
+  const r = spawnSync("docker", args, all);
+  if (timedOut(r, all)) fail(deadline(`\`docker ${args.join(" ")}\``, all.timeout));
   if (r.error) fail(`docker could not be run: ${r.error.message}`);
   return { status: r.status, out: `${r.stdout ?? ""}`, err: `${r.stderr ?? ""}` };
 }
@@ -773,8 +842,21 @@ function consumerInstall(spec, where) {
   }
   console.log(`      bun is not on the consumer PATH (${resolvesUnder("bun", process.env.PATH ?? "") ? "it is on this machine's" : "nor on this machine's"})`);
 
-  const env = { ...process.env, PATH: path, npm_config_cache: cache, npm_config_prefix: prefix, npm_config_yes: "true" };
-  const install = spawnSync("npm", ["install", "--global", "--prefix", prefix, spec], { encoding: "utf8", env, shell: process.platform === "win32" });
+  const env = {
+    ...process.env,
+    PATH: path,
+    npm_config_cache: cache,
+    npm_config_prefix: prefix,
+    // nobody is at this terminal, and npm's own network waits are bounded below
+    // the deadline this install is given — see NETWORK_TIMEOUT_MS
+    npm_config_yes: "true",
+    npm_config_fetch_timeout: "60000",
+    npm_config_fetch_retries: "2",
+    npm_config_fetch_retry_maxtimeout: "20000",
+  };
+  const installOpts = { encoding: "utf8", env, shell: process.platform === "win32", timeout: REGISTRY_SUBPROCESS_TIMEOUT_MS };
+  const install = spawnSync("npm", ["install", "--global", "--prefix", prefix, spec], installOpts);
+  if (timedOut(install, installOpts)) fail(deadline(`the consumer install of ${spec}`, installOpts.timeout));
   if (install.status !== 0) {
     fail(`the consumer install of ${spec} exited ${install.status}\n${redact(`${install.stdout ?? ""}${install.stderr ?? ""}`)}`);
   }
@@ -806,11 +888,14 @@ function consumerInstall(spec, where) {
  * read-back afterwards. `extra` runs while the deployment is up.
  */
 async function consumerContract(installed, where, expectedVersion, extra) {
-  const shimVersion = spawnSync(installed.shim.file, ["version"], {
+  const versionOpts = {
     encoding: "utf8",
     shell: installed.shim.shell,
     env: { ...process.env, PATH: installed.path },
-  });
+    timeout: LOCAL_SUBPROCESS_TIMEOUT_MS,
+  };
+  const shimVersion = spawnSync(installed.shim.file, ["version"], versionOpts);
+  if (timedOut(shimVersion, versionOpts)) fail(deadline("the installed `skillonomia version`", versionOpts.timeout));
   if (shimVersion.status !== 0) fail(`the installed \`skillonomia version\` exited ${shimVersion.status}\n${redact(shimVersion.stderr ?? "")}`);
   const version = shimVersion.stdout.trim().split("\n").pop().trim();
   if (expectedVersion !== null && version !== expectedVersion) {
@@ -883,7 +968,7 @@ async function npmCli(argv) {
     // installed from it: a publish that uploaded different bytes, or a version
     // that never arrived, is a fact about the registry and is read from it.
     console.log(`[1/4] npm view ${spec}`);
-    const viewed = run("npm", ["view", spec, "dist.integrity", "version", "--json"], { encoding: "utf8" });
+    const viewed = run("npm", ["view", spec, "dist.integrity", "version", "--json"], { encoding: "utf8", timeout: REGISTRY_SUBPROCESS_TIMEOUT_MS });
     const view = JSON.parse(viewed);
     expectedVersion = view.version ?? spec.slice(spec.lastIndexOf("@") + 1);
     console.log(`      registry: version ${expectedVersion}, integrity ${view["dist.integrity"] ?? view.dist?.integrity ?? "(none reported)"}`);
@@ -1060,6 +1145,25 @@ const SPDX_PREDICATE = "https://spdx.dev/Document";
 const CYCLONEDX_PREDICATE = "https://cyclonedx.org/bom";
 const PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
 const NPM_PUBLISH_PREDICATE = "https://github.com/npm/attestation/tree/main/specs/publish/v0.1";
+/** The document that says which signing keys the npm registry claims as its own. */
+const NPM_REGISTRY_KEYS_URL = "https://registry.npmjs.org/-/npm/v1/keys";
+/**
+ * NOTHING IN THIS FILE WAITS FOREVER. `v0.1.4`'s publish job hung for two hours
+ * and twenty-one minutes on a step whose npm publish had already finished in
+ * twenty-one seconds, and it hung because every call after it — a registry read,
+ * a consumer install, a loopback read-back — was written with no deadline, in a
+ * step and a job with no ceiling. Node's `fetch` has NO default timeout: a
+ * socket that is accepted and then never answered stalls until something else
+ * gives up, and nothing else was going to. So every network read this file makes
+ * carries `AbortSignal.timeout`, every subprocess it waits on carries a
+ * `timeout`, and a deadline that is reached is a refusal with a sentence, which
+ * is what a job that is stuck has to say before an operator has to guess.
+ */
+const NETWORK_TIMEOUT_MS = 120_000;
+/** A subprocess that talks to a registry: npm's own retries live inside this. */
+const REGISTRY_SUBPROCESS_TIMEOUT_MS = 900_000;
+/** A subprocess that talks to nothing: it is running locally or it is stuck. */
+const LOCAL_SUBPROCESS_TIMEOUT_MS = 120_000;
 /** The one workflow allowed to have produced a release this gate accepts. */
 const RELEASE_WORKFLOW = ".github/workflows/release.yml";
 /**
@@ -1091,7 +1195,7 @@ function parseImageRef(ref) {
 
 /** The registry's own anonymous pull token, taken from its `WWW-Authenticate`. */
 async function registryToken(image) {
-  const probe = await fetch(`https://${image.api}/v2/`, { headers: { "user-agent": UA } });
+  const probe = await fetch(`https://${image.api}/v2/`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
   if (probe.status !== 401) return null;
   const challenge = probe.headers.get("www-authenticate") ?? "";
   const field = (name) => new RegExp(`${name}="([^"]+)"`).exec(challenge)?.[1] ?? null;
@@ -1101,7 +1205,7 @@ async function registryToken(image) {
   const service = field("service");
   if (service !== null) url.searchParams.set("service", service);
   url.searchParams.set("scope", `repository:${image.repository}:pull`);
-  const res = await fetch(url, { headers: { "user-agent": UA } });
+  const res = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
   if (!res.ok) return null;
   const body = await res.json();
   return body.token ?? body.access_token ?? null;
@@ -1109,6 +1213,7 @@ async function registryToken(image) {
 
 function registryGet(image, kind, reference, accept) {
   return fetch(`https://${image.api}/v2/${image.repository}/${kind}/${reference}`, {
+    signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
     headers: {
       accept,
       "user-agent": UA,
@@ -1548,15 +1653,19 @@ export function cosignVerdict(image, expected, present) {
   if (present.length === 0) {
     return verdict("signature", image.ref, "MISSING", `neither sha256-${hex}.sig nor sha256-${hex} is in ${image.host}/${image.repository} — nothing has signed this digest`);
   }
-  const probe = spawnSync("cosign", ["version"], { encoding: "utf8" });
+  const probe = spawnSync("cosign", ["version"], { encoding: "utf8", timeout: LOCAL_SUBPROCESS_TIMEOUT_MS });
   if (probe.error !== undefined) {
     return verdict("signature", image.ref, "UNVERIFIABLE", `${present.join(", ")} is published, and \`cosign\` is not on this machine's PATH. A published signature nobody verified is not a verified signature, so this gate refuses rather than reporting it as present.`);
   }
+  const verifyOpts = { encoding: "utf8", timeout: REGISTRY_SUBPROCESS_TIMEOUT_MS };
   const r = spawnSync(
     "cosign",
     ["verify", "--certificate-oidc-issuer", OIDC_ISSUER, "--certificate-identity", expected.certificateIdentity, image.ref],
-    { encoding: "utf8" },
+    verifyOpts,
   );
+  if (timedOut(r, verifyOpts)) {
+    return verdict("signature", image.ref, "UNVERIFIABLE", deadline(`\`cosign verify\` of ${image.ref}`, verifyOpts.timeout));
+  }
   if (r.status !== 0) {
     return verdict("signature", image.ref, "REFUSED", `${present.join(", ")} is published and \`cosign verify\` refused it against ${expected.certificateIdentity} at ${OIDC_ISSUER}:\n${redact(`${r.stdout ?? ""}${r.stderr ?? ""}`).trim()}`);
   }
@@ -1577,7 +1686,7 @@ const integrityHex = (integrity) => Buffer.from(integrity.slice(integrity.indexO
 
 /** What the registry says it is serving under this exact version. */
 async function npmRegistryVersion(pkg) {
-  const res = await fetch(`https://registry.npmjs.org/${pkg.name}`, { headers: { "user-agent": UA } });
+  const res = await fetch(`https://registry.npmjs.org/${pkg.name}`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
   if (!res.ok) fail(`the npm registry answered ${res.status} ${res.statusText} for ${pkg.name}`);
   const packument = await res.json();
   const version = (packument.versions ?? {})[pkg.version];
@@ -1597,9 +1706,102 @@ async function npmProvenance(pkg, dist, expected) {
   if (attestations === null || attestations.url === undefined) {
     return verdict("provenance", pkg.spec, "MISSING", "the registry reports no `dist.attestations` for this version, which is what a publish with a long-lived token leaves behind; OIDC Trusted Publishing is what attaches provenance");
   }
-  const res = await fetch(attestations.url, { headers: { "user-agent": UA } });
+  // The registry's own signing keys, read before the bundle that claims to be
+  // signed by one of them: a `publicKey.hint` is a key id, and a key id is only
+  // evidence if the registry serves that key. A registry that will not say
+  // which keys are its own leaves the publish attestation unattributable, and
+  // that is reported as UNVERIFIABLE — the same answer a missing `cosign` gets,
+  // for the same reason: nothing was checked, so nothing may be claimed.
+  const keys = await npmRegistryKeyIds();
+  if (keys.fault !== null) return verdict("provenance", pkg.spec, "UNVERIFIABLE", keys.fault);
+  const res = await fetch(attestations.url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
   if (!res.ok) return verdict("provenance", pkg.spec, "REFUSED", `the registry names an attestations bundle at ${attestations.url} and it answered ${res.status} ${res.statusText}`);
-  return npmProvenanceFrom(pkg, dist, expected, (await res.json()).attestations ?? []);
+  return npmProvenanceFrom(pkg, dist, expected, (await res.json()).attestations ?? [], keys.ids);
+}
+
+/**
+ * THE KEY IDS THE NPM REGISTRY SAYS ARE ITS OWN. `/-/npm/v1/keys` is the
+ * document `npm audit signatures` itself resolves the registry's signing keys
+ * out of, and it is what turns the `publicKey.hint` on a publish attestation
+ * from a string the bundle chose into a key npm publishes. Expired keys are
+ * kept: this gate reads releases that were published in the past, and a key
+ * that has since expired is still the key that signed them — what is refused is
+ * a hint the registry never listed at all.
+ */
+async function npmRegistryKeyIds() {
+  let body;
+  try {
+    const res = await fetch(NPM_REGISTRY_KEYS_URL, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
+    if (!res.ok) return { ids: null, fault: `the npm registry answered ${res.status} ${res.statusText} for ${NPM_REGISTRY_KEYS_URL}, and that document is what says which keys are the registry's own` };
+    body = await res.json();
+  } catch (err) {
+    return { ids: null, fault: `${NPM_REGISTRY_KEYS_URL} could not be read (${err.message}), and that document is what says which keys are the registry's own` };
+  }
+  const ids = (body.keys ?? []).map((k) => k.keyid).filter((id) => typeof id === "string" && id.length > 0);
+  if (ids.length === 0) return { ids: null, fault: `${NPM_REGISTRY_KEYS_URL} names no key ids, so nothing published there can be attributed to the registry` };
+  return { ids, fault: null };
+}
+
+/**
+ * WHO SIGNED A BUNDLE, AND WITH WHAT KIND OF MATERIAL.
+ *
+ * THE TWO ATTESTATIONS ARE NOT SIGNED BY THE SAME PARTY, so they cannot carry
+ * the same material. The SLSA provenance is produced by a GitHub Actions run:
+ * it is keyless, the identity IS the Fulcio certificate, and a provenance with
+ * no certificate names nobody. The npm PUBLISH attestation is produced by the
+ * registry, about an upload it received, and the registry signs it with its own
+ * long-lived key — `verificationMaterial.publicKey.hint`, a key id, with no
+ * certificate anywhere in the bundle because there is no OIDC identity to bind.
+ * Demanding a certificate of it demanded a field npm does not write, and that
+ * is what refused `@skillonomia/cli@0.1.4`: two attestations, one certificate,
+ * one key, and a gate that read one shape.
+ *
+ * SO THE KEY IS CHECKED AS A KEY, and the check is not softer for it:
+ *
+ *   - the hint must be a key id `registry.npmjs.org/-/npm/v1/keys` serves, so a
+ *     bundle cannot name a key of its own choosing;
+ *   - every DSSE signature must carry that same key id, so the bundle cannot
+ *     announce npm's key and be signed by another;
+ *   - the bundle must carry a transparency-log entry with a log index, which is
+ *     what makes the signature discoverable rather than merely asserted.
+ *
+ * WHAT THIS IS NOT. None of it verifies a signature — this file never has, for
+ * either artifact. `cosign verify` and `npm audit signatures` do that, they run
+ * at this gate on what the registries serve now, and `hardening` refuses to
+ * print its marker unless `npm audit signatures` named a verified attestation.
+ * What is checked here is that the document is attributable and internally
+ * consistent before any of it is read as a claim.
+ *
+ * `registryKeyIds` is null when the caller did not read the registry's keys. A
+ * key that could not be attributed is not a key that was accepted, so a keyed
+ * bundle is refused rather than waved through with a parenthetical.
+ */
+export function signerOf(b, registryKeyIds = null) {
+  const vm = b.bundle?.verificationMaterial ?? {};
+  const certificate = vm.certificate ?? vm.x509CertificateChain ?? null;
+  const hint = vm.publicKey?.hint ?? null;
+  if (certificate !== null) return { kind: "certificate", keyid: null, described: "a Fulcio certificate", fault: null };
+  if (typeof hint !== "string" || hint.length === 0) {
+    const carried = Object.keys(vm).join(", ") || "nothing";
+    return { kind: null, keyid: null, described: "nothing", fault: `carries neither a certificate nor a \`publicKey.hint\` in \`verificationMaterial\` (it carries ${carried}), so nothing identifies who signed it` };
+  }
+  if (registryKeyIds === null) {
+    return { kind: null, keyid: hint, described: `the key ${hint}`, fault: `is signed with the key ${hint} and the npm registry's own key ids were not read, so the key could not be attributed to the registry` };
+  }
+  if (!registryKeyIds.includes(hint)) {
+    return { kind: null, keyid: hint, described: `the key ${hint}`, fault: `names the key ${hint}, and ${NPM_REGISTRY_KEYS_URL} serves ${registryKeyIds.join(", ")} — a key the registry does not publish signs for nobody` };
+  }
+  const signatures = b.bundle?.dsseEnvelope?.signatures ?? [];
+  if (signatures.length === 0) return { kind: null, keyid: hint, described: `the key ${hint}`, fault: `names the key ${hint} and its \`dsseEnvelope\` carries no signature at all` };
+  const wrong = signatures.map((s) => s.keyid ?? null).filter((k) => k !== hint);
+  if (wrong.length > 0) {
+    return { kind: null, keyid: hint, described: `the key ${hint}`, fault: `names the key ${hint} in \`verificationMaterial\` and is signed under ${JSON.stringify(wrong)} — the key it announces is not the key it was signed with` };
+  }
+  const tlog = (vm.tlogEntries ?? []).filter((e) => (e.logIndex ?? null) !== null);
+  if (tlog.length === 0) {
+    return { kind: null, keyid: hint, described: `the key ${hint}`, fault: `is signed with the registry key ${hint} and carries no \`tlogEntries\` with a log index, so the signature is asserted and not discoverable` };
+  }
+  return { kind: "registry key", keyid: hint, described: `the npm registry key ${hint}, log index ${tlog[0].logIndex}`, fault: null };
 }
 
 /**
@@ -1608,8 +1810,10 @@ async function npmProvenance(pkg, dist, expected) {
  * A MALFORMED BUNDLE IS AN ANSWER. The envelope's payload is base64 of JSON, and
  * a payload that is neither is not an error to crash the gate with — it is a
  * bundle that proves nothing, reported as such, in the same table as everything
- * else. So is a bundle with no certificate: what makes a DSSE envelope evidence
- * is the key that signed it, and `verificationMaterial` is where that key is.
+ * else. So is a bundle that identifies nobody: what makes a DSSE envelope
+ * evidence is the key that signed it, and `verificationMaterial` is where that
+ * key is — see `signerOf` for which material each of the two attestations is
+ * allowed to carry, and why they are not the same.
  *
  * BOTH ATTESTATIONS ARE ABOUT THIS TARBALL. The provenance says who built it and
  * the npm publish attestation says the registry countersigned the upload — and
@@ -1617,37 +1821,48 @@ async function npmProvenance(pkg, dist, expected) {
  * exists in the bundle" is satisfied by an attestation about a DIFFERENT version
  * of the same package, and the bundle is fetched by a URL the registry chose.
  */
-export function npmProvenanceFrom(pkg, dist, expected, bundles) {
+export function npmProvenanceFrom(pkg, dist, expected, bundles, registryKeyIds = null) {
   const statements = bundles.map((b) => {
     const payload = b.bundle?.dsseEnvelope?.payload;
-    const certified = (b.bundle?.verificationMaterial?.certificate ?? b.bundle?.verificationMaterial?.x509CertificateChain ?? null) !== null;
-    if (typeof payload !== "string") return { predicateType: b.predicateType ?? null, statement: null, certified, fault: "carries no `bundle.dsseEnvelope.payload`" };
+    const signer = signerOf(b, registryKeyIds);
+    if (typeof payload !== "string") return { predicateType: b.predicateType ?? null, statement: null, signer, fault: "carries no `bundle.dsseEnvelope.payload`" };
     let statement = null;
     try {
       statement = JSON.parse(Buffer.from(payload, "base64").toString("utf8"));
     } catch {
-      return { predicateType: b.predicateType ?? null, statement: null, certified, fault: "has a `dsseEnvelope.payload` that is not base64 of JSON" };
+      return { predicateType: b.predicateType ?? null, statement: null, signer, fault: "has a `dsseEnvelope.payload` that is not base64 of JSON" };
     }
     if (statement === null || typeof statement !== "object" || Array.isArray(statement)) {
-      return { predicateType: b.predicateType ?? null, statement: null, certified, fault: `has a payload that decodes to ${JSON.stringify(statement)}, not a statement` };
+      return { predicateType: b.predicateType ?? null, statement: null, signer, fault: `has a payload that decodes to ${JSON.stringify(statement)}, not a statement` };
     }
-    return { predicateType: b.predicateType ?? null, statement, certified, fault: null };
+    return { predicateType: b.predicateType ?? null, statement, signer, fault: null };
   });
   const broken = statements.filter((s) => s.fault !== null);
   if (broken.length > 0) {
     return verdict("provenance", pkg.spec, "REFUSED", `the attestation bundle for ${dist.integrity} is not readable: ${broken.map((s) => `the ${s.predicateType ?? "(unlabelled)"} entry ${s.fault}`).join("; ")}`);
   }
   const want = integrityHex(dist.integrity);
-  /** The one entry of `predicateType` that is a statement about THIS tarball. */
-  const about = (predicateType) => {
+  /**
+   * The one entry of `predicateType` that is a statement about THIS tarball.
+   * `material` is the identifying material this predicate is allowed to be
+   * signed with — a Fulcio certificate for anything a workflow produced, and a
+   * registry key as well for the one attestation the registry itself makes.
+   */
+  const about = (predicateType, material) => {
     const carried = statements.filter((s) => s.statement.predicateType === predicateType);
     if (carried.length === 0) return { entry: null, fault: `the bundle carries ${statements.map((s) => s.statement.predicateType ?? s.predicateType).join(", ") || "nothing"} and no ${predicateType}` };
     const entry = carried[0];
     if (!IN_TOTO_STATEMENT_TYPES.includes(entry.statement._type)) {
       return { entry: null, fault: `the ${predicateType} statement's \`_type\` is ${JSON.stringify(entry.statement._type ?? null)}, and an in-toto Statement is what carries a predicate` };
     }
-    if (!entry.certified) {
-      return { entry: null, fault: `the ${predicateType} bundle carries no certificate in \`verificationMaterial\`, so nothing identifies who signed it` };
+    if (entry.signer.fault !== null) return { entry: null, fault: `the ${predicateType} bundle ${entry.signer.fault}` };
+    if (!material.includes(entry.signer.kind)) {
+      return {
+        entry: null,
+        fault:
+          `the ${predicateType} bundle is signed with ${entry.signer.described}, and ${material.join(" or ")} is what may sign it — ` +
+          `a ${predicateType} statement is produced by a workflow and carries a Fulcio certificate`,
+      };
     }
     const subjects = entry.statement.subject ?? [];
     if (!subjects.some((s) => (s.digest ?? {}).sha512 === want)) {
@@ -1661,9 +1876,9 @@ export function npmProvenanceFrom(pkg, dist, expected, bundles) {
     return { entry, fault: null };
   };
 
-  const provenance = about(PROVENANCE_PREDICATE);
+  const provenance = about(PROVENANCE_PREDICATE, ["certificate"]);
   if (provenance.fault !== null) return verdict("provenance", pkg.spec, "REFUSED", provenance.fault);
-  const publish = about(NPM_PUBLISH_PREDICATE);
+  const publish = about(NPM_PUBLISH_PREDICATE, ["certificate", "registry key"]);
   if (publish.fault !== null) {
     return verdict("provenance", pkg.spec, "REFUSED", `${publish.fault} — without it the registry did not countersign THIS upload`);
   }
@@ -1676,7 +1891,7 @@ export function npmProvenanceFrom(pkg, dist, expected, bundles) {
     pkg.spec,
     "OK",
     `${id.repository} ${id.workflow}@${id.ref} commit ${id.commit}${id.runId === null ? "" : ` run ${id.runId}`}, ` +
-      `provenance and npm publish attestation both bound to ${dist.integrity}`,
+      `provenance (${provenance.entry.signer.described}) and npm publish attestation (${publish.entry.signer.described}) both bound to ${dist.integrity}`,
     id,
   );
 }
@@ -1779,21 +1994,38 @@ export function releaseIdentityVerdict(expected, image, npm, imageSignatureStatu
 export function npmSignature(pkg) {
   const where = mkdtempSync(join(tmpdir(), "skillonomia-audit-"));
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  // THE ENVIRONMENT SAYS THERE IS NOBODY TO ASK. `npm_config_yes` answers the
+  // prompts npm would otherwise block on, and the fetch settings bound npm's own
+  // network waits below this file's subprocess deadline, so a stalled registry
+  // ends as an npm error with a message rather than as a process nobody kills.
   const opts = {
     cwd: where,
     encoding: "utf8",
-    env: { ...process.env, npm_config_cache: join(where, "cache"), npm_config_fund: "false", npm_config_update_notifier: "false" },
+    timeout: REGISTRY_SUBPROCESS_TIMEOUT_MS,
+    env: {
+      ...process.env,
+      npm_config_cache: join(where, "cache"),
+      npm_config_fund: "false",
+      npm_config_update_notifier: "false",
+      npm_config_yes: "true",
+      npm_config_fetch_timeout: "60000",
+      npm_config_fetch_retries: "2",
+      npm_config_fetch_retry_maxtimeout: "20000",
+    },
   };
   const say = (r) => redact(`${r.stdout ?? ""}${r.stderr ?? ""}`).trim();
   try {
     const init = spawnSync(npm, ["init", "-y"], opts);
+    if (timedOut(init, opts)) return verdict("signature", pkg.spec, "UNVERIFIABLE", deadline("`npm init -y`", opts.timeout));
     if (init.error !== undefined) {
       return verdict("signature", pkg.spec, "UNVERIFIABLE", "`npm` is not on this machine's PATH, and `npm audit signatures` is what verifies the registry signature and the Sigstore bundle. An unverified bundle is not a verified one, so this gate refuses rather than reporting the bundle as read.");
     }
     if (init.status !== 0) return verdict("signature", pkg.spec, "UNVERIFIABLE", `\`npm init -y\` failed in a clean directory, so nothing could be installed to verify:\n${say(init)}`);
     const install = spawnSync(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", pkg.spec], opts);
+    if (timedOut(install, opts)) return verdict("signature", pkg.spec, "UNVERIFIABLE", deadline(`a clean install of ${pkg.spec}`, opts.timeout));
     if (install.status !== 0) return verdict("signature", pkg.spec, "REFUSED", `a clean install of ${pkg.spec} failed, so what a deploy would install is not installable:\n${say(install)}`);
     const audit = spawnSync(npm, ["audit", "signatures"], opts);
+    if (timedOut(audit, opts)) return verdict("signature", pkg.spec, "UNVERIFIABLE", deadline("`npm audit signatures`", opts.timeout));
     const out = say(audit);
     if (audit.status !== 0) return verdict("signature", pkg.spec, "REFUSED", `\`npm audit signatures\` refused ${pkg.spec}:\n${out}`);
     if (!/verified attestations?/i.test(out)) {
@@ -1977,7 +2209,7 @@ async function hardening(argv) {
     release: { tag: expected.tag, ref: expected.ref, workflow: expected.workflow, certificate_identity: expected.certificateIdentity },
     families: Object.fromEntries(families.map((f) => [f, results.filter((r) => r.family === f).every((r) => r.status === "OK") ? "OK" : "REFUSED"])),
     checks: results,
-    cosign_available: spawnSync("cosign", ["version"], { encoding: "utf8" }).error === undefined,
+    cosign_available: spawnSync("cosign", ["version"], { encoding: "utf8", timeout: LOCAL_SUBPROCESS_TIMEOUT_MS }).error === undefined,
     npm_bundle_cryptographically_verified: cryptographicallyVerified,
   };
   if (opts.record !== null) {
@@ -2336,7 +2568,7 @@ export function tagObjectCheck(tag, kind, sha, head) {
 
 /** The registry's document for a package, or null when it has none. */
 async function packumentOf(name) {
-  const res = await fetch(`https://registry.npmjs.org/${name.replace("/", "%2f")}`, { headers: { "user-agent": UA } });
+  const res = await fetch(`https://registry.npmjs.org/${name.replace("/", "%2f")}`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`the npm registry answered ${res.status} ${res.statusText} for ${name}`);
   return await res.json();
@@ -2346,7 +2578,9 @@ async function packumentOf(name) {
 function packed(expected, version) {
   const where = mkdtempSync(join(tmpdir(), "skillonomia-preflight-"));
   try {
-    const r = spawnSync("npm", ["pack", "--pack-destination", where], { cwd: ROOT, encoding: "utf8" });
+    const packOpts = { cwd: ROOT, encoding: "utf8", timeout: LOCAL_SUBPROCESS_TIMEOUT_MS };
+    const r = spawnSync("npm", ["pack", "--pack-destination", where], packOpts);
+    if (timedOut(r, packOpts)) return [check("pack", "UNVERIFIABLE", deadline("`npm pack`", packOpts.timeout)), check("tarball", "UNVERIFIABLE", "there is no tarball to read")];
     if (r.error !== undefined) return [check("pack", "UNVERIFIABLE", `\`npm pack\` could not be run: ${r.error.message}`), check("tarball", "UNVERIFIABLE", "there is no tarball to read")];
     if (r.status !== 0) {
       return [
