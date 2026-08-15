@@ -18,6 +18,12 @@
 // approval; the registry holds no image. So the documents must state the command
 // AND state that it has no digest yet, and this file requires both — a document
 // that printed a plausible 64-hex digest would be inventing an artifact.
+//
+// AND THE IMAGE IS A LINUX ARTIFACT. The owner deferred Docker Desktop on macOS
+// and every Windows lane, so `qualify-docker-linux` is the one container
+// qualification this project claims; `qualify-docker-macos` and
+// `qualify-docker-windows` stay in the workflow, unrun and named as deferred.
+// Nothing checked below may read as a container result on either.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -57,7 +63,11 @@ test("only release.yml pushes it, and the candidate stage cannot", () => {
   assert.match(release, /environment: release/, "…behind the protected environment the owner approves");
 });
 
-test("what is pushed is qualified by DIGEST, on three named runtimes", () => {
+test("what is pushed is taken by DIGEST — qualified on Linux, deferred on the other two", () => {
+  // The three jobs are wired identically and take one digest; only the Linux one
+  // is a CLAIM. macOS and Windows are deferred by the owner (Docker Desktop is
+  // not being installed), and the wiring below is checked so that the deferred
+  // pair stays exactly as written rather than being quietly made to pass.
   const platform = workflow("platform.yml");
   const jobs = ["qualify-docker-linux", "qualify-docker-macos", "qualify-docker-windows"];
   const hosts = ["linux-x64", "darwin-arm64", "win32-x64"];
@@ -77,6 +87,15 @@ test("what is pushed is qualified by DIGEST, on three named runtimes", () => {
   // hosted runner is not one, and the workflow may not quietly say it is.
   assert.match(platform, /runs-on: \[self-hosted, macOS, ARM64, docker-desktop\]/);
   assert.match(platform, /runs-on: \[self-hosted, Windows, X64, docker-desktop\]/);
+
+  // …and both are named as DEFERRED BY OWNER where they are declared, so a
+  // reader of the workflow meets the decision and not a job that looks pending.
+  for (const job of ["qualify-docker-macos", "qualify-docker-windows"]) {
+    const at = platform.indexOf(`  ${job}:`);
+    assert.notEqual(at, -1, `platform.yml still declares ${job}`);
+    const block = platform.slice(at, at + 900);
+    assert.match(block, /DEFERRED BY OWNER/, `${job} is declared as deferred, not as a pending qualification`);
+  }
 });
 
 test("the smoke REFUSES a tag, and refuses to run on a host it is not", () => {

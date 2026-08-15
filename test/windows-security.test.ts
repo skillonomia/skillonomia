@@ -1,6 +1,12 @@
 // B4's four Windows checks — the contract, from wherever this suite runs, and
 // the checks themselves ONLY on Windows.
 //
+// B4 IS DEFERRED BY OWNER. Windows qualification is not part of what this
+// project claims today: `windows-security` stays in `platform.yml` unchanged and
+// unweakened, and NO B4 result is claimed anywhere in this tree. What follows
+// asserts the SHAPE of the script — that it would fail closed if it were run —
+// and never that it has been run.
+//
 // The four properties are properties of NTFS, of Windows ACLs and of reparse
 // points. They cannot be measured from Linux, and this file does not pretend
 // otherwise: on any other host it asserts what `ci/windows-security.ps1` MUST

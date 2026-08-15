@@ -145,6 +145,15 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["README.md", "bd673d9ee2d1996b", "behaviour", "receipts are INSERT-only and adopter-writable only: test/insert-only.test.ts"],
     ["README.md", "e5a84f971ae1e2c0", "behaviour", "a service key can never satisfy the human-approval gate: test/p4-approvals.test.ts"],
     ["README.md", "71e9d95b743ffe2c", "behaviour", "the seed's demo key signs that one package and verifies out of the box: test/readme-quickstart.test.ts"],
+    // The owner's platform decision, stated in the document that would otherwise
+    // imply more. Two artifacts, two widths, and one lane deferred — none of
+    // which the tree can refute, because a deferral is a decision and an
+    // unexercised platform leaves no evidence behind to read.
+    ["README.md", "e547f6d3a19ea5af", "intent", "the container image is claimed on Ubuntu and on no other OS; a support boundary this project sets, not a fact of the tree"],
+    ["README.md", "808df16ac1de47be", "intent", "the owner deferred Docker Desktop on macOS and Windows, so neither container job has run and neither is claimed; a decision, and the absence it leaves is unreadable from here"],
+    ["README.md", "17a90d1d933e0a6a", "intent", "the Windows lane is deferred by the owner and no Windows result is reported; a support boundary. That the jobs remain declared is asserted by test/platform.test.ts"],
+    ["README.md", "d80a47d48743b01a", "intent", "names the supported macOS path — the npm CLI on ordinary Node, not a container; a support boundary"],
+    ["README.md", "7fc8f309a518600c", "behaviour", "the deferred jobs are still declared in the workflow, unaltered and undeleted: test/platform.test.ts"],
   ],
   // ---------------------------------------------------------------- SECURITY
   [
@@ -325,6 +334,14 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["docs/OPERATIONS.md", "121a6b75d0c09491", "behaviour", "the version-10 refusal and why it cannot be told apart: test/p14-r11-probes.test.ts"],
     ["docs/OPERATIONS.md", "d14f3ce4d29b8886", "editorial", "a historical statement about an unreleased development commit"],
     ["docs/OPERATIONS.md", "07e53a809d6b4dee", "behaviour", "an interrupted upgrade to 10 is equally indistinguishable: test/p14-r11-probes.test.ts"],
+    // The same platform decision, restated for the operator. `qualify-docker-linux`
+    // is the one container qualification; the other two rows and the Windows lane
+    // are the owner's deferral, written down so an absence is not read as a pass.
+    ["docs/OPERATIONS.md", "bd2a80bc63b7a753", "intent", "the container image is claimed on Ubuntu and on no other OS; a support boundary this project sets"],
+    ["docs/OPERATIONS.md", "34412b3e8f03ab47", "intent", "`qualify-docker-macos` is deferred by the owner and has produced no macOS container result; a decision, and an unexercised platform leaves nothing here to read"],
+    ["docs/OPERATIONS.md", "f21b3521832d9fdd", "intent", "`qualify-docker-windows` is deferred on the same decision, with no Windows container result"],
+    ["docs/OPERATIONS.md", "b89482d027524001", "intent", "names the supported macOS path — ordinary Node and npm, not a container; a support boundary"],
+    ["docs/OPERATIONS.md", "a3f4c7db1e2b9330", "behaviour", "each docker job takes the workflow's one digest and refuses a host it is not on: test/published-image-contract.test.ts"],
   ],
   // ----------------------------------------------------------- skills/README
   [

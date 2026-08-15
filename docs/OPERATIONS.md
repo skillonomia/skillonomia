@@ -8,29 +8,53 @@ README; for exact request shapes, see `API.md`.
 **The compiled binary is Linux x86_64.** `build:binary` targets
 `bun-linux-x64`; there is no macOS and no Windows binary.
 
-**The container image and `@skillonomia/cli` are qualified on Ubuntu x86_64,
-macOS arm64 and Windows x86_64.** What is qualified there is the user contract
-in `.github/workflows/platform.yml` — clean install, `version`, `serve`,
-`/health`, `demo` to a terminal `adopted` receipt inside the 600-second budget,
-a restart on the same SQLite file, and the §4.1b archive vectors — and not the
-full suite, which stays a Linux regression gate under Node and Bun on a clean
-Ubuntu x86_64 runner. The one behaviour known to depend on the host filesystem
-is §4.1b's DIRECTORY reader (see README → Supported platforms); the archive form
-of the same rule holds everywhere.
+**`@skillonomia/cli` is qualified on Ubuntu x86_64 and macOS arm64.** What is
+qualified there is the user contract in `.github/workflows/platform.yml` — clean
+install, `version`, `serve`, `/health`, `demo` to a terminal `adopted` receipt
+inside the 600-second budget, a restart on the same SQLite file, and the §4.1b
+archive vectors — and not the full suite, which stays a Linux regression gate
+under Node and Bun on a clean Ubuntu x86_64 runner. On macOS the path is
+ordinary Node and npm: a global install of the published package, and no
+container. The one behaviour known to depend on the host filesystem is §4.1b's
+DIRECTORY reader (see README → Supported platforms); the archive form of the
+same rule holds everywhere.
 
-The three container jobs (`qualify-docker-linux`, `qualify-docker-macos`,
-`qualify-docker-windows`) take ONE published digest and need REAL Docker
-runtimes: a Linux daemon, and Docker Desktop in LINUX-CONTAINER mode on the
-macOS and Windows hosts. `ci/mvp-release.mjs ghcr --expect-host` refuses to run
-anywhere else, so a job pointed at a runner without such a daemon fails rather
-than reporting a platform it was not on.
+**The container image is qualified on Ubuntu x86_64, and on no other operating
+system.**
+
+**Windows x86_64 is DEFERRED BY OWNER**, for both artifacts. `qualify-windows`
+and `windows-security` are present in `platform.yml`, unchanged, and neither has
+produced a result that is claimed here.
+
+**What has been observed so far.** `ci/mvp-release.mjs platform` reached
+`PLATFORM_QUALIFICATION_OK` on Linux from a checkout; the macOS job is the same
+contract on `macos-14` and has yet to report, and the intended macOS evidence is
+a global install of the published package on a real machine, from the public
+registry and outside any checkout. The macOS row above is therefore the contract
+this project commits to, and this paragraph is how far it has been exercised.
+
+Of the three container jobs, ONE runs and TWO are deferred:
+
+| Job | State |
+|---|---|
+| `qualify-docker-linux` | in force — pulls the one published digest on `ubuntu-latest` and drives the quickstart through it |
+| `qualify-docker-macos` | **DEFERRED BY OWNER** — Docker Desktop is not being installed on the macOS host; the job stays in the tree and is not run, and no macOS container result exists |
+| `qualify-docker-windows` | **DEFERRED BY OWNER** — same decision; the job stays in the tree and is not run, and no Windows container result exists |
+
+All three take ONE published digest and need a REAL Docker runtime, which for
+the two deferred ones would be Docker Desktop in LINUX-CONTAINER mode.
+`ci/mvp-release.mjs ghcr --expect-host` refuses to run anywhere else, so a job
+pointed at a runner without such a daemon fails rather than reporting a platform
+it was not on. That mechanism is unchanged; what is deferred is the claim, not
+the code.
 
 This is separate from what a skill package declares in `runtime.os`. A package
 may target `macos` or `windows` and be adopted from one; §4.2 compatibility is
 evaluated against the adopter's declared environment, not against the machine
-the registry runs on. On Windows the built-in seed package's
-`os: [linux, macos]` is genuinely unmet, `skillonomia demo` reports the §4.2
-`mismatch`, and at `risk_level: low` that is a warning and not a block.
+the registry runs on. On a Windows host the built-in seed package's
+`os: [linux, macos]` would be genuinely unmet, `skillonomia demo` would report
+the §4.2 `mismatch`, and at `risk_level: low` that is a warning and not a block —
+written in the conditional because Windows is deferred and unobserved.
 
 ## The release binary
 
@@ -292,7 +316,9 @@ No digest has been published for `ghcr.io/skillonomia/skillonomia`: the registry
 holds nothing under that name, and the row
 above is the shape the command will have, not a pull that works today. The
 publishing path exists and is armed — `.github/workflows/candidate.yml` builds
-both architectures on every push and pushes neither;
+`linux/amd64` and `linux/arm64` on every push and pushes neither (two Linux
+architectures, not two operating systems: the image is qualified on Linux and
+the other two container jobs are deferred by the owner);
 `.github/workflows/release.yml` pushes on a version tag out of the protected
 `release` environment, then resolves the manifest back from the registry and
 smokes it. The acceptance check is:
@@ -320,6 +346,11 @@ npm install -g @skillonomia/cli
 skillonomia serve --port 7431
 skillonomia demo                       # the §9.1 quickstart, end to end
 ```
+
+**On macOS this is the path.** A global install of the published package, from
+the public registry, outside any checkout — the container is qualified on Linux
+alone and Docker Desktop on macOS is deferred by the owner, so the CLI is what a
+macOS operator runs.
 
 Bun is the maintainer's build runtime — `prepack` runs `bun build` to produce
 the plain-JS entry point the installed package runs — and npm runs `prepack`

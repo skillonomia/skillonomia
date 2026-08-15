@@ -1,5 +1,10 @@
-// WHERE A DEPLOYMENT'S DATA LIVES, on each of the three platforms this CLI now
-// claims — asserted as a TABLE, from one host.
+// WHERE A DEPLOYMENT'S DATA LIVES, on each of the three platforms
+// `src/platform.ts` ANSWERS FOR — asserted as a TABLE, from one host.
+//
+// Three rows is not three claims. The CLI is qualified on Ubuntu and macOS;
+// Windows is deferred by the owner. `dataDirFor` still has to answer for a
+// Windows host, because the function is a definition and not a qualification —
+// and the row below is what it answers, not evidence that anyone ran it there.
 //
 // The rule that matters is not any single row: it is that there is ONE function
 // answering this question. Before src/platform.ts the answer was `/data`, which

@@ -4,14 +4,21 @@
 // THE CLAIM HAS MOVED, AND THE MOVE IS THE POINT. It was "Linux x86_64 and
 // nothing else": CI ran on `ubuntu-latest` alone and the compiled binary targets
 // `bun-linux-x64`. B2 and B3 add a second product path — `@skillonomia/cli` on
-// Node — and qualify it on Ubuntu, macOS and Windows, so the scope is now TWO
-// statements and not one, and both of them are narrower than "supported
-// everywhere":
+// Node — so the scope is now THREE statements and not one, and each is narrower
+// than "supported everywhere":
 //
 //   * the COMPILED BINARY is Linux x86_64 and stays so;
-//   * the npm CLI and the container image are qualified on the three platforms
-//     `.github/workflows/platform.yml` names, by the small user contract of that
-//     workflow — not by this suite's thousand Linux-oriented tests.
+//   * the NPM CLI is qualified on Ubuntu and macOS, by the small user contract
+//     of `.github/workflows/platform.yml` — not by this suite's thousand
+//     Linux-oriented tests. Windows is DEFERRED BY OWNER;
+//   * the CONTAINER IMAGE is qualified on Ubuntu and on no other operating
+//     system. `qualify-docker-macos` and `qualify-docker-windows` are DEFERRED
+//     BY OWNER and stay in the workflow unrun; on macOS the product path is the
+//     npm CLI on ordinary Node.
+//
+// This file therefore checks that the documents keep those three apart. A
+// sentence that puts the CLI and the image under one width is the defect the
+// owner named, and the widths differ.
 //
 // The substantive part below is §4.1b. Its case-insensitive and NFC/NFD
 // collision refusals are defined over a package's member names. Read from a
@@ -101,7 +108,31 @@ test("the platform scope is stated in every document that would otherwise imply 
   );
   const platform = read(".github/workflows/platform.yml");
   for (const runner of ["ubuntu-latest", "macos-14", "windows-latest"]) {
-    assert.ok(platform.includes(`runs-on: ${runner}`), `platform.yml qualifies on ${runner}`);
+    assert.ok(platform.includes(`runs-on: ${runner}`), `platform.yml declares a job on ${runner}`);
+  }
+
+  // WHAT IS DEFERRED HAS TO BE CALLED DEFERRED. The owner deferred Docker on
+  // macOS, every Windows job, and with them any container claim outside Linux.
+  // The jobs stay in the tree; an unnamed deferral is indistinguishable from a
+  // pass, so each of the three places a reader goes has to say the word.
+  for (const [where, text] of [
+    ["README.md", read("README.md")],
+    ["docs/OPERATIONS.md", read("docs/OPERATIONS.md")],
+    [".github/workflows/platform.yml", platform],
+  ] as const) {
+    assert.match(text, /DEFERRED BY OWNER/, `${where} names the deferral rather than leaving it as an absence`);
+  }
+  // …and the jobs it defers are still declared, not deleted and not replaced.
+  for (const job of ["qualify-docker-macos", "qualify-docker-windows", "qualify-windows", "windows-security"]) {
+    assert.match(platform, new RegExp(`^  ${job}:$`, "m"), `${job} stays in the tree as an explicit deferral`);
+  }
+  // The container's width is Linux, and the documents may not widen it.
+  for (const doc of ["README.md", "docs/OPERATIONS.md"]) {
+    assert.doesNotMatch(
+      read(doc),
+      /container image (?:and|is)[^.]*qualified on[^.]*(?:macOS|Windows)/i,
+      `${doc} must not qualify the container image on macOS or Windows`,
+    );
   }
 });
 

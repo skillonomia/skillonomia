@@ -78,8 +78,18 @@ not themselves normative.
 - **Supported platform:** **Linux x86_64, and no other.** V1 is built and tested
   there only — the whole suite under both runtimes, the ≤600-second container
   quickstart and both packaging smokes run on a clean Ubuntu x86_64 runner, and
-  the compiled binary targets `bun-linux-x64`. macOS and Windows are neither
-  release artifacts nor tested hosts, so no conformance claim is made for them.
+  the compiled binary targets `bun-linux-x64`. No conformance claim is made for
+  macOS or for Windows, and neither is a release artifact.
+
+  One packaging qualification sits beside that and does not widen it.
+  `@skillonomia/cli` runs the small consumer contract of
+  `.github/workflows/platform.yml` on macOS arm64 as well as on Ubuntu x86_64 —
+  install, `version`, `serve`, `/health`, `demo`, restart, the §4.1b vectors.
+  That qualifies ONE packaging artifact and is not a conformance claim about the
+  profile above. The container image carries no such qualification outside
+  Linux: `qualify-docker-macos` and `qualify-docker-windows` are deferred by the
+  owner, as is the whole Windows lane, so no macOS or Windows container result
+  exists and none is claimed.
 
   One rule of §4.1b is the reason this is a substantive statement rather than a
   packaging note. The case-insensitive and NFC/NFD collision refusals are

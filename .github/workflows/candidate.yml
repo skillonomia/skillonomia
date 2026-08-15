@@ -29,10 +29,12 @@ defaults:
 # B1 and B2 add two more things a release would carry — the container image and
 # the npm tarball — and they are staged here on exactly the same terms: built,
 # checksummed or digested, uploaded as a workflow artifact, and pushed NOWHERE.
-# `candidate-image` builds for both published architectures without a registry
-# in the command line at all; `candidate-npm` packs the tarball and records its
-# SHA-256, which is the number the three `platform.yml` qualification jobs check
-# what they downloaded against.
+# `candidate-image` builds for both published LINUX architectures (amd64 and
+# arm64 — two architectures, one operating system) without a registry in the
+# command line at all; `candidate-npm` packs the tarball and records its
+# SHA-256, which is the number the `platform.yml` qualification jobs check what
+# they downloaded against. Of those, Ubuntu and macOS are claimed and the
+# Windows one is deferred by the owner; see the head of `platform.yml`.
 
 env:
   # The image a release publishes, named once. `release.yml` pushes to this

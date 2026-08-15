@@ -19,7 +19,17 @@ defaults:
 
 # ------------------------------------------------------- the qualification matrix
 #
-# B3: ONE npm tarball, built ONCE, qualified on three operating systems.
+# B3: ONE npm tarball, built ONCE, run on three operating systems — of which TWO
+# ARE CLAIMED and one is DEFERRED BY OWNER.
+#
+#   npm CLI      Ubuntu x86_64 — claimed.  macOS arm64 — claimed.
+#                Windows x86_64 — DEFERRED BY OWNER.
+#   container    Ubuntu x86_64 — claimed.  macOS and Windows — DEFERRED BY OWNER.
+#
+# `qualify-windows` and `windows-security` stay in this file exactly as written.
+# They are not deleted, not weakened and not made to pass some other way; what is
+# deferred is the CLAIM that they have proved anything, and no document in this
+# tree states a Windows result. Read the deferral where each job is declared.
 #
 # `package-build` packs it (with Bun, which `prepack` needs) and records its
 # SHA-256. The three `qualify-*` jobs DOWNLOAD that artifact, check the checksum,
@@ -42,16 +52,24 @@ defaults:
 # take ONE published digest and run it. They are `workflow_dispatch`-only and
 # they are SKIPPED when no digest is given, because there is nothing to qualify
 # until an image has been published — and a job that "passed" with no digest
-# would be reporting a cross-platform claim about nothing.
+# would be reporting a claim about nothing.
 #
-# The two that are not Linux need a REAL Docker Desktop host running Linux
-# containers, and no hosted GitHub runner is one: `macos-14` has no Docker
-# daemon and `windows-latest` runs Windows containers. They therefore ask for
-# self-hosted labels — and, because a label is a name somebody types, the first
-# thing they run is `ci/mvp-release.mjs ghcr --expect-host`, which refuses
-# unless the process really is on that platform and architecture and the daemon
-# really does run Linux containers. Mislabelling a runner produces a failed job
-# and never a green one.
+# ONLY THE LINUX ONE IS CLAIMED. `qualify-docker-macos` and
+# `qualify-docker-windows` are DEFERRED BY OWNER: Docker Desktop is not being
+# installed on the macOS or the Windows host, so the container is qualified on
+# Linux and on nothing else, and no document, test or message in this tree says
+# otherwise. On macOS the product path is the npm CLI on ordinary Node.
+#
+# The two deferred jobs stay here, written out in full, because a deferral that
+# is not written down reads exactly like a pass. They would need a REAL Docker
+# Desktop host running Linux containers, and no hosted GitHub runner is one:
+# `macos-14` has no Docker daemon and `windows-latest` runs Windows containers.
+# They therefore ask for self-hosted labels — and, because a label is a name
+# somebody types, the first thing they run is `ci/mvp-release.mjs ghcr
+# --expect-host`, which refuses unless the process really is on that platform
+# and architecture and the daemon really does run Linux containers.
+# Mislabelling a runner produces a failed job and never a green one. That
+# machinery is unchanged and correct; it is the claim that is deferred.
 
 jobs:
   # -------------------------------------------------------------- the artifact
@@ -132,6 +150,9 @@ jobs:
           name: qualification-macos
           path: qualification-macos.json
 
+  # DEFERRED BY OWNER. The job below is the identical contract on Windows, kept
+  # here unchanged and unweakened — but Windows x86_64 is not a platform this
+  # project claims today, and nothing in the tree reports a result from it.
   qualify-windows:
     needs: package-build
     runs-on: windows-latest
@@ -154,10 +175,14 @@ jobs:
           path: qualification-windows.json
 
   # ------------------------------------------------------------ Windows security
-  # B4's four live checks. This one IS a hosted runner's job: every check is
-  # about NTFS, Windows ACLs and reparse points, and `windows-latest` has all
-  # three. Each check fails closed — one that cannot be performed exits non-zero
-  # rather than reporting a pass it did not observe.
+  # B4's four live checks. DEFERRED BY OWNER, together with the rest of the
+  # Windows qualification: the job stays here in full, and no B4 result is
+  # claimed anywhere in this tree.
+  #
+  # This one IS a hosted runner's job: every check is about NTFS, Windows ACLs
+  # and reparse points, and `windows-latest` has all three. Each check fails
+  # closed — one that cannot be performed exits non-zero rather than reporting a
+  # pass it did not observe.
   windows-security:
     runs-on: windows-latest
     steps:
@@ -189,9 +214,12 @@ jobs:
 
   qualify-docker-macos:
     if: inputs.digest != ''
-    # A REAL macOS arm64 host with Docker Desktop in Linux-container mode. There
-    # is no hosted runner that is one; until such a runner is registered this job
-    # waits, which is the honest state of B1 and is not a pass.
+    # DEFERRED BY OWNER. Docker Desktop is not being installed on the macOS
+    # host, so this job does not run and the container carries NO macOS claim;
+    # the macOS product path is the npm CLI on ordinary Node. It would need a
+    # REAL macOS arm64 host with Docker Desktop in Linux-container mode, and
+    # there is no hosted runner that is one. Kept here, unaltered, so that the
+    # deferral has a name instead of being an absence nobody can see.
     runs-on: [self-hosted, macOS, ARM64, docker-desktop]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -208,9 +236,10 @@ jobs:
 
   qualify-docker-windows:
     if: inputs.digest != ''
-    # A REAL Windows x86_64 host with Docker Desktop in LINUX-container mode.
-    # `windows-latest` is not one: its daemon runs Windows containers and cannot
-    # run this image at all.
+    # DEFERRED BY OWNER, on the same decision: this job does not run and the
+    # container carries NO Windows claim. It would need a REAL Windows x86_64
+    # host with Docker Desktop in LINUX-container mode. `windows-latest` is not
+    # one: its daemon runs Windows containers and cannot run this image at all.
     runs-on: [self-hosted, Windows, X64, docker-desktop]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

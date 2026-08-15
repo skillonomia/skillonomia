@@ -562,9 +562,14 @@ function dockerOrFail(args, what) {
 }
 
 /**
- * THE RUNTIME THIS JOB CLAIMS TO BE. B1 is a claim about ONE digest on THREE
- * real Docker runtimes — Linux, macOS arm64 and Windows x86_64 — and the two
- * that are not Linux need a Docker Desktop host running LINUX CONTAINERS.
+ * THE RUNTIME THIS JOB CLAIMS TO BE. This check is written for ONE digest on a
+ * real Docker runtime, of which THE CLAIMED ONE IS LINUX. The macOS arm64 and
+ * Windows x86_64 lanes are DEFERRED BY OWNER — Docker Desktop is not being
+ * installed on either host — so `qualify-docker-macos` and
+ * `qualify-docker-windows` stay in the workflow unrun, and no container result
+ * exists or is claimed for either. The mechanism below is unchanged and stays
+ * correct for the day the deferral is lifted: the two non-Linux lanes would
+ * need a Docker Desktop host running LINUX CONTAINERS.
  *
  * A hosted GitHub runner is not that. `macos-14` has no Docker daemon at all,
  * and `windows-latest` has one in WINDOWS-CONTAINER mode, which cannot run this
@@ -888,7 +893,7 @@ async function npmCli(argv) {
  * It takes the tarball the `package-build` job made and its checksum, and NEVER
  * builds one: a platform job that packed its own package would be qualifying its
  * own build environment (and would need Bun to do it), not the artifact the
- * other two jobs are running. The checksum is what makes "the same tarball"
+ * other platform jobs are given. The checksum is what makes "the same tarball"
  * checkable rather than asserted by the workflow's own wiring.
  */
 async function platform(argv) {

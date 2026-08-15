@@ -1,14 +1,22 @@
 // THE QUALIFICATION MATRIX, AS A CONTRACT — what each platform job must do, and
 // what it is not allowed to be.
 //
-// B3's claim is "three required jobs green on ONE exact commit, running ONE
-// tarball". Every word of that has a way of quietly becoming false:
+// B3 runs the same consumer contract on three operating systems from ONE
+// tarball. TWO of the three are claimed — Ubuntu x86_64 and macOS arm64;
+// Windows x86_64 is DEFERRED BY OWNER, and so is `windows-security`. Both
+// Windows jobs stay in the workflow exactly as written and are checked here
+// exactly as before: what the owner deferred is the CLAIM that they have proved
+// something, and this file asserts wiring, not results.
+//
+// Every word of the contract has a way of quietly becoming false:
 //
 //   * three jobs that each PACKED THEIR OWN tarball would be three different
 //     artifacts wearing one name, and two of them would need Bun — the very
 //     prerequisite B2 removes from the consumer's side;
 //   * a job that skipped the demo, or ran it without a budget, would report a
 //     platform as qualified on the strength of an install;
+//   * a deferred job quietly deleted, weakened or made to pass some other way
+//     would turn a decision nobody took into a platform nobody ran;
 //   * a `continue-on-error` anywhere would turn a red job into a green matrix.
 //
 // So the workflow is read for each of those, and the ORCHESTRATOR is executed
@@ -31,7 +39,11 @@ const read = (rel: string): string => readFileSync(join(REPO_ROOT, rel), "utf8")
 const PLATFORM = read(".github/workflows/platform.yml");
 const RELEASE_SCRIPT = join(REPO_ROOT, "ci/mvp-release.mjs");
 
-/** The `qualify-*` jobs that run the consumer contract, and their runners. */
+/**
+ * The `qualify-*` jobs that run the consumer contract, and their runners. All
+ * three are held to the same wiring; only the first two are CLAIMED platforms —
+ * `qualify-windows` is deferred by the owner and kept here unchanged.
+ */
 const QUALIFY: ReadonlyArray<[string, string]> = [
   ["qualify-ubuntu", "ubuntu-latest"],
   ["qualify-macos", "macos-14"],
@@ -128,7 +140,8 @@ test("the orchestrator refuses a tarball that is not the one the checksum names"
 test("the contract the orchestrator runs is the contract §8 B3 lists", () => {
   // The steps are named in the script, in the order a user meets them. This is
   // a shallow check on purpose: the deep one is that the subcommand ran green on
-  // three platforms, which no single host can assert.
+  // the platforms this project claims — Ubuntu and macOS — which no single host
+  // can assert, and which nothing here reports for the deferred Windows lane.
   const script = read("ci/mvp-release.mjs");
   for (const step of [
     "version",           // the installed executable answers

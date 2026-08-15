@@ -156,11 +156,13 @@ at the first-start credentials. `node ci/mvp-release.mjs binary --tag <tag>` is
 the same check run against the published release: it downloads the assets,
 verifies the checksum, and starts the unpacked binary outside any checkout.
 
-## The two cross-platform paths, once they are published
+## The two published paths, once they exist
 
 Both are written here as the shapes they will have. Neither works today — no
 digest and no npm version have been published — and the section above says so
-rather than leaving a reader to find out from an error message.
+rather than leaving a reader to find out from an error message. They are also
+not the same width: the CLI is the macOS path and the container is not
+qualified there, which [Supported platforms](#supported-platforms) states.
 
 **The container.** One image, pinned by digest, published on the LOOPBACK and
 nowhere else:
@@ -510,28 +512,55 @@ with the registry port not published at all (see
 [The network boundary](#the-network-boundary)).
 
 The published forms of the first and third rows — `docker pull` by digest and
-`npm install -g @skillonomia/cli` — are given under [The two cross-platform
-paths](#the-two-cross-platform-paths-once-they-are-published), together with the
-statement that neither has been published yet.
+`npm install -g @skillonomia/cli` — are given under [The two published
+paths](#the-two-published-paths-once-they-exist), together with the statement
+that neither has been published yet.
 
 ### Supported platforms
 
-Two claims, and they are different sizes.
+Three claims, and they are three different sizes. The npm CLI and the container
+image are NOT the same width, and this section states them apart rather than
+together.
 
 **The compiled binary is Linux x86_64 and claims nothing else.**
 `npm run build:binary` compiles `--target=bun-linux-x64`; there is no macOS and
 no Windows binary and neither is a release artifact.
 
-**The npm CLI and the container image are qualified on Ubuntu x86_64, macOS
-arm64 and Windows x86_64** — by the small user contract in
-`.github/workflows/platform.yml`, and not by this repository's full suite:
-clean install, `version`, `serve`, `/health`, `demo` to a terminal `adopted`
-receipt inside the 600-second budget, a restart on the same SQLite file, and the
-§4.1b archive vectors. The full suite (Node and Bun) stays a Linux regression
-gate on `ubuntu-latest`, which is where it was written and what it measures.
+**The npm CLI is qualified on Ubuntu x86_64 and macOS arm64. Windows x86_64 is
+DEFERRED BY OWNER and is not claimed.** What qualifies the two named platforms
+is the small user contract in `.github/workflows/platform.yml`, and not this
+repository's full suite: clean install, `version`, `serve`, `/health`, `demo` to
+a terminal `adopted` receipt inside the 600-second budget, a restart on the same
+SQLite file, and the §4.1b archive vectors. On macOS that path is ordinary Node
+and npm — a global install of the published `@skillonomia/cli`, and no
+container. The `qualify-windows` job that would run the identical contract on
+`windows-latest` is present in the workflow and untouched, and so is
+`windows-security`, the B4 lane; both are deferred, and no Windows result is
+reported here.
 
-Two things inside that contract are narrower than the platforms around them, and
-both say so where they are:
+**The container image is qualified on Ubuntu x86_64, and on no other operating
+system.** `qualify-docker-linux` pulls one published digest and drives the
+quickstart through it. The two container jobs beside it —
+`qualify-docker-macos` and `qualify-docker-windows` — are DEFERRED BY OWNER:
+Docker Desktop is not being installed on the macOS or the Windows host, so no
+container has been exercised on either, and this repository claims none. Those
+two jobs stay in `platform.yml` exactly as written, deferred rather than
+deleted, so that what is missing keeps a name.
+
+The full suite (Node and Bun) stays a Linux regression gate on `ubuntu-latest`,
+which is where it was written and what it measures.
+
+**How much of that has actually been observed, at this commit.** The two claims
+above are what this project qualifies; this paragraph is what has been run.
+`ci/mvp-release.mjs platform` has been driven to `PLATFORM_QUALIFICATION_OK` on
+Linux from this checkout. The macOS job is the same contract on `macos-14` and
+has yet to report; the intended macOS evidence is a global install of the
+published package on a real machine, from the public registry and outside any
+checkout. Until that run exists, read the macOS row as the contract this
+project commits to rather than as a result somebody has in hand.
+
+Two things inside the npm CLI contract are narrower than the platforms around
+them, and both say so where they are:
 
 - Part of §4.1b is filesystem-dependent. When a package is read from a plain
   **directory** rather than a `.tar`, the case-insensitive and NFC/NFD collision
@@ -551,10 +580,11 @@ both say so where they are:
 
 A skill package's `runtime.os` is a third question again: it says where the
 **package's procedure** runs, and §4.2 compatibility honours it whatever the
-registry is hosted on. On Windows the seed package's `os: [linux, macos]` is
-genuinely unmet, `demo` reports the `mismatch`, and at `risk_level: low` that is
-a warning rather than a block — which is the §4.2 rule working, not an exception
-to it.
+registry is hosted on. On a Windows host the seed package's `os: [linux, macos]`
+would be genuinely unmet, `demo` would report the `mismatch`, and at
+`risk_level: low` that is a warning rather than a block — which is the §4.2 rule
+working, not an exception to it. Stated in the conditional on purpose: Windows
+is deferred by the owner and nobody here has run it.
 
 ### Where the data lives
 
