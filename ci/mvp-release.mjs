@@ -1756,7 +1756,18 @@ async function npmRegistryKeyIds() {
  * is what refused `@skillonomia/cli@0.1.4`: two attestations, one certificate,
  * one key, and a gate that read one shape.
  *
- * SO THE KEY IS CHECKED AS A KEY, and the check is not softer for it:
+ * SO EACH ATTESTATION IS READ FOR ITS OWN MATERIAL, AND ONLY THAT ONE. This
+ * function says what a bundle CARRIES — `certificate`, `key`, `both` or
+ * `nothing` — and `npmProvenanceFrom` says which of those the predicate in hand
+ * is allowed to carry. The two are not a menu: a provenance that arrives keyed
+ * is refused however good the key is, and a publish attestation that arrives
+ * with a certificate is refused however good the certificate is, because a
+ * certificate on it names a signer the registry never is. A bundle carrying
+ * BOTH is refused as well — one signer signs with one of the two, and a
+ * document that offers each reader the material that passes has not been
+ * signed by anybody in particular.
+ *
+ * AND THE KEY IS CHECKED AS A KEY, and the check is not softer for it:
  *
  *   - the hint must be a key id `registry.npmjs.org/-/npm/v1/keys` serves, so a
  *     bundle cannot name a key of its own choosing;
@@ -1780,28 +1791,37 @@ export function signerOf(b, registryKeyIds = null) {
   const vm = b.bundle?.verificationMaterial ?? {};
   const certificate = vm.certificate ?? vm.x509CertificateChain ?? null;
   const hint = vm.publicKey?.hint ?? null;
-  if (certificate !== null) return { kind: "certificate", keyid: null, described: "a Fulcio certificate", fault: null };
-  if (typeof hint !== "string" || hint.length === 0) {
+  const keyed = typeof hint === "string" && hint.length > 0;
+  if (certificate !== null && keyed) {
+    return {
+      carries: "both",
+      keyid: hint,
+      described: `both a Fulcio certificate and the key ${hint}`,
+      fault: `carries a Fulcio certificate AND a \`publicKey.hint\` (${hint}) in \`verificationMaterial\` — a signer signs with one of the two, and a bundle offering each reader the material that passes was signed by nobody in particular`,
+    };
+  }
+  if (certificate !== null) return { carries: "certificate", keyid: null, described: "a Fulcio certificate", fault: null };
+  if (!keyed) {
     const carried = Object.keys(vm).join(", ") || "nothing";
-    return { kind: null, keyid: null, described: "nothing", fault: `carries neither a certificate nor a \`publicKey.hint\` in \`verificationMaterial\` (it carries ${carried}), so nothing identifies who signed it` };
+    return { carries: "nothing", keyid: null, described: "nothing", fault: `carries neither a certificate nor a \`publicKey.hint\` in \`verificationMaterial\` (it carries ${carried}), so nothing identifies who signed it` };
   }
   if (registryKeyIds === null) {
-    return { kind: null, keyid: hint, described: `the key ${hint}`, fault: `is signed with the key ${hint} and the npm registry's own key ids were not read, so the key could not be attributed to the registry` };
+    return { carries: "key", keyid: hint, described: `the key ${hint}`, fault: `is signed with the key ${hint} and the npm registry's own key ids were not read, so the key could not be attributed to the registry` };
   }
   if (!registryKeyIds.includes(hint)) {
-    return { kind: null, keyid: hint, described: `the key ${hint}`, fault: `names the key ${hint}, and ${NPM_REGISTRY_KEYS_URL} serves ${registryKeyIds.join(", ")} — a key the registry does not publish signs for nobody` };
+    return { carries: "key", keyid: hint, described: `the key ${hint}`, fault: `names the key ${hint}, and ${NPM_REGISTRY_KEYS_URL} serves ${registryKeyIds.join(", ")} — a key the registry does not publish signs for nobody` };
   }
   const signatures = b.bundle?.dsseEnvelope?.signatures ?? [];
-  if (signatures.length === 0) return { kind: null, keyid: hint, described: `the key ${hint}`, fault: `names the key ${hint} and its \`dsseEnvelope\` carries no signature at all` };
+  if (signatures.length === 0) return { carries: "key", keyid: hint, described: `the key ${hint}`, fault: `names the key ${hint} and its \`dsseEnvelope\` carries no signature at all` };
   const wrong = signatures.map((s) => s.keyid ?? null).filter((k) => k !== hint);
   if (wrong.length > 0) {
-    return { kind: null, keyid: hint, described: `the key ${hint}`, fault: `names the key ${hint} in \`verificationMaterial\` and is signed under ${JSON.stringify(wrong)} — the key it announces is not the key it was signed with` };
+    return { carries: "key", keyid: hint, described: `the key ${hint}`, fault: `names the key ${hint} in \`verificationMaterial\` and is signed under ${JSON.stringify(wrong)} — the key it announces is not the key it was signed with` };
   }
   const tlog = (vm.tlogEntries ?? []).filter((e) => (e.logIndex ?? null) !== null);
   if (tlog.length === 0) {
-    return { kind: null, keyid: hint, described: `the key ${hint}`, fault: `is signed with the registry key ${hint} and carries no \`tlogEntries\` with a log index, so the signature is asserted and not discoverable` };
+    return { carries: "key", keyid: hint, described: `the key ${hint}`, fault: `is signed with the registry key ${hint} and carries no \`tlogEntries\` with a log index, so the signature is asserted and not discoverable` };
   }
-  return { kind: "registry key", keyid: hint, described: `the npm registry key ${hint}, log index ${tlog[0].logIndex}`, fault: null };
+  return { carries: "key", keyid: hint, described: `the npm registry key ${hint}, log index ${tlog[0].logIndex}`, fault: null };
 }
 
 /**
@@ -1844,26 +1864,29 @@ export function npmProvenanceFrom(pkg, dist, expected, bundles, registryKeyIds =
   const want = integrityHex(dist.integrity);
   /**
    * The one entry of `predicateType` that is a statement about THIS tarball.
-   * `material` is the identifying material this predicate is allowed to be
-   * signed with — a Fulcio certificate for anything a workflow produced, and a
-   * registry key as well for the one attestation the registry itself makes.
+   * `signer` is THE material this predicate is signed with — not a list of
+   * acceptable ones: a Fulcio certificate for what a workflow produced, the
+   * registry's own key for what the registry produced. Foreign material is a
+   * refusal and not an alternative, and it is refused BEFORE the material is
+   * validated, so the answer does not depend on whether the wrong material
+   * happened to be well-formed. Only "carries nothing at all" is reported as
+   * itself: there is no material to have been the wrong one.
    */
-  const about = (predicateType, material) => {
+  const about = (predicateType, signer) => {
     const carried = statements.filter((s) => s.statement.predicateType === predicateType);
     if (carried.length === 0) return { entry: null, fault: `the bundle carries ${statements.map((s) => s.statement.predicateType ?? s.predicateType).join(", ") || "nothing"} and no ${predicateType}` };
     const entry = carried[0];
     if (!IN_TOTO_STATEMENT_TYPES.includes(entry.statement._type)) {
       return { entry: null, fault: `the ${predicateType} statement's \`_type\` is ${JSON.stringify(entry.statement._type ?? null)}, and an in-toto Statement is what carries a predicate` };
     }
-    if (entry.signer.fault !== null) return { entry: null, fault: `the ${predicateType} bundle ${entry.signer.fault}` };
-    if (!material.includes(entry.signer.kind)) {
+    if (entry.signer.carries === "nothing") return { entry: null, fault: `the ${predicateType} bundle ${entry.signer.fault}` };
+    if (entry.signer.carries !== signer.carries) {
       return {
         entry: null,
-        fault:
-          `the ${predicateType} bundle is signed with ${entry.signer.described}, and ${material.join(" or ")} is what may sign it — ` +
-          `a ${predicateType} statement is produced by a workflow and carries a Fulcio certificate`,
+        fault: `the ${predicateType} bundle is signed with ${entry.signer.described}, and ${signer.material} is what may sign it — ${signer.why}`,
       };
     }
+    if (entry.signer.fault !== null) return { entry: null, fault: `the ${predicateType} bundle ${entry.signer.fault}` };
     const subjects = entry.statement.subject ?? [];
     if (!subjects.some((s) => (s.digest ?? {}).sha512 === want)) {
       return {
@@ -1876,9 +1899,21 @@ export function npmProvenanceFrom(pkg, dist, expected, bundles, registryKeyIds =
     return { entry, fault: null };
   };
 
-  const provenance = about(PROVENANCE_PREDICATE, ["certificate"]);
+  const provenance = about(PROVENANCE_PREDICATE, {
+    carries: "certificate",
+    material: "a Fulcio certificate",
+    why:
+      `a slsa provenance is produced by a GitHub Actions run, the run is keyless and its identity IS that certificate, ` +
+      `so a provenance that arrives keyed instead names a signer no workflow ever was`,
+  });
   if (provenance.fault !== null) return verdict("provenance", pkg.spec, "REFUSED", provenance.fault);
-  const publish = about(NPM_PUBLISH_PREDICATE, ["certificate", "registry key"]);
+  const publish = about(NPM_PUBLISH_PREDICATE, {
+    carries: "key",
+    material: `the registry's own key from ${NPM_REGISTRY_KEYS_URL}`,
+    why:
+      `an npm publish attestation is made by the registry about an upload it received and is signed with that key; there is no OIDC identity to bind ` +
+      `and no version of npm that writes a certificate on it, so a certificate here names a signer the registry never is`,
+  });
   if (publish.fault !== null) {
     return verdict("provenance", pkg.spec, "REFUSED", `${publish.fault} — without it the registry did not countersign THIS upload`);
   }

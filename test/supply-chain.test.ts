@@ -345,6 +345,16 @@ const npmPublishStatement = (sha512: string = TARBALL.toString("hex")) => ({
 const NPM_PROVENANCE = "https://slsa.dev/provenance/v1";
 const NPM_PUBLISH = "https://github.com/npm/attestation/tree/main/specs/publish/v0.1";
 
+/**
+ * The publish attestation as npm writes it — keyed, never certified. It is a
+ * helper and not a default of `bundle` because the material is the thing under
+ * test on this side: a test that hands the publish attestation a certificate
+ * ([D-E8]) is naming the substitution, not forgetting the shape. Every use of
+ * it passes `REGISTRY_KEY_IDS`, because a key nothing attributes is refused
+ * ([D-E6]) and a fixture refused for that is a fixture testing nothing else.
+ */
+const publishBundle = (statement: Record<string, unknown> = npmPublishStatement()) => bundle(NPM_PUBLISH, statement, KEYED());
+
 // --- the positive controls -------------------------------------------------
 //
 // A gate that refuses everything passes every negative test below. These four
@@ -366,10 +376,7 @@ test("[D-B] the provenance the release attaches is accepted, and carries the rel
 });
 
 test("[D-D] a trusted publish's bundle is accepted, and carries the same identity", () => {
-  const r = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [
-    bundle(NPM_PROVENANCE, npmProvenanceStatement()),
-    bundle(NPM_PUBLISH, npmPublishStatement()),
-  ]);
+  const r = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, npmProvenanceStatement()), publishBundle()], REGISTRY_KEY_IDS);
   assert.equal(r.status, "OK", r.detail);
   assert.equal(r.identity?.commit, COMMIT);
   assert.equal(r.identity?.runId, RUN);
@@ -377,10 +384,7 @@ test("[D-D] a trusted publish's bundle is accepted, and carries the same identit
 
 test("[D-F] one release identity on both artifacts is accepted", () => {
   const image = gate.imageProvenance(IMAGE, published([provenance()]), EXPECTED);
-  const npm = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [
-    bundle(NPM_PROVENANCE, npmProvenanceStatement()),
-    bundle(NPM_PUBLISH, npmPublishStatement()),
-  ]);
+  const npm = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, npmProvenanceStatement()), publishBundle()], REGISTRY_KEY_IDS);
   const r = gate.releaseIdentityVerdict(EXPECTED, image.identity, npm.identity);
   assert.equal(r.status, "OK", r.detail);
   assert.match(r.detail, new RegExp(`run ${RUN}`));
@@ -525,10 +529,13 @@ test("[D-D1] a publish attestation about another version of the same package is 
   // whether the bundle carried one, and the bundle is fetched from a URL the
   // registry chose. A countersignature of a different upload is not a
   // countersignature of this one.
-  const r = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [
-    bundle(NPM_PROVENANCE, npmProvenanceStatement()),
-    bundle(NPM_PUBLISH, npmPublishStatement(createHash("sha512").update("some other tarball").digest("hex"))),
-  ]);
+  const r = gate.npmProvenanceFrom(
+    PKG,
+    DIST,
+    EXPECTED,
+    [bundle(NPM_PROVENANCE, npmProvenanceStatement()), publishBundle(npmPublishStatement(createHash("sha512").update("some other tarball").digest("hex")))],
+    REGISTRY_KEY_IDS,
+  );
   assert.notEqual(r.status, "OK", `an unbound publish attestation was accepted: ${r.detail}`);
   assert.match(r.detail, /and the registry serves sha512-/);
   assert.match(r.detail, /the registry did not countersign THIS upload/);
@@ -677,10 +684,81 @@ test("[D-E7] a correctly keyed publish attestation about ANOTHER tarball is stil
   assert.match(r.detail, /the registry did not countersign THIS upload/);
 });
 
+// --- E8..E10: the material is not a menu -------------------------------------
+//
+// The relaxation that let the registry's key sign the publish attestation was
+// written as a LIST of acceptable materials — `["certificate", "registry key"]`
+// — and `signerOf` answered "certificate" for any bundle carrying one, before
+// anything asked which attestation it was looking at. So a publish attestation
+// arriving with a Fulcio certificate instead of npm's key was accepted: the
+// certificate satisfied the first entry of the list, and every key check below
+// it — the hint the registry serves, the DSSE keyid, the log index — was never
+// reached. That is a countersignature attributed to the registry that the
+// registry did not make.
+//
+// The two attestations are made by two different parties, so each one has ONE
+// material and foreign material is a refusal, not an alternative. These three
+// are that rule from both sides.
+
+test("[D-E8] a publish attestation signed with a certificate instead of the registry's key is refused", () => {
+  const r = gate.npmProvenanceFrom(
+    PKG,
+    DIST,
+    EXPECTED,
+    [bundle(NPM_PROVENANCE, npmProvenanceStatement(), CERTIFIED), bundle(NPM_PUBLISH, npmPublishStatement(), CERTIFIED)],
+    REGISTRY_KEY_IDS,
+  );
+  assert.notEqual(r.status, "OK", `a publish attestation the registry never signed was accepted as its countersignature: ${r.detail}`);
+  // and the sentence says which signer was expected and what turned up, so a
+  // reader is not sent looking for a missing field
+  assert.match(r.detail, /is signed with a Fulcio certificate/);
+  assert.match(r.detail, /the registry's own key from https:\/\/registry\.npmjs\.org\/-\/npm\/v1\/keys is what may sign it/);
+  assert.match(r.detail, /a certificate here names a signer the registry never is/);
+  assert.match(r.detail, /the registry did not countersign THIS upload/);
+});
+
+test("[D-E9] a SLSA provenance is refused for carrying a key at all, not for which key it carries", () => {
+  // [D-E2] shows a provenance keyed with npm's own key refused. This one is the
+  // other half: the refusal must not depend on the key being attributable. A
+  // provenance keyed with a key nobody publishes was already refused, but for
+  // the wrong reason — "a key the registry does not publish signs for nobody" —
+  // which reads as if a better key would have done. No key does.
+  for (const [which, material] of [
+    ["a key the registry does publish", KEYED()],
+    ["a key the registry never published", KEYED({ publicKey: { hint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } })],
+  ] as const) {
+    const r = gate.npmProvenanceFrom(
+      PKG,
+      DIST,
+      EXPECTED,
+      [bundle(NPM_PROVENANCE, npmProvenanceStatement(), material), bundle(NPM_PUBLISH, npmPublishStatement(), KEYED())],
+      REGISTRY_KEY_IDS,
+    );
+    assert.notEqual(r.status, "OK", `a keyed provenance was accepted (${which}): ${r.detail}`);
+    assert.match(r.detail, /a Fulcio certificate is what may sign it/, `refused with ${which}, but not for carrying a key: ${r.detail}`);
+    assert.match(r.detail, /names a signer no workflow ever was/, r.detail);
+  }
+});
+
+test("[D-E10] a bundle carrying both a certificate and a key is refused on either side", () => {
+  // A document that offers each reader the material that passes has not been
+  // signed by anybody in particular — and a check that takes the first material
+  // it recognises decides which by the order its own `if`s are written in.
+  const both = () => KEYED({ certificate: { rawBytes: "MII..." } });
+  for (const [side, bundles] of [
+    ["the provenance", [bundle(NPM_PROVENANCE, npmProvenanceStatement(), both()), bundle(NPM_PUBLISH, npmPublishStatement(), KEYED())]],
+    ["the publish attestation", [bundle(NPM_PROVENANCE, npmProvenanceStatement(), CERTIFIED), bundle(NPM_PUBLISH, npmPublishStatement(), both())]],
+  ] as const) {
+    const r = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [...bundles], REGISTRY_KEY_IDS);
+    assert.notEqual(r.status, "OK", `${side} carrying both materials was accepted: ${r.detail}`);
+    assert.match(r.detail, /is signed with both a Fulcio certificate and the key/, `${side}: ${r.detail}`);
+  }
+});
+
 test("[D-D3] a bundle whose payload is not base64 of JSON is refused, and does not throw", () => {
   const broken = bundle(NPM_PROVENANCE, npmProvenanceStatement());
   broken.bundle.dsseEnvelope.payload = "bm90IGpzb24=";
-  const r = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [broken, bundle(NPM_PUBLISH, npmPublishStatement())]);
+  const r = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [broken, publishBundle()], REGISTRY_KEY_IDS);
   assert.notEqual(r.status, "OK", r.detail);
   assert.match(r.detail, /not base64 of JSON/);
 });
@@ -691,7 +769,7 @@ test("[D-D4] a package published by a workflow that is not release.yml is refuse
   // compared only `workflow.repository`.
   const recovery = npmProvenanceStatement();
   (recovery.predicate.buildDefinition.externalParameters.workflow as { path: string }).path = ".github/workflows/npm-v012-recovery.yml";
-  const r = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, recovery), bundle(NPM_PUBLISH, npmPublishStatement())]);
+  const r = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, recovery), publishBundle()], REGISTRY_KEY_IDS);
   assert.notEqual(r.status, "OK", `a publish by another workflow of this repository was accepted: ${r.detail}`);
   assert.match(r.detail, /only \.github\/workflows\/release\.yml publishes this project/);
 });
@@ -862,7 +940,7 @@ test("[D-G4] the carve-out is the image's alone: an npm provenance with no workf
   // workflow (see [D-D4]). Nothing about the image's missing field weakens this.
   assert.equal(gate.imageProvenance(IMAGE, published([buildkit()]), EXPECTED).status, "OK", "the control: the image's absent workflow is excused");
 
-  const r = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, npmWithoutWorkflow()), bundle(NPM_PUBLISH, npmPublishStatement())]);
+  const r = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, npmWithoutWorkflow()), publishBundle()], REGISTRY_KEY_IDS);
   assert.notEqual(r.status, "OK", `an unattributed npm publish was accepted: ${r.detail}`);
   assert.match(r.detail, /the workflow is \(not recorded\) and only \.github\/workflows\/release\.yml publishes this project/);
 });
@@ -872,7 +950,7 @@ test("[D-G5] a workflow-less image whose signature was not verified is refused b
   // identity on its signature. If `cosign verify` did not accept it — refused,
   // or UNVERIFIABLE because cosign is not installed — then nothing named the
   // workflow at all, and the identity line says so instead of passing.
-  const npm = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, npmProvenanceStatement()), bundle(NPM_PUBLISH, npmPublishStatement())]);
+  const npm = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, npmProvenanceStatement()), publishBundle()], REGISTRY_KEY_IDS);
   assert.equal(npm.status, "OK", npm.detail);
 
   for (const status of ["REFUSED", "UNVERIFIABLE", "MISSING", null]) {
@@ -892,7 +970,7 @@ test("[D-G6] the successful verdict does not claim the image named the workflow"
   // provenances were required to carry the workflow. After the carve-out it
   // would be a gate asserting a fact it did not check, about the one field it
   // stopped checking, in the line an operator reads to decide a deploy.
-  const npm = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, npmProvenanceStatement()), bundle(NPM_PUBLISH, npmPublishStatement())]);
+  const npm = gate.npmProvenanceFrom(PKG, DIST, EXPECTED, [bundle(NPM_PROVENANCE, npmProvenanceStatement()), publishBundle()], REGISTRY_KEY_IDS);
   const r = gate.releaseIdentityVerdict(EXPECTED, IMAGE_IDENTITY, npm.identity, "OK");
   assert.equal(r.status, "OK", r.detail);
 
