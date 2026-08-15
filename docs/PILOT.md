@@ -20,9 +20,9 @@ signing key: the registry packs and signs it, and `risk_level` is `low`.
 - Node `>=22.6` on the host. It runs `ci/run-pilot.mjs`, and on the npm path it
   is also the runtime of the thing being piloted.
 - On the container path, a Docker daemon running Linux containers, and the
-  immutable digest of the image. This repository has published no such digest
-  yet, so `ci/run-pilot.mjs` refuses a tag and a pilot on that path waits for a
-  digest to exist.
+  immutable digest of the image. `ci/run-pilot.mjs` refuses a tag there, so a
+  pilot on that path is given the digest the image was published under rather
+  than the version it was tagged with.
 - A loopback port, and a way for the owner to reach it — the deployment stays up
   for a read-only receipt read-back until acceptance, so the URL named as
   `--verification-base-url` has to answer after the run ends.
@@ -96,6 +96,30 @@ whose hashes disagree with the files they name, or whose fields were retyped is
 refused, and `ci/run-pilot.mjs` exits non-zero naming every check that refused
 it. `PILOTS_OK 2/2` needs two live read-backs, one record from macOS and one
 from Windows, and one candidate SHA between them.
+
+### When the owner has deferred the Windows pilot
+
+While the Windows boundary stands deferred by the owner there is no second
+record for `ci/run-pilot.mjs` to read, so its two-record marker is not failed but
+unreachable. For that case the `verify` subcommand of `ci/run-pilot.mjs` takes
+`--windows-deferred`, a word the owner types and one `ci/run-pilot.mjs` never
+infers:
+
+```bash
+node ci/run-pilot.mjs verify --online \
+  --macos-record evidence/pilots/macos.json \
+  --macos-token-file "${MACOS_PILOT_TOKEN_FILE}" \
+  --windows-deferred
+```
+
+The macOS record then gets the checks a two-record run gives it, and
+`ci/run-pilot.mjs` prints `PILOTS_OK 1/1 WINDOWS_DEFERRED_BY_OWNER` — a different
+marker for a weaker claim, because one host was piloted and the candidate SHA it
+carries was compared with nothing. Two things `ci/run-pilot.mjs` refuses here:
+`PILOTS_OK 2/2` for anything other than two records, and `--windows-deferred`
+together with a `--windows-record`, since a deferred pilot produced no record.
+Without the flag `ci/run-pilot.mjs` behaves as it did before the flag existed and
+exits non-zero when a Windows record is not named.
 
 ## What a pilot proves
 

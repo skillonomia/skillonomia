@@ -12,6 +12,10 @@
 //     --windows-record evidence/pilots/windows.json \
 //     --windows-token-file "${WINDOWS_PILOT_TOKEN_FILE}"
 //
+// …and, when the owner has deferred the Windows pilot, the same command with
+// `--windows-deferred` in place of that pair. It runs the identical checks on
+// the record it has and prints a marker that counts it: one, not two.
+//
 // THE ONE PRODUCER, AND THE ONE VERIFIER. §7 allows this project four new
 // acceptance scripts before the pilots and this is the fourth. `run` is the
 // only thing that writes a pilot record, and `verify` is the only thing that
@@ -65,6 +69,16 @@ const RUN_STAGED = "PILOT_RUN_STAGED_OK";
 const RUN_BLOCKED = "PILOT_RUN_BLOCKED";
 /** §C's acceptance marker: two records, both online, neither a rehearsal. */
 const PILOTS_OK = "PILOTS_OK 2/2";
+/**
+ * THE OWNER'S DEFERRAL, SAID OUT LOUD. §C names two participants and the marker
+ * above counts them, so while the Windows boundary stands deferred by the owner
+ * there is no second record and the marker above is unreachable — not failed,
+ * unreachable. This is what that run prints instead: a DIFFERENT marker for a
+ * WEAKER claim, reached only when `--windows-deferred` is passed by name. The
+ * checks it applies to the one record it has are the ones a two-record run
+ * applies; what it does not have is a second record, and it says which.
+ */
+const PILOTS_DEFERRED = "PILOTS_OK 1/1 WINDOWS_DEFERRED_BY_OWNER";
 /** The same checks when at least one record is a rehearsal. */
 const PILOTS_REHEARSAL = "PILOTS_REHEARSAL_OK";
 
@@ -87,6 +101,11 @@ const USAGE = `usage:
                                --windows-record <file> --windows-token-file <file>
       check both records against their transcripts, their artifacts, the live /health and the live receipt
 
+  node ci/run-pilot.mjs verify --online --macos-record <file> --macos-token-file <file>
+                               --windows-deferred
+      the same checks on the one record there is, when the owner has deferred the Windows pilot;
+      prints ${PILOTS_DEFERRED} and never ${PILOTS_OK}
+
 options (run):
   --path npm|docker            which official path this pilot used
   --artifact <spec>            @scope/name@version, or <registry>/<image>@sha256:<64 hex>
@@ -103,6 +122,9 @@ options (verify):
   --online                     required for ${PILOTS_OK}: the live instance is contacted
   --macos-record / --windows-record <file>
   --macos-token-file / --windows-token-file <file>
+  --windows-deferred           the owner deferred the Windows pilot: check the one record there is and say so
+                               in the marker. Never implied — without it a missing --windows-record is an error,
+                               and with it a --windows-record is one too
 `;
 
 // ------------------------------------------------------------------ failures
@@ -1088,15 +1110,27 @@ function validateAgainstTemplate(value, what) {
 // verify
 // ==========================================================================
 
+/**
+ * THE DEFERRAL IS ASKED FOR, NEVER INFERRED. A verifier that dropped the second
+ * record because the second record was absent would turn every incomplete
+ * invocation into a pass, which is the failure mode §C's marker exists to make
+ * impossible. So `--windows-deferred` is a word the owner types, and it is
+ * refused alongside a Windows record: a run that HAS the record is not a run
+ * whose pilot was deferred, and one of the two statements would be false.
+ */
+const MACOS_FLAGS = { "--macos-record": "macosRecord", "--macos-token-file": "macosTokenFile" };
+const WINDOWS_FLAGS = { "--windows-record": "windowsRecord", "--windows-token-file": "windowsTokenFile" };
+
 function parseVerify(argv) {
-  const opts = { online: false, macosRecord: null, macosTokenFile: null, windowsRecord: null, windowsTokenFile: null };
-  const named = {
-    "--macos-record": "macosRecord", "--macos-token-file": "macosTokenFile",
-    "--windows-record": "windowsRecord", "--windows-token-file": "windowsTokenFile",
+  const opts = {
+    online: false, windowsDeferred: false,
+    macosRecord: null, macosTokenFile: null, windowsRecord: null, windowsTokenFile: null,
   };
+  const named = { ...MACOS_FLAGS, ...WINDOWS_FLAGS };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--online") opts.online = true;
+    else if (a === "--windows-deferred") opts.windowsDeferred = true;
     else if (a in named) {
       const v = argv[i + 1];
       if (v === undefined) usage(`${a} needs a value`);
@@ -1104,8 +1138,20 @@ function parseVerify(argv) {
       i += 1;
     } else usage(`unknown option ${a}`);
   }
-  for (const [flag, key] of Object.entries(named)) {
+  for (const [flag, key] of Object.entries(MACOS_FLAGS)) {
     if (opts[key] === null) usage(`\`verify\` needs ${flag}`);
+  }
+  for (const [flag, key] of Object.entries(WINDOWS_FLAGS)) {
+    if (opts.windowsDeferred) {
+      if (opts[key] !== null) {
+        usage(
+          `${flag} was given with --windows-deferred — a deferred pilot produced no record, so a run that has one ` +
+            "is not the case this flag describes",
+        );
+      }
+    } else if (opts[key] === null) {
+      usage(`\`verify\` needs ${flag}`);
+    }
   }
   return opts;
 }
@@ -1255,24 +1301,48 @@ async function verifyRecord(label, expectedOs, recordFile, tokenFile, online) {
 
 async function verify(argv) {
   const opts = parseVerify(argv);
-  console.log("[1/3] the two records, their transcripts and their artifacts");
-  const macos = await verifyRecord("macos", "macos", opts.macosRecord, opts.macosTokenFile, opts.online);
-  const windows = await verifyRecord("windows", "windows", opts.windowsRecord, opts.windowsTokenFile, opts.online);
+
+  // THE RECORDS THIS RUN ACTUALLY HAS, counted once and used for everything
+  // below — the cross-check, the blocker list and the marker. The marker is
+  // chosen from `verified.length` rather than from the flag, so `${PILOTS_OK}`
+  // cannot be printed by a path that holds one record however it got there.
+  console.log(
+    opts.windowsDeferred
+      ? "[1/3] the macOS record, its transcript and its artifact — the owner deferred the Windows pilot"
+      : "[1/3] the two records, their transcripts and their artifacts",
+  );
+  const verified = [["macos", await verifyRecord("macos", "macos", opts.macosRecord, opts.macosTokenFile, opts.online)]];
+  if (!opts.windowsDeferred) {
+    verified.push(["windows", await verifyRecord("windows", "windows", opts.windowsRecord, opts.windowsTokenFile, opts.online)]);
+  }
 
   console.log("[2/3] one candidate SHA, and one official path each");
-  check(
-    macos.candidate_sha === windows.candidate_sha,
-    `the two pilots ran different candidates (${macos.candidate_sha} and ${windows.candidate_sha}) — a PASS is bound to one exact SHA`,
-  );
-  console.log(`      candidate ${macos.candidate_sha}`);
+  if (verified.length === 2) {
+    const [[, macos], [, windows]] = verified;
+    check(
+      macos.candidate_sha === windows.candidate_sha,
+      `the two pilots ran different candidates (${macos.candidate_sha} and ${windows.candidate_sha}) — a PASS is bound to one exact SHA`,
+    );
+    console.log(`      candidate ${macos.candidate_sha}`);
+  } else {
+    // A CROSS-CHECK OF ONE RECORD IS NOT A CROSS-CHECK. §C binds a PASS to one
+    // SHA by making two pilots agree on it; with one record there is a SHA and
+    // nothing that agrees with it, and printing the SHA without saying so would
+    // read exactly like the two-record line above.
+    console.log(`      candidate ${verified[0][1].candidate_sha}`);
+    console.log("      one record, so this SHA was compared with nothing — the agreement §C asks for needs a second pilot");
+  }
 
   console.log("[3/3] the blockers each run reproduced");
-  for (const [label, record] of [["macos", macos], ["windows", windows]]) {
+  for (const [label, record] of verified) {
     const list = record.blockers.map((b) => b.id);
     console.log(`      ${label}: ${list.length === 0 ? "none reproduced" : list.join(", ")}`);
   }
+  if (opts.windowsDeferred) {
+    console.log("      windows: no record, and therefore no blockers reproduced there — deferred, not clean");
+  }
 
-  const rehearsal = macos.rehearsal || windows.rehearsal;
+  const rehearsal = verified.some(([, record]) => record.rehearsal);
   if (!opts.online) {
     console.log("the live instances were NOT contacted: --online was not given.");
     console.log(PILOTS_REHEARSAL);
@@ -1286,7 +1356,15 @@ async function verify(argv) {
     console.log(PILOTS_REHEARSAL);
     return;
   }
-  console.log(PILOTS_OK);
+  if (verified.length === 2) {
+    console.log(PILOTS_OK);
+    return;
+  }
+  console.log(
+    "the Windows pilot was deferred by the owner, so this run checked the one record §C's other participant did " +
+      "not produce a partner for.",
+  );
+  console.log(PILOTS_DEFERRED);
 }
 
 // ==========================================================================
