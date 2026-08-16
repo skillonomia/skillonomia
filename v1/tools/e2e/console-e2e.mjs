@@ -478,28 +478,6 @@ async function main() {
   );
   check("P1's own audit is preserved beneath it", audit.items.length >= 3, `${audit.items.length} draft_events`);
 
-  // 10b. THE EDIT TRANSITION IS THE SERVER'S — `P2-FR-11`, P2 REVIEW-1 finding
-  // `P2-R1-003`. The page renders the server's `actions.revise.allowed`; the
-  // request that ignores the rendering meets the same rule, in the backend, and
-  // `INV-06` holds because the refusal changes nothing.
-  const reviseAllowed = await page.getAttribute("#eligibility", "data-revise-allowed");
-  const reviseReason = await page.getAttribute("#eligibility", "data-revise-reason");
-  check("P2-FR-11 the page renders the server's revise verdict", reviseAllowed === "false", `data-revise-allowed=${reviseAllowed}`);
-  check("P2-FR-11 and the machine-readable reason with it", reviseReason === "ALREADY_DECIDED", String(reviseReason));
-  const saveDisabled = await page.getAttribute("#save-edit", "disabled");
-  check("P2-FR-11 the Save button follows that field", saveDisabled !== null);
-  const editAfter = await api(`/v1/console/drafts/${clean.draft.draft_id}/revisions`, {
-    method: "POST",
-    body: { sections: { procedure: ["Read it twice.", "Tag the commit.", "Publish the notes."] } },
-    headers: { Origin: BASE, Cookie: `skln_console=${cookie.value}`, "X-Skillonomia-Console-CSRF": csrfToken },
-  });
-  const editAfterBody = await editAfter.json();
-  check("P2-FR-11 a revision POSTed straight past the disabled button is refused", editAfter.status === 409, `status ${editAfter.status}`);
-  check("P2-FR-11 the refusal is structured and names the state", editAfterBody.error?.current_state === "approved", JSON.stringify(editAfterBody.error ?? null));
-  const afterRefusal = await (await api(`/v1/drafts/${clean.draft.draft_id}`, { key: OWNER_KEY })).json();
-  check("INV-06 the approved revision is still the head and still itself", afterRefusal.revision.revision_id === revAfter);
-  check("INV-06 no revision was added by the refused edit", afterRefusal.lineage.length === 2, `${afterRefusal.lineage.length} revisions`);
-
   // 11. a resent decision is one decision
   const resend = await api(`/v1/console/drafts/${clean.draft.draft_id}/approve`, {
     method: "POST",
@@ -508,7 +486,49 @@ async function main() {
   });
   check("P2-FR-13 a second decision on one draft is a conflict", resend.status === 409, `status ${resend.status}`);
   const conflictBody = await resend.json();
-  check("the conflict states the current state so a console converges", conflictBody.error?.current_state === "approved");
+  check("the conflict states the current state so a console converges", conflictBody.error?.current_state === "approved", JSON.stringify(conflictBody.error ?? null));
+  // 10b. THE EDIT TRANSITION IS THE SERVER'S — `P2-FR-11`, P2 REVIEW-1 finding
+  // `P2-R1-003`, as V1 P3 leaves it. The page renders the server's
+  // `actions.revise.allowed` and holds no rule of its own; what the SERVER
+  // answers changed in P3, because approval became a fact about a REVISION.
+  // An approved lineage takes a further revision, and `INV-06` holds by
+  // APPENDING: the approved revision keeps its row, its approval and its place.
+  const reviseAllowed = await page.getAttribute("#eligibility", "data-revise-allowed");
+  const reviseReason = await page.getAttribute("#eligibility", "data-revise-reason");
+  check("P2-FR-11 the page renders the server's revise verdict", reviseAllowed === "true", `data-revise-allowed=${reviseAllowed}`);
+  check("P2-FR-11 and the machine-readable reason with it", reviseReason === "REVISABLE", String(reviseReason));
+  const saveDisabled = await page.getAttribute("#save-edit", "disabled");
+  check("P2-FR-11 the Save button follows that field", saveDisabled === null);
+  const editAfter = await api(`/v1/console/drafts/${clean.draft.draft_id}/revisions`, {
+    method: "POST",
+    body: { sections: { procedure: ["Read it twice.", "Tag the commit.", "Publish the notes."] } },
+    headers: { Origin: BASE, Cookie: `skln_console=${cookie.value}`, "X-Skillonomia-Console-CSRF": csrfToken },
+  });
+  const editAfterBody = await editAfter.json();
+  check("P3 an approved lineage takes a further revision", editAfter.status === 201, `status ${editAfter.status}`);
+  const afterRefusal = await (await api(`/v1/drafts/${clean.draft.draft_id}`, { key: OWNER_KEY })).json();
+  check("INV-06 the approved revision is still itself", afterRefusal.lineage.some((r) => r.revision_id === revAfter));
+  check("INV-06 the edit APPENDED rather than rewrote", afterRefusal.lineage.length === 3, `${afterRefusal.lineage.length} revisions`);
+  check(
+    "P3 the new head is the edit and it carries no approval of its own",
+    afterRefusal.revision.revision_id === editAfterBody.revision_id,
+    String(editAfterBody.revision_id),
+  );
+  const capabilityView = await (await api(`/v1/console/capabilities/${clean.draft.draft_id}`, {
+    headers: { Cookie: `skln_console=${cookie.value}` },
+  })).json();
+  check(
+    "P3 the capability carries exactly the approved revisions as the rollback targets",
+    Array.isArray(capabilityView.approved_revisions) && capabilityView.approved_revisions.length === 1,
+    JSON.stringify(capabilityView.approved_revisions?.map((a) => a.draft_revision_id) ?? null),
+  );
+  check(
+    "P3 and it says the change would take effect in the next session",
+    capabilityView.effective_from === "next_session",
+    String(capabilityView.effective_from),
+  );
+
+  // 11. the rest of the decision rules
   const idem = "e2e-approve-once";
   const first = await api(`/v1/console/drafts/${thin.draft.draft_id}/reject`, {
     method: "POST",
