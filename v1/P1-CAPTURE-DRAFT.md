@@ -77,9 +77,9 @@ and records nothing, because no arrival was expressed.
 | `P1-FR-05` | `DRAFT_SECTIONS` and `compileDraft` in `src/draft.ts` | `test/v1p1-capture.test.ts` — every section asserted |
 | `P1-FR-06` | `semanticReview` | `test/v1p1-capture.test.ts` — missing, contradictory, duplicated and unexecutable |
 | `P1-FR-07` | `securityReview` | `test/v1p1-capture.test.ts` — permissions, dependencies, risky actions |
-| `P1-FR-08` | `redact` called before any write | `test/v1p1-redaction.test.ts` — a sweep of every column of every table, both adapters and the audit |
+| `P1-FR-08` | `redact` called before any write, on the body and on every metadata field | `test/v1p1-redaction.test.ts` — a sweep of every column of every table, both adapters and the audit; `test/v1p1-r1-fixes.test.ts` — the same sweep over title, reference and native path, with a run that proves the sweep can fail |
 | `P1-FR-09` | `RedactionFinding` | `test/v1p1-redaction.test.ts` — the finding's own field set is asserted, so a value has nowhere to hide |
-| `P1-FR-10` | `readNative` and the refusal path | `test/v1p1-refusals.test.ts` — malformed, unsupported, unsafe and ambiguous |
+| `P1-FR-10` | `readNative`, the refusal path and the column-bound refusal | `test/v1p1-refusals.test.ts` — malformed, unsupported, unsafe and ambiguous; `test/v1p1-r1-fixes.test.ts` — an unstorable bounded capture at the real HTTP listener |
 | `P1-FR-11` | `contentDigest` over content and compiler version | `test/v1p1-capture.test.ts` — two captures, one digest; a recompile converges |
 | `P1-FR-12` | `insertRevision` plus the INSERT-only triggers | `test/v1p1-capture.test.ts` — the parent is byte-for-byte unchanged, and the database refuses an update |
 | `P1-FR-13` | the whole path takes text and nothing else | `test/v1p1-capture.test.ts` — no version, attestation or signing key is written |
@@ -121,6 +121,61 @@ credential that reaches the column, and the categories above are recognisers
 rather than a proof that the database holds none. That limit is
 the same one `src/journal.ts` states about its own boundary columns, and the
 columns this phase adds are classified there as declared limits for that reason.
+
+### 5.1. The metadata is source too
+
+P1 REVIEW-1's finding `P1-R1-001` was that the rule above was applied to the
+BODY of a capture and to nothing around it. A title reached the draft's own
+`title` verbatim whenever the source stated no name of its own — no frontmatter
+`name`, no level-one heading — and an unsupported native path was interpolated
+into the refusal's `reason`. Neither is a lesser field: an owner types a token
+into a title as readily as into a step, and both travel to the response, the
+row and the audit.
+
+So every field that travels goes through the same function the body does — the
+title, the source reference, a session's own reference, the native path a
+refusal names, and the identifiers echoed back by a `NOT_FOUND` or an
+`INVALID_SCHEMA`. A finding from one of them says which field it came out of,
+in the form an edited section already used, so the preview still answers
+`P1-FR-09`: category, location and reason, and nowhere for the value.
+
+The redaction of a path is why a refusal can still name one. A refusal that
+dropped the path would be a refusal an owner cannot act on; the shape survives
+and the material does not.
+
+## 5.2. Bounds, and the answer when one is reached
+
+The three JSON columns of a revision are bounded, and the fields whose length
+is decided by the SOURCE rather than by the schema are the finding lists: one
+redaction finding per credential, one semantic finding per bad line, one risky
+action per risky line. A capture inside the published input bound can carry a
+thousand of each. P1 BUILD-1 answered that with `500 INTERNAL` after the
+arrival row was already written — an arrival classified as drafted with neither
+draft nor refusal behind it, which is P1 REVIEW-1's finding `P1-R1-002`.
+
+Two changes, and they close different halves of it.
+
+* **The lists are capped and the counts are not.** `MAX_LISTED_FINDINGS` in
+  `src/draft.ts` bounds what a stored preview LISTS; `redactions_total`,
+  `findings_total`, `risky_actions_total` and every `blocking_count` are
+  computed over the whole set before the cap applies, so nothing that decides
+  whether a draft may be approved depends on how much detail fits. This is the
+  narrowing contract section 8.10 permits rather than a wider column: the bound
+  is a `CHECK` on a populated table, and widening it is a rebuild, which is
+  neither additive nor reversible.
+* **What a cap cannot reach is refused, not attempted.** A declared permissions
+  block the size of the input bound is the draft's own content and not a
+  finding list, so it is checked against the column bound before the write:
+  `DRAFT_TOO_LARGE`, a structured refusal with a reason on the capture path,
+  and `LIMIT_EXCEEDED` on the edit path, which the error model answers as
+  `413`. Neither reaches SQLite as a constraint failure.
+
+And the writes are one transaction. `withIdempotency` calls its handler
+directly and opens none, which is what let a failure between the arrival and
+the revision leave partial state; `captureDraft` and `reviseDraft` each own a
+`BEGIN IMMEDIATE` now, in the shape every other mutating surface of this
+registry already used. `test/v1p1-r1-fixes.test.ts` drives a failure at each of
+the three write boundaries and asserts that no row survives any of them.
 
 ## 6. Schema, and how it comes back out
 
