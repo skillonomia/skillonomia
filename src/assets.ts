@@ -69,3 +69,10 @@ export function migrationsDir(): string {
 export function seedDir(slug: string): string {
   return join(assetRoot(), "seed", slug);
 }
+
+/** Where the BUILT Owner Console bundle sits. It is a build output, not a
+ *  source file: `npm run build:console` writes it and the server reads it, so
+ *  the thing an owner's browser runs is the thing the production build made. */
+export function consoleAssetDir(): string {
+  return join(assetRoot(), "dist-console");
+}

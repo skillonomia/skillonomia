@@ -258,6 +258,70 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
   },
   "draft_events.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
 
+  // ---------------------------------------------------------- owner_sessions
+  // V1 P2. Not one of these columns holds a caller's text: a browser session is
+  // composed entirely out of this registry's own material, which is why the
+  // whole table is `registry_generated` and `bounded_form` with no declared
+  // limit anywhere in it.
+  "owner_sessions.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "owner_sessions.workspace_id": { intake: "registry_generated", note: "taken from the ticket's row, which took it from AuthContext" },
+  "owner_sessions.agent_id": { intake: "registry_generated", note: "taken from the ticket's row, which took it from AuthContext" },
+  "owner_sessions.actor_role": { intake: "bounded_form", note: "owner|admin" },
+  "owner_sessions.token_hash": { intake: "digest", note: "`sha256:` of the opaque value this registry minted; the value itself is stored nowhere" },
+  "owner_sessions.csrf_token": {
+    intake: "registry_generated",
+    note: "32 random bytes this registry minted, base64url. Stored in the clear on purpose: it authenticates nothing without the cookie, and a reload has to be able to read it back",
+  },
+  "owner_sessions.created_at_ms": { intake: "registry_generated", note: "the registry clock" },
+  "owner_sessions.absolute_expires_at_ms": {
+    intake: "registry_generated",
+    note: "the clock plus the configured lifetime, capped at 60 minutes by a CHECK on this table (`INV-04`)",
+  },
+
+  // ----------------------------------------------- owner_session_revocations
+  "owner_session_revocations.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "owner_session_revocations.session_id": { intake: "registry_generated", note: "a row of this registry" },
+  "owner_session_revocations.reason_code": { intake: "bounded_form", note: "logout|superseded" },
+  "owner_session_revocations.revoked_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
+  // --------------------------------------------------------- console_tickets
+  "console_tickets.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "console_tickets.workspace_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "console_tickets.agent_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "console_tickets.actor_role": { intake: "bounded_form", note: "owner|admin" },
+  "console_tickets.ticket_hash": { intake: "digest", note: "`sha256:` of the one-time ticket this registry minted" },
+  "console_tickets.created_at_ms": { intake: "registry_generated", note: "the registry clock" },
+  "console_tickets.expires_at_ms": { intake: "registry_generated", note: "the clock plus five minutes, capped by a CHECK on this table" },
+
+  // ----------------------------------------------------- console_ticket_uses
+  "console_ticket_uses.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "console_ticket_uses.ticket_id": { intake: "registry_generated", note: "a row of this registry; UNIQUE, which is the single-use rule" },
+  "console_ticket_uses.session_id": { intake: "registry_generated", note: "a row of this registry" },
+  "console_ticket_uses.used_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
+  // --------------------------------------------------------- draft_decisions
+  "draft_decisions.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "draft_decisions.draft_id": { intake: "registry_generated", note: "a row of this registry; UNIQUE, which makes a lineage's decision singular" },
+  "draft_decisions.draft_revision_id": { intake: "registry_generated", note: "a row of this registry" },
+  "draft_decisions.capture_id": { intake: "registry_generated", note: "a row of this registry" },
+  "draft_decisions.workspace_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "draft_decisions.decision": { intake: "bounded_form", note: "approved|rejected" },
+  "draft_decisions.actor_agent_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "draft_decisions.actor_role": { intake: "bounded_form", note: "owner|admin" },
+  "draft_decisions.source": { intake: "bounded_form", note: "owner" },
+  "draft_decisions.reason_code": { intake: "bounded_form", note: "OWNER_APPROVED|OWNER_REJECTED; no caller supplies one" },
+  "draft_decisions.reason": {
+    intake: "declared_limit",
+    note:
+      "THE OWNER'S OWN PROSE, admitted on purpose: `P2-FR-10` requires a rejection to carry a reason and a reason nobody can write is not one. It is redacted at the same boundary a capture body is, and bounded at 2000 characters",
+  },
+  "draft_decisions.content_digest": { intake: "digest", note: "the approved revision's own digest, copied from the row rather than recomputed" },
+  "draft_decisions.provenance_json": {
+    intake: "registry_generated",
+    note: "composed by `src/draft-decision.ts` out of this registry's own vocabulary — the revision number, the two blocking counts, the semantic status and the compiler version. No string a caller sent is copied into it",
+  },
+  "draft_decisions.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
   // ------------------------------------------------------- adoption_receipts
   "adoption_receipts.id": { intake: "registry_generated", note: "a ULID this registry mints" },
   "adoption_receipts.adoption_request_id": { intake: "registry_generated", note: "a row of this registry" },
@@ -439,8 +503,13 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
 export const JOURNAL_WRITERS: Record<string, readonly string[]> = {
   adoption_receipts: ["src/service.ts", "src/transfer.ts"],
   captures: ["src/capture.ts"],
+  console_ticket_uses: ["src/console-session.ts"],
+  console_tickets: ["src/console-session.ts"],
+  draft_decisions: ["src/draft-decision.ts"],
   draft_events: ["src/capture.ts"],
   draft_revisions: ["src/capture.ts"],
+  owner_session_revocations: ["src/console-session.ts"],
+  owner_sessions: ["src/console-session.ts"],
   assignment_events: ["src/assignments.ts"],
   assignments: ["src/assignments.ts"],
   observed_records: ["src/fleet-store.ts"],

@@ -174,6 +174,28 @@ import {
   type DraftListItem,
   type DraftRevisionView,
 } from "./capture.ts";
+import { redact } from "./redaction.ts";
+import {
+  DEFAULT_SESSION_MS,
+  MAX_SESSION_MS,
+  authContextOf,
+  mintConsoleTicket,
+  openConsoleSession,
+  resolveConsoleSession,
+  revokeConsoleSession,
+  type ConsoleSession,
+  type MintedTicket,
+  type OpenedSession,
+} from "./console-session.ts";
+import { decideDraftInTx, type Decision, type DecisionResponse } from "./draft-decision.ts";
+import {
+  consoleAudit,
+  consoleDraft,
+  consoleInbox,
+  type ConsoleAudit,
+  type ConsoleDraft,
+  type ConsoleInbox,
+} from "./console-view.ts";
 import {
   createGrant,
   findGrant,
@@ -363,6 +385,15 @@ export interface RegistryOptions {
    * walks nothing and every inventory number is `unknown`, never zero.
    */
   inventory?: InventoryRoots;
+  /**
+   * `INV-04`: the absolute lifetime of an Owner Console browser session.
+   *
+   * The default is half the cap. A value above `MAX_SESSION_MS` is REFUSED here
+   * rather than clamped, and the same bound is a CHECK on `owner_sessions`, so a
+   * deployment cannot configure a session the invariant forbids by any path —
+   * not through this option, not by writing the row itself.
+   */
+  consoleSessionMs?: number;
 }
 
 // ------------------------------------------- §5.5 deployment answer shapes
@@ -945,9 +976,17 @@ export class Registry {
   /** §6: where an agent's capabilities are READ from. Nowhere, by default:
    *  an inventory with no configured root inventories nothing and says so. */
   private readonly inventory: InventoryRoots;
+  /** `INV-04`: the absolute lifetime of a console session, at most 60 minutes. */
+  private readonly consoleSessionMs: number;
 
   constructor(db: Db, opts: RegistryOptions = {}) {
     this.db = db;
+    this.consoleSessionMs = opts.consoleSessionMs ?? DEFAULT_SESSION_MS;
+    if (!Number.isInteger(this.consoleSessionMs) || this.consoleSessionMs < 1 || this.consoleSessionMs > MAX_SESSION_MS) {
+      // a deployment that asked for a session `INV-04` forbids is told so at
+      // construction, rather than being given a shorter one it does not know about
+      throw new Error(`consoleSessionMs must be between 1 and ${MAX_SESSION_MS} ms`);
+    }
     this.activation = opts.activation ?? NO_ACTIVATION_ROOTS;
     // The default is NOT `NO_RUNTIME_RECORDS`: `observation.report` writes the
     // records a §5 arrival is assessed from, and a registry that stored them
@@ -4481,6 +4520,102 @@ export class Registry {
   draftAudit(auth: AuthContext, draftId: unknown): DraftAuditResponse {
     if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
     return draftAudit(this.db, auth, draftId);
+  }
+
+  // ------------------------------------------------- V1 P2: the Owner Console
+  //
+  // Every method below reaches the SAME service layer, the same access rules and
+  // the same database as an API key does. The console is a second CHANNEL, never
+  // a second registry (`INV-01`), which is why there is no permission logic here
+  // beyond the role checks the P1 methods above already make.
+
+  /** `POST /v1/console/tickets` — machine-to-machine, Bearer. Mints the
+   *  one-time ticket a browser trades for a session; confers nothing else. */
+  mintConsoleTicket(auth: AuthContext): MintedTicket {
+    return mintConsoleTicket(this.db, auth, this.now());
+  }
+
+  /** `POST /v1/console/session` — ticket in, `Set-Cookie` out. The caller of
+   *  this method is the HTTP adapter, which is what turns the returned value
+   *  into a cookie; no other surface returns it. */
+  openConsoleSession(ticket: unknown): OpenedSession {
+    return openConsoleSession(this.db, ticket, this.now(), this.consoleSessionMs);
+  }
+
+  /** A cookie value → a live session, or null. Three server-side facts decide
+   *  it (`src/console-session.ts`), so expiry and logout are real. */
+  resolveConsoleSession(cookieValue: string | undefined): ConsoleSession | null {
+    return resolveConsoleSession(this.db, cookieValue, this.now());
+  }
+
+  /** Logout: the server-side end of the session, recorded as a row. */
+  revokeConsoleSession(sessionId: string): void {
+    revokeConsoleSession(this.db, sessionId, this.now());
+  }
+
+  /**
+   * A live session → the `AuthContext` the service layer takes, rate-limited on
+   * the same limiter an API key uses. A console that could outrun the limiter
+   * would be a way around it.
+   */
+  consoleAuth(session: ConsoleSession): AuthContext {
+    const ctx = authContextOf(session);
+    if (!this.limiter.take(ctx.api_key_id, this.now())) {
+      throw new ApiError("RATE_LIMITED", "rate limit exceeded for this console session");
+    }
+    return ctx;
+  }
+
+  /** `GET /v1/console/drafts` — the Inbox, from the backend (`P2-FR-04`). */
+  consoleInbox(auth: AuthContext): ConsoleInbox {
+    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    return consoleInbox(this.db, auth);
+  }
+
+  /** `GET /v1/console/drafts/{id}` — the detail, with the server's own
+   *  eligibility verdict beside it (`P2-FR-05`, `P2-FR-11`). */
+  consoleDraft(auth: AuthContext, draftId: unknown, revisionId?: unknown): ConsoleDraft {
+    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    return consoleDraft(this.db, auth, draftId, revisionId);
+  }
+
+  /** `GET /v1/console/drafts/{id}/audit` — the capture's history and the
+   *  owner's decision, in one field set (`INV-05`). */
+  consoleAudit(auth: AuthContext, draftId: unknown): ConsoleAudit {
+    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    return consoleAudit(this.db, auth, draftId);
+  }
+
+  /**
+   * Approve or reject (`P2-FR-08`, `P2-FR-09`, `P2-FR-10`).
+   *
+   * Idempotent through the mechanism every other mutation of this registry uses:
+   * a resent form with the same key replays the STORED response rather than
+   * writing a second row, and a genuinely second decision collides on
+   * `UNIQUE(draft_id)` and is answered `CONFLICT` (`P2-FR-13`).
+   *
+   * The reason travels through `redact` because it is an owner's prose on its
+   * way to a row and to an audit — the rule P1 established for every field that
+   * travels, not only for the body of a capture.
+   */
+  decideDraft(
+    auth: AuthContext,
+    draftId: unknown,
+    decision: Decision,
+    input: unknown,
+    idempotencyKey?: string,
+  ): IdempotentOutcome<DecisionResponse> {
+    return withIdempotencyInTx(this.db, auth.agent_id, `draft.${decision}`, idempotencyKey, this.now(), () =>
+      decideDraftInTx(
+        this.db,
+        auth,
+        draftId,
+        decision,
+        (input ?? {}) as Record<string, unknown>,
+        this.now(),
+        (text) => redact(text).text,
+      ),
+    );
   }
 
   listAssignments(auth: AuthContext): AssignmentListResponse {

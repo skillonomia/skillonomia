@@ -13,3 +13,4 @@ evidence/*
 evidence/pilots/*
 !evidence/pilots/PILOT_TEMPLATE.json
 *.tgz
+dist-console/

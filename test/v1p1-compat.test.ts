@@ -35,11 +35,21 @@ const MIGRATION_DIR = join(root, "migrations");
 const FILES = readdirSync(MIGRATION_DIR).filter((f) => /^\d{4}_.+\.sql$/.test(f)).sort();
 const DOWN_0013 = join(MIGRATION_DIR, "down", "0013_capture_and_draft_revisions.down.sql");
 
-/** The released base: every migration up to and including `through`. */
-function databaseAtVersion(through: number): Db {
-  const db = openDb();
+/** The head this tree migrates to, DERIVED from the migration files rather than
+ *  written down. P2 added `0014`, and a test that had to be edited for that would
+ *  be a test that has to be edited again for `0015` — which is how the number in
+ *  an assertion stops meaning anything. */
+const HEAD_VERSION = Math.max(...FILES.map((f) => parseInt(f.slice(0, 4), 10)));
+
+/** Apply every migration after the database's current version up to and
+ *  including `through` — the same loop `migrate` runs, stopped at a version. It
+ *  is what lets the claims below stay claims about `0013` now that `0013` is no
+ *  longer the head. */
+function upgradeTo(db: Db, through: number): Db {
+  const at = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
   for (const file of FILES) {
     const n = parseInt(file.slice(0, 4), 10);
+    if (n <= at) continue;
     if (n > through) break;
     db.exec("BEGIN");
     MIGRATION_STEPS[n]?.(db);
@@ -48,6 +58,11 @@ function databaseAtVersion(through: number): Db {
     db.exec("COMMIT");
   }
   return db;
+}
+
+/** The released base: every migration up to and including `through`. */
+function databaseAtVersion(through: number): Db {
+  return upgradeTo(openDb(), through);
 }
 
 function userVersion(db: Db): number {
@@ -86,8 +101,7 @@ test("0013 is additive: the schema at 12 survives statement for statement, and o
   const beforeSchema = schemaOf(before);
   before.close();
 
-  const after = openDb();
-  migrate(after);
+  const after = databaseAtVersion(13);
   assert.equal(userVersion(after), 13);
   const afterSchema = schemaOf(after);
 
@@ -122,7 +136,7 @@ test("a database carrying the base's DATA upgrades with every row intact", () =>
   const before = rowCounts(db);
   assert.ok(before.skills! > 0 && before.skill_versions! > 0 && before.adoption_receipts! > 0, "the seed really wrote rows");
 
-  migrate(db);
+  upgradeTo(db, 13);
   assert.equal(userVersion(db), 13);
 
   const after = rowCounts(db);
@@ -153,7 +167,7 @@ test("the migration round-trips: up, down, up, and the schema converges each way
   const baseRows = rowCounts(db);
 
   // up
-  migrate(db);
+  upgradeTo(db, 13);
   assert.equal(userVersion(db), 13);
   const headSchema = schemaOf(db);
   assert.notDeepEqual(headSchema, baseSchema, "the upgrade did something");
@@ -177,7 +191,7 @@ test("the migration round-trips: up, down, up, and the schema converges each way
   assert.ok(!("captures" in afterDown), "the V1-only tables are gone, with the rows the reversal discards");
 
   // up again
-  migrate(db);
+  upgradeTo(db, 13);
   assert.equal(userVersion(db), 13);
   assert.deepEqual(schemaOf(db), headSchema, "the second upgrade converges on the same head");
   assert.equal(rowCounts(db).captures, 0, "…with the V1-only tables empty, which is what a reversal costs");
@@ -213,7 +227,7 @@ test("P1-FR-14: the surfaces that existed before answer exactly as they did, on 
   const fx = p4Fixture({ db: legacy });
   assert.equal(userVersion(fx.db), 12, "the fixture was seeded on the BASE schema, before the upgrade");
   migrate(fx.db);
-  assert.equal(userVersion(fx.db), 13, "…and then upgraded, which is the path a deployment takes");
+  assert.equal(userVersion(fx.db), HEAD_VERSION, "…and then upgraded, which is the path a deployment takes");
 
   for (const [method, url] of [
     ["GET", "/v1/skills"],

@@ -152,6 +152,30 @@ export const IDENTITY_INTAKE: Record<string, IdentityColumnClass> = {
       "cannot express",
   },
   "draft_revisions.workspace_id": FROM_AUTH,
+
+  // --------------------------------------------------------- V1 P2 identities
+  "owner_sessions.id": MINTED,
+  "owner_sessions.token_hash": {
+    intake: "registry_generated",
+    note: "`sha256:` of 32 random bytes this registry minted. UNIQUE, and a caller cannot express a value here: the column is written from the mint and read by digest lookup",
+  },
+  "owner_session_revocations.id": MINTED,
+  "owner_session_revocations.session_id": RESOLVED,
+  "console_tickets.id": MINTED,
+  "console_tickets.ticket_hash": {
+    intake: "registry_generated",
+    note: "`sha256:` of 32 random bytes this registry minted. UNIQUE, and written only from the mint",
+  },
+  "console_ticket_uses.id": MINTED,
+  "console_ticket_uses.ticket_id": RESOLVED,
+  "draft_decisions.id": MINTED,
+  "draft_decisions.draft_id": {
+    intake: "registry_generated",
+    note:
+      "the LINEAGE id, resolved by `getDraft` from the caller's path parameter and never stored as the caller wrote it. " +
+      "UNIQUE, which is what makes a second decision on one lineage collide in the database rather than in a check",
+  },
+  "draft_decisions.workspace_id": FROM_AUTH,
   "assignment_events.assignment_id": RESOLVED,
   "assignment_events.idempotency_key": {
     intake: "registry_generated",

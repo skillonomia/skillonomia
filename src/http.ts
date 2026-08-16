@@ -10,6 +10,17 @@ import { ApiError, asApiError, isApiError } from "./errors.ts";
 import { handleMcpMessage, type JsonRpcRequest } from "./mcp.ts";
 import { DASHBOARD_VIEWS, renderDashboard, serializeDashboard, parseDashboardFormat } from "./dashboard.ts";
 import { VERSION } from "./version.ts";
+import {
+  CONSOLE_COOKIE,
+  checkCsrf,
+  checkOrigin,
+  clearedCookie,
+  parseCookies,
+  sessionCookie,
+  type ConsoleSession,
+} from "./console-session.ts";
+import { CONSOLE_CONTRACT_VERSION } from "./console-view.ts";
+import { CONSOLE_SCRIPT_PATH, consolePage, consoleScript, loginPage } from "./console-page.ts";
 
 /** Reported by `/health`; the release version of the running build.
  *  Re-exported from src/version.ts — the literal lives in package.json only. */
@@ -36,6 +47,45 @@ const JSON_HEADERS = { "Content-Type": "application/json" };
 
 function json(status: number, bodyJson: string, extra: Record<string, string> = {}): RestResponse {
   return { status, headers: { ...JSON_HEADERS, ...extra }, body: bodyJson };
+}
+
+/**
+ * The header a console mutation carries its CSRF token in, and the one place its
+ * name is written on the server. `console/app.ts` holds the other.
+ */
+const CSRF_HEADER = "x-skillonomia-console-csrf";
+
+/**
+ * `INV-04`: `Secure` outside localhost.
+ *
+ * The decision is made from the request's own `Host`, because that is what the
+ * browser will compare the cookie against. A loopback host gets a cookie without
+ * `Secure` — a `Secure` cookie on `http://127.0.0.1` is discarded by the browser
+ * and the console could not run at all — and everything else gets one with it.
+ * There is no configuration switch here on purpose: a flag that can be turned
+ * off is a flag that will be found off in a deployment.
+ */
+function secureFor(host: string | undefined): boolean {
+  if (typeof host !== "string") return true;
+  const name = host.replace(/:\d+$/, "").toLowerCase().replace(/^\[|\]$/g, "");
+  return !(name === "localhost" || name === "127.0.0.1" || name === "::1");
+}
+
+/** Pages and the bundle. `nosniff` and a `frame-ancestors 'none'` CSP, because a
+ *  console in somebody else's frame is the clickjacking half of the same problem
+ *  `SameSite=Strict` covers on the request side. */
+function html(status: number, body: string, contentType = "text/html; charset=utf-8"): RestResponse {
+  return {
+    status,
+    headers: {
+      "Content-Type": contentType,
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+      "Content-Security-Policy":
+        "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'",
+    },
+    body,
+  };
 }
 
 function errorResponse(e: ApiError): RestResponse {
@@ -135,8 +185,157 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       return json(200, JSON.stringify(registry.exchangeBootstrap(body.bootstrap_token)));
     }
 
+    // ---- V1 P2: the Owner Console.
+    //
+    // TWO UNAUTHENTICATED THINGS AND NOTHING ELSE: the sign-in page, and the
+    // bundle. Neither carries a draft, a credential or an identifier — the page
+    // is a fixed shell (`src/console-page.ts`) and the bundle is the same bytes
+    // for every visitor. Everything under `/console` past this point, and every
+    // route under `/v1/console/`, needs a live session (`P2-FR-01`).
+
+    if (method === "GET" && path === "/console/login") {
+      return html(200, loginPage());
+    }
+
+    if (method === "GET" && path === CONSOLE_SCRIPT_PATH) {
+      return html(200, consoleScript(), "text/javascript; charset=utf-8");
+    }
+
+    // The session establishment. It is not authenticated BY A COOKIE — it is
+    // what mints one — and it is authenticated by the one-time ticket in its
+    // body. The Origin check applies here too: a form on another site must not
+    // be able to plant a session in this browser.
+    if (method === "POST" && path === "/v1/console/session") {
+      checkOrigin(req.headers["origin"], req.headers["host"]);
+      const body = parseBody(req);
+      const opened = registry.openConsoleSession(body.ticket);
+      return json(
+        201,
+        JSON.stringify({
+          contract: CONSOLE_CONTRACT_VERSION,
+          agent_id: opened.agent_id,
+          actor_role: opened.actor_role,
+          expires_at_ms: opened.expires_at_ms,
+          // the CSRF token is delivered HERE, in a body, and the page keeps it in
+          // memory. It is deliberately not a cookie: `P2-FR-14` has to be able to
+          // say the browser's stores are empty.
+          csrf_token: opened.csrf_token,
+        }),
+        {
+          "Set-Cookie": sessionCookie(
+            opened.cookie_value,
+            opened.expires_at_ms - opened.created_at_ms,
+            secureFor(req.headers["host"]),
+          ),
+          "Cache-Control": "no-store",
+        },
+      );
+    }
+
+    const cookies = parseCookies(req.headers["cookie"]);
+    const session: ConsoleSession | null = registry.resolveConsoleSession(cookies[CONSOLE_COOKIE]);
+
+    if (method === "GET" && path === "/console") {
+      // `P2-FR-01`: no session, no console. The body is the sign-in page and the
+      // status is 401 — a browser lands on something usable and a script sees a
+      // refusal, and neither is told anything about the deployment.
+      if (!session) return html(401, loginPage());
+      return html(200, consolePage());
+    }
+
+    if (path === "/v1/console/session" || path === "/v1/console/logout" || path.startsWith("/v1/console/drafts")) {
+      if (!session) throw new ApiError("UNAUTHORIZED", "the owner console requires a session");
+      // Every MUTATION under the console carries both defences: the request must
+      // come from this origin, and it must echo the token only this page holds
+      // (`P2-FR-13`). Reads carry neither, because a read changes nothing and a
+      // `SameSite=Strict` cookie is not sent cross-site to begin with.
+      if (method !== "GET") {
+        checkOrigin(req.headers["origin"], req.headers["host"]);
+        checkCsrf(session, req.headers[CSRF_HEADER]);
+      }
+
+      if (method === "GET" && path === "/v1/console/session") {
+        // The CSRF token comes back here, and this is the route a reload uses to
+        // get it again — the page keeps it in memory only, so a refresh has no
+        // copy. Handing it out is safe for the reason it is not a credential:
+        // reading this response requires the cookie, `SameSite=Strict` keeps the
+        // cookie off a cross-site request, and the same-origin policy keeps a
+        // cross-site script from reading the body even if one were sent.
+        return json(
+          200,
+          JSON.stringify({
+            contract: CONSOLE_CONTRACT_VERSION,
+            agent_id: session.agent_id,
+            actor_role: session.actor_role,
+            expires_at_ms: session.expires_at_ms,
+            csrf_token: session.csrf_token,
+          }),
+          { "Cache-Control": "no-store" },
+        );
+      }
+
+      if (method === "POST" && path === "/v1/console/logout") {
+        registry.revokeConsoleSession(session.session_id);
+        return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_VERSION, logged_out: true }), {
+          "Set-Cookie": clearedCookie(secureFor(req.headers["host"])),
+          "Cache-Control": "no-store",
+        });
+      }
+
+      // From here the session becomes the ordinary `AuthContext` every service
+      // method takes, rate-limited on the same limiter an API key uses.
+      const cauth = registry.consoleAuth(session);
+
+      if (method === "GET" && path === "/v1/console/drafts") {
+        return json(200, JSON.stringify(registry.consoleInbox(cauth)), { "Cache-Control": "no-store" });
+      }
+
+      let cm = /^\/v1\/console\/drafts\/([^/]+)\/audit$/.exec(path);
+      if (method === "GET" && cm) {
+        return json(200, JSON.stringify(registry.consoleAudit(cauth, cm[1])), { "Cache-Control": "no-store" });
+      }
+
+      cm = /^\/v1\/console\/drafts\/([^/]+)\/revisions$/.exec(path);
+      if (method === "POST" && cm) {
+        const body = parseBody(req);
+        // the SAME service method the API-key surface calls: an edit is a new
+        // revision with both previews re-run, and there is one implementation
+        const out = registry.reviseDraft(cauth, cm[1], body, idemKey(body));
+        return mutationResponse(out, 201);
+      }
+
+      cm = /^\/v1\/console\/drafts\/([^/]+)\/(approve|reject)$/.exec(path);
+      if (method === "POST" && cm) {
+        const body = parseBody(req);
+        const out = registry.decideDraft(cauth, cm[1], cm[2] === "approve" ? "approved" : "rejected", body, idemKey(body));
+        return mutationResponse(out, 201);
+      }
+
+      cm = /^\/v1\/console\/drafts\/([^/]+)$/.exec(path);
+      if (method === "GET" && cm) {
+        const revision = url.searchParams.get("revision_id");
+        return json(200, JSON.stringify(registry.consoleDraft(cauth, cm[1], revision ?? undefined)), {
+          "Cache-Control": "no-store",
+        });
+      }
+
+      throw new ApiError("NOT_FOUND", `no route ${method} ${path}`);
+    }
+
     // -- everything else: Bearer auth + per-key rate limit
     const auth = registry.authenticate(req.headers["authorization"]);
+
+    // The machine-to-machine half of the console login. Authenticated by the
+    // Registry API key, over the channel that already carries one, and answering
+    // with a ticket that is not a key: it opens one session, once, within five
+    // minutes. This is the route that keeps `INV-04` true — the browser never
+    // holds a credential because the credential never leaves this side.
+    if (method === "POST" && path === "/v1/console/tickets") {
+      const minted = registry.mintConsoleTicket(auth);
+      return json(201, JSON.stringify({ contract: CONSOLE_CONTRACT_VERSION, ...minted }), {
+        "Cache-Control": "no-store",
+      });
+    }
 
     if (method === "POST" && path === "/mcp") {
       const msg = parseBody(req) as JsonRpcRequest;
@@ -552,7 +751,18 @@ export function startServer(registry: () => Registry, port: number, host = "127.
         const out = handleRest(registry(), {
           method: req.method ?? "GET",
           url: req.url ?? "/",
-          headers: { authorization: req.headers.authorization },
+          // The forwarded set is a LIST, not the whole request. Everything the
+          // router reads is here and nothing else is: the console needs the
+          // cookie it authenticates with, the `Origin` and `Host` it compares,
+          // and the CSRF header it echoes. A header the router does not read is a
+          // header the router cannot be surprised by.
+          headers: {
+            authorization: req.headers.authorization,
+            cookie: req.headers.cookie,
+            origin: req.headers.origin as string | undefined,
+            host: req.headers.host,
+            [CSRF_HEADER]: req.headers[CSRF_HEADER] as string | undefined,
+          },
           body: Buffer.concat(chunks),
         });
         res.writeHead(out.status, out.headers);
