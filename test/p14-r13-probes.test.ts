@@ -75,6 +75,7 @@ import { fileURLToPath } from "node:url";
 import { p4Fixture, reviewedVersion, rest, NOW, type P4Fixture } from "./p6-helpers.ts";
 import { arrivalMarker } from "../src/marker.ts";
 import { correlationDigest } from "../src/journal.ts";
+import { requestDigest } from "../src/assignment-lifecycle.ts";
 import { evidenceDigestOf, evaluateOutcome } from "../src/outcome.ts";
 import { outcomeContractOf } from "../src/manifest.ts";
 import { registryObservedEvidence } from "../src/activation.ts";
@@ -795,6 +796,41 @@ const PROOFS: Record<string, Proof> = {
       });
       assert.equal(replay.raw, first.raw, "the retry did not replay the first answer byte for byte");
       fx.db.close();
+    },
+  },
+
+  "assignment-lifecycle.ts::correlationDigest": {
+    calls: 1,
+    because:
+      "its input is `JSON.stringify` of the payload, and JSON string escaping is injective and well-formed by construction: a lone surrogate leaves it as the six characters `\\ud800`, so the primitive never meets a non-well-formed string here AND two payloads differing only in such a character still differ in the digest",
+    run: () => {
+      // WHAT THE DIGEST IS FOR HERE: telling a repeat from a different request
+      // wearing the same key (`P3-FR-09`, `P3-FR-10`). So the property to prove
+      // is that equal payloads are equal digests, unequal payloads are unequal
+      // digests, and the caller's text does not survive into the value.
+      const one = requestDigest({ agent_id: "A", revision_id: "R", reason: "because" });
+      const same = requestDigest({ reason: "because", revision_id: "R", agent_id: "A" });
+      const other = requestDigest({ agent_id: "A", revision_id: "R2", reason: "because" });
+      assert.equal(one, same, "field order changed the digest, so a retry would be read as a different request");
+      assert.notEqual(one, other, "two different requests share one digest");
+      assert.equal(one.startsWith("sha256:"), true, one);
+      assert.equal(one.includes("because"), false, "the caller's text survived into the stored value");
+      // THE ATTACK THIS ROUND IS ABOUT, at this boundary: two payloads that
+      // differ only in a character SQLite or a runtime might fold. They must
+      // not share a digest, or a caller would replay another caller's response.
+      // `JSON.stringify` escapes both to distinct well-formed text, so the
+      // primitive is reached with strings it can tell apart and never with one
+      // it would refuse.
+      const surrogateA = requestDigest({ reason: A });
+      const surrogateB = requestDigest({ reason: B });
+      assert.notEqual(surrogateA, surrogateB, "two payloads differing by a lone surrogate share one digest");
+      for (const text of NOT_WELL_FORMED) {
+        assert.equal(JSON.stringify({ reason: text }).isWellFormed(), true, `JSON.stringify left ${units(text)} raw`);
+        assert.equal(typeof requestDigest({ reason: text }), "string");
+      }
+      console.log(
+        `    requestDigest is stable under field order and separates ${NOT_WELL_FORMED.length} non-well-formed payloads without meeting one`,
+      );
     },
   },
 

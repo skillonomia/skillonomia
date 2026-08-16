@@ -176,6 +176,32 @@ export const IDENTITY_INTAKE: Record<string, IdentityColumnClass> = {
       "UNIQUE, which is what makes a second decision on one lineage collide in the database rather than in a check",
   },
   "draft_decisions.workspace_id": FROM_AUTH,
+
+  // --------------------------------------------------------- V1 P3 identities
+  "revision_approvals.id": MINTED,
+  "revision_approvals.draft_id": RESOLVED,
+  "revision_approvals.draft_revision_id": {
+    intake: "registry_generated",
+    note:
+      "the revision the owner decided on, resolved by `getDraft` from the caller's path parameter. " +
+      "UNIQUE, which is what makes one revision approvable exactly once and what a rollback target is selected from",
+  },
+  "revision_approvals.workspace_id": FROM_AUTH,
+  "skill_assignments.id": MINTED,
+  "skill_assignments.agent_id": {
+    intake: "registry_generated",
+    note:
+      "resolved against `agents` of the caller's own workspace before the row is written: a string that names no agent of the closed fleet is refused with AGENT_NOT_IN_FLEET and never reaches the column",
+  },
+  "skill_assignments.draft_id": {
+    intake: "registry_generated",
+    note: "taken from the approval row this assignment names, never from the caller's payload",
+  },
+  "skill_assignments.workspace_id": FROM_AUTH,
+  "skill_assignment_events.id": MINTED,
+  "skill_assignment_events.assignment_id": RESOLVED,
+  "assignment_observations.id": MINTED,
+  "assignment_observations.assignment_id": RESOLVED,
   "assignment_events.assignment_id": RESOLVED,
   "assignment_events.idempotency_key": {
     intake: "registry_generated",

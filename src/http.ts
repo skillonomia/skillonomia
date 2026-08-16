@@ -460,13 +460,26 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
         return json(200, JSON.stringify(registry.assignmentAudit(cauth, m[1])), { "Cache-Control": "no-store" });
       }
 
-      m = /^\/v1\/console\/assignments\/([^/]+)\/(activate|pause|revoke)$/.exec(path);
+      // One route per action rather than one alternation, because
+      // `test/spec-parity.test.ts` reads this file's routes by the shape of
+      // these lines and Appendix H documents one row per route — a pattern that
+      // covers three routes is a row that documents none of them exactly.
+      m = /^\/v1\/console\/assignments\/([^/]+)\/activate$/.exec(path);
       if (method === "POST" && m) {
         const body = parseBody(req);
-        return consoleMutationResponse(
-          registry.assignmentLifecycle(cauth, m[1], m[2] as "activate" | "pause" | "revoke", body, idemKey(body)),
-          200,
-        );
+        return consoleMutationResponse(registry.assignmentLifecycle(cauth, m[1], "activate", body, idemKey(body)), 200);
+      }
+
+      m = /^\/v1\/console\/assignments\/([^/]+)\/pause$/.exec(path);
+      if (method === "POST" && m) {
+        const body = parseBody(req);
+        return consoleMutationResponse(registry.assignmentLifecycle(cauth, m[1], "pause", body, idemKey(body)), 200);
+      }
+
+      m = /^\/v1\/console\/assignments\/([^/]+)\/revoke$/.exec(path);
+      if (method === "POST" && m) {
+        const body = parseBody(req);
+        return consoleMutationResponse(registry.assignmentLifecycle(cauth, m[1], "revoke", body, idemKey(body)), 200);
       }
 
       m = /^\/v1\/console\/assignments\/([^/]+)\/revision$/.exec(path);

@@ -322,6 +322,135 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
   },
   "draft_decisions.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
 
+  // ------------------------------------------------------ revision_approvals
+  // V1 P3. An approval is composed entirely out of this registry's own
+  // material: which revision, which digest, who, when. There is no prose column
+  // here at all — a rejection carries the owner's reason and an approval does
+  // not, so there is nothing to declare a limit about.
+  "revision_approvals.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "revision_approvals.draft_id": { intake: "registry_generated", note: "a row of this registry" },
+  "revision_approvals.draft_revision_id": {
+    intake: "registry_generated",
+    note: "a row of this registry; UNIQUE, which is what makes one revision approvable once",
+  },
+  "revision_approvals.capture_id": { intake: "registry_generated", note: "a row of this registry" },
+  "revision_approvals.workspace_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "revision_approvals.revision": { intake: "registry_generated", note: "the revision number of the approved row" },
+  "revision_approvals.actor_agent_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "revision_approvals.actor_role": { intake: "bounded_form", note: "owner|admin" },
+  "revision_approvals.source": { intake: "bounded_form", note: "owner" },
+  "revision_approvals.reason_code": { intake: "bounded_form", note: "OWNER_APPROVED; no caller supplies one" },
+  "revision_approvals.content_digest": {
+    intake: "digest",
+    note: "the approved revision's own digest, copied from the row rather than recomputed",
+  },
+  "revision_approvals.provenance_json": {
+    intake: "registry_generated",
+    note: "the same payload `draft_decisions` carries, composed by `src/draft-decision.ts` out of this registry's vocabulary",
+  },
+  "revision_approvals.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
+  // -------------------------------------------------------- skill_assignments
+  "skill_assignments.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "skill_assignments.workspace_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "skill_assignments.agent_id": {
+    intake: "registry_generated",
+    note: "resolved against `agents` of the caller's own workspace before the row is written; a value that names no agent of the closed fleet never reaches this column",
+  },
+  "skill_assignments.draft_id": { intake: "registry_generated", note: "taken from the approval row, never from the caller" },
+  "skill_assignments.created_by_agent_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "skill_assignments.created_by_role": { intake: "bounded_form", note: "owner|admin" },
+  "skill_assignments.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
+  // -------------------------------------------------- skill_assignment_events
+  // The DESIRED state machine. Every column but one is this registry's own
+  // vocabulary; the one that is not is the owner's reason, admitted for the
+  // reason `draft_decisions.reason` is admitted and cleaned at the same
+  // boundary.
+  "skill_assignment_events.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "skill_assignment_events.assignment_id": { intake: "registry_generated", note: "a row of this registry" },
+  "skill_assignment_events.event_seq": {
+    intake: "registry_generated",
+    note: "the journal's own counter, dense from 1 and UNIQUE per assignment; it is also the optimistic-concurrency token",
+  },
+  "skill_assignment_events.event": {
+    intake: "bounded_form",
+    note: "assigned|activated|paused|revoked|revision_selected",
+  },
+  "skill_assignment_events.desired_state": { intake: "bounded_form", note: "assigned|active|paused|revoked" },
+  "skill_assignment_events.desired_revision_id": {
+    intake: "registry_generated",
+    note: "a row of this registry, checked against the approved set before the write",
+  },
+  "skill_assignment_events.effective_from": {
+    intake: "bounded_form",
+    note: "next_session, and nothing else — `INV-07` written in the schema rather than in a comment",
+  },
+  "skill_assignment_events.actor_agent_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "skill_assignment_events.actor_role": { intake: "bounded_form", note: "owner|admin" },
+  "skill_assignment_events.source": { intake: "bounded_form", note: "owner" },
+  "skill_assignment_events.reason_code": {
+    intake: "bounded_form",
+    note: "OWNER_ASSIGNED|OWNER_ACTIVE|OWNER_PAUSED|OWNER_REVOKED|OWNER_SELECTED_REVISION|OWNER_ROLLED_BACK; no caller supplies one",
+  },
+  "skill_assignment_events.reason": {
+    intake: "declared_limit",
+    note:
+      "THE OWNER'S OWN PROSE, admitted on purpose: a lifecycle command an owner cannot explain is a journal entry nobody can read. It goes through `redact` at the same boundary a capture body does, and is bounded at 2000 characters",
+  },
+  "skill_assignment_events.content_digest": {
+    intake: "digest",
+    note: "the desired revision's own digest, copied from the approval row rather than recomputed",
+  },
+  "skill_assignment_events.provenance_json": {
+    intake: "registry_generated",
+    note: "composed by `src/assignment-lifecycle.ts` out of this registry's own vocabulary — the states, the revision ids, the approval id and the direction of a selection. No string a caller sent is copied into it",
+  },
+  "skill_assignment_events.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
+  // --------------------------------------------------- assignment_observations
+  // What somebody REPORTED SEEING (`INV-02`). Two columns carry the reporter's
+  // own text — the reason and the session reference — and both are declared
+  // limits for that reason: an observation whose reason nobody may write is an
+  // observation with no reason, which `INV-03` forbids outright.
+  "assignment_observations.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "assignment_observations.assignment_id": { intake: "registry_generated", note: "a row of this registry" },
+  "assignment_observations.agent_id": {
+    intake: "registry_generated",
+    note: "copied from the assignment row, never from the report: an observation cannot be filed against another agent by naming one",
+  },
+  "assignment_observations.observed_status": { intake: "bounded_form", note: "proposed|loaded|invoked|unknown" },
+  "assignment_observations.draft_revision_id": {
+    intake: "registry_generated",
+    note: "a row of this registry when the report names one; NULL when it does not, which is `unknown` about the revision and never a default",
+  },
+  "assignment_observations.session_ref": {
+    intake: "declared_limit",
+    note: "THE REPORTER'S OWN REFERENCE to the session it saw, bounded at 200 characters. `INV-03` requires the identifiers of an observation to be kept when they are known, and a runtime's session id is one",
+  },
+  "assignment_observations.reason_code": {
+    intake: "declared_limit",
+    note: "THE REPORTER'S OWN CODE, bounded at 64 characters. It is machine-readable by contract and this registry does not enumerate an adapter's vocabulary for it — an adapter that must pick from a list this build ships cannot report a reason this build did not anticipate",
+  },
+  "assignment_observations.reason": {
+    intake: "declared_limit",
+    note: "THE REPORTER'S OWN PROSE, bounded at 2000 characters and required by `INV-03` of every observation, `unknown` included",
+  },
+  "assignment_observations.source": {
+    intake: "bounded_form",
+    note: "backend|adapter|runtime — and no `owner` member, which is how `INV-02` is enforced rather than promised",
+  },
+  "assignment_observations.reported_by_agent_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "assignment_observations.observed_at_ms": {
+    intake: "declared_limit",
+    note: "THE REPORTER'S OWN CLOCK, which is the time the thing was SEEN and cannot be this registry's; `server_at_ms` beside it is the time it arrived, and the pair is the boundary [I-3] asks for",
+  },
+  "assignment_observations.provenance_json": {
+    intake: "declared_limit",
+    note: "THE REPORTER'S OWN PAYLOAD, bounded by the column. It is stored as it arrived because it is evidence about a runtime this registry did not observe, and it is never the place a column above hides",
+  },
+  "assignment_observations.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
   // ------------------------------------------------------- adoption_receipts
   "adoption_receipts.id": { intake: "registry_generated", note: "a ULID this registry mints" },
   "adoption_receipts.adoption_request_id": { intake: "registry_generated", note: "a row of this registry" },
@@ -502,7 +631,11 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
  */
 export const JOURNAL_WRITERS: Record<string, readonly string[]> = {
   adoption_receipts: ["src/service.ts", "src/transfer.ts"],
+  assignment_observations: ["src/assignment-lifecycle.ts"],
   captures: ["src/capture.ts"],
+  revision_approvals: ["src/draft-decision.ts"],
+  skill_assignment_events: ["src/assignment-lifecycle.ts"],
+  skill_assignments: ["src/assignment-lifecycle.ts"],
   console_ticket_uses: ["src/console-session.ts"],
   console_tickets: ["src/console-session.ts"],
   draft_decisions: ["src/draft-decision.ts"],

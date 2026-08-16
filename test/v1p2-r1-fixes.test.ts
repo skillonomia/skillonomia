@@ -190,7 +190,19 @@ test("P2-R1-002: a second logout of the same session is still a no-op, not a ref
 // P2-R1-003 — the edit transition is the server's (P2-FR-11, INV-06)
 // ===========================================================================
 
-for (const decision of ["approve", "reject"] as const) {
+// V1 P3 NARROWED THE `approve` HALF OF THIS, AND LEFT THE `reject` HALF EXACTLY
+// AS IT WAS. What `P2-R1-003` found was a SPLIT — the client held a rule the
+// server did not — and a lineage whose reported state disagreed with its head.
+// The split is closed by `ConsoleDraft.actions`, which is unchanged. The
+// disagreement is closed differently in P3: approval became a fact about a
+// REVISION (`revision_approvals`), so an approved lineage whose head is a newer
+// revision reports that head as unapproved rather than reporting the lineage as
+// approved. With the disagreement gone, refusing the edit is no longer what
+// prevents it, and `P3-FR-05` and `P5` both require a lineage to be able to
+// carry more than one approved revision. A REJECTION is still terminal, and the
+// test below is that rule; the approve case moved to the test after it, where
+// the assertion is that the edit is allowed AND `INV-06` still holds.
+for (const decision of ["reject"] as const) {
   test(`P2-R1-003: a revision POSTed after ${decision} is refused by the server`, () => {
     const fx = p4Fixture();
     const s = signIn(fx);
@@ -236,6 +248,32 @@ test("P2-R1-003: the same refusal reaches the machine-to-machine surface", () =>
   const fx = p4Fixture();
   const s = signIn(fx);
   const draft = capture(fx).draft;
+  const rejected = call(fx, {
+    method: "POST",
+    path: `/v1/console/drafts/${draft.draft_id}/reject`,
+    cookie: s.cookie,
+    csrf: s.csrf,
+    body: { revision_id: draft.revision_id, reason: "not this one", idempotency_key: "k-a" },
+  });
+  assert.equal(rejected.status, 201, rejected.body);
+  const viaKey = call(fx, {
+    method: "POST",
+    path: `/v1/drafts/${draft.draft_id}/revisions`,
+    key: fx.keys.owner!,
+    body: { sections: { procedure: ["One.", "Two.", "Three."] }, idempotency_key: "k-b" },
+  });
+  assert.equal(viaKey.status, 409, viaKey.body);
+  assert.equal(viaKey.json.error.current_state, "rejected");
+  fx.db.close();
+});
+
+test("P2-R1-003 as V1 P3 leaves it: an approved lineage revises, and INV-06 is kept by APPENDING", () => {
+  // The property the original finding was protecting is that no revision is
+  // rewritten and no lineage reports a state its head does not have. Both are
+  // asserted here, on the path P3 opened.
+  const fx = p4Fixture();
+  const s = signIn(fx);
+  const draft = capture(fx).draft;
   const approved = call(fx, {
     method: "POST",
     path: `/v1/console/drafts/${draft.draft_id}/approve`,
@@ -244,14 +282,26 @@ test("P2-R1-003: the same refusal reaches the machine-to-machine surface", () =>
     body: { revision_id: draft.revision_id, idempotency_key: "k-a" },
   });
   assert.equal(approved.status, 201, approved.body);
-  const viaKey = call(fx, {
+
+  const edited = call(fx, {
     method: "POST",
-    path: `/v1/drafts/${draft.draft_id}/revisions`,
-    key: fx.keys.owner!,
-    body: { sections: { procedure: ["One.", "Two.", "Three."] }, idempotency_key: "k-b" },
+    path: `/v1/console/drafts/${draft.draft_id}/revisions`,
+    cookie: s.cookie,
+    csrf: s.csrf,
+    body: { sections: { procedure: ["Read twice.", "Run the suite.", "Merge it."] }, idempotency_key: "k-e" },
   });
-  assert.equal(viaKey.status, 409, viaKey.body);
-  assert.equal(viaKey.json.error.current_state, "approved");
+  assert.equal(edited.status, 201, edited.body);
+
+  const detail = call(fx, { path: `/v1/console/drafts/${draft.draft_id}`, cookie: s.cookie });
+  // the approved revision is untouched and still approved …
+  assert.equal(detail.json.approved_revisions.length, 1);
+  assert.equal(detail.json.approved_revisions[0].draft_revision_id, draft.revision_id);
+  assert.equal(detail.json.decision.draft_revision_id, draft.revision_id);
+  assert.equal(detail.json.draft.lineage.length, 2);
+  // … and the HEAD, which nobody approved, says so rather than inheriting it
+  assert.equal(detail.json.draft.revision.revision_id, edited.json.revision_id);
+  assert.equal(detail.json.revision_approval, null);
+  assert.equal(detail.json.eligibility.approvable, true);
   fx.db.close();
 });
 
@@ -285,7 +335,11 @@ test("P2-R1-003: an undecided draft still revises, and the console reads the ans
   assert.equal(approved.status, 201, approved.body);
 
   const after = call(fx, { path: `/v1/console/drafts/${draft.draft_id}`, cookie: s.cookie });
-  assert.deepEqual(after.json.actions.revise, { allowed: false, reason_code: "ALREADY_DECIDED" });
+  // V1 P3: an approved lineage still takes no second DECISION — an approval is
+  // not undone by a rejection — and the approved revision cannot be approved
+  // twice. What it does take is a further revision, which is the narrowing the
+  // comment above the first test in this section states.
+  assert.deepEqual(after.json.actions.revise, { allowed: true, reason_code: "REVISABLE" });
   assert.deepEqual(after.json.actions.reject, { allowed: false, reason_code: "ALREADY_DECIDED" });
   assert.equal(after.json.actions.approve.allowed, false);
   fx.db.close();

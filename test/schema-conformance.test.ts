@@ -176,6 +176,14 @@ const AUTHORIZED_P5_EDITS: ReadonlyArray<{ readonly from: string; readonly to: s
     from: "CHECK(event IN ('delivered','attempted','adopted','failed','rolled_back','transferred'))",
     to: "CHECK(event IN ('delivered','attempted','adopted','failed','rolled_back','transferred','requested'))",
   },
+  // D.1o. The one column V1 P3 adds to a D.1 table: `P3-FR-10` needs the
+  // fingerprint of the payload a key was first used with, and the released row
+  // holds the key and the response and nothing else. It is nullable, so every
+  // row a released build wrote keeps its meaning.
+  {
+    from: "created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0), UNIQUE(actor_agent_id,surface,key) )",
+    to: "created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0), request_digest TEXT, UNIQUE(actor_agent_id,surface,key) )",
+  },
 ];
 
 /**
@@ -264,6 +272,28 @@ const NEW_OBJECTS: ReadonlyArray<{ file: string; names: readonly string[] }> = [
       "tg_draft_decisions_no_del",
     ],
   },
+  {
+    file: "0015_assignment_and_lifecycle_control.sql",
+    names: [
+      "revision_approvals",
+      "idx_revision_approvals_draft",
+      "skill_assignments",
+      "idx_skill_assignments_agent",
+      "idx_skill_assignments_workspace",
+      "skill_assignment_events",
+      "idx_skill_assignment_events_assignment",
+      "assignment_observations",
+      "idx_assignment_observations_assignment",
+      "tg_revision_approvals_no_upd",
+      "tg_revision_approvals_no_del",
+      "tg_skill_assignments_no_upd",
+      "tg_skill_assignments_no_del",
+      "tg_skill_assignment_events_no_upd",
+      "tg_skill_assignment_events_no_del",
+      "tg_assignment_observations_no_upd",
+      "tg_assignment_observations_no_del",
+    ],
+  },
 ];
 
 const ADDED_OBJECT_COUNT = NEW_OBJECTS.reduce((n, m) => n + m.names.length, 0);
@@ -322,8 +352,8 @@ test("live schema is Appendix D.1 plus exactly the Appendix D.1b delta", () => {
   }
   assert.equal(
     edited,
-    5,
-    "exactly five tables carry the authorized delta: adoption_requests, webhooks, receipt_events, signing_keys and skill_versions",
+    6,
+    "exactly six tables carry the authorized delta: adoption_requests, webhooks, receipt_events, signing_keys, skill_versions and idempotency_keys",
   );
 
   // Everything live that is NOT a D.1 statement must be an object one of the
@@ -359,7 +389,7 @@ test("live schema is Appendix D.1 plus exactly the Appendix D.1b delta", () => {
   assert.equal(liveSet.size, fileStatements.length + ADDED_OBJECT_COUNT, "live schema has no extra objects");
 });
 
-test("object counts: 34 tables, 36 triggers, 18 indexes; no bookkeeping table", () => {
+test("object counts: 38 tables, 44 triggers, 23 indexes; no bookkeeping table", () => {
   const db = openMigrated();
   const count = (type: string) =>
     (db
@@ -385,14 +415,18 @@ test("object counts: 34 tables, 36 triggers, 18 indexes; no bookkeeping table", 
   // D.1n adds five tables, ten triggers and two indexes — the Owner Console's
   // sessions, its one-time tickets and the owner's decision on a draft — and
   // edits nothing either.
-  assert.equal(count("table"), 34);
-  assert.equal(count("trigger"), 36);
-  assert.equal(count("index"), 18);
+  // D.1o adds four tables, eight triggers and five indexes — the per-revision
+  // approval, the assignment, its DESIRED-state journal and the OBSERVED
+  // reports filed against it — and edits nothing but the one nullable column on
+  // `idempotency_keys`, which is a column and not an object.
+  assert.equal(count("table"), 38);
+  assert.equal(count("trigger"), 44);
+  assert.equal(count("index"), 23);
   const uv = db.prepare("PRAGMA user_version").get() as { user_version: number };
   assert.equal(
     uv.user_version,
-    14,
-    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote, 0013 = D.1m the capture and draft domain of V1 — three INSERT-only tables added and nothing edited, 0014 = D.1n the Owner Console of V1 — five INSERT-only tables added and nothing edited; tracked in user_version",
+    15,
+    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote, 0013 = D.1m the capture and draft domain of V1 — three INSERT-only tables added and nothing edited, 0014 = D.1n the Owner Console of V1 — five INSERT-only tables added and nothing edited, 0015 = D.1o assignment and lifecycle control — four INSERT-only tables added, one nullable column on `idempotency_keys` and nothing edited; tracked in user_version",
   );
 });
 
