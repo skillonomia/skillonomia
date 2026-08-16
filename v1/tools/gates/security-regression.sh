@@ -18,6 +18,10 @@
 #   p14-r9-probes.test.ts   token-shaped values must not reach an evidence name
 #   p14-r9b-probes.test.ts  secrets in other forms — hex, base32, token
 #   p14-r10-probes.test.ts  a planted credential is found rather than passed through
+#   v1p2-console.test.ts    P2's part of the surface: the browser session boundary,
+#                           the CSRF and Origin refusals, the safe-rendering property
+#                           of the console bundle, and the redaction of an owner's
+#                           rejection reason
 #   bind-address.test.ts    the server does not bind wider than it was told to
 #   docker-network-boundary.test.ts  the container network boundary
 #   transport.test.ts       transport-level handling
@@ -39,6 +43,7 @@ FILES=(
   test/p14-r9b-probes.test.ts
   test/p14-r10-probes.test.ts
   test/v1p1-redaction.test.ts
+  test/v1p2-console.test.ts
   test/bind-address.test.ts
   test/docker-network-boundary.test.ts
   test/transport.test.ts

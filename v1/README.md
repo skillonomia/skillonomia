@@ -16,6 +16,7 @@ implements no product behaviour (`P0-FR-08`).
 | `P0-THREAT-MODEL.md` | the frozen V1 threat model, and what it means for a finding |
 | `P0-EVIDENCE-FORMAT.md` | the frozen evidence record, the session record, the mandatory gates per phase with a command each, and the append-only rule |
 | `P0-BRANCH-HISTORY.md` | the branch's history, the one rewrite that happened, and the audit boundary of P0 |
+| `P2-OWNER-CONSOLE.md` | what P2 built — the browser session, the Inbox, the detail, approve/edit/reject, and what the session and the eligibility rule do and do not claim |
 | `P1-CAPTURE-DRAFT.md` | what P1 built — the capture/draft path, where each `P1-FR-*` is met, what the classifier and the redactor do and do not claim, and how the schema change comes back out |
 | `P0-RESIDUAL-LIMITATIONS.md` | what P0 leaves permanently unprovable, carried forward to the final report rather than forgotten |
 | `append-only-baseline.tsv` | the disclosed non-append-only reflog entries — the only ones the append-only check excuses |
@@ -27,7 +28,8 @@ implements no product behaviour (`P0-FR-08`).
 | `tools/p0-gate-table-check.ts` | refuses if a mandatory gate is missing, renamed or downgraded, if a row has no runnable command, or if an N/A cell has no justification |
 | `tools/p0-append-only-check.sh` | refuses on an undisclosed amend, rebase, reset or non-fast-forward move of the branch |
 | `tools/p0-negative-probes.sh` | runs every validator against a deliberately damaged copy and fails unless each one refuses, for the stated reason |
-| `tools/gates/` | one entry point per mandatory gate category: two real, seven executable interfaces that exit `3` until their phase implements them |
+| `tools/gates/` | one entry point per mandatory gate category. P0 left two real and seven executable interfaces; P1 implemented the reversible-migration round trip and the `v0.1.6` upgrade, and P2 implemented the browser E2E |
+| `tools/e2e/console-e2e.mjs` | the browser run `tools/gates/browser-e2e.sh` drives: Chromium through Playwright against a real deployment |
 
 ## Running the P0 harnesses
 

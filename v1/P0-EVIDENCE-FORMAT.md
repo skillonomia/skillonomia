@@ -247,7 +247,7 @@ A phase runs everything marked `✓` in its column.
 | browser E2E | `v1/tools/gates/browser-e2e.sh` | — | — | ✓ | ✓ | — | ✓ | ✓ |
 | actual Codex runtime session | `v1/tools/gates/runtime-codex.sh` | — | — | — | — | ✓ | ✓ | ✓ |
 | actual Claude Code runtime session | `v1/tools/gates/runtime-claude-code.sh` | — | — | — | — | ✓ | ✓ | ✓ |
-| upgrade from a `v0.1.6` copy | `v1/tools/gates/upgrade-from-v016.sh` | — | ✓ | — | — | — | — | ✓ |
+| upgrade from a `v0.1.6` copy | `v1/tools/gates/upgrade-from-v016.sh` | — | ✓ | ✓ | — | — | — | ✓ |
 | containerised quickstart | `ci/quickstart-docker.sh` | — | — | — | — | — | — | ✓ |
 | high-risk exercise | `node ci/high-risk-exercise.mjs` | — | — | — | — | — | — | ✓ |
 | dogfood ledger metrics | `v1/tools/gates/dogfood-metrics.sh` | — | — | — | — | — | — | ✓ |
@@ -288,13 +288,19 @@ and only with a concrete reason. One entry per gate that carries a `—` or a
 
 * **reversible migration round trip** — P0: this phase changes no schema. Its diff
   touches no file under migrations/ or schema/, which is checked rather than
-  claimed (`P0-FR-08`). P2: `cond`. Contract section 9 makes the round trip mandatory
+  claimed (`P0-FR-08`). P2: `cond`, and the condition FIRED. Contract section 9 makes the round
+  trip mandatory
   for schema-changing phases, and whether P2 changes schema is decided by its diff
   against the phase base — if any file under migrations/ or schema/ differs, the
-  gate runs. The rule is the diff, not preference, and a P2 that reports this gate
-  as `—` while its diff shows a migration has failed the gate, not skipped it.
+  gate runs. P2's diff adds
+  `migrations/0014_owner_console_sessions_and_decisions.sql` and its reversal, so the
+  gate ran and its exit code is in P2's gate summary. The rule is the diff, not
+  preference, and a P2 that reported this gate
+  as `—` while its diff shows a migration would have failed the gate, not skipped it.
 * **browser E2E** — P0, P1: there is no browser session and no console route to
-  drive; P2 creates the first one. P4: P4 adds runtime adapters and touches no
+  drive; P2 creates the first one, and `v1/tools/gates/browser-e2e.sh` stopped being
+  an interface there — it drives Chromium through Playwright against a real
+  deployment (`v1/tools/e2e/console-e2e.mjs`). P4: P4 adds runtime adapters and touches no
   console surface, so there is nothing new to drive — but a P4 that does touch the
   console owes this gate, and the same diff rule applies.
 * **actual Codex runtime session** — P0, P1, P2, P3: no adapter exists to load a
@@ -312,10 +318,13 @@ and only with a concrete reason. One entry per gate that carries a `—` or a
   the `v0.1.6` tag and changes no file under src/, migrations/ or schema/, so at P0
   the current schema and the `v0.1.6` schema are the same object and an upgrade has
   nothing to traverse; `v1/P0-BASELINE.md` records the `git diff` that shows it.
-  P2, P3, P4, P5: these phases inherit the migration set P1 established, and the
+  P3, P4, P5: these phases inherit the migration set P1 and P2 established, and the
   upgrade path from `v0.1.6` is re-measured at P1 when the first schema change
   lands and at P6 as final acceptance. A phase in that range whose diff adds a
-  migration owes the gate — the same diff rule as the round trip.
+  migration owes the gate — the same diff rule as the round trip. P2's diff adds
+  `migrations/0014_owner_console_sessions_and_decisions.sql`, so P2 owed it and its
+  cell is `✓` rather than the `—` P0 wrote there: the rule fired, exactly as
+  written, and the cell moved.
 * **containerised quickstart** — P0, P1, P2, P3, P4, P5: this exercises the packaged
   container against the published quickstart and is the final acceptance form of the
   owner path. Contract section 4.2 puts release and publish packaging out of V1, and

@@ -14,6 +14,9 @@
 # compatibility surface as it exists at the base commit:
 #
 #   p6-compat.test.ts         the compatibility matcher and its result vocabulary
+#   v1p2-console.test.ts      P2's own: every P1 draft surface answers as it did with
+#                             an API key, and a machine client carrying nothing but an
+#                             Authorization header is unaffected by the console
 #   migration-count.test.ts   the migration set is append-only and its count is pinned
 #   schema-conformance.test.ts the shipped JSON schemas against the objects produced
 #   insert-only.test.ts       the append-only storage triggers
@@ -36,6 +39,7 @@ FILES=(
   test/insert-only.test.ts
   test/lifecycle-surfaces.test.ts
   test/v1p1-compat.test.ts
+  test/v1p2-console.test.ts
 )
 
 missing=0
