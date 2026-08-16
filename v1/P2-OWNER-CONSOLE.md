@@ -173,3 +173,78 @@ which discards live sessions, outstanding tickets and the owner's decisions; the
 captures, revisions and audit of `0013` and every table of the released base are
 untouched. `v1/tools/gates/reversible-migration.sh` runs the round trip on a
 throwaway database.
+
+## 9. What P2 REVIEW-1 found, and what closed it
+
+Five blocking findings. Each is closed by a mechanism plus a check that fails
+without it; the checks live in `test/v1p2-r1-fixes.test.ts`, in
+`v1/tools/e2e/console-e2e.mjs` and in `v1/tools/p0-negative-probes.sh`.
+
+* **`P2-R1-001` — the Node test gate depended on an untracked prior build.**
+  `dist-console/` is gitignored and holds no tracked file; `src/console-page.ts`
+  reads `dist-console/app.js`. From a fresh clone, `npm ci && npm test` failed
+  two tests. The fix is `pretest` (and `pretest:bun`): the test command builds
+  the bundle it reads. This was chosen over tracking the artifact, which would
+  put a second, checked-in answer to "what does the browser run" beside the one
+  the build produces, and over leaving it to the runner, which is how the
+  prerequisite went undeclared in the first place. Bun is not new here — it is
+  already what `build:js`, `build:binary`, `build:console` and `prepack` run.
+  A machine without it now gets a named error from `bun build` instead of an
+  `ENOENT` on a path nothing declared.
+
+* **`P2-R1-002` — logout reported success when the revocation failed.**
+  `revokeConsoleSession` caught every SQLite error. Under a write lock it
+  answered `200 logged_out: true` over a session that stayed usable for the rest
+  of its hour. The catch now decides on the state — is this session revoked? —
+  and rethrows anything else; the route answers `409` with
+  `current_state: active`, does not clear the cookie, and the console stays put
+  and shows the refusal.
+
+* **`P2-R1-003` — the client owned an edit transition the server did not.**
+  `POST /v1/console/drafts/{id}/revisions` answered `201` after a decision.
+  `requireRevisable` refuses in `Registry.reviseDraft`, which is the one method
+  REST, the console and MCP all reach, and `ConsoleDraft.actions` carries the
+  server's answer for approve, reject and revise so the three buttons render a
+  rule instead of holding one. `INV-06` is preserved by refusing: no revision is
+  added, none is rewritten, and the audit is untouched.
+
+* **`P2-R1-004` — two consumed payloads ignored their contract version.**
+  The check moved into `api()`, the one function every request passes through,
+  and every console response now carries `contract` — the three mutations
+  included, via `consoleMutationResponse`.
+
+* **`P2-R1-005` — the evidence package closed at a stale SHA.**
+  Regenerating the artifacts closes the instance;
+  `v1/tools/p0-output-sha-check.ts` closes the class. Every closure artifact
+  carries one `OUTPUT_SHA:` marker, all of them must agree with the closing
+  record of `runs.jsonl`, and `--repo` additionally compares that against the
+  tree's HEAD. Probes 19–22 of `p0-negative-probes.sh` make it fail on a stale
+  marker and on a deleted one.
+
+Two backlog items from the same review were taken with them: the cross-site
+browser assertion compared a revision id that an approval never changes, so it
+held whether or not the request had worked and now asserts the draft is still
+undecided; and `browser-e2e.sh` defaulted its trace file into the working
+directory, so a gate certifying a clean tree dirtied the tree it certified.
+
+## 10. Owed to P6: `dist-console` is absent from what a release ships
+
+RECORDED HERE RATHER THAN DISCOVERED IN P6. The console bundle is a build output
+of `npm run build:console`, and:
+
+* `package.json`'s `files` array lists `bin/`, `dist-js/`, `src/`, `migrations/`,
+  `schema/`, `seed/`, `README.md` and `LICENSE`. It does not list `dist-console/`,
+  and `prepack` runs `build:js` only. An `npm pack` therefore produces a tarball
+  from which `consoleScript()` throws `ENOENT` — the console routes are the one
+  part of the server an npm consumer cannot run.
+* `build:binary` copies `migrations/`, `schema/` and `seed/` next to the compiled
+  executable and does not copy `dist-console/`. `consoleAssetDir()` resolves
+  against the same asset root, so the single-file binary has the same hole.
+
+This is NOT fixed in P2. Release packaging is not in P2's IN list and the phase
+that owns it is P6, whose evidence list carries the containerised quickstart, the
+fresh-install migration and the npm-consumer surface. What P2 owes P6 is the
+obligation written down: a release that ships the console must add `dist-console/`
+to `files` and to the binary's asset copying, run `build:console` from `prepack`,
+and prove it by serving `/console/app.js` from an installed package and from the
+compiled binary rather than from a checkout.

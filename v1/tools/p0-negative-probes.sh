@@ -215,6 +215,43 @@ T="$WORK/table-runtime-renamed.md"
 sed 's/^| actual Codex runtime session |/| codex thing |/' "$TABLE" >"$T"
 probe gate-table-row-renamed 1 "required gate" -- "${GTCHECK[@]}" "$T"
 
+# --- 10b the output-SHA agreement of the phase package -----------------------
+#
+# P2 REVIEW-1 finding `P2-R1-005`: the closure artifacts named an EARLIER commit
+# than the one under review, for the third time in this contract. Every artifact
+# was individually well-formed, so every individual checker passed. The check
+# that closes the class compares them against each other, and the probes below
+# are it being made to fail — once on a stale marker, which is the finding's own
+# shape, and once on a missing one, which is the way a stale artifact would
+# otherwise be made to pass.
+#
+# GUARDED, because the check requires an `OUTPUT_SHA:` marker in every artifact
+# and P0's and P1's packages were closed before the marker existed. On those
+# directories there is nothing here to measure and saying so is the honest
+# answer; see the justification under the gate table.
+OSCHECK=(node --experimental-strip-types --no-warnings "$REPO/v1/tools/p0-output-sha-check.ts")
+if grep -rlq '^[[:space:]]*\(#\|-\|\*\|>\)\?[[:space:]]*OUTPUT_SHA:' "$EV"/*.md "$EV"/*.txt 2>/dev/null; then
+  probe positive-control-output-sha 0 "PASS  every closure artifact" -- "${OSCHECK[@]}" "$EV"
+
+  # The finding itself: ONE artifact left describing the previous commit.
+  D="$(fresh_copy stale-output-sha)"
+  STALE_FILE="$(grep -rl 'OUTPUT_SHA:' "$D"/*.md "$D"/*.txt 2>/dev/null | head -1)"
+  sed -i 's/^\([[:space:]]*\(#\|-\|\*\|>\)\?[[:space:]]*OUTPUT_SHA:[[:space:]]*\)[0-9a-f]\{40\}$/\18450df72d7f989f4ecefcce473765f182dd229f7/' "$STALE_FILE"
+  probe stale-output-sha-artifact 1 "disagrees with the ledger's closing output_sha" -- "${OSCHECK[@]}" "$D"
+
+  # And the way out of the first probe: delete the marker instead of fixing it.
+  D="$(fresh_copy no-output-sha-marker)"
+  DROP_FILE="$(grep -rl 'OUTPUT_SHA:' "$D"/*.md "$D"/*.txt 2>/dev/null | head -1)"
+  sed -i '/OUTPUT_SHA:/d' "$DROP_FILE"
+  probe missing-output-sha-marker 1 "no OUTPUT_SHA marker" -- "${OSCHECK[@]}" "$D"
+
+  # The optional half: agreement with the tree, not only with itself.
+  D="$(fresh_copy output-sha-vs-repo)"
+  probe output-sha-matches-repo-head 0 "and so does the repository" -- "${OSCHECK[@]}" "$D" --repo "$REPO"
+else
+  echo "  --  output-SHA agreement probes            SKIPPED (no OUTPUT_SHA marker in $EV)"
+fi
+
 # --- 11 positive control, again ----------------------------------------------
 # The last word belongs to the unmodified inputs: nothing above left them changed.
 probe positive-control-evidence-again 0 "PASS  every run record is complete" -- "${EVCHECK[@]}" "$EV"

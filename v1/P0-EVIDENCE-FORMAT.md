@@ -242,6 +242,7 @@ A phase runs everything marked `✓` in its column.
 | traceability completeness | `node --experimental-strip-types --no-warnings v1/tools/p0-traceability-check.ts` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | evidence-record completeness | `node --experimental-strip-types --no-warnings v1/tools/p0-evidence-check.ts <evidence-dir>` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | gate-table validity | `node --experimental-strip-types --no-warnings v1/tools/p0-gate-table-check.ts` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| output-SHA agreement across the phase package | `node --experimental-strip-types --no-warnings v1/tools/p0-output-sha-check.ts <evidence-dir> --repo <repo>` | — | — | ✓ | ✓ | ✓ | ✓ | ✓ |
 | validator negative probes | `v1/tools/p0-negative-probes.sh <evidence-dir> <workdir>` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | append-only branch history | `v1/tools/p0-append-only-check.sh` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | browser E2E | `v1/tools/gates/browser-e2e.sh` | — | — | ✓ | ✓ | — | ✓ | ✓ |
@@ -285,6 +286,15 @@ missing from a document. Proved, not asserted: probes 15–18 of
 Contract section 9 permits `N/A` only for a surface that genuinely does not exist,
 and only with a concrete reason. One entry per gate that carries a `—` or a
 `cond`; each names the phases it covers.
+
+* **output-SHA agreement across the phase package** — P0, P1: the check was written
+  in P2, as the close of P2 REVIEW-1 finding `P2-R1-005`, and it requires an
+  `OUTPUT_SHA:` marker in every closure artifact of the directory it reads. P0's and
+  P1's evidence packages were written and closed before that marker existed. Adding
+  the markers to them now would be editing two closed phases' evidence to satisfy a
+  rule invented afterwards — which is the thing the archived-ledger rule of
+  `p0-evidence-check.ts` exists to forbid. It is `✓` from P2, the phase that
+  introduced it, onward.
 
 * **reversible migration round trip** — P0: this phase changes no schema. Its diff
   touches no file under migrations/ or schema/, which is checked rather than

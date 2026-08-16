@@ -478,6 +478,28 @@ async function main() {
   );
   check("P1's own audit is preserved beneath it", audit.items.length >= 3, `${audit.items.length} draft_events`);
 
+  // 10b. THE EDIT TRANSITION IS THE SERVER'S — `P2-FR-11`, P2 REVIEW-1 finding
+  // `P2-R1-003`. The page renders the server's `actions.revise.allowed`; the
+  // request that ignores the rendering meets the same rule, in the backend, and
+  // `INV-06` holds because the refusal changes nothing.
+  const reviseAllowed = await page.getAttribute("#eligibility", "data-revise-allowed");
+  const reviseReason = await page.getAttribute("#eligibility", "data-revise-reason");
+  check("P2-FR-11 the page renders the server's revise verdict", reviseAllowed === "false", `data-revise-allowed=${reviseAllowed}`);
+  check("P2-FR-11 and the machine-readable reason with it", reviseReason === "ALREADY_DECIDED", String(reviseReason));
+  const saveDisabled = await page.getAttribute("#save-edit", "disabled");
+  check("P2-FR-11 the Save button follows that field", saveDisabled !== null);
+  const editAfter = await api(`/v1/console/drafts/${clean.draft.draft_id}/revisions`, {
+    method: "POST",
+    body: { sections: { procedure: ["Read it twice.", "Tag the commit.", "Publish the notes."] } },
+    headers: { Origin: BASE, Cookie: `skln_console=${cookie.value}`, "X-Skillonomia-Console-CSRF": csrfToken },
+  });
+  const editAfterBody = await editAfter.json();
+  check("P2-FR-11 a revision POSTed straight past the disabled button is refused", editAfter.status === 409, `status ${editAfter.status}`);
+  check("P2-FR-11 the refusal is structured and names the state", editAfterBody.error?.current_state === "approved", JSON.stringify(editAfterBody.error ?? null));
+  const afterRefusal = await (await api(`/v1/drafts/${clean.draft.draft_id}`, { key: OWNER_KEY })).json();
+  check("INV-06 the approved revision is still the head and still itself", afterRefusal.revision.revision_id === revAfter);
+  check("INV-06 no revision was added by the refused edit", afterRefusal.lineage.length === 2, `${afterRefusal.lineage.length} revisions`);
+
   // 11. a resent decision is one decision
   const resend = await api(`/v1/console/drafts/${clean.draft.draft_id}/approve`, {
     method: "POST",

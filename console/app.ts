@@ -568,6 +568,7 @@ async function decide(detail: DraftDetail, action: "approve" | "reject"): Promis
   const reason = byId<HTMLInputElement>("reason").value.trim();
   button.disabled = true;
   const key = crypto.randomUUID();
+  let failure: ApiFailure | null = null;
   try {
     await api(
       "POST",
@@ -576,12 +577,14 @@ async function decide(detail: DraftDetail, action: "approve" | "reject"): Promis
       key,
     );
   } catch (e) {
-    const failure = failureOf(e);
-    showError(`${failure.code}: ${failure.message}`);
+    failure = failureOf(e);
   }
   // whatever happened — success, conflict, refusal — the truth is refetched
   await openDraft(detail.draft.draft_id);
   await loadInbox();
+  // and the refusal is shown AFTER the refetch, because the refetch clears the
+  // error box: a message written before it is a message the owner never sees
+  if (failure) showError(`${failure.code}: ${failure.message}`);
 }
 
 /** `P2-FR-07`: an edit is a POST to the revisions surface, which creates a NEW
@@ -593,6 +596,7 @@ async function saveEdit(detail: DraftDetail): Promise<void> {
   const button = byId<HTMLButtonElement>("save-edit");
   button.disabled = true;
   const key = crypto.randomUUID();
+  let failure: ApiFailure | null = null;
   try {
     await api(
       "POST",
@@ -604,11 +608,11 @@ async function saveEdit(detail: DraftDetail): Promise<void> {
       key,
     );
   } catch (e) {
-    const failure = failureOf(e);
-    showError(`${failure.code}: ${failure.message}`);
+    failure = failureOf(e);
   }
   await openDraft(detail.draft.draft_id);
   await loadInbox();
+  if (failure) showError(`${failure.code}: ${failure.message}`);
 }
 
 // ------------------------------------------------------------------ the boot
