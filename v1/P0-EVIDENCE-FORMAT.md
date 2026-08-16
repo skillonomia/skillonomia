@@ -370,7 +370,27 @@ evidence/
     logs-build1/                   what survives of BUILD-1's artifacts, with its own README.md
     logs-fix2-attempt1/            an aborted gate run kept with its red log, with its own README.md
     probes-fix2/                   one transcript per negative probe, with its own README.md
+  P1/
+    00-refs-tags-before.txt        refs and tags before the phase's first commit
+    01-refs-tags-after.txt         refs, tags, ancestry and clean-worktree at the output SHA
+    02-branch-reflog.txt           the full branch reflog — the append-only record
+    03-session-record.md           this session's role, model contract, task and session IDs, and its two commits
+    04-forbidden-actions-log.md    the log of forbidden production and history-rewriting actions
+    05-refs-before-after-diff.txt  the before/after ref comparison
+    06-gate-summary.md             every gate, its command and its exit code, for both runs
+    07-negative-probes.txt         the validator negative probes
+    08-secret-scan.txt             the secret-absence sweep
+    09-evidence-check.txt          the closing evidence-record check — the last file P1 writes
+    runs.jsonl                     one record per run, in the schema of section 1
+    logs/                          full captured output of each command, one file per record
+    logs-baseline/                 the pre-change reading at the phase base, with its own README.md
+    probes/                        one transcript per negative probe, with its own README.md
 ```
+
+A phase directory follows the same rules: the numbered files are per event, the
+`logs/` correspondence is one file to one record, and the closing pair runs last.
+P1's numbered files start at `00` for the same reason P0's did — the snapshot
+that has to be taken before anything moves is the first thing written.
 
 Two things this layout does not promise. **logs/ holds more than one session's
 artifacts** — FIX-1's and FIX-2's live side by side under distinct names, because a
