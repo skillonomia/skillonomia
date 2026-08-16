@@ -1,0 +1,23 @@
+# DISCLOSED NON-APPEND-ONLY REFLOG ENTRIES — the only ones v1/tools/p0-append-only-check.sh excuses.
+#
+# The append-only rule (v1/P0-EVIDENCE-FORMAT.md section 5) binds every BUILD and FIX
+# session of this contract: a fix lands as a NEW COMMIT. No amend, no rebase, no reset.
+# The check reads the branch reflog and fails on any entry that moved the branch other
+# than by fast-forward, or whose operation is an amend, a rebase or a reset.
+#
+# One such entry already existed when the rule was written, and it is disclosed here
+# rather than hidden or erased. Erasing it would be a second history rewrite; leaving it
+# undisclosed would make the check fail forever and teach the next session to delete the
+# check. So the check excuses EXACTLY the triples listed below and nothing else — and
+# because this file is tracked, adding a line to it is a visible diff a reviewer reads.
+#
+# Columns, tab-separated:
+#   branch  old_sha  new_sha  operation  disclosure
+# `operation` is the reflog message's operation word. `disclosure` names the document
+# that explains the entry in full. `branch` scopes the excuse: a disclosure written for
+# one branch never excuses another.
+#
+# A disclosed entry must ALSO still be reachable: the check runs `git cat-file -e` on
+# old_sha and fails if the pre-rewrite commit was actually destroyed. Disclosure is not
+# a licence to lose an object.
+v1-final-integration	c9606ac4adb9d4aad3f3e362453c115967707042	3927571a8349e215aff096ee3ac58135435f4b51	commit (amend)	v1/P0-BRANCH-HISTORY.md

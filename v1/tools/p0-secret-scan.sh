@@ -53,7 +53,19 @@ PATTERNS=(
 # place to edit, and the edit that matters would be the one that adds a real
 # secret to it. Everything else still fails, and a fixture whose bytes drift
 # from its pin fails the suite before it ever reaches this scanner.
-PINNED=$(grep -rhoE '"[0-9a-f]{64}"' "$(dirname "$0")/../../test" 2>/dev/null | tr -d '"' | sort -u)
+#
+# THE EXTRACTION IS THE CALL SITE, NOT THE FILE. An earlier version of this line
+# read EVERY quoted 64-hex literal anywhere under test/ — 8 values, of which only
+# 4 are pinned fixture digests. The other 4 are content digests, tree hashes and
+# vector checksums that have nothing to do with excusing a credential shape, and
+# a scanner whose excuse list is wider than its stated claim is a scanner whose
+# documentation is wrong. So the call bodies are cut out first — from
+# `pinnedFixture(` to the `);` that closes it — and only the digests INSIDE those
+# bodies are eligible. If a call is ever written so that the cut truncates it,
+# the digest is simply not extracted and the match is NOT excused: the failure
+# direction is a false alarm, never a silent pass.
+PINNED=$(perl -0777 -ne 'while (/pinnedFixture\s*\((.*?)\)\s*;/gs) { my $b = $1; while ($b =~ /"([0-9a-f]{64})"/g) { print "$1\n" } }' \
+  "$(dirname "$0")/../../test"/*.ts 2>/dev/null | sort -u)
 echo "scanning: $DIR"
 echo "files:    $(find "$DIR" -type f | wc -l)"
 echo "pinned test-fixture digests read from test/: $(printf '%s\n' "$PINNED" | grep -c . || echo 0)"

@@ -33,7 +33,36 @@ JSON object per run, appended to evidence/<phase>/runs.jsonl.
 
 Required for every record: `phase`, `role`, `task_id`, `session_id`, `provider`,
 `model`, `reasoning_effort`, `input_base_sha`, `output_sha`, `command`, `cwd`,
-`exit_code`, `timestamp_utc`, `gate_verdict`.
+`tool_versions`, `exit_code`, `timestamp_utc`, `gate_verdict`, and an **output
+reference** — `artifact` (a path that resolves) or a non-empty `stdout_tail`.
+
+The last two entries of that list were added by P0 FIX-1, closing finding
+`P0-R1-003`. Contract section 9 names "релевантные tool/runtime versions" and
+"sanitised stdout/stderr или путь к artifact" among the things every run must
+save, and the first freeze of this schema showed both in the example while
+omitting both from the required list — which is how a record with neither gets
+written and still validates. `tool_versions` must be a non-empty object; the
+whole point of a version field is that a rerun on a different toolchain is
+distinguishable from a rerun on the same one.
+
+Enforced, not asked for: `v1/tools/p0-evidence-check.ts` validates every record
+against this list and refuses on a missing field, an abbreviated SHA, a model
+alias, or a `fail`/`skipped` verdict with no `notes`.
+
+### One artifact, one record
+
+Every file under evidence/&lt;phase&gt;/logs/ is the output of exactly one run and
+must be named by exactly one record's `artifact`. An unregistered log is a
+command that ran with no record of who ran it, at which SHA, or what it returned
+— which is the state finding `P0-R1-003` found P0 in, with 13 files against 11
+records. The correspondence is checked in both directions: a log no record names
+fails, and a record naming a log that is not there fails. Records may point at an
+artifact outside logs/ (the secret sweep writes evidence/&lt;phase&gt;/08-secret-scan.txt);
+those must resolve, but they are not part of the one-to-one set.
+
+A `.log` file anywhere else under the phase directory must sit in a directory
+that carries a `README.md` saying what it is. Otherwise the one-to-one rule is
+satisfiable by moving an inconvenient artifact one level sideways.
 
 `model` is the exact model ID the contract section 7 fixes — `opus` for BUILD and FIX,
 `gpt-5.6-sol` for REVIEW. Any alias is a contract violation, not a formatting
@@ -93,47 +122,120 @@ different values.
 
 ## 3. Mandatory gates per phase
 
-Commands are the repository's own, discovered and run at P0
-(`v1/P0-BASELINE.md` section 3). A phase runs everything in its row.
+Every row carries a **command**. That is the whole change P0 FIX-1 made here, and
+it is what finding `P0-R1-002` was: the first freeze of this table named the
+phase-specific gates — reversible migration, security regression, browser E2E,
+actual Codex session, actual Claude Code session, dogfood metrics, clean-room
+journey — as descriptive labels with nothing to run behind them, which satisfies
+`P0-FR-04` only in the sense that a menu satisfies hunger.
 
-| gate | P0 | P1 | P2 | P3 | P4 | P5 | P6 |
-|---|---|---|---|---|---|---|---|
-| `npm ci` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `npm run typecheck` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `npm test` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `bun run test:bun` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `npm run build:js` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `npm run build:binary` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| migration / schema on a disposable DB | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| reversible migration round trip | — | ✓ | if schema changes | ✓ | ✓ | ✓ | ✓ |
-| Registry API/CLI smoke | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Registry backwards-compatibility suite | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| security regression on the touched surface | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| secret-absence sweep of evidence | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| browser E2E | — | — | ✓ | ✓ | — | ✓ | ✓ |
-| actual Codex runtime session | — | — | — | — | ✓ | ✓ | ✓ |
-| actual Claude Code runtime session | — | — | — | — | ✓ | ✓ | ✓ |
-| upgrade from a `v0.1.6` copy | — | ✓ | — | — | — | — | ✓ |
-| containerised quickstart (`ci/quickstart-docker.sh`) | — | — | — | — | — | — | ✓ |
-| high-risk exercise (`ci/high-risk-exercise.mjs`) | — | — | — | — | — | — | ✓ |
-| dogfood ledger metrics | — | — | — | — | — | — | ✓ |
-| clean-room owner journey | — | — | — | — | — | — | ✓ |
+Two kinds of command appear, and they are not the same claim:
 
-`—` means the surface does not exist in that phase; it is not permission to
-skip a check that does. `if schema changes` is decided by the diff, not by
-preference.
+* **Real commands.** The repository's own, discovered and run at P0
+  (`v1/P0-BASELINE.md` section 3), plus the two subject-list harnesses
+  `v1/tools/gates/registry-compat.sh` and `v1/tools/gates/security-regression.sh`,
+  which run existing tests and are green today.
+* **Gate interfaces.** A path under `v1/tools/gates/` that exists, is executable,
+  documents in its own header exactly what the implementing phase must assert, and
+  exits `3` — NOT IMPLEMENTED FOR THIS PHASE. It fails closed. It is an interface,
+  not a feature: P0 defines how a phase's gate is invoked and what it owes, and
+  implements no P1–P6 product behaviour. Contract section 10 puts that behaviour
+  out of P0's scope; contract section 9 still requires the gate to be a runnable
+  path rather than a sentence, so it is one.
 
-Two entries deserve their reasons stated, since contract section 9 allows `N/A` only
-with a concrete justification and neither of these is being waived:
+A phase runs everything marked `✓` in its column.
 
-* **Browser E2E is absent before P2** because there is no browser session and no
-  console route to drive at the base. It becomes mandatory the moment P2 creates
-  one, and stays mandatory afterwards for every phase that touches the console.
-* **Actual runtime sessions are absent before P4** because no adapter exists to
-  load a skill into Codex or Claude Code. Contract section 9 is explicit that mocked
-  adapter tests never substitute for actual runtime evidence once P4 arrives,
-  and that missing runtime access at that point is a blocker for Leo rather than
-  a reason to fall back to mocks.
+| gate | command | P0 | P1 | P2 | P3 | P4 | P5 | P6 |
+|---|---|---|---|---|---|---|---|---|
+| install, npm toolchain | `npm ci` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| install, Bun toolchain | `bun install --frozen-lockfile` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| typecheck | `npm run typecheck` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| unit and integration suite, Node | `npm test` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| unit and integration suite, Bun | `bun run test:bun` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| build, JS entry point | `npm run build:js` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| build, single-file binary | `npm run build:binary` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| migration / schema on a disposable DB | `node --experimental-strip-types --no-warnings v1/tools/p0-db-check.ts` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| reversible migration round trip | `v1/tools/gates/reversible-migration.sh` | — | ✓ | cond | ✓ | ✓ | ✓ | ✓ |
+| Registry API / CLI / MCP contract smoke | `v1/tools/p0-registry-smoke.sh` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Registry backwards-compatibility suite | `v1/tools/gates/registry-compat.sh` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| security regression on the threat-model surface | `v1/tools/gates/security-regression.sh` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| secret-absence sweep of evidence | `v1/tools/p0-secret-scan.sh <evidence-dir>` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| traceability completeness | `node --experimental-strip-types --no-warnings v1/tools/p0-traceability-check.ts` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| evidence-record completeness | `node --experimental-strip-types --no-warnings v1/tools/p0-evidence-check.ts <evidence-dir>` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| gate-table validity | `node --experimental-strip-types --no-warnings v1/tools/p0-gate-table-check.ts` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| append-only branch history | `v1/tools/p0-append-only-check.sh` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| browser E2E | `v1/tools/gates/browser-e2e.sh` | — | — | ✓ | ✓ | — | ✓ | ✓ |
+| actual Codex runtime session | `v1/tools/gates/runtime-codex.sh` | — | — | — | — | ✓ | ✓ | ✓ |
+| actual Claude Code runtime session | `v1/tools/gates/runtime-claude-code.sh` | — | — | — | — | ✓ | ✓ | ✓ |
+| upgrade from a `v0.1.6` copy | `v1/tools/gates/upgrade-from-v016.sh` | — | ✓ | — | — | — | — | ✓ |
+| containerised quickstart | `ci/quickstart-docker.sh` | — | — | — | — | — | — | ✓ |
+| high-risk exercise | `node ci/high-risk-exercise.mjs` | — | — | — | — | — | — | ✓ |
+| dogfood ledger metrics | `v1/tools/gates/dogfood-metrics.sh` | — | — | — | — | — | — | ✓ |
+| clean-room owner journey | `v1/tools/gates/clean-room-journey.sh` | — | — | — | — | — | — | ✓ |
+
+Cell vocabulary, and nothing else is accepted: `✓` the gate runs in that phase ·
+`—` N/A, the surface does not exist in that phase · `cond` conditional, run when
+the stated rule fires. `—` is never permission to skip a check whose surface does
+exist.
+
+`v1/tools/p0-gate-table-check.ts` parses this table and refuses if any row has no
+command, if a command does not resolve to something runnable in this tree, if a
+cell holds a word outside that vocabulary, or if a row carrying a `—` or a `cond`
+has no justification below naming every phase it applies to.
+
+### N/A and conditional justifications
+
+Contract section 9 permits `N/A` only for a surface that genuinely does not exist,
+and only with a concrete reason. One entry per gate that carries a `—` or a
+`cond`; each names the phases it covers.
+
+* **reversible migration round trip** — P0: this phase changes no schema. Its diff
+  touches no file under migrations/ or schema/, which is checked rather than
+  claimed (`P0-FR-08`). P2: `cond`. Contract section 9 makes the round trip mandatory
+  for schema-changing phases, and whether P2 changes schema is decided by its diff
+  against the phase base — if any file under migrations/ or schema/ differs, the
+  gate runs. The rule is the diff, not preference, and a P2 that reports this gate
+  as `—` while its diff shows a migration has failed the gate, not skipped it.
+* **browser E2E** — P0, P1: there is no browser session and no console route to
+  drive; P2 creates the first one. P4: P4 adds runtime adapters and touches no
+  console surface, so there is nothing new to drive — but a P4 that does touch the
+  console owes this gate, and the same diff rule applies.
+* **actual Codex runtime session** — P0, P1, P2, P3: no adapter exists to load a
+  skill into Codex before P4 builds one, so there is no runtime path to exercise.
+  Contract section 9 is explicit that mocked adapter tests never substitute once P4
+  arrives, and contract section 11 makes missing runtime access at that point a blocker
+  for Leo rather than grounds to fall back to mocks.
+* **actual Claude Code runtime session** — P0, P1, P2, P3: the same absent surface,
+  on the other adapter. No Claude Code adapter exists before P4 builds one, so there
+  is no native mechanism to materialise into and no session to invoke. It is listed
+  as its own row rather than folded into the Codex one because the two native
+  mechanisms differ, and one gate covering both invites one runtime to be proved and
+  the other assumed.
+* **upgrade from a `v0.1.6` copy** — P0: the phase base commit is one commit above
+  the `v0.1.6` tag and changes no file under src/, migrations/ or schema/, so at P0
+  the current schema and the `v0.1.6` schema are the same object and an upgrade has
+  nothing to traverse; `v1/P0-BASELINE.md` records the `git diff` that shows it.
+  P2, P3, P4, P5: these phases inherit the migration set P1 established, and the
+  upgrade path from `v0.1.6` is re-measured at P1 when the first schema change
+  lands and at P6 as final acceptance. A phase in that range whose diff adds a
+  migration owes the gate — the same diff rule as the round trip.
+* **containerised quickstart** — P0, P1, P2, P3, P4, P5: this exercises the packaged
+  container against the published quickstart and is the final acceptance form of the
+  owner path. Contract section 4.2 puts release and publish packaging out of V1, and
+  contract section 10 places the final clean-room and dogfood validation in P6, so it is
+  run once, at P6, on the final SHA rather than repeatedly against intermediate
+  states that no one adopts.
+* **high-risk exercise** — P0, P1, P2, P3, P4, P5: same reason as the containerised
+  quickstart. It is a final-acceptance exercise over the packaged artifact, and P6
+  is where contract section 10 puts final acceptance.
+* **dogfood ledger metrics** — P0, P1, P2, P3, P4, P5: no dogfood exists to measure.
+  Contract section 10 P5 states outright that synthetic fixtures are permitted for P5's
+  automated tests and are NOT dogfood, so running this gate before P6 could only
+  measure fixtures, which `P6-FR-08` forbids counting.
+* **clean-room owner journey** — P0, P1, P2, P3, P4, P5: the journey spans capture,
+  approval, assignment, session loadout, invocation, outcome, revision and rollback.
+  Until P5 closes the loop there is no complete journey to walk, and a partial walk
+  reported as this gate would be a green mark for a path that does not join up.
 
 ## 4. Where evidence lives
 
@@ -145,15 +247,52 @@ evidence/
     02-integration-branch.txt      branch creation, ancestry, clean worktree
     03-surface-inventory.txt       API, CLI, MCP, schema, workflows — with the commands used
     04-session-record.md           this session's role, model contract, task and session IDs
-    05-forbidden-actions-log.md    the log of forbidden production actions (must stay empty)
+    05-forbidden-actions-log.md    the log of forbidden production and history-rewriting actions
     06-refs-tags-after.txt         refs and tags after the commit
     07-gate-summary.md             every gate, its command and its exit code
     08-secret-scan.txt             the secret-absence sweep over every artifact
+    09-refs-before-after-diff.txt  the before/after ref comparison
+    10-branch-reflog.txt           the full branch reflog — the append-only record
+    11-append-only-check.txt       the append-only check, positive and negative runs
     runs.jsonl                     one record per run, in the schema of section 1
-    logs/                          full captured output of each command
+    logs/                          full captured output of each command, one file per record
 ```
 
 evidence/ is listed in the repository's `.gitignore`, so these artifacts live
 outside the tracked tree by design and are handed to the reviewer as a directory.
 The harnesses that produce them are tracked, under `v1/tools/`, so a reviewer can
 regenerate rather than trust.
+
+The forbidden-actions log is **not** a file whose only correct content is
+"empty". It is a log, and P0 has an entry in it. A log that can only ever say
+nothing happened is a decoration; one that records what did happen is evidence.
+
+## 5. Append-only: how a fix lands
+
+**Every BUILD and FIX session of this contract lands its work as new commits. No
+`--amend`, no rebase, no reset, no non-fast-forward move of an integration
+branch.** This binds every later session, not only P0.
+
+Contract section 2 already forbids force-push, history rewriting, history deletion and
+destructive reset. This section states the operational form of that rule, because
+P0 BUILD-1 amended a commit it had already written and then recorded that no
+history rewrite had occurred — finding `P0-R1-001`. The full account of that
+amend, including why the lineage was not rebuilt in a fresh repository, is
+`v1/P0-BRANCH-HISTORY.md`.
+
+Three consequences worth stating plainly:
+
+* **A mistake in a commit is corrected by the next commit.** A wrong sentence, a
+  wrong log, a broken harness — all of them are new-commit work. The cost is a
+  slightly longer history, and the history is the audit trail, so that is not a
+  cost.
+* **The reflog is part of the evidence.** `git log` cannot show where a branch has
+  been, only where it is, so an amend is invisible in it. Every phase captures its
+  branch reflog at evidence/&lt;phase&gt;/10-branch-reflog.txt, and P0's audit boundary
+  is the reflog plus the run records — that pair, not the commit graph alone.
+* **The rule is checked.** `v1/tools/p0-append-only-check.sh` reads the branch
+  reflog and fails on any amend, rebase, reset or non-fast-forward move that is not
+  disclosed in the tracked file `v1/append-only-baseline.tsv`, on a disclosure that
+  matches no real reflog entry, and on a disclosed entry whose pre-rewrite commit
+  has stopped being reachable. It refuses rather than passes when no reflog is
+  available. It is in the gate table for every phase.
