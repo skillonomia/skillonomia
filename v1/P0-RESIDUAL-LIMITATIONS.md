@@ -39,7 +39,7 @@ re-run at the reviewed SHA.
 
 **The residual limitation, stated exactly.** For the SHA
 `3927571a8349e215aff096ee3ac58135435f4b51` there is no independent artifact backing
-for those ten gate results — only BUILD-1's own records and prose. Anyone auditing
+for the ten commands listed above — only BUILD-1's own records and prose. Anyone auditing
 P0 later should treat BUILD-1's gate results as **attested but not artifact-backed**,
 and rely on the FIX-1 and FIX-2 SHAs, which are both fully backed. This limitation
 can never be closed: the bytes are gone.
@@ -60,7 +60,7 @@ contract section 7 fixes. That closes `P0-R2-001`, and it is worth being precise
 about what it does not close: nothing running locally, after the fact, can prove that
 the UUID in a record is the session that issued the command. The binding between a
 record and a real session rests on the record being written from the provider's own
-task ledger at the time, and on `evidence/SESSIONS.md` carrying those authoritative
+task ledger at the time, and on the session ledger evidence/SESSIONS.md carrying those authoritative
 values.
 
 So the checker establishes a necessary condition, not a sufficient one: a badly

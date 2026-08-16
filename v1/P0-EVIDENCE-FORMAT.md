@@ -76,7 +76,7 @@ and the checker accepted it, together with a FIX record declaring
 * One role holds one `(task_id, session_id)` pair, and no two roles share either
   value.
 
-The authoritative values are written once, in `evidence/SESSIONS.md`, from the
+The authoritative values are written once, in the session ledger evidence/SESSIONS.md, from the
 provider's own task ledger. A well-shaped id is not proof that the session ran the
 command — nothing local can establish that after the fact — but a badly-shaped one is
 proof that it did not.
@@ -191,7 +191,7 @@ The identifiers are written in the evidence file rather than restated here,
 because a document that carries a value in two places will eventually carry two
 different values.
 
-`evidence/SESSIONS.md` is the ledger, and it carries `task_id` and `session_id`
+The session ledger evidence/SESSIONS.md is that file, and it carries `task_id` and `session_id`
 as columns of the session table — one row per session of this contract, taken
 from the provider's own task ledger. P0 FIX-2 added the `session_id` column: until
 then the real ids appeared nowhere in the evidence package, which is what let the
