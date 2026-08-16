@@ -248,3 +248,52 @@ obligation written down: a release that ships the console must add `dist-console
 to `files` and to the binary's asset copying, run `build:console` from `prepack`,
 and prove it by serving `/console/app.js` from an installed package and from the
 compiled binary rather than from a checkout.
+
+## 11. What P2 REVIEW-2 found, and what closed it
+
+* **`P2-R2-001` — the error payloads bypassed the versioned-contract boundary
+  (`INV-05`).** `console/app.ts` refused a response that did not announce
+  `console.v1` before reading a field of it, and `src/http.ts` stamped that
+  version on the answers a console route succeeds with. Neither held on the ones
+  it fails with: a `400`, a `409` and a `412` left the server as a bare
+  `{"error":{…}}`, and `api()` read `error.code`, `error.message` and
+  `error.current_state` out of the body BEFORE calling `requireContract`.
+  REVIEW-2 rewrote a rejection error to announce `console.v999` with a planted
+  message, and the console rendered the planted message.
+
+  **What closed it, on the client:** the one `requireContract` call moved to the
+  top of `api()` — above the status branch, above the envelope, the first thing
+  done with a parsed body. It was moved rather than duplicated: a second check
+  beside the first is two places deciding one thing, which is the shape of the
+  defect.
+
+  **What closed it, on the server:** `errorBody` in `src/http.ts`, through which
+  each of the three exits that write an error envelope now passes — the router's
+  own, the oversize-body guard's and the listener's internal-error tail.
+
+* **The boundary, and `INV-08`.** The marker is added to a refusal whose REQUEST
+  PATH is a console route — the ones section 2 lists — and to no other. The
+  error envelope is the
+  machine-to-machine Registry API's envelope as well: `v0.1.6` clients read it,
+  `SPEC.md` §6 and Appendix H fix its shape, and `test/spec-parity.test.ts`
+  compares that shape with the specification. So the console's channel carries
+  the version and the released channel is untouched — which
+  `test/v1p2-r2-fixes.test.ts` asserts in both directions, by producing one
+  failure on each surface and comparing the two answers. Inside the console
+  surface the change is additive as well: a field beside `error`, with `error`
+  and its `current_state` unchanged, on a surface P2 itself introduced.
+
+* **How it is proved.** `v1/tools/e2e/console-error-contract.mjs`, part of
+  `v1/tools/gates/browser-e2e.sh`, drives Chromium against a real deployment and
+  puts three refusals this server really produces — `400` from a rejection with
+  no reason, `409` from a second decision, `412` from an approval of a draft with
+  a blocking finding — to the page three ways each: untouched, with the version
+  deleted, and with the version set to `console.v999`. The mutated forms also
+  carry a planted `code`, `message` and `current_state`. The assertion is that
+  nothing planted appears anywhere in the page's text and the owner is shown
+  `CONTRACT_MISMATCH`, while the untouched refusal is still rendered.
+
+  The gate then runs the same probes a second time against a bundle rebuilt from
+  a copy of `console/app.ts` with the fix undone, and requires all six mutated
+  probes to fail there. A probe nobody has seen fail proves nothing, so it is
+  made to fail on the client that has the defect.

@@ -379,8 +379,18 @@ test("P2-R1-004: every console response carries the contract version", () => {
 
 test("P2-R1-004: the client refuses an unsupported contract in one place, before any field is read", () => {
   const source = readFileSync(new URL("../console/app.ts", import.meta.url), "utf8");
-  // the check is inside `api()`, on the parsed body, before it is returned
-  assert.ok(/requireContract\(parsed, path\);\s*\n\s*return parsed as T;/.test(source), "api() does not gate its return");
+  // The check is inside `api()`, on the parsed body, and it is the FIRST thing
+  // done with it. This assertion used to require the call to sit immediately
+  // above `return parsed as T` — which is precisely where `P2-R2-001` found it
+  // doing nothing for a failed response. What is required now is the ORDER: one
+  // call, above the status branch and above the error envelope. The behavioural
+  // half is in `test/v1p2-r2-fixes.test.ts`.
+  const calls = source.match(/requireContract\(parsed, path\);/g) ?? [];
+  assert.equal(calls.length, 1, `api() calls requireContract ${calls.length} times`);
+  const gate = source.indexOf("requireContract(parsed, path);");
+  const status401 = source.indexOf("if (res.status === 401)");
+  const envelope = source.indexOf("if (!res.ok)");
+  assert.ok(gate > 0 && gate < status401 && gate < envelope, "api() reads a response before checking its contract");
   // and no caller re-implements it, which is how the session and the audit came
   // to be consumed without one
   const perCall = source.match(/\.contract !== CONTRACT/g) ?? [];

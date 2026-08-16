@@ -16,6 +16,13 @@
 # The assertions and the requirement each one is owed to are listed at the head
 # of `v1/tools/e2e/console-e2e.mjs`, and the run prints one line per check.
 #
+# TWO HARNESSES, THREE RUNS. `console-e2e.mjs` drives the workflow;
+# `console-error-contract.mjs` drives the versioned-contract boundary on the
+# answers that FAIL — a `400`, a `409` and a `412`, each with its version missing
+# and with a foreign one (`INV-05`, P2 REVIEW-2 finding `P2-R2-001`) — and then
+# runs again against a rebuilt PRE-FIX bundle, where those probes must fail. All
+# three must pass for this gate to pass.
+#
 # WHAT P2 DOES NOT COVER, SAID HERE RATHER THAN LEFT TO BE ASSUMED. The contract
 # P0 wrote for this gate also names `P3-FR-12` — a `409`/`412` conflict makes the
 # console refetch canonical state. The P2 run DOES exercise both statuses (a
@@ -87,10 +94,48 @@ echo "trace: $TRACE"
 echo
 node v1/tools/e2e/console-e2e.mjs
 rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo
+  case "$rc" in
+    2) echo "REFUSED browser E2E — the harness could not reach its subject" >&2 ;;
+    *) echo "FAIL  browser E2E (exit $rc)" >&2 ;;
+  esac
+  exit "$rc"
+fi
+
+# THE SECOND HARNESS — the versioned-contract boundary on the answers that FAIL
+# (`INV-05`, P2 REVIEW-2 finding `P2-R2-001`). It is part of this gate rather
+# than a probe beside it because it measures the same surface with the same
+# browser, and a check that runs only when somebody remembers to run it is the
+# shape of the hole it closes.
+#
+# It runs TWICE. The first run is the probes. The second rebuilds the bundle from
+# a copy of `console/app.ts` with the fix undone and requires every mutated probe
+# to FAIL against it — a probe nobody has seen fail proves nothing, and this is
+# the seeing.
+echo
+echo "gate:  the versioned-contract boundary on 400 / 409 / 412 (INV-05, P2-R2-001)"
+echo
+SKLN_ERROR_CONTRACT_PORT="${SKLN_ERROR_CONTRACT_PORT:-$((PORT - 1))}" node v1/tools/e2e/console-error-contract.mjs
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo
+  case "$rc" in
+    2) echo "REFUSED error-contract probes — the harness could not reach its subject" >&2 ;;
+    *) echo "FAIL  error-contract probes (exit $rc)" >&2 ;;
+  esac
+  exit "$rc"
+fi
+
+echo
+echo "demo:  the same probes against the PRE-FIX client, which must fail them"
+echo
+SKLN_ERROR_CONTRACT_PORT="${SKLN_ERROR_CONTRACT_NEG_PORT:-$((PORT - 2))}" node v1/tools/e2e/console-error-contract.mjs --broken-client
+rc=$?
 echo
 case "$rc" in
-  0) echo "PASS  browser E2E" ;;
-  2) echo "REFUSED browser E2E — the harness could not reach its subject" >&2 ;;
-  *) echo "FAIL  browser E2E (exit $rc)" >&2 ;;
+  0) echo "PASS  browser E2E, the error-contract probes, and the demonstration that they can fail" ;;
+  2) echo "REFUSED the negative demonstration — the harness could not reach its subject" >&2 ;;
+  *) echo "FAIL  the negative demonstration (exit $rc): the probes did not fail against a client that has the defect" >&2 ;;
 esac
 exit "$rc"

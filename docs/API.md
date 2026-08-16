@@ -16,7 +16,14 @@ proven on one holds on the other — the test suite asserts the parity.
   RATE_LIMITED | UNAUTHORIZED | UNKNOWN_KEY | BAD_SIGNATURE | TAMPERED_CONTENT |
   MALFORMED_ARCHIVE | LIMIT_EXCEEDED | NOT_IMPLEMENTED`. A conflicting or precondition-failed
   transition always returns the **current state**, so a caller can converge
-  instead of looping.
+  instead of looping. On the Owner Console routes listed below, the same envelope
+  carries one field beside `error`: `"contract":"console.v1"`, the version the
+  browser reads. Elsewhere the envelope is as written above, and
+  `test/v1p2-r2-fixes.test.ts` produces one failure on each of the two surfaces
+  and compares the answers. The marker is what lets the browser refuse a payload
+  from a build it was not written against before it reads a field of it; the
+  account of it is in `v1/P2-OWNER-CONSOLE.md`, under the heading "What P2
+  REVIEW-2 found, and what closed it".
 - **Idempotency**: every mutating call accepts `idempotency_key` (≤128 chars).
   A duplicate replays the stored original response byte for byte with
   `Idempotency-Replayed: true`. The exceptions are the three calls that return

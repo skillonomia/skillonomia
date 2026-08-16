@@ -88,8 +88,56 @@ function html(status: number, body: string, contentType = "text/html; charset=ut
   };
 }
 
-function errorResponse(e: ApiError): RestResponse {
-  return json(e.httpStatus, JSON.stringify(e.toEnvelope()));
+/**
+ * `P2-R2-001` — WHERE THE VERSIONED-CONTRACT BOUNDARY IS DRAWN, AND WHY THERE.
+ *
+ * `console/app.ts` refuses a response that does not announce `console.v1` before
+ * it reads a field of it (`INV-05`). Until this fix that held for the answers a
+ * console route SUCCEEDS with and for none of the answers it FAILS with: a `400`,
+ * a `409` and a `412` left here as a bare `{"error":{…}}`, and the browser read
+ * `code`, `message` and `current_state` out of a document whose version nobody
+ * had checked. P2 REVIEW-2 rewrote one of those refusals to announce `console.v999`
+ * with a planted message and the console rendered the planted message.
+ *
+ * THE BOUNDARY IS THE REQUEST PATH, and it is the console surface: a response to
+ * a request under `/v1/console/` carries the marker, and every other response
+ * carries the envelope `src/errors.ts` has always produced, byte for byte. That
+ * is the line `INV-08` asks for. The error envelope is the machine-to-machine
+ * Registry API's error envelope too — `v0.1.6` clients read it, `SPEC.md` §6 and
+ * Appendix H fix its shape, and `test/spec-parity.test.ts` compares that shape
+ * against the specification — so the marker is added where the console reads and
+ * nowhere a released client does. Inside the console surface the addition is
+ * additive as well: a field beside `error`, with `error` unchanged, on a surface
+ * P2 itself introduced.
+ *
+ * `path`, not a flag threaded through the throw sites: a refusal is raised deep
+ * inside the service layer, which knows nothing about channels, and a flag would
+ * be a second thing to keep in step with the routes — which is the shape of the
+ * defect being closed here.
+ */
+const CONSOLE_SURFACE = "/v1/console";
+
+function isConsoleSurface(rawUrl: string | undefined): boolean {
+  if (typeof rawUrl !== "string") return false;
+  let requested: string;
+  try {
+    requested = new URL(rawUrl, "http://registry.local").pathname;
+  } catch {
+    return false;
+  }
+  return requested === CONSOLE_SURFACE || requested.startsWith(`${CONSOLE_SURFACE}/`);
+}
+
+/** The one place a structured refusal becomes bytes. Every exit that writes an
+ *  error envelope — the router's, the oversize-body guard's and the listener's
+ *  internal-error tail — goes through it, so the marker is a property of the
+ *  SURFACE rather than of the exits somebody remembered. */
+function errorBody(envelope: { error: { code: string; message: string; current_state?: string } }, rawUrl: string | undefined): string {
+  return JSON.stringify(isConsoleSurface(rawUrl) ? { contract: CONSOLE_CONTRACT_VERSION, ...envelope } : envelope);
+}
+
+function errorResponse(e: ApiError, rawUrl: string | undefined): RestResponse {
+  return json(e.httpStatus, errorBody(e.toEnvelope(), rawUrl));
 }
 
 function parseBody(req: RestRequest): any {
@@ -757,7 +805,7 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
     // the listener below answer 500 INTERNAL for a request the published schema
     // accepts. One exit, one mapping, every route (`src/errors.ts`).
     const api = asApiError(e);
-    if (api) return errorResponse(api);
+    if (api) return errorResponse(api, req.url);
     throw e;
   }
 }
@@ -794,7 +842,7 @@ export function startServer(registry: () => Registry, port: number, host = "127.
       bytes += c.length;
       if (bytes > MAX_BODY_BYTES) {
         res.writeHead(413, JSON_HEADERS);
-        res.end(JSON.stringify(new ApiError("LIMIT_EXCEEDED", "request body too large").toEnvelope()));
+        res.end(errorBody(new ApiError("LIMIT_EXCEEDED", "request body too large").toEnvelope(), req.url));
         req.destroy();
         return;
       }
@@ -824,7 +872,7 @@ export function startServer(registry: () => Registry, port: number, host = "127.
         res.end(out.body);
       } catch {
         res.writeHead(500, JSON_HEADERS);
-        res.end(JSON.stringify({ error: { code: "INTERNAL", message: "internal error" } }));
+        res.end(errorBody({ error: { code: "INTERNAL", message: "internal error" } }, req.url));
       }
     });
   });

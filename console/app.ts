@@ -19,7 +19,12 @@
 //     against. The check is in `api()`, which is the one function every request
 //     goes through, so there is no call site that could forget it. P2 REVIEW-1
 //     finding `P2-R1-004`: the session and the audit payloads were consumed
-//     without it, so a payload marked `console.v999` was rendered.
+//     without it, so a payload marked `console.v999` was rendered. P2 REVIEW-2
+//     finding `P2-R2-001`: the check was in `api()` but BELOW the failure branch,
+//     so a `400`, a `409` or a `412` was read for `code`, `message` and
+//     `current_state` before its version was looked at. The check is now the
+//     first thing done with a parsed body and there is still exactly one of it —
+//     a second check beside the first is how the hole appeared.
 //
 //   `P2-FR-14` — nothing is written to `localStorage`, `sessionStorage`,
 //     IndexedDB, the Cache API or a cookie. The CSRF token lives in the module
@@ -241,10 +246,6 @@ async function api<T>(method: string, path: string, body?: unknown, idempotencyK
     credentials: "same-origin",
     body: payload === undefined ? undefined : JSON.stringify(payload),
   });
-  if (res.status === 401) {
-    window.location.assign("/console/login");
-    throw new Error("session ended");
-  }
   const text = await res.text();
   let parsed: unknown = null;
   try {
@@ -256,6 +257,17 @@ async function api<T>(method: string, path: string, body?: unknown, idempotencyK
       message: "unparseable response",
     } satisfies ApiFailure);
   }
+  // `INV-05`, and it stands HERE — ahead of the status, ahead of the error
+  // envelope, ahead of everything. `P2-R2-001`: the check used to sit at the
+  // bottom, so a failed response was read for `code`, `message` and
+  // `current_state` before its version had been looked at, and a payload
+  // announcing a contract this build does not know was rendered on the strength
+  // of being an error. A version boundary with a hole in it is not a boundary.
+  requireContract(parsed, path);
+  if (res.status === 401) {
+    window.location.assign("/console/login");
+    throw new Error("session ended");
+  }
   if (!res.ok) {
     const envelope = (parsed as { error?: { code?: string; message?: string; current_state?: string } } | null)?.error;
     throw Object.assign(new Error(envelope?.message ?? `request failed (${res.status})`), {
@@ -265,19 +277,21 @@ async function api<T>(method: string, path: string, body?: unknown, idempotencyK
       current_state: envelope?.current_state,
     } satisfies ApiFailure);
   }
-  requireContract(parsed, path);
   return parsed as T;
 }
 
 /**
  * `INV-05` — the refusal, in the one place every response passes through.
  *
- * A console response is a versioned document. This build reads `console.v1`; a
- * body that announces anything else, or announces nothing, is refused HERE,
- * before the caller can read a field of it. Refusing is the point of a version:
- * a payload from a server this bundle was not built against may have moved a
- * field, changed what a code means, or dropped a check, and rendering it on a
- * guess is how a console shows an owner something that is not true.
+ * A console response is a versioned document — SUCCEEDING OR FAILING. This build
+ * reads `console.v1`; a body that announces anything else, or announces nothing,
+ * is refused HERE, before the caller can read a field of it. Refusing is the
+ * point of a version: a payload from a server this bundle was not built against
+ * may have moved a field, changed what a code means, or dropped a check, and
+ * rendering it on a guess is how a console shows an owner something that is not
+ * true. An error envelope is such a payload — its `code` decides what the owner
+ * is told happened — which is why `P2-R2-001` was a hole and not a nicety, and
+ * why `src/http.ts` stamps the marker on the console surface's refusals too.
  */
 function requireContract(parsed: unknown, path: string): void {
   const got = (parsed as { contract?: unknown } | null)?.contract;
