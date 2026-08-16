@@ -97,6 +97,11 @@ test("P1-FR-08: no raw secret reaches the database, the API response, the audit 
     kind: "workflow",
     title: "restore-staging",
     source_ref: `session-${SECRETS.github}`,
+    // …AND IN THE IDEMPOTENCY KEY. `P1-R2-001`: the key travels with the body
+    // into a column of its own, and it is the one field of this request that
+    // cannot be redacted, because it is the lookup index. It is digested
+    // instead, so the sweep below covers it like everything else.
+    idempotency_key: `retry-${SECRETS.apiKey}`,
     text: CAPTURE,
   });
   assert.equal(created.status, 201, created.raw);
@@ -142,9 +147,10 @@ test("P1-FR-09: the preview names category, location and reason and carries no v
     assert.ok(finding.removed_characters > 0, "how much was taken out");
     assert.deepEqual(
       Object.keys(finding).sort(),
-      ["category", "column", "detector", "line", "reason", "removed_characters"],
+      ["category", "column", "detector", "line", "reason", "removed_characters", "source_field"],
       "a finding carries no field that could hold the value",
     );
+    assert.equal(finding.source_field, "source", "the body's findings name the body, as a field and not a sentence");
   }
   // the security preview is the same list, and the security review reports it
   assert.deepEqual(created.body.draft.security_review.redactions, redactions);

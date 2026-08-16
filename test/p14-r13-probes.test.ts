@@ -750,6 +750,54 @@ const PROOFS: Record<string, Proof> = {
     },
   },
 
+  "idempotency.ts::correlationDigest": {
+    calls: 1,
+    because:
+      "`validateIdempotencyKey` runs `assertIdentityText` on the CALLER'S key before `storedKeyFor` hashes it, so a " +
+      "string the primitive would refuse is answered `INVALID_SCHEMA` at the surface and never reaches the digest — " +
+      "and on the two surfaces that digest, the stored column holds the digest and the retry still replays",
+    run: () => {
+      const fx = p4Fixture();
+      const procedure = [
+        "## Purpose",
+        "Restore staging from a known-good backup.",
+        "",
+        "## When to use",
+        "Whenever staging must be recovered.",
+        "",
+        "## Procedure",
+        "1. Stop staging traffic.",
+        "2. Restore the backup.",
+      ].join("\n");
+      const refused = rest(fx, "POST", "/v1/captures", fx.keys.owner, {
+        kind: "workflow",
+        text: procedure,
+        idempotency_key: A,
+      });
+      console.log(`    a capture idempotency_key of ${units(A)} → ${refused.status} ${String(refused.raw).slice(0, 60)}`);
+      assert.notEqual(refused.status, 201, "a key this registry cannot key by was accepted");
+      assert.match(String(refused.raw), /INVALID_SCHEMA/);
+
+      const first = rest(fx, "POST", "/v1/captures", fx.keys.owner, {
+        kind: "workflow",
+        text: procedure,
+        idempotency_key: "r13-idempotency-proof",
+      });
+      assert.equal(first.status, 201, first.raw);
+      const stored = fx.db
+        .prepare("SELECT key FROM idempotency_keys WHERE surface='capture.submit'")
+        .get() as { key: string };
+      assert.equal(stored.key, correlationDigest("r13-idempotency-proof"), "the stored key stopped being computable");
+      const replay = rest(fx, "POST", "/v1/captures", fx.keys.owner, {
+        kind: "workflow",
+        text: procedure,
+        idempotency_key: "r13-idempotency-proof",
+      });
+      assert.equal(replay.raw, first.raw, "the retry did not replay the first answer byte for byte");
+      fx.db.close();
+    },
+  },
+
   "service.ts::correlationDigest": {
     calls: 1,
     because: "the reported `call_id` is refused at this boundary with a reason, before anything is reduced or stored",

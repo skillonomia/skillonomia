@@ -419,10 +419,16 @@ function digestOfSource(text: string): string {
  * every field that travels goes through this, and the finding says which field
  * it came out of — the convention an edited section already used.
  */
-function cleanField(value: string, field: string): { text: string; findings: RedactionFinding[] } {
-  const out = redact(value);
+function cleanField(
+  value: string,
+  field: string,
+  sourceField: string,
+): { text: string; findings: RedactionFinding[] } {
+  const out = redact(value, sourceField);
   return {
     text: out.text,
+    // `source_field` is what a consumer reads (INV-05); the sentence is the
+    // same fact written for a person, and nothing decides anything by it.
     findings: out.findings.map((f) => ({ ...f, reason: `in the capture ${field}: ${f.reason}` })),
   };
 }
@@ -435,6 +441,57 @@ const COLUMN_BOUNDS = {
   semantic_json: 100_000,
   security_json: 100_000,
 } as const;
+
+/**
+ * The bounds `migrations/0013` puts on the two columns that hold CLEANED TEXT,
+ * as opposed to compiled JSON.
+ *
+ * `P1-R2-002`, and the reason this constant exists at all: THE INPUT BOUND AND
+ * THE STORED BOUND ARE DIFFERENT BOUNDS, and cleaning moves a value between
+ * them. Redaction does not shorten — it replaces material with a marker, and
+ * `password=abcd` (13 characters) leaves `password=⟦REDACTED:password⟧` (28).
+ * So a `source_ref` of 200 characters, admitted by `asString`, can arrive at a
+ * column that holds 200 as a longer string, and a body inside `MAX_SOURCE_CHARS`
+ * can arrive at `redacted_source` above 200,000. Both reached SQLite as a
+ * `CHECK` and surfaced as `500 INTERNAL` — an accepted, bounded capture
+ * answered with an internal error, which `P1-FR-10` forbids.
+ *
+ * `redacted_source` has a LOWER bound too, and it is the one an empty workflow
+ * hit: `length(redacted_source) BETWEEN 1 AND 200000` refuses the empty string,
+ * so `{"kind":"workflow","text":""}` — a well-formed request — was a 500 as
+ * well. Every one of these is checked HERE, after cleaning and before any
+ * write, and answered as a typed result.
+ */
+const TEXT_COLUMN_BOUNDS = {
+  /** `captures.redacted_source`, the cleaned body */
+  redacted_source: { min: 1, max: 200_000 },
+  /** `captures.source_ref` and `draft_events.correlation_ref`, which hold the
+   *  same cleaned reference and carry the same bound */
+  source_ref: { min: 1, max: 200 },
+} as const;
+
+/**
+ * A cleaned reference, checked against the column that will hold it.
+ *
+ * A reference the caller can shorten is answered as `LIMIT_EXCEEDED` and
+ * nothing is written: unlike a body, a reference is metadata the arrival cannot
+ * be recorded WITHOUT — `captures.source_ref` and `draft_events.correlation_ref`
+ * are the same value — and silently truncating it would put a reference in the
+ * database that names something else.
+ */
+function boundedRef(cleaned: string | null, field: string): string | null {
+  if (cleaned === null) return null;
+  const { max } = TEXT_COLUMN_BOUNDS.source_ref;
+  if (cleaned.length > max) {
+    throw new ApiError(
+      "LIMIT_EXCEEDED",
+      `${field} is ${cleaned.length} characters once credential material is redacted, and the column holds ${max}. ` +
+        "Redaction replaces a secret with a marker and can make a value longer, so a reference inside the input " +
+        "bound can still be outside the stored one",
+    );
+  }
+  return cleaned;
+}
 
 /**
  * Which column, if any, this revision would not fit in.
@@ -592,27 +649,104 @@ function insertRevision(
 /**
  * Capture one input and answer with a draft or with a refusal.
  *
- * THE TRANSACTION IS THIS FUNCTION'S OWN. An earlier version of this comment
- * said the boundary was the caller's, and it was not: `withIdempotency` calls
- * its handler directly and opens no transaction, so a failure between the
- * arrival row and the revision row left an arrival recorded as `drafted` with
- * neither draft nor refusal behind it (`P1-R1-002`). Every write below happens
- * inside one `BEGIN IMMEDIATE` — the same shape every other mutating surface
- * of this registry uses — so a failure at any boundary leaves zero rows.
+ * THE TRANSACTION IS THE CALLER'S, AND THERE IS EXACTLY ONE CALLER.
+ * `Registry.capture` runs this inside `withIdempotencyInTx`, which owns one
+ * `BEGIN IMMEDIATE` around every write below AND the `idempotency_keys` row.
  *
- * `src/service.ts` still runs it under the idempotency wrapper, so a repeat
- * with one key replays the first answer rather than compiling twice.
+ * Both halves of that were findings. P1 BUILD-1 opened no transaction at all,
+ * so a failure between the arrival row and the revision row left an arrival
+ * recorded as `drafted` with neither draft nor refusal behind it
+ * (`P1-R1-002`). FIX-1 gave this function its own `BEGIN IMMEDIATE`, which
+ * fixed that and left the replay row OUTSIDE it: a failure between the commit
+ * and that insert left a capture no retry could replay, and the retry compiled
+ * a SECOND lineage (`P1-R2-003`). One transaction owned above this function is
+ * the shape that answers both, and it is why there is no self-transacting form
+ * here — two entry points would be two answers to when the transaction opens.
  */
-export function captureDraft(db: Db, auth: AuthContext, input: Record<string, unknown>, nowMs: number): CaptureResponse {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const out = captureWithin(db, auth, input, nowMs);
-    db.exec("COMMIT");
-    return out;
-  } catch (e) {
-    db.exec("ROLLBACK");
-    throw e;
-  }
+export function captureDraftInTx(
+  db: Db,
+  auth: AuthContext,
+  input: Record<string, unknown>,
+  nowMs: number,
+): CaptureResponse {
+  return captureWithin(db, auth, input, nowMs);
+}
+
+/**
+ * An arrival this registry answered and did not carry: one `captures` row, one
+ * `refused` audit event, and no draft.
+ *
+ * `redacted_source` holds `⟦REFUSED:<code>⟧` and never the content — a source
+ * that could not be read, that was empty, or that does not fit the column is
+ * not a source this registry stores. The two callers are the import refusal,
+ * which happens before any content is admitted, and the STORED-BOUND refusals,
+ * which happen after cleaning and before any other write (`P1-R2-002`).
+ */
+function recordRefusedArrival(
+  db: Db,
+  auth: AuthContext,
+  refusal: {
+    code: string;
+    reason: string;
+    kind: CaptureKind;
+    format: CaptureFormat;
+    ref: string | null;
+    stage: string;
+    routingReason: string;
+  },
+  nowMs: number,
+): CaptureResponse {
+  const captureId = ulid(nowMs);
+  const digest = digestOfSource(`refused:${refusal.code}`);
+  db.prepare(
+    `INSERT INTO captures(id, workspace_id, captured_by_agent_id, source_kind, source_format, source_ref,
+       redacted_source, source_digest, category, skillable, reason_code, outcome, server_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    captureId,
+    auth.workspace_id,
+    auth.agent_id,
+    refusal.kind,
+    refusal.format,
+    refusal.ref,
+    `⟦REFUSED:${refusal.code}⟧`,
+    digest,
+    "ambiguous",
+    0,
+    refusal.code,
+    "refused",
+    nowMs,
+  );
+  appendEvent(db, {
+    event: "refused",
+    captureId,
+    draftId: null,
+    revisionId: null,
+    auth,
+    source: "registry",
+    correlationRef: refusal.ref,
+    reasonCode: refusal.code,
+    result: "refused",
+    contentDigest: null,
+    provenance: { source_kind: refusal.kind, source_format: refusal.format, stage: refusal.stage },
+    nowMs,
+  });
+  return {
+    outcome: "refused",
+    capture_id: captureId,
+    source_kind: refusal.kind,
+    source_format: refusal.format,
+    source_digest: digest,
+    classification: null,
+    draft: null,
+    refusal: {
+      code: refusal.code,
+      category: null,
+      reason_code: refusal.code,
+      reason: refusal.reason,
+      routing_reason: refusal.routingReason,
+    },
+  };
 }
 
 function captureWithin(db: Db, auth: AuthContext, input: Record<string, unknown>, nowMs: number): CaptureResponse {
@@ -623,57 +757,17 @@ function captureWithin(db: Db, auth: AuthContext, input: Record<string, unknown>
   // content is stored, and the record of the arrival is the refusal itself.
   if (!("text" in normalised)) {
     const refusal = normalised as NormalisationRefusal;
-    const captureId = ulid(nowMs);
-    const ref = refusal.ref === null ? null : redactReference(refusal.ref);
-    db.prepare(
-      `INSERT INTO captures(id, workspace_id, captured_by_agent_id, source_kind, source_format, source_ref,
-         redacted_source, source_digest, category, skillable, reason_code, outcome, server_at_ms)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).run(
-      captureId,
-      auth.workspace_id,
-      auth.agent_id,
-      refusal.kind,
-      refusal.format,
-      ref,
-      `⟦REFUSED:${refusal.code}⟧`,
-      digestOfSource(`refused:${refusal.code}`),
-      "ambiguous",
-      0,
-      refusal.code,
-      "refused",
+    return recordRefusedArrival(
+      db,
+      auth,
+      {
+        ...refusal,
+        ref: refusal.ref === null ? null : boundedRef(redactReference(refusal.ref), "native.path"),
+        stage: "import",
+        routingReason: "an import that cannot be read is refused whole: no part of it becomes a draft",
+      },
       nowMs,
     );
-    appendEvent(db, {
-      event: "refused",
-      captureId,
-      draftId: null,
-      revisionId: null,
-      auth,
-      source: "registry",
-      correlationRef: ref,
-      reasonCode: refusal.code,
-      result: "refused",
-      contentDigest: null,
-      provenance: { source_kind: refusal.kind, source_format: refusal.format, stage: "import" },
-      nowMs,
-    });
-    return {
-      outcome: "refused",
-      capture_id: captureId,
-      source_kind: refusal.kind,
-      source_format: refusal.format,
-      source_digest: digestOfSource(`refused:${refusal.code}`),
-      classification: null,
-      draft: null,
-      refusal: {
-        code: refusal.code,
-        category: null,
-        reason_code: refusal.code,
-        reason: refusal.reason,
-        routing_reason: "an import that cannot be read is refused whole: no part of it becomes a draft",
-      },
-    };
   }
 
   // ---- REDACTION, before anything at all is written. THE BODY AND EVERY
@@ -682,9 +776,38 @@ function captureWithin(db: Db, auth: AuthContext, input: Record<string, unknown>
   // column and the audit's correlation field).
   const redacted = redact(normalised.text);
   const text = redacted.text;
-  const cleanRef = normalised.ref === null ? null : cleanField(normalised.ref, "reference");
-  const ref = cleanRef === null ? null : cleanRef.text;
-  const cleanTitle = cleanField(normalised.fallbackTitle, "title");
+  const cleanRef = normalised.ref === null ? null : cleanField(normalised.ref, "reference", "source_ref");
+  const ref = boundedRef(cleanRef === null ? null : cleanRef.text, "source_ref");
+
+  // ---- THE BOUNDS OF THE COLUMN THAT WILL HOLD THE CLEANED BODY, checked
+  // against the CLEANED value and before anything is written (`P1-R2-002`).
+  // An empty workflow and a body that redaction made longer than the column
+  // both used to reach SQLite and come back as `500 INTERNAL`.
+  const bounds = TEXT_COLUMN_BOUNDS.redacted_source;
+  if (text.length < bounds.min || text.length > bounds.max) {
+    const tooLarge = text.length > bounds.max;
+    return recordRefusedArrival(
+      db,
+      auth,
+      {
+        code: tooLarge ? "SOURCE_TOO_LARGE" : "EMPTY_SOURCE",
+        reason: tooLarge
+          ? `the source is ${text.length} characters once credential material is redacted, and the column holds ${bounds.max}: ` +
+            "redaction replaces a secret with a marker and can make a source longer than it arrived"
+          : "the source carries no content: there is nothing to classify and nothing to compile",
+        kind: normalised.kind,
+        format: normalised.format,
+        ref,
+        stage: "intake",
+        routingReason: tooLarge
+          ? "a source this large is refused whole rather than stored in part: split it into smaller procedures"
+          : "a capture is text somebody wrote down; an empty one is an arrival with nothing behind it",
+      },
+      nowMs,
+    );
+  }
+
+  const cleanTitle = cleanField(normalised.fallbackTitle, "title", "title");
   const metadataFindings = [...cleanTitle.findings, ...(cleanRef?.findings ?? [])];
   const allFindings = [...redacted.findings, ...metadataFindings];
   const sourceDigest = digestOfSource(text);
@@ -894,7 +1017,8 @@ const EDITABLE_STRINGS = ["title", "purpose", "when_to_use"] as const;
 const EDITABLE_LISTS = ["procedure", "inputs", "outputs", "permissions", "dependencies", "failure_modes"] as const;
 
 /**
- * Edit or recompile a draft — always as a NEW revision.
+ * Edit or recompile a draft — always as a NEW revision, inside the transaction
+ * `withIdempotencyInTx` opened, for the reason `captureDraftInTx` gives.
  *
  * There is no code path in this module that updates a `draft_revisions` row,
  * and the table refuses one anyway (`tg_draft_revisions_no_upd`). An edit
@@ -906,22 +1030,14 @@ const EDITABLE_LISTS = ["procedure", "inputs", "outputs", "permissions", "depend
  * the same event as an agent pasting one into a capture, and it is treated the
  * same way: the value never reaches the row.
  */
-export function reviseDraft(
+export function reviseDraftInTx(
   db: Db,
   auth: AuthContext,
   draftId: unknown,
   input: Record<string, unknown>,
   nowMs: number,
 ): DraftRevisionView {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const out = reviseWithin(db, auth, draftId, input, nowMs);
-    db.exec("COMMIT");
-    return out;
-  } catch (e) {
-    db.exec("ROLLBACK");
-    throw e;
-  }
+  return reviseWithin(db, auth, draftId, input, nowMs);
 }
 
 function reviseWithin(
@@ -971,7 +1087,8 @@ function reviseWithin(
   };
   const added: RedactionFinding[] = [];
   const clean = (value: string, section: string): string => {
-    const out = redact(value);
+    // `sections.<name>` is the structured half; the sentence below is display.
+    const out = redact(value, `sections.${section}`);
     for (const finding of out.findings) {
       added.push({ ...finding, reason: `in the edited ${section.replace(/_/g, " ")}: ${finding.reason}` });
     }

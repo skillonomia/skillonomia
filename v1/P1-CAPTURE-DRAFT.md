@@ -177,6 +177,68 @@ the revision leave partial state; `captureDraft` and `reviseDraft` each own a
 registry already used. `test/v1p1-r1-fixes.test.ts` drives a failure at each of
 the three write boundaries and asserts that no row survives any of them.
 
+## 5.3. What P1 REVIEW-2 found, and how each was closed
+
+REVIEW-2 returned three blocking findings against the FIX-1 SHA. None of them
+needed a schema change, and none is closed by narrowing a claim.
+
+**`P1-R2-001` — the key of a repeat was the caller's own text.** `P1-FR-08`
+promises that no raw secret value is persisted by this surface, and the
+`idempotency_key` travelled beside the body into `idempotency_keys.key`
+verbatim: a caller who put a token in the key made it durable registry data on
+the one surface whose contract says otherwise. It cannot be redacted — a cleaned
+key would no longer equal the key a retry sends, and the replay would be lost —
+so it is HASHED. `DIGESTED_KEY_SURFACES` in `src/idempotency.ts` names
+`capture.submit` and `draft.revise`, and on those two the column holds
+`correlationDigest` of the key: the primitive this tree already applies to
+`receipt_events.idempotency_key` and `observed_records.call_id`, for the same
+reason — equality survives a hash exactly and the string does not survive at
+all.
+
+The rule is decided by the SURFACE, which is a constant of this repository at
+every call site, and never by the form of a value: that second rule is the one
+`migrations/0012` had to withdraw. No migration is needed, because both surfaces
+are new in this phase and no released build wrote a row on either — and
+`UNIQUE(actor_agent_id, surface, key)` keeps each surface in its own comparison
+domain, so a raw key stored by an older surface can never be read as a digest
+here. What this does NOT cover is stated rather than left to be found: the
+surfaces that existed before P1 still store the caller's key, which is unchanged
+base behaviour on surfaces that carry no capture content, and converting the
+rows a released build wrote is a different change from this one.
+
+**`P1-R2-002` — an accepted bounded capture could still end in `500`.** The
+input bound and the stored bound are different bounds, and cleaning moves a
+value between them: redaction replaces material with a marker, so
+`password=abcd` becomes longer than it arrived. A `source_ref` inside the
+200-character input bound could reach a 200-character column as a longer string,
+and an empty workflow reached the lower bound of `captures.redacted_source`.
+Both surfaced as `500 INTERNAL`. `TEXT_COLUMN_BOUNDS` in `src/capture.ts` now
+checks the CLEANED value before any write: a reference that does not fit is
+`LIMIT_EXCEEDED`, and a source that does not fit is a recorded structured
+refusal — `EMPTY_SOURCE` or `SOURCE_TOO_LARGE` — whose stored
+`redacted_source` is the marker and never the content. The same check covers the
+native path a refusal carries. `test/v1p1-r2-fixes.test.ts` drives each case at
+a real HTTP listener and on the MCP surface, asserting the typed answer and zero
+rows.
+
+**`P1-R2-003` — the capture and its replay row were two mutations.**
+`captureDraft` committed and `withIdempotency` inserted the replay row
+afterwards, so a failure between them left a capture, a revision and three
+events with no idempotency row — and the retry with the same key compiled a
+SECOND lineage instead of replaying the first. `withIdempotencyInTx` owns one
+`BEGIN IMMEDIATE` around both halves, and `captureDraftInTx` and
+`reviseDraftInTx` are the handlers that run inside it. The multi-process UNIQUE
+race still converges, and converges more strictly: the loser rolls its own
+domain write back before replaying the winner's stored response.
+
+Two non-blocking items REVIEW-2 recorded were closed with them. The listed
+window of a capped finding list is filled by SEVERITY first and by source order
+within a severity, so a destructive action behind two hundred warnings is shown
+rather than cut — the totals are unchanged and were always true. And a redaction
+finding now carries `source_field`, naming the field it came from as a
+structured value (`source`, `title`, `source_ref`, `sections.<name>`); the
+sentence in `reason` stays as display, which is what `INV-05` asks for.
+
 ## 6. Schema, and how it comes back out
 
 `migrations/0013_capture_and_draft_revisions.sql` adds `captures`,

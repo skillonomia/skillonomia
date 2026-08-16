@@ -24,7 +24,7 @@ import {
   type BootstrapStore,
   type BootstrapExchange,
 } from "./auth.ts";
-import { withIdempotency, type IdempotentOutcome } from "./idempotency.ts";
+import { withIdempotency, withIdempotencyInTx, type IdempotentOutcome } from "./idempotency.ts";
 import { RateLimiter, DEFAULT_RATE_LIMIT, type RateLimitOptions } from "./ratelimit.ts";
 import { ArchiveError, readPackage, computeIntegrity, writeTar, type PackageFiles } from "./archive.ts";
 import { parseJsonStrict, utf8Decode, jcsBytes } from "./jcs.ts";
@@ -163,11 +163,11 @@ import {
 } from "./fleet-scan.ts";
 import { StoredObservations, recordObservationInTx } from "./fleet-store.ts";
 import {
-  captureDraft,
+  captureDraftInTx,
   draftAudit,
   getDraft,
   listDrafts,
-  reviseDraft,
+  reviseDraftInTx,
   type CaptureResponse,
   type DraftAuditResponse,
   type DraftDetail,
@@ -4433,9 +4433,12 @@ export class Registry {
    * SHAPE is wrong still fails as `INVALID_SCHEMA`.
    */
   capture(auth: AuthContext, input: unknown, idempotencyKey?: string): IdempotentOutcome<CaptureResponse> {
-    return withIdempotency(this.db, auth.agent_id, "capture.submit", idempotencyKey, this.now(), () => {
+    // `withIdempotencyInTx`, not `withIdempotency`: the arrival, its revision,
+    // its audit events and the row that makes a retry replay them are ONE
+    // transaction (`P1-R2-003`).
+    return withIdempotencyInTx(this.db, auth.agent_id, "capture.submit", idempotencyKey, this.now(), () => {
       if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
-      return captureDraft(this.db, auth, (input ?? {}) as Record<string, unknown>, this.now());
+      return captureDraftInTx(this.db, auth, (input ?? {}) as Record<string, unknown>, this.now());
     });
   }
 
@@ -4465,11 +4468,11 @@ export class Registry {
     input: unknown,
     idempotencyKey?: string,
   ): IdempotentOutcome<DraftRevisionView> {
-    return withIdempotency(this.db, auth.agent_id, "draft.revise", idempotencyKey, this.now(), () => {
+    return withIdempotencyInTx(this.db, auth.agent_id, "draft.revise", idempotencyKey, this.now(), () => {
       if (auth.role !== "owner" && auth.role !== "admin") {
         throw new ApiError("FORBIDDEN", "editing a draft is an owner or admin action");
       }
-      return reviseDraft(this.db, auth, draftId, (input ?? {}) as Record<string, unknown>, this.now());
+      return reviseDraftInTx(this.db, auth, draftId, (input ?? {}) as Record<string, unknown>, this.now());
     });
   }
 

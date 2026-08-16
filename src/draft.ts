@@ -88,9 +88,30 @@ export interface DraftProvenance {
  */
 export const MAX_LISTED_FINDINGS = 200;
 
-/** The first `MAX_LISTED_FINDINGS` of a list, and how many there really were. */
-export function capFindings<T>(all: readonly T[]): { listed: T[]; total: number } {
-  return { listed: all.slice(0, MAX_LISTED_FINDINGS), total: all.length };
+/**
+ * The `MAX_LISTED_FINDINGS` findings WORTH READING, and how many there really
+ * were.
+ *
+ * WHY THE ORDER IS NOT SOURCE ORDER ANY MORE. The counts were always honest —
+ * `blocking_count` and every `*_total` are computed over the whole set — so a
+ * capture with two hundred unpinned installs on lines 1..200 and one `rm -rf`
+ * on line 201 was never approvable. But the LIST an owner reads held two
+ * hundred warnings and not the destructive command, which is the one finding
+ * the window existed to show. So the listed window is filled by priority first
+ * and by source order within a priority.
+ *
+ * `rank` is the caller's, because severity is spelled differently in the two
+ * lists it applies to (`blocking`/`advisory`, `fail`/`warn`) and a shared
+ * vocabulary would be a third one to keep in step. A list with no priority —
+ * the redactions, where every finding is one credential and none outranks
+ * another — passes no `rank` and keeps source order exactly as before.
+ *
+ * The sort is stable (ES2019), so two findings of one rank stay in the order
+ * the reviewer produced them, which is the order of the source.
+ */
+export function capFindings<T>(all: readonly T[], rank?: (item: T) => number): { listed: T[]; total: number } {
+  const ordered = rank === undefined ? all : [...all].sort((a, b) => rank(a) - rank(b));
+  return { listed: ordered.slice(0, MAX_LISTED_FINDINGS), total: all.length };
 }
 
 export interface DraftContent {
@@ -451,7 +472,9 @@ export function semanticReview(content: DraftContent, source: string): SemanticR
 
   // the counts are over the WHOLE set; only the listed detail is capped
   const blocking = findings.filter((f) => f.severity === "blocking").length;
-  const capped = capFindings(findings);
+  // blocking findings fill the window first: what the list is FOR is the part
+  // an owner has to act on
+  const capped = capFindings(findings, (f) => (f.severity === "blocking" ? 0 : 1));
   return {
     status: blocking === 0 ? "complete" : "incomplete",
     blocking_count: blocking,
@@ -562,7 +585,10 @@ export function securityReview(content: DraftContent, source: string): SecurityR
     });
   }
 
-  const cappedRisky = capFindings(risky);
+  // `fail` outranks `warn` in the listed window, for the reason `capFindings`
+  // states: a destructive command behind two hundred unpinned installs is the
+  // finding the window exists to show
+  const cappedRisky = capFindings(risky, (r) => (r.severity === "fail" ? 0 : 1));
   return {
     requested_permissions: content.permissions,
     dependencies: content.dependencies,

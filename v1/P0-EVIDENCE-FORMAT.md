@@ -383,7 +383,15 @@ evidence/
     09-evidence-check.txt          the evidence-record check of that sweep's package
     10-negative-probes-final.txt   the probes again, at the phase's final SHA
     11-secret-scan-final.txt       the closing sweep, run after the last word was written
-    12-evidence-check-final.txt    the closing evidence-record check — the last file P1 writes
+    12-evidence-check-final.txt    the closing evidence-record check of FIX-1
+    13-session-record-fix2.md      FIX-2's role, model contract, task and session IDs, and its commit
+    14-review2-probes-before.txt   REVIEW-2's own probe file at the SHA it reviewed, where it passes on the defects
+    15-review2-probes-after.txt    the same probes at the FIX-2 SHA, where the ones asserting a defect fail
+    16-gate-summary-fix2.md        every gate of the FIX-2 run, its command and its exit code
+    17-negative-probes-fix2.txt    the validator negative probes, at the FIX-2 SHA
+    18-refs-tags-after-fix2.txt    refs, tags, ancestry and clean-worktree at the final SHA
+    19-secret-scan-fix2-final.txt  the closing secret sweep, run after the last word was written
+    20-evidence-check-fix2-final.txt  the closing evidence-record check — the last file P1 writes
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
     logs-baseline/                 the pre-change reading at the phase base, with its own README.md

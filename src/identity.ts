@@ -179,10 +179,13 @@ export const IDENTITY_INTAKE: Record<string, IdentityColumnClass> = {
   "idempotency_keys.key": {
     intake: "checked_at_boundary",
     note:
-      "THE CALLER'S OWN KEY, stored VERBATIM and compared to decide whether a request is a repeat. " +
-      "`withIdempotency` (src/idempotency.ts) calls the rule at the boundary and translates its refusal into " +
-      "`INVALID_SCHEMA`; without it node folded an unpaired surrogate to U+FFFD and replayed a DIFFERENT key's " +
-      "stored response",
+      "THE CALLER'S OWN KEY, compared to decide whether a request is a repeat. `withIdempotency` " +
+      "(src/idempotency.ts) calls the rule at the boundary and translates its refusal into `INVALID_SCHEMA`; " +
+      "without it node folded an unpaired surrogate to U+FFFD and replayed a DIFFERENT key's stored response. " +
+      "It is stored VERBATIM except on the surfaces of `DIGESTED_KEY_SURFACES` — `capture.submit` and " +
+      "`draft.revise`, which carry capture content and must persist no raw caller text (`P1-R2-001`) — where the " +
+      "column holds `correlationDigest` of it. The check runs on the caller's string either way, which is what " +
+      "this class names: a digest of a string that folds is a digest of the wrong string",
   },
 
   // ------------------------------------------------------------ lint_reports

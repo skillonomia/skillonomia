@@ -20,7 +20,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { p4Fixture, type P4Fixture } from "./p4-helpers.ts";
 import { rest, mcp } from "./p6-helpers.ts";
-import { captureDraft, MAX_LISTED_FINDINGS } from "../src/capture.ts";
+import { MAX_LISTED_FINDINGS } from "../src/capture.ts";
+import { Registry } from "../src/service.ts";
 import { startServer } from "../src/http.ts";
 import type { AddressInfo } from "node:net";
 
@@ -154,13 +155,17 @@ test("P1-R1-001: the redaction of `title` is reported as a finding with no value
     title: `restore ${PLANTED.title}`,
     text: PROCEDURE,
   });
-  const findings = created.body.draft.content.redactions.filter((r: any) => /title/.test(r.reason));
+  // selected by the STRUCTURED field (INV-05, `P1-R2` backlog item 2), not by a
+  // regular expression over the human-readable reason, which is what a consumer
+  // had to do before the field existed
+  const findings = created.body.draft.content.redactions.filter((r: any) => r.source_field === "title");
   assert.equal(findings.length, 1, "the owner is told the title carried credential material");
   assert.deepEqual(
     Object.keys(findings[0]).sort(),
-    ["category", "column", "detector", "line", "reason", "removed_characters"],
+    ["category", "column", "detector", "line", "reason", "removed_characters", "source_field"],
     "a finding carries no field that could hold the value",
   );
+  assert.match(findings[0].reason, /in the capture title:/, "the sentence is still there, as display");
   assert.ok(!JSON.stringify(findings[0]).includes(PLANTED.title.slice(0, 12)));
   fx.db.close();
 });
@@ -319,7 +324,10 @@ for (const table of ["captures", "draft_events", "draft_revisions"]) {
   test(`P1-R1-002: a failure writing ${table} leaves zero rows behind`, () => {
     const fx = p4Fixture();
     const wrapped = failingAt(fx.db, table);
-    assert.throws(() => captureDraft(wrapped, fx.owner, { kind: "workflow", text: PROCEDURE }, Date.now()), /simulated write failure/);
+    // through `Registry.capture`, which is the one entry point of this surface
+    // and the one that owns the transaction (`P1-R2-003`)
+    const registry = new Registry(wrapped, { now: () => Date.now() });
+    assert.throws(() => registry.capture(fx.owner, { kind: "workflow", text: PROCEDURE }), /simulated write failure/);
     for (const t of ["captures", "draft_events", "draft_revisions"]) {
       assert.equal((fx.db.prepare(`SELECT COUNT(*) c FROM ${t}`).get() as any).c, 0, `${t} kept a row from a failed capture`);
     }

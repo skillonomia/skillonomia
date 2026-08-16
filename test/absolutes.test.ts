@@ -109,6 +109,12 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["docs/API.md", "9a95a14393c11eb1", "behaviour", "a redaction finding carries category, location and reason and no value: test/v1p1-redaction.test.ts"],
     ["docs/API.md", "f764db4f16194e1b", "behaviour", "a revise body with no sections recompiles the stored source: test/v1p1-capture.test.ts"],
     ["docs/API.md", "df1532107e84787c", "behaviour", "an edit appends a revision and the previous row is unchanged: test/v1p1-capture.test.ts"],
+    ["docs/API.md", "1e6c58f8ad04f589", "behaviour", "the key of a capture is hashed rather than redacted, and a repeat still replays: test/v1p1-r2-fixes.test.ts"],
+    ["docs/API.md", "d3b533a6e92479d2", "behaviour", "only the two surfaces of DIGESTED_KEY_SURFACES digest the key; every other stores it as sent: test/v1p1-r2-fixes.test.ts"],
+    ["docs/API.md", "51c6cf5dfc512b35", "behaviour", "a stored bound is checked against the cleaned value, and each case has its own typed answer: test/v1p1-r2-fixes.test.ts"],
+    ["docs/API.md", "83d4dc7b239114ab", "behaviour", "none of those bounded answers is a 500, asserted at a real listener and on MCP: test/v1p1-r2-fixes.test.ts"],
+    ["docs/API.md", "9f77c151c1d5d2f6", "behaviour", "the capture and its replay row are one transaction, proved by injecting a failure at that boundary: test/v1p1-r2-fixes.test.ts"],
+    ["docs/API.md", "48fc7738ef86d1cf", "behaviour", "every redaction finding names its source field as a structured value: test/v1p1-r2-fixes.test.ts"],
   ],
   // ------------------------------------------------------------------ README
   [

@@ -42,9 +42,27 @@ export const REDACTION_CATEGORIES = [
 ] as const;
 export type RedactionCategory = (typeof REDACTION_CATEGORIES)[number];
 
+/**
+ * WHERE A FINDING CAME FROM, AS A FIELD RATHER THAN AS A SENTENCE.
+ *
+ * The body of a capture is `source`; the two metadata fields that travel with
+ * it are `title` and `source_ref`; an owner's edit names the section it changed
+ * as `sections.<name>`. The vocabulary is open at exactly that last point,
+ * because the sections are the compiler's and are enumerated there.
+ *
+ * INV-05 is why this is a column of the finding and not a phrase inside
+ * `reason`: a consumer deciding "which field do I show this next to" was
+ * parsing `in the capture title: …` out of prose. The prose stays, as display.
+ */
+export const REDACTION_SOURCE_BODY = "source";
+
 export interface RedactionFinding {
   /** what kind of material was removed */
   category: RedactionCategory;
+  /** which field of the request the material was removed from — `source`,
+   *  `title`, `source_ref` or `sections.<name>`. Structured, and never derived
+   *  by reading `reason`. */
+  source_field: string;
   /** which detector fired — the id of the pattern, never the value it matched */
   detector: string;
   /** 1-based line of the NORMALISED SOURCE the material was removed from */
@@ -195,7 +213,7 @@ function patternHits(text: string): Hit[] {
  * leave one token behind, not two nested ones. The findings are returned in
  * source order, which is the order an owner reads them in.
  */
-export function redact(text: string): RedactionResult {
+export function redact(text: string, sourceField: string = REDACTION_SOURCE_BODY): RedactionResult {
   const hits = [...patternHits(text), ...highEntropyHits(text)].sort((a, b) =>
     a.start === b.start ? b.end - a.end : a.start - b.start,
   );
@@ -226,6 +244,7 @@ export function redact(text: string): RedactionResult {
     const at = lineAndColumn(text, hit.start);
     findings.push({
       category: hit.category,
+      source_field: sourceField,
       detector: hit.detector,
       line: at.line,
       column: at.column,
