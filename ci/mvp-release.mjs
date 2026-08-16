@@ -158,6 +158,174 @@ function deadline(what, ms) {
   return `${what} did not finish within ${Math.round(ms / 1000)}s and was killed. A step that waits without a deadline is how \`v0.1.4\` spent two hours and twenty-one minutes after its publish had already succeeded; this refuses instead.`;
 }
 
+// ------------------------------------------------------- the read-back window
+//
+// A DEADLINE IS NOT A RETRY, AND `v0.1.5` NEEDED BOTH.
+//
+// `v0.1.4` hung for 2h21m on a call with no deadline, so every network read and
+// every subprocess in this file was given one. `v0.1.5` then published
+// SUCCESSFULLY — its log carries
+//
+//     npm notice publish Signed provenance statement with source and build
+//     information from GitHub Actions
+//     npm notice publish Provenance statement published to transparency log:
+//     .../logIndex=2480636561
+//     + @skillonomia/cli@0.1.5
+//
+// — and the read-back on the very next line answered
+//
+//     npm error code E404
+//     npm error 404 No match found for version 0.1.5
+//
+// A minute later the version was there. Nothing was stuck and nothing was
+// wrong: a registry serves reads from replicas, and a replica that has not yet
+// caught up with a write that was already accepted answers "not found",
+// promptly and correctly. The step failed on that answer, and the three steps
+// after it — the tarball's CycloneDX document, the signature verification and
+// this file's own `hardening` gate — never ran. That is why `0.1.5` has no SBOM
+// on its release, exactly as `0.1.4` has none, for the other reason.
+//
+// THE TWO FAILURES ARE NOT THE SAME CLASS, AND ONLY ONE OF THEM HAD AN ANSWER.
+// A deadline protects against a read that never answers. It does nothing about
+// a read that answers early and correctly with "not yet": no per-attempt budget
+// can turn that into the other failure, and a budget of any size is reached in
+// the same instant. So a read that is CHASING SOMETHING JUST PUBLISHED asks
+// again — and every attempt keeps its own hard deadline, because a retry loop
+// built out of calls that can hang is the 2h21m failure with more steps in it.
+//
+// BOUNDED BY A COUNT AND BY A CLOCK, and whichever is reached first ends it.
+
+/**
+ * The read-back window. The waits double from `firstDelayMs`, capped at
+ * `maxDelayMs`: 2, 4, 8, 16, 30, 30, 30 seconds — 120s of waiting across eight
+ * attempts, inside a 180s ceiling on the whole thing. `0.1.5`'s replica caught
+ * up in about a minute, so this covers that with room and still ends.
+ */
+export const READBACK = { attempts: 8, budgetMs: 180_000, firstDelayMs: 2_000, maxDelayMs: 30_000 };
+
+/**
+ * WHAT IS RETRIED, AND WHAT IS NEVER RETRIED. This is the whole of the
+ * discrimination, and it is why this is one function rather than a loop written
+ * out at each call site.
+ *
+ * RETRIED — ABSENCE, AND THE NETWORK NOT ANSWERING. `read` returns
+ * `{ pending: <sentence> }` for exactly these: the registry does not have it
+ * (404), it answered with nothing (an empty body, an empty list, a packument
+ * that does not list this version), a field the document must carry is not
+ * filled in yet (`dist.attestations` on a version whose bundle has not landed),
+ * or the read never reached anything at all (the connection refused, the socket
+ * reset, a 5xx, its own deadline). Every one of them means NOTHING WAS LEARNED,
+ * so asking again can learn something.
+ *
+ * NEVER RETRIED — DISAGREEMENT. An integrity that does not match, a statement
+ * whose subject is another artifact, a bundle signed by the wrong party, a
+ * signature `cosign verify` refuses, a request npm is telling us is malformed:
+ * the read SUCCEEDED and what came back is wrong. `read` returns those as
+ * `{ value }` — the refusal itself — and this function hands them straight back
+ * on the first attempt. Waiting cannot turn a mismatch into a match. It can
+ * only spend three minutes before reporting the same disagreement, and, worse,
+ * a retry around a mismatch is indistinguishable in a log from a retry around a
+ * lagging replica: the first is a release that must be refused now, the second
+ * is a release that is fine. A gate that spells them the same way has stopped
+ * being a gate.
+ *
+ * `sleep` and `now` are injectable so that the tests can exercise the policy —
+ * two absences then an answer, absence to exhaustion, a mismatch — without
+ * spending two minutes of wall clock proving it.
+ */
+export async function settle(what, read, options = {}) {
+  const plan = { ...READBACK, ...options };
+  const sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const now = options.now ?? (() => Date.now());
+  const started = now();
+  let attempts = 0;
+  let pending = "it was never read";
+  while (attempts < plan.attempts) {
+    attempts += 1;
+    const answer = await read(attempts);
+    // ANYTHING THAT IS NOT `pending` IS AN ANSWER, and an answer ends this —
+    // whether it is the artifact or the refusal that says it is the wrong one.
+    if (answer.pending === undefined) return { ok: true, value: answer.value, attempts, waitedMs: now() - started };
+    pending = answer.pending;
+    if (attempts >= plan.attempts) break;
+    const delay = Math.min(plan.firstDelayMs * 2 ** (attempts - 1), plan.maxDelayMs);
+    // BOTH BOUNDS, AND THE CLOCK IS CHECKED BEFORE THE WAIT IS TAKEN: a pause
+    // that would carry the total past the budget is not taken at all, so the
+    // budget is a ceiling on this loop and not a number it overshoots by one.
+    if (now() - started + delay > plan.budgetMs) break;
+    await sleep(delay);
+  }
+  const outcome = { ok: false, value: undefined, attempts, waitedMs: now() - started, pending };
+  return { ...outcome, why: readbackExhausted(what, outcome) };
+}
+
+/**
+ * WHAT AN EXHAUSTED READ-BACK SAYS. It names how long it waited and how many
+ * times it asked, because "not found, once" and "not found, eight times across
+ * three minutes" are two different facts about a release and an operator has to
+ * be able to tell them apart from the log alone.
+ */
+export function readbackExhausted(what, outcome) {
+  return (
+    `${what} was still not there after ${outcome.attempts} attempt${outcome.attempts === 1 ? "" : "s"} over ` +
+    `${Math.round(outcome.waitedMs / 1000)}s. The last answer was: ${outcome.pending}. ` +
+    `A registry and a release API both serve reads from replicas and caches, and one that has not caught up with a write ` +
+    `that was already accepted answers exactly this way — which is what failed \`v0.1.5\` on the line after its own ` +
+    `successful publish — so this read waited for that instead of refusing on the first answer. It stops waiting, ` +
+    `because a read with no bound is how \`v0.1.4\` spent two hours and twenty-one minutes.`
+  );
+}
+
+/**
+ * IS THIS NPM FAILURE AN ABSENCE, OR IS NPM TELLING US ABOUT THE REQUEST?
+ *
+ * `E404` is the one that stopped `v0.1.5`, and the transport codes beside it are
+ * the same class: nothing was learned, so a second attempt can learn something.
+ * `E403` (publishing over a version), `E422` (the provenance does not match the
+ * manifest), `EAUTH`, `EPERM` are npm answering the request that was made —
+ * asking again, identically, is a slower way to be told the same thing, and a
+ * gate that retried them would turn a refusal into three minutes of silence
+ * followed by the same refusal.
+ */
+const NPM_ABSENT_OR_UNREACHED =
+  /\b(E404|E5\d\d|ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|ENETDOWN|EPIPE|ERR_SOCKET_TIMEOUT)\b|No match found|No matching version found|network error|socket hang up|request to .*? failed/i;
+
+const npmAbsence = (said) => NPM_ABSENT_OR_UNREACHED.test(said);
+
+/** The first line of a command's output, for a one-line `pending` sentence. */
+const firstLine = (said) => (said.split("\n").find((l) => l.trim() !== "") ?? "nothing at all").trim();
+
+/**
+ * WHAT NPM ACTUALLY SAID, IN ONE LINE THAT MEANS SOMETHING. Under `--json` a
+ * failure arrives as a JSON object on STDOUT and the human text on stderr, so
+ * the first line of the two concatenated is `{` — which is what a reader of a
+ * failed release would otherwise be given as the reason. The error object is
+ * read when there is one, and the first line of the text when there is not.
+ */
+function npmSaid(said) {
+  const open = said.indexOf("{");
+  const close = said.lastIndexOf("}");
+  if (open > -1 && close > open) {
+    try {
+      const error = JSON.parse(said.slice(open, close + 1)).error ?? null;
+      if (error !== null && typeof error === "object") {
+        const line = [error.code, error.summary].filter((s) => typeof s === "string" && s !== "").join(" ");
+        if (line !== "") return line;
+      }
+    } catch {
+      // not JSON after all: the text below is what there is
+    }
+  }
+  return firstLine(said);
+}
+
+/** What a settled read prints when it did in fact have to wait for a replica. */
+function saySettled(outcome) {
+  if (outcome.attempts > 1) {
+    console.log(`      it was not there on the first read; it settled on attempt ${outcome.attempts}, ${Math.round(outcome.waitedMs / 1000)}s in`);
+  }
+}
+
 function run(file, args, opts = {}) {
   const r = spawnSync(file, args, { encoding: "utf8", ...opts });
   if (timedOut(r, opts)) fail(deadline(`${file} ${args.join(" ")}`, opts.timeout));
@@ -831,7 +999,7 @@ async function ghcr(argv) {
  * a long-running child is spawned as, so that no shell stands between this
  * script and the process it has to signal).
  */
-function consumerInstall(spec, where) {
+async function consumerInstall(spec, where) {
   const prefix = join(where, "prefix");
   const cache = join(where, "npm-cache");
   mkdirSync(prefix, { recursive: true });
@@ -855,11 +1023,25 @@ function consumerInstall(spec, where) {
     npm_config_fetch_retry_maxtimeout: "20000",
   };
   const installOpts = { encoding: "utf8", env, shell: process.platform === "win32", timeout: REGISTRY_SUBPROCESS_TIMEOUT_MS };
-  const install = spawnSync("npm", ["install", "--global", "--prefix", prefix, spec], installOpts);
-  if (timedOut(install, installOpts)) fail(deadline(`the consumer install of ${spec}`, installOpts.timeout));
-  if (install.status !== 0) {
-    fail(`the consumer install of ${spec} exited ${install.status}\n${redact(`${install.stdout ?? ""}${install.stderr ?? ""}`)}`);
-  }
+  // THE INSTALL IS A READ OF THE PUBLISHED ARTIFACT TOO, and it is a SECOND
+  // request: the read-back above settled against whichever replica answered it,
+  // and this one may reach another. So an install that cannot find the version
+  // is retried on the same terms — and an install that fails for a reason npm
+  // named about the request is not, because the second attempt would be
+  // identical to the first.
+  const outcome = await settle(`the consumer install of ${spec}`, () => {
+    const install = spawnSync("npm", ["install", "--global", "--prefix", prefix, spec], installOpts);
+    const said = redact(`${install.stdout ?? ""}${install.stderr ?? ""}`);
+    if (timedOut(install, installOpts)) return { pending: deadline(`the consumer install of ${spec}`, installOpts.timeout) };
+    if (install.error !== undefined) fail(`npm could not be run: ${install.error.message}`);
+    if (install.status !== 0) {
+      if (!npmAbsence(said)) fail(`the consumer install of ${spec} exited ${install.status}\n${said}`);
+      return { pending: `\`npm install\` answered ${npmSaid(said)}` };
+    }
+    return { value: said };
+  });
+  if (!outcome.ok) fail(outcome.why);
+  saySettled(outcome);
 
   const shimName = process.platform === "win32" ? "skillonomia.cmd" : join("bin", "skillonomia");
   const shim = join(prefix, shimName);
@@ -941,6 +1123,47 @@ function tarballVersion(file) {
 
 // ----------------------------------------------------------------------- npm
 
+/**
+ * `npm view <spec> dist.integrity version --json`, asked until the registry has
+ * caught up or the window closes.
+ *
+ * E404 HERE MEANS ONE OF TWO THINGS AND THE ANSWER DOES NOT SAY WHICH: the
+ * version was never published, or the replica this request reached has not seen
+ * it yet. Both are absence, so both wait; the one that is real outlives the
+ * budget and is reported with the number of attempts it survived, which is the
+ * sentence that tells the two apart afterwards.
+ *
+ * An EMPTY `{}` is npm's other spelling of the same absence and is treated as
+ * one. Everything npm says about the request itself — `E403`, `E422`, `EAUTH` —
+ * refuses here, immediately: see `npmAbsence`.
+ */
+async function npmViewSettled(spec) {
+  const opts = { encoding: "utf8", timeout: REGISTRY_SUBPROCESS_TIMEOUT_MS };
+  const outcome = await settle(`${spec} on the npm registry`, () => {
+    const r = spawnSync("npm", ["view", spec, "dist.integrity", "version", "--json"], opts);
+    const said = redact(`${r.stdout ?? ""}${r.stderr ?? ""}`).trim();
+    if (timedOut(r, opts)) return { pending: deadline(`\`npm view ${spec}\``, opts.timeout) };
+    if (r.error !== undefined) fail(`npm could not be run: ${r.error.message}`);
+    if (r.status !== 0) {
+      if (!npmAbsence(said)) fail(`npm view ${spec} exited ${r.status}\n${said}`);
+      return { pending: `\`npm view\` answered ${npmSaid(said)}` };
+    }
+    let view;
+    try {
+      view = JSON.parse(r.stdout);
+    } catch {
+      fail(`\`npm view ${spec} --json\` answered something that is not JSON:\n${said}`);
+    }
+    if (view === null || typeof view !== "object" || Object.keys(view).length === 0) {
+      return { pending: `\`npm view\` answered ${JSON.stringify(view)}, which is the registry's other way of saying it does not have this version yet` };
+    }
+    return { value: view };
+  });
+  if (!outcome.ok) fail(outcome.why);
+  saySettled(outcome);
+  return outcome.value;
+}
+
 async function npmCli(argv) {
   const opts = { pkg: null, keep: false };
   for (let i = 0; i < argv.length; i += 1) {
@@ -967,9 +1190,13 @@ async function npmCli(argv) {
     // THE REGISTRY READ-BACK. What the registry says it has, before anything is
     // installed from it: a publish that uploaded different bytes, or a version
     // that never arrived, is a fact about the registry and is read from it.
+    //
+    // AND IT IS THE READ THAT FAILED `v0.1.5`, ON THE LINE AFTER ITS OWN
+    // SUCCESSFUL PUBLISH. `npm view` is asked again while the answer is an
+    // absence — see `settle` for why an absence and a disagreement are not the
+    // same failure and only one of them is worth asking twice.
     console.log(`[1/4] npm view ${spec}`);
-    const viewed = run("npm", ["view", spec, "dist.integrity", "version", "--json"], { encoding: "utf8", timeout: REGISTRY_SUBPROCESS_TIMEOUT_MS });
-    const view = JSON.parse(viewed);
+    const view = await npmViewSettled(spec);
     expectedVersion = view.version ?? spec.slice(spec.lastIndexOf("@") + 1);
     console.log(`      registry: version ${expectedVersion}, integrity ${view["dist.integrity"] ?? view.dist?.integrity ?? "(none reported)"}`);
   }
@@ -978,7 +1205,7 @@ async function npmCli(argv) {
   if (resolve(where).startsWith(`${ROOT}/`)) fail(`the consumer prefix ${where} is inside this checkout`);
   try {
     console.log(`[2/4] a clean npm prefix, with no bun on PATH`);
-    const installed = consumerInstall(spec, where);
+    const installed = await consumerInstall(spec, where);
     console.log(`[3/4] version, serve, /health, demo, restart, receipt read-back`);
     await consumerContract(installed, where, expectedVersion, undefined);
     console.log(`[4/4] done`);
@@ -1036,7 +1263,7 @@ async function platform(argv) {
   let result;
   try {
     console.log(`[2/5] a clean consumer install, with no bun on PATH`);
-    const installed = consumerInstall(opts.pkg, where);
+    const installed = await consumerInstall(opts.pkg, where);
     console.log(`[3/5] version, serve, /health, demo <${QUICKSTART_BUDGET_MS / 1000}s, restart, receipt read-back`);
     result = await consumerContract(installed, where, expectedVersion, async ({ dataDir }) => {
       console.log(`[4/5] the §4.1b archive vectors, through the installed CLI`);
@@ -1256,8 +1483,30 @@ async function registryBlob(image, digest, what) {
  * is a document about something else that was filed in the right drawer.
  */
 async function imageStatements(image) {
-  const index = await registryManifest(image, image.digest, "the image index");
-  if (index === null) fail(`${image.ref} is not in the registry, or is not readable anonymously`);
+  // THE INDEX OF AN IMAGE THAT MAY HAVE BEEN PUSHED SECONDS AGO. A container
+  // registry answers reads from replicas exactly as npm does, so a 404 or a 5xx
+  // on a digest a push has just reported is an absence and is asked again. A
+  // manifest that IS served and does not hash to the digest that referenced it
+  // is not: `registryManifest` throws for that, and this loop lets the throw
+  // out, because bytes that disagree with their own digest are a disagreement
+  // and no amount of waiting makes them agree.
+  const settled = await settle(`the index of ${image.ref}`, async () => {
+    try {
+      const manifest = await registryManifest(image, image.digest, "the image index");
+      if (manifest === null) return { pending: `${image.ref} is not in the registry, or is not readable anonymously` };
+      return { value: manifest };
+    } catch (err) {
+      // THE ONE THING THAT IS NOT WAITED FOR: bytes that do not hash to the
+      // digest that asked for them. Everything else a read can throw — a 5xx, a
+      // refused connection, this read's own deadline — is the network not
+      // having answered, and is asked again.
+      if (/was served as sha256:/.test(err.message)) throw err;
+      return { pending: err.message };
+    }
+  });
+  if (!settled.ok) fail(settled.why);
+  saySettled(settled);
+  const index = settled.value;
   const entries = index.manifests ?? [];
   const runtime = entries.filter((m) => (m.annotations?.["vnd.docker.reference.type"] ?? null) === null);
   const attestations = entries.filter((m) => m.annotations?.["vnd.docker.reference.type"] === "attestation-manifest");
@@ -1631,12 +1880,27 @@ async function imageSignature(image, expected) {
     [`sha256-${hex}.sig`, "the `.sig` tag"],
     [`sha256-${hex}`, "the referrers-fallback tag"],
   ];
-  const present = [];
-  for (const [tag, what] of layouts) {
-    const manifest = await registryManifest(image, tag, `the signature under ${what}`);
-    if (manifest !== null) present.push(`${what} ${tag}`);
-  }
-  return cosignVerdict(image, expected, present);
+  // DISCOVERY IS THE PART THAT CAN BE EARLY. `cosign sign` pushes a tag, and a
+  // tag that was pushed a moment ago is subject to the same replica lag as
+  // anything else — so "neither layout is there" is asked again rather than
+  // reported as "nothing has signed this digest". What is NOT asked again is
+  // `cosign verify` below: a certificate that does not carry this release's
+  // identity is a disagreement, and it is refused the first time.
+  const settled = await settle(`a cosign signature over ${image.digest}`, async () => {
+    const present = [];
+    for (const [tag, what] of layouts) {
+      try {
+        const manifest = await registryManifest(image, tag, `the signature under ${what}`);
+        if (manifest !== null) present.push(`${what} ${tag}`);
+      } catch (err) {
+        if (/was served as sha256:/.test(err.message)) throw err;
+        return { pending: err.message };
+      }
+    }
+    if (present.length === 0) return { pending: `neither sha256-${hex}.sig nor sha256-${hex} is in ${image.host}/${image.repository}` };
+    return { value: present };
+  });
+  return cosignVerdict(image, expected, settled.ok ? settled.value : [], settled.ok ? null : settled.why);
 }
 
 /**
@@ -1648,10 +1912,17 @@ async function imageSignature(image, expected) {
  * and compares it, so `v0.1.2`'s package can only be deployed beside the image
  * `release.yml` signed while running on `refs/tags/v0.1.2`.
  */
-export function cosignVerdict(image, expected, present) {
+export function cosignVerdict(image, expected, present, waited = null) {
   const hex = image.digest.slice("sha256:".length);
   if (present.length === 0) {
-    return verdict("signature", image.ref, "MISSING", `neither sha256-${hex}.sig nor sha256-${hex} is in ${image.host}/${image.repository} — nothing has signed this digest`);
+    // `waited` is what the read-back window said when it gave up, so the line
+    // says how long the absence was chased and not merely that it is an absence.
+    return verdict(
+      "signature",
+      image.ref,
+      "MISSING",
+      waited ?? `neither sha256-${hex}.sig nor sha256-${hex} is in ${image.host}/${image.repository} — nothing has signed this digest`,
+    );
   }
   const probe = spawnSync("cosign", ["version"], { encoding: "utf8", timeout: LOCAL_SUBPROCESS_TIMEOUT_MS });
   if (probe.error !== undefined) {
@@ -1684,14 +1955,39 @@ function parseNpmSpec(spec) {
 
 const integrityHex = (integrity) => Buffer.from(integrity.slice(integrity.indexOf("-") + 1), "base64").toString("hex");
 
-/** What the registry says it is serving under this exact version. */
+/**
+ * What the registry says it is serving under this exact version.
+ *
+ * THREE ABSENCES, ONE WINDOW. The registry may not have the package, may have
+ * the package and not this version, or may have the version and not yet the
+ * `dist.integrity` every other check in this gate hangs off — and a release
+ * that has just been published passes through all three as its replicas catch
+ * up. None of them is a disagreement, so each is asked again. A 4xx that is not
+ * a 404 is the registry answering the request, and refuses at once.
+ */
 async function npmRegistryVersion(pkg) {
-  const res = await fetch(`https://registry.npmjs.org/${pkg.name}`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
-  if (!res.ok) fail(`the npm registry answered ${res.status} ${res.statusText} for ${pkg.name}`);
-  const packument = await res.json();
-  const version = (packument.versions ?? {})[pkg.version];
-  if (version === undefined) fail(`the npm registry has no ${pkg.spec} — it carries ${Object.keys(packument.versions ?? {}).join(", ") || "no versions"}`);
-  return version;
+  const outcome = await settle(`${pkg.spec} on the npm registry`, async () => {
+    let res;
+    try {
+      res = await fetch(`https://registry.npmjs.org/${pkg.name}`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
+    } catch (err) {
+      return { pending: `the read of ${pkg.name} did not complete: ${err.message}` };
+    }
+    if (res.status === 404 || res.status >= 500) return { pending: `the registry answered ${res.status} ${res.statusText} for ${pkg.name}` };
+    if (!res.ok) fail(`the npm registry answered ${res.status} ${res.statusText} for ${pkg.name}`);
+    const packument = await res.json();
+    const version = (packument.versions ?? {})[pkg.version];
+    if (version === undefined) {
+      return { pending: `the registry carries ${Object.keys(packument.versions ?? {}).join(", ") || "no versions"} of ${pkg.name}, and not ${pkg.version}` };
+    }
+    if ((version.dist ?? {}).integrity === undefined) {
+      return { pending: `the registry serves ${pkg.spec} and reports no \`dist.integrity\` for it, which is a version document mid-write` };
+    }
+    return { value: version };
+  });
+  if (!outcome.ok) fail(outcome.why);
+  saySettled(outcome);
+  return outcome.value;
 }
 
 /**
@@ -1702,9 +1998,38 @@ async function npmRegistryVersion(pkg) {
  * package on the registry was published.
  */
 async function npmProvenance(pkg, dist, expected) {
-  const attestations = dist.attestations ?? null;
+  // AN ABSENT `dist.attestations` IS TWO DIFFERENT FACTS AND THE FIELD DOES NOT
+  // SAY WHICH: a publish with a long-lived token leaves none at all, and a
+  // trusted publish leaves one that the replica this read reached may not carry
+  // yet. So the version document is read again — a fresh document each time,
+  // because the one this function was handed is a snapshot of the first answer
+  // — and only an absence that outlives the window is reported as the first
+  // fact, with the number of attempts behind it.
+  let attestations = dist.attestations ?? null;
   if (attestations === null || attestations.url === undefined) {
-    return verdict("provenance", pkg.spec, "MISSING", "the registry reports no `dist.attestations` for this version, which is what a publish with a long-lived token leaves behind; OIDC Trusted Publishing is what attaches provenance");
+    const again = await settle(`\`dist.attestations\` for ${pkg.spec}`, async () => {
+      let res;
+      try {
+        res = await fetch(`https://registry.npmjs.org/${pkg.name}`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
+        if (!res.ok) return { pending: `the registry answered ${res.status} ${res.statusText} for ${pkg.name}` };
+        const version = ((await res.json()).versions ?? {})[pkg.version] ?? {};
+        const found = version.dist?.attestations ?? null;
+        if (found === null || found.url === undefined) return { pending: `the registry reports no \`dist.attestations\` for ${pkg.spec}` };
+        return { value: found };
+      } catch (err) {
+        return { pending: `the read of ${pkg.name} did not complete: ${err.message}` };
+      }
+    });
+    if (!again.ok) {
+      return verdict(
+        "provenance",
+        pkg.spec,
+        "MISSING",
+        `${again.why} A publish with a long-lived token leaves exactly this behind; OIDC Trusted Publishing is what attaches provenance.`,
+      );
+    }
+    saySettled(again);
+    attestations = again.value;
   }
   // The registry's own signing keys, read before the bundle that claims to be
   // signed by one of them: a `publicKey.hint` is a key id, and a key id is only
@@ -1714,9 +2039,23 @@ async function npmProvenance(pkg, dist, expected) {
   // for the same reason: nothing was checked, so nothing may be claimed.
   const keys = await npmRegistryKeyIds();
   if (keys.fault !== null) return verdict("provenance", pkg.spec, "UNVERIFIABLE", keys.fault);
-  const res = await fetch(attestations.url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
-  if (!res.ok) return verdict("provenance", pkg.spec, "REFUSED", `the registry names an attestations bundle at ${attestations.url} and it answered ${res.status} ${res.statusText}`);
-  return npmProvenanceFrom(pkg, dist, expected, (await res.json()).attestations ?? [], keys.ids);
+  // The bundle the registry pointed at, on the same terms: a URL that is not
+  // serving yet is an absence. What comes OUT of the bundle — the signer, the
+  // subject, the identity — is read once and refused once, by
+  // `npmProvenanceFrom`, which is below this window on purpose.
+  const bundle = await settle(`the attestation bundle at ${attestations.url}`, async () => {
+    try {
+      const res = await fetch(attestations.url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
+      if (res.status === 404 || res.status >= 500) return { pending: `it answered ${res.status} ${res.statusText}` };
+      if (!res.ok) return { value: verdict("provenance", pkg.spec, "REFUSED", `the registry names an attestations bundle at ${attestations.url} and it answered ${res.status} ${res.statusText}`) };
+      return { value: npmProvenanceFrom(pkg, dist, expected, (await res.json()).attestations ?? [], keys.ids) };
+    } catch (err) {
+      return { pending: `the read of it did not complete: ${err.message}` };
+    }
+  });
+  if (!bundle.ok) return verdict("provenance", pkg.spec, "MISSING", bundle.why);
+  saySettled(bundle);
+  return bundle.value;
 }
 
 /**
@@ -2026,7 +2365,7 @@ export function releaseIdentityVerdict(expected, image, npm, imageSignatureStatu
  * is required to name a verified attestation: that sentence is what says the
  * Sigstore bundle read above was cryptographically checked.
  */
-export function npmSignature(pkg) {
+export async function npmSignature(pkg) {
   const where = mkdtempSync(join(tmpdir(), "skillonomia-audit-"));
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   // THE ENVIRONMENT SAYS THERE IS NOBODY TO ASK. `npm_config_yes` answers the
@@ -2056,9 +2395,26 @@ export function npmSignature(pkg) {
       return verdict("signature", pkg.spec, "UNVERIFIABLE", "`npm` is not on this machine's PATH, and `npm audit signatures` is what verifies the registry signature and the Sigstore bundle. An unverified bundle is not a verified one, so this gate refuses rather than reporting the bundle as read.");
     }
     if (init.status !== 0) return verdict("signature", pkg.spec, "UNVERIFIABLE", `\`npm init -y\` failed in a clean directory, so nothing could be installed to verify:\n${say(init)}`);
-    const install = spawnSync(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", pkg.spec], opts);
-    if (timedOut(install, opts)) return verdict("signature", pkg.spec, "UNVERIFIABLE", deadline(`a clean install of ${pkg.spec}`, opts.timeout));
-    if (install.status !== 0) return verdict("signature", pkg.spec, "REFUSED", `a clean install of ${pkg.spec} failed, so what a deploy would install is not installable:\n${say(install)}`);
+    // THE INSTALL IS A READ OF A PUBLISHED ARTIFACT, so an absence gets the
+    // read-back window and a failure npm names about the request does not.
+    const installed = await settle(`a clean install of ${pkg.spec}`, () => {
+      const install = spawnSync(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", pkg.spec], opts);
+      if (timedOut(install, opts)) return { pending: deadline(`a clean install of ${pkg.spec}`, opts.timeout) };
+      if (install.status === 0) return { value: null };
+      const said = say(install);
+      if (!npmAbsence(said)) {
+        return { value: verdict("signature", pkg.spec, "REFUSED", `a clean install of ${pkg.spec} failed, so what a deploy would install is not installable:\n${said}`) };
+      }
+      return { pending: `\`npm install\` answered ${npmSaid(said)}` };
+    });
+    if (!installed.ok) return verdict("signature", pkg.spec, "UNVERIFIABLE", installed.why);
+    if (installed.value !== null) return installed.value;
+    saySettled(installed);
+    // AND THE VERIFICATION IS NOT IN THE WINDOW. `npm audit signatures` refusing
+    // is a cryptographic disagreement about bytes that were already fetched: a
+    // second attempt reads the same bytes and reaches the same answer, and a
+    // retry here would put three minutes between a bad signature and the line
+    // that says so.
     const audit = spawnSync(npm, ["audit", "signatures"], opts);
     if (timedOut(audit, opts)) return verdict("signature", pkg.spec, "UNVERIFIABLE", deadline("`npm audit signatures`", opts.timeout));
     const out = say(audit);
@@ -2095,38 +2451,30 @@ export function purlOf(component) {
  * SBOM OF THIS TARBALL is the hash the workflow records in it: the root
  * component's SHA-512 must be the integrity the registry serves.
  */
-async function npmSbom(pkg, dist, expected) {
-  const { repo, tag } = expected;
-  // `GITHUB_API_URL` is what a GitHub Enterprise host sets, and what a workflow
-  // already carries; the public API is the default and not the only answer.
-  const api = process.env.GITHUB_API_URL ?? "https://api.github.com";
-  const res = await fetch(`${api}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, {
-    headers: {
-      "user-agent": UA,
-      accept: "application/vnd.github+json",
-      "x-github-api-version": "2022-11-28",
-      ...(process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ? { authorization: `Bearer ${process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN}` } : {}),
-    },
-  });
-  if (!res.ok) return verdict("SBOM", pkg.spec, "MISSING", `${repo} has no release tagged ${tag} to carry an SBOM (the API answered ${res.status} ${res.statusText})`);
-  const release = await res.json();
-  const candidates = (release.assets ?? []).filter((a) => a.name.endsWith(".cdx.json"));
-  if (candidates.length === 0) {
-    return verdict("SBOM", pkg.spec, "MISSING", `release ${tag} carries [${(release.assets ?? []).map((a) => a.name).join(", ")}] and no CycloneDX document`);
-  }
+/**
+ * THE DECISION, ON DOCUMENTS THAT ARE ALREADY IN HAND — and it is a separate
+ * function from the reading because the two obey OPPOSITE rules.
+ *
+ * Whether a CycloneDX document is on the release yet is a question about a
+ * replica and about an upload that may still be in flight: `npmSbom` asks it
+ * again. WHICH TARBALL a document that IS there describes is a question about
+ * its contents, and the answer does not change with time. A document whose
+ * SHA-512 is not the integrity the registry serves is an SBOM of some other
+ * build of the same version, and that is the one thing an SBOM check exists to
+ * catch — so it is REFUSED here, once, outside the read-back window. A retry
+ * around it would spend three minutes re-reading identical bytes and would
+ * leave, in the log, a mismatch that looks exactly like a slow upload.
+ */
+export function npmSbomFrom(pkg, dist, tag, documents) {
   const want = integrityHex(dist.integrity);
   const rejected = [];
-  for (const asset of candidates) {
-    const body = await (await fetchOrFail(asset.url, `the SBOM asset ${asset.name} of ${tag}`, { accept: "application/octet-stream" })).arrayBuffer();
-    let document;
-    try {
-      document = JSON.parse(Buffer.from(body).toString("utf8"));
-    } catch {
-      rejected.push(`${asset.name} is not JSON`);
+  for (const { name, document } of documents) {
+    if (document === null) {
+      rejected.push(`${name} is not JSON`);
       continue;
     }
     if (document.bomFormat !== "CycloneDX") {
-      rejected.push(`${asset.name} is not a CycloneDX document`);
+      rejected.push(`${name} is not a CycloneDX document`);
       continue;
     }
     const root = document.metadata?.component ?? {};
@@ -2136,22 +2484,75 @@ async function npmSbom(pkg, dist, expected) {
     // Comparing the field a human would reach for first would refuse every
     // document this project publishes.
     if (purlOf(root) !== `${pkg.name}@${pkg.version}`) {
-      rejected.push(`${asset.name} describes ${purlOf(root) ?? `${root.name ?? "?"}@${root.version ?? "?"}`}`);
+      rejected.push(`${name} describes ${purlOf(root) ?? `${root.name ?? "?"}@${root.version ?? "?"}`}`);
       continue;
     }
     const hash = (root.hashes ?? []).find((h) => h.alg === "SHA-512");
-    if (hash === undefined || hash.content.toLowerCase() !== want) {
-      rejected.push(`${asset.name} records ${hash === undefined ? "no SHA-512 for the tarball" : `SHA-512 ${hash.content}`}, and the registry serves ${dist.integrity}`);
+    if (hash === undefined || String(hash.content).toLowerCase() !== want) {
+      rejected.push(`${name} records ${hash === undefined ? "no SHA-512 for the tarball" : `SHA-512 ${hash.content}`}, and the registry serves ${dist.integrity}`);
       continue;
     }
     return verdict(
       "SBOM",
       pkg.spec,
       "OK",
-      `${asset.name} (CycloneDX ${document.specVersion}, ${(document.components ?? []).length} components), bound to ${dist.integrity}`,
+      `${name} (CycloneDX ${document.specVersion}, ${(document.components ?? []).length} components), bound to ${dist.integrity}`,
     );
   }
   return verdict("SBOM", pkg.spec, "REFUSED", `release ${tag} carries a CycloneDX document that is not this package's: ${rejected.join("; ")}`);
+}
+
+async function npmSbom(pkg, dist, expected) {
+  const { repo, tag } = expected;
+  // `GITHUB_API_URL` is what a GitHub Enterprise host sets, and what a workflow
+  // already carries; the public API is the default and not the only answer.
+  const api = process.env.GITHUB_API_URL ?? "https://api.github.com";
+  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  // THE RELEASE AND ITS ASSETS ARE READ INSIDE THE WINDOW. `gh release upload`
+  // runs after the publish, so at the moment this gate runs in `release.yml` the
+  // document may be uploading; and the release API is served from caches like
+  // everything else. Both absences — no release, no `.cdx.json` on it — are
+  // asked again. The verdict on a document that IS there is `npmSbomFrom`'s,
+  // and it is returned on the first answer whatever it says.
+  const settled = await settle(`a CycloneDX document on release ${tag} of ${repo}`, async () => {
+    let res;
+    try {
+      res = await fetch(`${api}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, {
+        // this read had no deadline of its own, which is the other half of the
+        // failure this file has been paying for since `v0.1.4`
+        signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
+        headers: {
+          "user-agent": UA,
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+      });
+    } catch (err) {
+      return { pending: `asking ${repo} for release ${tag} did not complete: ${err.message}` };
+    }
+    if (!res.ok) return { pending: `${repo} has no release tagged ${tag} to carry an SBOM (the API answered ${res.status} ${res.statusText})` };
+    const release = await res.json();
+    const candidates = (release.assets ?? []).filter((a) => a.name.endsWith(".cdx.json"));
+    if (candidates.length === 0) {
+      return { pending: `release ${tag} carries [${(release.assets ?? []).map((a) => a.name).join(", ")}] and no CycloneDX document` };
+    }
+    const documents = [];
+    for (const asset of candidates) {
+      const body = await (await fetchOrFail(asset.url, `the SBOM asset ${asset.name} of ${tag}`, { accept: "application/octet-stream" })).arrayBuffer();
+      let document = null;
+      try {
+        document = JSON.parse(Buffer.from(body).toString("utf8"));
+      } catch {
+        document = null;
+      }
+      documents.push({ name: asset.name, document });
+    }
+    return { value: npmSbomFrom(pkg, dist, tag, documents) };
+  });
+  if (!settled.ok) return verdict("SBOM", pkg.spec, "MISSING", settled.why);
+  saySettled(settled);
+  return settled.value;
 }
 
 async function hardening(argv) {
@@ -2211,7 +2612,7 @@ async function hardening(argv) {
   const npmProv = await npmProvenance(pkg, dist, expected);
   results.push(npmProv);
   console.log(`      \`npm audit signatures\` on a clean install of ${pkg.spec}`);
-  const npmSig = npmSignature(pkg);
+  const npmSig = await npmSignature(pkg);
   results.push(npmSig);
 
   console.log(`[6/6] the CycloneDX document published for the tarball`);
@@ -2601,12 +3002,74 @@ export function tagObjectCheck(tag, kind, sha, head) {
   return check("tag-object", "OK", `\`refs/tags/${tag}\` is the lightweight tag of ${sha}, which is HEAD`);
 }
 
-/** The registry's document for a package, or null when it has none. */
+/**
+ * THE SAME HOLE IS NOT HERE, AND THE REASON IS WORTH WRITING DOWN.
+ *
+ * `hardening` and `npm --package <spec>` read an artifact that WAS JUST
+ * PUBLISHED, so for them "not found" is the answer a lagging replica gives and
+ * asking again is how the truth arrives. `preflight` runs BEFORE anything is
+ * published and asks the opposite question — "is this version still free" —
+ * where "not found" is the PASSING answer. Retrying a 404 here would ask a
+ * replica to agree with itself and would report exactly what it reported the
+ * first time; and if a stale replica has NOT yet caught up with someone else's
+ * publish, no number of retries makes that a refusal, so the retry would buy
+ * nothing and cost the reader a false sense that it had.
+ *
+ * WHAT IS RETRIED HERE IS THE TRANSPORT, AND ONLY THAT. A 5xx, a refused
+ * connection or this read's own deadline means the question was NOT ANSWERED,
+ * and an unanswered question is `UNVERIFIABLE` — which refuses the release. A
+ * release blocked by one flaky second is a release blocked for no reason, so
+ * the question is put again; a 404 and a 200 are answers and are taken as they
+ * come, on the first attempt.
+ */
 async function packumentOf(name) {
-  const res = await fetch(`https://registry.npmjs.org/${name.replace("/", "%2f")}`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`the npm registry answered ${res.status} ${res.statusText} for ${name}`);
-  return await res.json();
+  const outcome = await settle(`the npm registry's document for ${name}`, async () => {
+    let res;
+    try {
+      res = await fetch(`https://registry.npmjs.org/${name.replace("/", "%2f")}`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
+    } catch (err) {
+      return { pending: `the read did not complete: ${err.message}` };
+    }
+    if (res.status === 404) return { value: null };
+    if (res.status >= 500) return { pending: `the registry answered ${res.status} ${res.statusText}` };
+    if (!res.ok) throw new Error(`the npm registry answered ${res.status} ${res.statusText} for ${name}`);
+    return { value: await res.json() };
+  });
+  if (!outcome.ok) throw new Error(outcome.why);
+  return outcome.value;
+}
+
+/**
+ * Whether the release for this tag exists, as an HTTP status. Same rule as
+ * `packumentOf`: 404 and 200 are the two answers this check is asking for, and
+ * only a transport failure is asked again. The status this returns is what
+ * `releaseCheck` turns into a line — including a status it does not recognise,
+ * which stays `UNVERIFIABLE` rather than becoming a pass.
+ */
+async function releaseStatus(api, repo, tag, token) {
+  const outcome = await settle(`whether ${repo} has a release tagged ${tag}`, async () => {
+    let res;
+    try {
+      res = await fetch(`${api}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, {
+        // this read had no deadline at all until now: `fetch` has no default
+        // one, and a socket that is accepted and never answered is what held
+        // `v0.1.4` for 2h21m
+        signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
+        headers: {
+          "user-agent": UA,
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+      });
+    } catch (err) {
+      return { pending: `the read did not complete: ${err.message}` };
+    }
+    if (res.status >= 500) return { pending: `the API answered ${res.status} ${res.statusText}` };
+    return { value: res.status };
+  });
+  if (!outcome.ok) throw new Error(outcome.why);
+  return outcome.value;
 }
 
 /** `npm pack`, into a directory of its own, and the manifest it produced. */
@@ -2701,15 +3164,7 @@ async function preflight(argv) {
   try {
     const api = process.env.GITHUB_API_URL ?? "https://api.github.com";
     const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
-    const res = await fetch(`${api}/repos/${repo}/releases/tags/${encodeURIComponent(releaseTag)}`, {
-      headers: {
-        "user-agent": UA,
-        accept: "application/vnd.github+json",
-        "x-github-api-version": "2022-11-28",
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
-    });
-    results.push(releaseCheck(repo, releaseTag, res.status));
+    results.push(releaseCheck(repo, releaseTag, await releaseStatus(api, repo, releaseTag, token)));
   } catch (err) {
     results.push(check("github-release", "UNVERIFIABLE", `asking whether ${repo} has a release tagged ${releaseTag} failed: ${err.message}`));
   }

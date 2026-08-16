@@ -448,8 +448,26 @@ jobs:
           sha256sum "$TARBALL" | tee "$TARBALL.sha256"
           echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
           bounded 15m "npm publish" npm publish "$TARBALL" --access public --provenance
-          bounded 5m "npm view" npm view "@skillonomia/cli@${VERSION#v}" dist.integrity version --json
-          bounded 20m "the consumer contract against the published package" \
+          # THE READ-BACK, THROUGH THE ONE THING THAT CAN TELL AN ABSENCE FROM A
+          # DISAGREEMENT. This used to be a bare `bounded 5m "npm view" npm view
+          # …` on the line above, and that bare read is what failed `v0.1.5`
+          # seconds after its own successful publish:
+          #
+          #     npm error code E404
+          #     npm error 404 No match found for version 0.1.5
+          #
+          # A minute later the version was there. `bounded` gives a command a
+          # deadline, which is the right answer to a read that never finishes
+          # and no answer at all to a read that finishes early with "not yet" —
+          # and `npm view` in a shell cannot ask again on absence only, because
+          # it cannot tell an absence from an E403 or an E422 without reading
+          # its own error text. `ci/mvp-release.mjs npm` does exactly this read
+          # first (`[1/4] npm view <spec>`), retries it while the answer is an
+          # absence, refuses at once on anything else, and then installs the
+          # package as a consumer. One read, one policy, in the place that can
+          # state it. The budget carries the read-back window (up to ~3m of
+          # waiting) on top of the contract itself.
+          bounded 25m "the registry read-back and the consumer contract against the published package" \
             node ci/mvp-release.mjs npm --package "@skillonomia/cli@${VERSION#v}"
 
       # THE SBOM OF THE TARBALL, AND WHAT TIES IT TO THE TARBALL. `npm sbom`

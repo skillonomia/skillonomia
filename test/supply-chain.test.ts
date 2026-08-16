@@ -219,7 +219,24 @@ const gate = (await import(new URL("../ci/mvp-release.mjs", import.meta.url).hre
   releaseCheck: (repo: string, tag: string, status: number) => Check;
   tarballCheck: (manifest: unknown, expected: string, version: string, name: string) => Check;
   tagObjectCheck: (tag: string, kind: string | null, sha: string | null, head: string | null) => Check;
+  READBACK: { attempts: number; budgetMs: number; firstDelayMs: number; maxDelayMs: number };
+  settle: (
+    what: string,
+    read: (attempt: number) => Answer | Promise<Answer>,
+    options?: Partial<{
+      attempts: number;
+      budgetMs: number;
+      firstDelayMs: number;
+      maxDelayMs: number;
+      sleep: (ms: number) => Promise<void>;
+      now: () => number;
+    }>,
+  ) => Promise<Settled>;
+  npmSbomFrom: (pkg: unknown, dist: unknown, tag: string, documents: { name: string; document: unknown }[]) => Verdict;
 };
+
+type Answer = { value?: unknown; pending?: string };
+type Settled = { ok: boolean; value?: unknown; attempts: number; waitedMs: number; pending?: string; why?: string };
 
 type Check = { check: string; status: string; detail: string };
 
@@ -1234,7 +1251,7 @@ test("[P-12] every publishing job has a ceiling, and every command in the publis
   const body = release.slice(release.indexOf("- name: Pack, checksum, publish that file"));
   const step = body.slice(0, body.indexOf("\n      - name: The tarball's SBOM"));
   assert.match(step, /timeout --signal=TERM --kill-after=30s "\$budget" "\$@" < \/dev\/null/, "the publish step's commands are no longer bounded by `timeout`");
-  for (const command of ["npm pack", "npm publish", "npm view", "node ci/mvp-release.mjs npm"]) {
+  for (const command of ["npm pack", "npm publish", "node ci/mvp-release.mjs npm"]) {
     assert.match(
       step,
       new RegExp(`bounded \\d+m "[^"]*"[\\s\\\\]+${command.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}`),
@@ -1245,4 +1262,165 @@ test("[P-12] every publishing job has a ceiling, and every command in the publis
   assert.match(step, /npm_config_fetch_timeout: "60000"/, "npm's own network waits are unbounded again");
   // and the file's own account of it, so the next reader does not re-derive it
   assert.match(release, /2h21m/, "release.yml no longer records what the deadlines are for");
+
+  // AND THE READ-BACK IS NOT A BARE SHELL READ ANY MORE. `v0.1.5` published
+  // successfully and then failed on `npm view` answering E404 from a replica
+  // that had not caught up. A deadline cannot help that, and a shell cannot
+  // retry it correctly: telling "not there yet" from "E403, and it never will
+  // be" means reading npm's error text, which is what `ci/mvp-release.mjs npm`
+  // does and a `bounded` line cannot. So the step runs the read through the
+  // script, and the bare read is gone.
+  const commands = step
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("bounded ") || l.startsWith("npm ") || l.startsWith("node "));
+  assert.ok(
+    !commands.some((l) => /\bnpm view\b/.test(l)),
+    "the publish step runs a bare `npm view` again: that read cannot ask again on absence only, and it is the read that failed v0.1.5 on the line after its own successful publish",
+  );
+  assert.match(release, /E404/, "release.yml no longer records why the read-back moved into the script");
+});
+
+// ------------------------------------------------- the read-back window
+//
+// `v0.1.5` PUBLISHED AND THEN FAILED ON READING WHAT IT HAD JUST PUBLISHED.
+// The job's log carries the provenance statement, the transparency-log index
+// and `+ @skillonomia/cli@0.1.5`, and the read-back on the next line answered
+// `E404 No match found for version 0.1.5`. A minute later the version was
+// there. The step failed, and the three steps after it — the CycloneDX
+// document, the signature verification, the `hardening` gate — never ran,
+// which is why `0.1.5` has no SBOM on its release.
+//
+// The previous fix put a deadline on every call in `ci/mvp-release.mjs`.
+// A deadline answers "this never finished". It does not answer "this finished
+// early, correctly, with `not yet`" — and no per-attempt budget ever will,
+// because that answer arrives in milliseconds. These three tests are the two
+// classes kept apart: absence waits, disagreement does not.
+
+test("[read-back] two 404s and then the version: the read settles, and the waits grow", async () => {
+  const found = { version: "0.1.5", "dist.integrity": "sha512-Zm9v" };
+  const answers: Answer[] = [
+    { pending: "`npm view` answered npm error 404 No match found for version 0.1.5" },
+    { pending: "`npm view` answered npm error 404 No match found for version 0.1.5" },
+    { value: found },
+  ];
+  const slept: number[] = [];
+  let clock = 0;
+  const outcome = await gate.settle("@skillonomia/cli@0.1.5 on the npm registry", () => answers.shift() as Answer, {
+    sleep: async (ms: number) => {
+      slept.push(ms);
+      clock += ms;
+    },
+    now: () => clock,
+  });
+  assert.equal(outcome.ok, true, "a version that arrived on the third read was reported as absent");
+  assert.deepEqual(outcome.value, found);
+  assert.equal(outcome.attempts, 3, "the read stopped asking as soon as it had an answer");
+  assert.deepEqual(slept, [2000, 4000], "the waits are exponential: a replica a minute behind is not chased at a fixed interval");
+});
+
+test("[read-back] a 404 that outlives the window is a refusal that says how long it waited", async () => {
+  let clock = 0;
+  const sleep = async (ms: number) => {
+    clock += ms;
+  };
+  const outcome = await gate.settle(
+    "@skillonomia/cli@0.1.5 on the npm registry",
+    () => ({ pending: "`npm view` answered npm error 404 No match found for version 0.1.5" }),
+    { sleep, now: () => clock },
+  );
+  assert.equal(outcome.ok, false, "an absence that never resolved was reported as a success");
+  assert.equal(outcome.attempts, gate.READBACK.attempts, "the count bound is what ended it");
+  assert.ok(outcome.waitedMs <= gate.READBACK.budgetMs, `it waited ${outcome.waitedMs}ms inside a ${gate.READBACK.budgetMs}ms window`);
+  // THE SENTENCE IS THE POINT. "not found" once and "not found, eight times
+  // across two minutes" are different facts about a release, and the operator
+  // reading a failed job has only this line to tell them apart.
+  assert.match(outcome.why as string, /after 8 attempts over 120s/, "the refusal does not say how many times it asked or for how long");
+  assert.match(outcome.why as string, /No match found/, "the refusal does not carry what the registry actually said");
+  assert.match(outcome.why as string, /replicas/, "the refusal does not say what it was waiting for");
+
+  // AND THE CLOCK BOUNDS IT TOO, not only the count: a window with a thousand
+  // attempts still ends when the budget is spent.
+  clock = 0;
+  const byClock = await gate.settle("@skillonomia/cli@0.1.5 on the npm registry", () => ({ pending: "404" }), {
+    attempts: 1000,
+    budgetMs: 60_000,
+    sleep,
+    now: () => clock,
+  });
+  assert.equal(byClock.ok, false);
+  assert.ok(byClock.attempts < 1000, `the count bound ended a run the clock should have: ${byClock.attempts} attempts`);
+  assert.ok(byClock.waitedMs <= 60_000, `the budget was overshot: ${byClock.waitedMs}ms of a 60000ms window`);
+});
+
+test("[read-back] an SBOM whose SHA-512 is not the published integrity is refused on the FIRST read", async () => {
+  const pkg = { spec: "@skillonomia/cli@0.1.5", name: "@skillonomia/cli", version: "0.1.5" };
+  const publishedHex = "ab".repeat(64);
+  const dist = { integrity: `sha512-${Buffer.from(publishedHex, "hex").toString("base64")}` };
+  const document = (hex: string) => ({
+    bomFormat: "CycloneDX",
+    specVersion: "1.5",
+    metadata: { component: { purl: "pkg:npm/%40skillonomia/cli@0.1.5", hashes: [{ alg: "SHA-512", content: hex }] } },
+    components: [{ purl: "pkg:npm/ajv@8.20.0" }],
+  });
+
+  // the same read the gate makes, with the document already on the release
+  const readOnce = async (doc: unknown, counter: { reads: number; slept: number[] }) =>
+    gate.settle(
+      "a CycloneDX document on release v0.1.5 of skillonomia/skillonomia",
+      () => {
+        counter.reads += 1;
+        return { value: gate.npmSbomFrom(pkg, dist, "v0.1.5", [{ name: "skillonomia-cli-0.1.5.cdx.json", document: doc }]) };
+      },
+      { sleep: async (ms: number) => void counter.slept.push(ms), now: () => 0 },
+    );
+
+  const mismatch = { reads: 0, slept: [] as number[] };
+  const refused = ((await readOnce(document("cd".repeat(64)), mismatch)).value as Verdict);
+  assert.equal(refused.status, "REFUSED", "an SBOM of some other build of this version was accepted");
+  assert.match(refused.detail, /records SHA-512 cdcd/, "the refusal does not name the hash it found");
+  assert.match(refused.detail, /and the registry serves sha512-/, "the refusal does not name the hash it wanted");
+  // A MISMATCH IS NOT A REPLICA THAT IS BEHIND. Waiting cannot turn one hash
+  // into another; all a retry could do is put two minutes between a wrong SBOM
+  // and the line that says so, and make it look in the log exactly like a slow
+  // upload — which is the one thing this gate must never do.
+  assert.equal(mismatch.reads, 1, "a content mismatch was read again: waiting cannot make two different hashes agree");
+  assert.deepEqual(mismatch.slept, [], "a content mismatch was waited on");
+
+  // and the same path says OK when the document IS this tarball's, so the
+  // refusal above is a decision and not a function that always refuses
+  const match = { reads: 0, slept: [] as number[] };
+  const ok = ((await readOnce(document(publishedHex.toUpperCase()), match)).value as Verdict);
+  assert.equal(ok.status, "OK", "the SBOM this release actually published was refused");
+  assert.equal(match.reads, 1);
+});
+
+test("[read-back] every read of a just-published artifact goes through the window, and the verifiers do not", () => {
+  const src = read("ci/mvp-release.mjs");
+  // the reads that chase something that was published moments ago
+  for (const site of [
+    "on the npm registry",
+    "the consumer install of",
+    "dist.attestations",
+    "the attestation bundle at",
+    "a clean install of",
+    "a CycloneDX document on release",
+    "the index of",
+    "a cosign signature over",
+  ]) {
+    assert.ok(
+      new RegExp(`settle\\(\`[^\\n]*${site.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(src),
+      `the read of \`${site}\` is outside the read-back window: it answers a replica's first "not yet" as a refusal`,
+    );
+  }
+  // both bounds, and neither of them optional
+  assert.match(src, /export const READBACK = \{ attempts: \d+, budgetMs: \d+_?\d*, firstDelayMs/, "the window no longer declares a count and a clock");
+  // and the rule itself, in words, because the next reader has to be able to
+  // decide which class a NEW read belongs to without re-deriving this incident
+  assert.match(src, /RETRIED — ABSENCE/, "the file no longer says what is retried");
+  assert.match(src, /NEVER RETRIED — DISAGREEMENT/, "the file no longer says what is never retried");
+  // the two verifiers stay outside it: their refusals are about bytes already
+  // in hand, and a second run of either reads the same bytes to the same answer
+  assert.match(src, /AND THE VERIFICATION IS NOT IN THE WINDOW/, "`npm audit signatures` no longer says why it is not retried");
+  assert.match(src, /What is NOT asked again is\n  \/\/ `cosign verify`/, "`cosign verify` no longer says why it is not retried");
 });
