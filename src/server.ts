@@ -162,6 +162,19 @@ export async function serve(opts: ServeOptions = {}): Promise<Instance> {
     throw new Error("SKILLONOMIA_INVENTORY_RUNTIME is set without SKILLONOMIA_INVENTORY_ROOT — a runtime names a layout, not a place");
   }
 
+  // `SKILLONOMIA_CONSOLE_SESSION_MS`, when it is set at all. A value that is not
+  // a positive integer is refused here rather than ignored: a deployment that
+  // typed a lifetime and got a different one has been told nothing.
+  const consoleSessionRaw = env("SKILLONOMIA_CONSOLE_SESSION_MS");
+  let consoleSessionMs: number | null = null;
+  if (consoleSessionRaw !== undefined && consoleSessionRaw !== null && consoleSessionRaw !== "") {
+    const parsed = Number(consoleSessionRaw);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new Error("SKILLONOMIA_CONSOLE_SESSION_MS must be a positive integer number of milliseconds");
+    }
+    consoleSessionMs = parsed;
+  }
+
   // BIND FIRST. Everything below this line is a side effect on the operator's
   // machine — a directory, a database, two credentials that exist once — and
   // none of it may happen for a process that has no listener.
@@ -196,6 +209,12 @@ export async function serve(opts: ServeOptions = {}): Promise<Instance> {
       // — the two principals were committed, so the token was never re-issued,
       // and nothing could mint the owner's key again.
       bootstrap: new FsBootstrapStore(join(dataDir, BOOTSTRAP_FILENAME)),
+      // `INV-04`: the absolute lifetime of an Owner Console session. A
+      // deployment may shorten it — the browser gate sets it to a few seconds to
+      // watch an expiry happen — and cannot lengthen it past the hour, because
+      // `Registry` refuses a larger value and the CHECK on `owner_sessions`
+      // refuses the row a larger value would write.
+      consoleSessionMs: consoleSessionMs ?? undefined,
     });
     opened = registry;
 

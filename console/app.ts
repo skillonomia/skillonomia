@@ -545,7 +545,10 @@ async function saveEdit(detail: DraftDetail): Promise<void> {
     await api(
       "POST",
       `/v1/console/drafts/${encodeURIComponent(detail.draft.draft_id)}/revisions`,
-      { procedure: text.split("\n").filter((line) => line.trim().length > 0) },
+      // `sections`, which is the field `draft.revise` takes. A body without it
+      // RECOMPILES the stored source instead of editing it — a new revision with
+      // the same digest, which is not what the owner asked for.
+      { sections: { procedure: text.split("\n").filter((line) => line.trim().length > 0) } },
       key,
     );
   } catch (e) {

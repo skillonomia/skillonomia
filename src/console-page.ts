@@ -68,7 +68,7 @@ export function loginPage(): string {
   return shell(
     "Skillonomia — owner console sign-in",
     `<h1>Owner console</h1>
-<p class="muted">Mint a one-time ticket with <code>skillonomia console-ticket</code> and paste it here. The ticket is single-use and expires in five minutes.</p>
+<p class="muted">Mint a one-time ticket on the server, with the owner API key, by calling POST /v1/console/tickets — then paste it here. The ticket is single-use and expires in five minutes. Pasting an API key here does nothing: this field takes a ticket.</p>
 <form id="login" method="post" action="/v1/console/session" autocomplete="off">
   <div class="row">
     <label for="ticket">Ticket</label>
