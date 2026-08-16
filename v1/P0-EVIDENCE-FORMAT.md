@@ -380,7 +380,10 @@ evidence/
     06-gate-summary.md             every gate, its command and its exit code, for both runs
     07-negative-probes.txt         the validator negative probes
     08-secret-scan.txt             the secret-absence sweep
-    09-evidence-check.txt          the closing evidence-record check — the last file P1 writes
+    09-evidence-check.txt          the evidence-record check of that sweep's package
+    10-negative-probes-final.txt   the probes again, at the phase's final SHA
+    11-secret-scan-final.txt       the closing sweep, run after the last word was written
+    12-evidence-check-final.txt    the closing evidence-record check — the last file P1 writes
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
     logs-baseline/                 the pre-change reading at the phase base, with its own README.md
