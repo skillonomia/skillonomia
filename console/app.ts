@@ -14,6 +14,13 @@
 //     `eligibility.reason_code`, rendered through a lookup table of labels. The
 //     state of a draft is `item.state`. Every one of those is a field.
 //
+//   `INV-05` — EVERY response from the console API is refused before a field of
+//     it is read unless it announces the contract version this build was written
+//     against. The check is in `api()`, which is the one function every request
+//     goes through, so there is no call site that could forget it. P2 REVIEW-1
+//     finding `P2-R1-004`: the session and the audit payloads were consumed
+//     without it, so a payload marked `console.v999` was rendered.
+//
 //   `P2-FR-14` — nothing is written to `localStorage`, `sessionStorage`,
 //     IndexedDB, the Cache API or a cookie. The CSRF token lives in the module
 //     variable below and dies with the page. The session lives in an `HttpOnly`
@@ -80,11 +87,25 @@ interface RiskyAction {
   detail: string;
 }
 
+interface ActionEligibility {
+  allowed: boolean;
+  reason_code: string;
+}
+
+/** The server's answer to "will you approve / reject / revise this?" — three
+ *  fields, so this file holds none of the three rules (`P2-FR-11`). */
+interface DraftActions {
+  approve: ActionEligibility;
+  reject: ActionEligibility;
+  revise: ActionEligibility;
+}
+
 interface DraftDetail {
   contract: string;
   state: string;
   decision: DecisionRecord | null;
   eligibility: Eligibility;
+  actions: DraftActions;
   draft: {
     draft_id: string;
     revision: {
@@ -152,6 +173,8 @@ const REASON_LABEL: Record<string, string> = {
   BLOCKING_SECURITY_FINDINGS: "blocked: unresolved security findings",
   ALREADY_DECIDED: "already decided",
   NOT_LATEST_REVISION: "a newer revision exists — reload",
+  REJECTABLE: "can be rejected",
+  REVISABLE: "can be edited",
 };
 
 let csrfToken = "";
@@ -242,7 +265,34 @@ async function api<T>(method: string, path: string, body?: unknown, idempotencyK
       current_state: envelope?.current_state,
     } satisfies ApiFailure);
   }
+  requireContract(parsed, path);
   return parsed as T;
+}
+
+/**
+ * `INV-05` — the refusal, in the one place every response passes through.
+ *
+ * A console response is a versioned document. This build reads `console.v1`; a
+ * body that announces anything else, or announces nothing, is refused HERE,
+ * before the caller can read a field of it. Refusing is the point of a version:
+ * a payload from a server this bundle was not built against may have moved a
+ * field, changed what a code means, or dropped a check, and rendering it on a
+ * guess is how a console shows an owner something that is not true.
+ */
+function requireContract(parsed: unknown, path: string): void {
+  const got = (parsed as { contract?: unknown } | null)?.contract;
+  if (got === CONTRACT) return;
+  throw Object.assign(new Error("unsupported contract version"), {
+    status: 0,
+    code: "CONTRACT_MISMATCH",
+    message: `this console reads ${CONTRACT} and ${path} announced ${typeof got === "string" ? got : "no contract"}`,
+  } satisfies ApiFailure);
+}
+
+/** An event handler's tail. A rejected promise handed to `void` is an unhandled
+ *  rejection and a page that silently did nothing; this shows the refusal. */
+function guard(run: () => Promise<unknown>): void {
+  void run().catch((e) => showError(failureOf(e).message));
 }
 
 function failureOf(e: unknown): ApiFailure {
@@ -294,7 +344,7 @@ function renderInbox(inbox: Inbox, filter: string): void {
     const open = el("button", "Open");
     open.type = "button";
     open.dataset.draftId = item.draft_id;
-    open.addEventListener("click", () => void openDraft(item.draft_id));
+    open.addEventListener("click", () => guard(() => openDraft(item.draft_id)));
     actions.appendChild(open);
     tr.appendChild(actions);
     tr.dataset.draftId = item.draft_id;
@@ -325,11 +375,9 @@ function renderStates(states: string[], select: HTMLSelectElement): void {
 
 async function loadInbox(): Promise<void> {
   showError("");
+  // the contract was checked in `api()`; nothing below can run on a payload
+  // this build does not read
   const inbox = await api<Inbox>("GET", "/v1/console/drafts");
-  if (inbox.contract !== CONTRACT) {
-    showError(`this console reads ${CONTRACT} and the server sent ${inbox.contract}`);
-    return;
-  }
   const select = byId<HTMLSelectElement>("state-filter");
   renderStates(inbox.states, select);
   renderInbox(inbox, select.value);
@@ -412,6 +460,11 @@ function renderDetail(detail: DraftDetail): void {
   verdict.id = "eligibility";
   verdict.dataset.reasonCode = detail.eligibility.reason_code;
   verdict.dataset.approvable = String(detail.eligibility.approvable);
+  // the three server answers, as attributes, so a gate can read what was
+  // rendered rather than infer it from whether a button looked disabled
+  verdict.dataset.reviseAllowed = String(detail.actions.revise.allowed);
+  verdict.dataset.reviseReason = detail.actions.revise.reason_code;
+  verdict.dataset.rejectAllowed = String(detail.actions.reject.allowed);
   box.appendChild(verdict);
 
   const actions = el("div", undefined, "row");
@@ -419,15 +472,16 @@ function renderDetail(detail: DraftDetail): void {
   approve.type = "button";
   approve.id = "approve";
   // the ONLY input to this line is the server's boolean
-  approve.disabled = !detail.eligibility.approvable;
-  approve.addEventListener("click", () => void decide(detail, "approve"));
+  approve.disabled = !detail.actions.approve.allowed;
+  approve.addEventListener("click", () => guard(() => decide(detail, "approve")));
   actions.appendChild(approve);
 
   const reject = el("button", "Reject");
   reject.type = "button";
   reject.id = "reject";
-  reject.disabled = detail.decision !== null;
-  reject.addEventListener("click", () => void decide(detail, "reject"));
+  // `P2-R1-003`: the server's field, not `decision !== null` computed here
+  reject.disabled = !detail.actions.reject.allowed;
+  reject.addEventListener("click", () => guard(() => decide(detail, "reject")));
   actions.appendChild(reject);
 
   const reason = el("input");
@@ -449,8 +503,10 @@ function renderDetail(detail: DraftDetail): void {
   const save = el("button", "Save as new revision");
   save.type = "button";
   save.id = "save-edit";
-  save.disabled = detail.decision !== null;
-  save.addEventListener("click", () => void saveEdit(detail));
+  // likewise: whether an edit is possible is a thing the server answers, and the
+  // same answer refuses the POST
+  save.disabled = !detail.actions.revise.allowed;
+  save.addEventListener("click", () => guard(() => saveEdit(detail)));
   actions.appendChild(save);
 
   box.appendChild(actions);
@@ -489,10 +545,6 @@ async function openDraft(draftId: string): Promise<void> {
   showError("");
   openDraftId = draftId;
   const detail = await api<DraftDetail>("GET", `/v1/console/drafts/${encodeURIComponent(draftId)}`);
-  if (detail.contract !== CONTRACT) {
-    showError(`this console reads ${CONTRACT} and the server sent ${detail.contract}`);
-    return;
-  }
   renderDetail(detail);
   const audit = await api<{ contract: string; items: AuditEntry[] }>(
     "GET",
@@ -569,13 +621,17 @@ async function boot(): Promise<void> {
   csrfToken = me.csrf_token;
   byId("who").textContent = `${me.agent_id}`;
   byId("session-note").textContent = `session ends ${new Date(me.expires_at_ms).toISOString()}`;
-  byId("refresh").addEventListener("click", () => void loadInbox());
-  byId<HTMLSelectElement>("state-filter").addEventListener("change", () => void loadInbox());
+  byId("refresh").addEventListener("click", () => guard(() => loadInbox()));
+  byId<HTMLSelectElement>("state-filter").addEventListener("change", () => guard(() => loadInbox()));
   byId("logout").addEventListener("click", () => {
-    void (async () => {
+    // `P2-R1-002`: the browser leaves the page only if the SERVER said the
+    // session is revoked. A logout that failed shows the refusal and keeps the
+    // owner where they are, because a sign-in page after a failed revocation is
+    // the console telling them something the server does not agree with.
+    guard(async () => {
       await api("POST", "/v1/console/logout", {}, crypto.randomUUID());
       window.location.assign("/console/login");
-    })();
+    });
   });
   await loadInbox();
   if (openDraftId) await openDraft(openDraftId);

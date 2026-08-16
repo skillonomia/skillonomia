@@ -187,7 +187,7 @@ import {
   type MintedTicket,
   type OpenedSession,
 } from "./console-session.ts";
-import { decideDraftInTx, type Decision, type DecisionResponse } from "./draft-decision.ts";
+import { decideDraftInTx, requireRevisable, type Decision, type DecisionResponse } from "./draft-decision.ts";
 import {
   consoleAudit,
   consoleDraft,
@@ -4511,6 +4511,12 @@ export class Registry {
       if (auth.role !== "owner" && auth.role !== "admin") {
         throw new ApiError("FORBIDDEN", "editing a draft is an owner or admin action");
       }
+      // `P2-R1-003`: a decided lineage takes no further revision, and the rule is
+      // HERE — one service method behind REST, the console and MCP alike, so no
+      // surface can be the one that forgot. `getDraft` inside `reviseDraftInTx`
+      // still owns access and existence; this owns the transition.
+      const resolved = getDraft(this.db, auth, draftId);
+      requireRevisable(this.db, resolved.draft_id);
       return reviseDraftInTx(this.db, auth, draftId, (input ?? {}) as Record<string, unknown>, this.now());
     });
   }

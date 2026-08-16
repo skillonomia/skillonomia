@@ -15,7 +15,9 @@
     "access": "public"
   },
   "scripts": {
+    "pretest": "npm run build:console",
     "test": "node --experimental-strip-types --no-warnings --test \"test/*.test.ts\"",
+    "pretest:bun": "npm run build:console",
     "test:bun": "bun test --timeout 120000",
     "verify": "node --experimental-strip-types --no-warnings src/cli.ts verify",
     "verify-log": "node --experimental-strip-types --no-warnings src/cli.ts verify-log",

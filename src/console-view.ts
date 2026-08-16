@@ -38,8 +38,10 @@ import {
   decisionsOf,
   eligibilityFrom,
   approvalEligibility,
+  draftActions,
   type ApprovalEligibility,
   type DecisionRecord,
+  type DraftActions,
 } from "./draft-decision.ts";
 
 /** The version of these shapes. A console reads it and refuses a payload it was
@@ -68,6 +70,9 @@ export interface ConsoleDraft {
   draft: DraftDetail;
   decision: DecisionRecord | null;
   eligibility: ApprovalEligibility;
+  /** `P2-FR-11` / `P2-R1-003`: whether the server will approve, reject or revise
+   *  this draft — three fields the page renders instead of three rules it holds. */
+  actions: DraftActions;
   state: ConsoleInboxItem["state"];
 }
 
@@ -135,11 +140,17 @@ export function consoleDraft(db: Db, auth: AuthContext, draftId: unknown, revisi
   const detail = getDraft(db, auth, draftId, revisionId);
   const latest = detail.lineage[detail.lineage.length - 1];
   const decision = decisionOf(db, detail.draft_id);
+  const eligibility = approvalEligibility(
+    detail.revision,
+    latest ? latest.revision_id : detail.revision.revision_id,
+    decision,
+  );
   return {
     contract: CONSOLE_CONTRACT_VERSION,
     draft: detail,
     decision,
-    eligibility: approvalEligibility(detail.revision, latest ? latest.revision_id : detail.revision.revision_id, decision),
+    eligibility,
+    actions: draftActions(eligibility, decision),
     state: stateOf(decision),
   };
 }

@@ -70,7 +70,14 @@ fi
 # measured instead, and would answer a different version — which the run checks
 # against `package.json` before it drives anything.
 PORT="${SKLN_E2E_PORT:-7993}"
-TRACE="${SKLN_E2E_TRACE:-$PWD/console-e2e-trace.txt}"
+# A GATE THAT DIRTIES THE TREE IT CERTIFIES CANNOT CERTIFY A CLEAN TREE. The
+# default trace used to be `$PWD/console-e2e-trace.txt`, which is inside the
+# checkout and is not ignored, so a run with no `SKLN_E2E_TRACE` left an
+# untracked file behind and the next `git status --porcelain` — the check that
+# the phase closes on a clean worktree — reported it. The default is now a
+# temporary file outside the repository; a caller that wants the trace as
+# evidence names where, which the phase runner already does.
+TRACE="${SKLN_E2E_TRACE:-$(mktemp -t skln-console-e2e-trace.XXXXXX)}"
 export SKLN_E2E_PORT="$PORT"
 export SKLN_E2E_TRACE="$TRACE"
 

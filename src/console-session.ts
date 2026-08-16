@@ -251,9 +251,32 @@ export function resolveConsoleSession(db: Db, cookieValue: string | undefined, n
   };
 }
 
-/** Logout. An INSERT, so the logout is itself a record; a second logout of the
- *  same session is a no-op rather than an error, because a browser that sends
- *  the request twice has not done anything wrong. */
+/**
+ * Logout. An INSERT, so the logout is itself a record; a second logout of the
+ * same session is a no-op rather than an error, because a browser that sends
+ * the request twice has not done anything wrong.
+ *
+ * P2 REVIEW-1 finding `P2-R1-002`: this used to swallow EVERY error the INSERT
+ * could raise, on the reasoning that the only one it could raise was the UNIQUE
+ * a second logout trips. That is not the only one — a busy database, a full
+ * disk and a locked file all arrive the same way — and under any of them the
+ * caller answered `200 logged_out: true` while the session stayed usable for the
+ * rest of its hour. An owner was told they had logged out and had not, which is
+ * the exact failure `INV-04`'s "logout invalidates the server-side session" is
+ * about.
+ *
+ * So the catch now decides on the STATE, not on the exception. After a failed
+ * INSERT it asks the database the only question that matters — is this session
+ * revoked? — and swallows the error only when the answer is yes, which is the
+ * outcome the caller asked for however it was reached. Anything else is
+ * rethrown, and `src/http.ts` turns it into a refusal.
+ *
+ * The question is asked with a SELECT rather than by matching the error text
+ * because the text is the SQLite driver's, and this tree runs on two of them
+ * (`node:sqlite` and `bun:sqlite`). A readable state is the same on both; a
+ * message is not. A SELECT also still answers while another connection holds a
+ * write lock, which is the case that produced the finding.
+ */
 export function revokeConsoleSession(db: Db, sessionId: string, nowMs: number, reasonCode: "logout" | "superseded" = "logout"): void {
   try {
     db.prepare("INSERT INTO owner_session_revocations(id, session_id, reason_code, revoked_at_ms) VALUES (?,?,?,?)").run(
@@ -262,8 +285,24 @@ export function revokeConsoleSession(db: Db, sessionId: string, nowMs: number, r
       reasonCode,
       nowMs,
     );
-  } catch {
+  } catch (e) {
+    if (!isRevoked(db, sessionId)) throw e;
     /* already revoked: the UNIQUE refused a second row, which is the outcome asked for */
+  }
+}
+
+/** Is there a revocation naming this session? The one question the catch above
+ *  is allowed to decide on. */
+function isRevoked(db: Db, sessionId: string): boolean {
+  try {
+    const row = db
+      .prepare("SELECT COUNT(*) AS n FROM owner_session_revocations WHERE session_id=?")
+      .get(sessionId) as { n: number } | undefined;
+    return row !== undefined && row.n > 0;
+  } catch {
+    // the database cannot even be read: that is not evidence of a revocation,
+    // and reporting one would be the finding again in a quieter place
+    return false;
   }
 }
 

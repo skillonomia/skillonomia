@@ -151,6 +151,63 @@ export function eligibilityFrom(
   return { approvable: true, reason_code: "APPROVABLE", ...base };
 }
 
+/** One action, and whether the SERVER will carry it out. `P2-FR-11` says the
+ *  frontend computes no state transition; a console that reads these three
+ *  booleans is a console that renders a rule instead of holding one. */
+export interface ActionEligibility {
+  allowed: boolean;
+  reason_code: "APPROVABLE" | "REJECTABLE" | "REVISABLE" | ApprovalEligibility["reason_code"];
+}
+
+/** The three things an owner can do to a draft from the detail view, each with
+ *  the server's answer. */
+export interface DraftActions {
+  approve: ActionEligibility;
+  reject: ActionEligibility;
+  revise: ActionEligibility;
+}
+
+/**
+ * `P2-FR-11`, as a value — P2 REVIEW-1 finding `P2-R1-003`.
+ *
+ * The console used to disable Save and Reject on `decision !== null`, which made
+ * the CLIENT the thing that knew a decided lineage is closed to edits; the server
+ * still answered `201` to a direct POST, so a lineage could report `approved`
+ * while its head was a revision nobody approved. That is the split `P2-FR-11`
+ * forbids, in the direction that matters.
+ *
+ * So the rule lives here, once. `requireRevisable` below is the enforcement and
+ * this is the display of the same fact, both computed from the same decision row.
+ */
+export function draftActions(eligibility: ApprovalEligibility, decided: DecisionRecord | null): DraftActions {
+  const closed: ActionEligibility = { allowed: false, reason_code: "ALREADY_DECIDED" };
+  return {
+    approve: { allowed: eligibility.approvable, reason_code: eligibility.reason_code },
+    reject: decided ? closed : { allowed: true, reason_code: "REJECTABLE" },
+    revise: decided ? closed : { allowed: true, reason_code: "REVISABLE" },
+  };
+}
+
+/**
+ * The enforcement half: a decided lineage takes no further revision.
+ *
+ * `INV-06` is preserved by refusing rather than by rewriting — the approved
+ * revision stays exactly as it was, every earlier revision stays, and the audit
+ * is not touched. The refusal is `CONFLICT` with `current_state` set to the
+ * decision, which is the converging-conflict shape Appendix H requires and the
+ * same one `decideDraftInTx` already answers a second decision with.
+ */
+export function requireRevisable(db: Db, draftId: string): void {
+  const decided = decisionOf(db, draftId);
+  if (decided) {
+    throw new ApiError(
+      "CONFLICT",
+      `draft ${draftId} is already ${decided.decision}; a decided draft takes no further revision`,
+      decided.decision,
+    );
+  }
+}
+
 export interface DecisionResponse {
   draft_id: string;
   decision: DecisionRecord;

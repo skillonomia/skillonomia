@@ -427,11 +427,22 @@ async function main() {
     },
     `${BASE}/v1/console/drafts/${clean.draft.draft_id}/approve`,
   );
-  const afterCrossSite = await (await api(`/v1/drafts/${clean.draft.draft_id}`, { key: OWNER_KEY })).json();
+  // WHAT THIS ASSERTS, AND WHY IT IS NOT THE REVISION ID. P2 REVIEW-1's
+  // non-blocking backlog: this used to compare `revision.revision_id` against
+  // the id from before the attempt — but the request the attacker page makes is
+  // an APPROVE, and an approval never changes which revision is the head. The
+  // comparison therefore held whether the cross-site POST was refused or
+  // carried out, which is a check that cannot fail. The state a successful
+  // approve WOULD move is the decision, so that is what is read: through the
+  // console surface, over the owner's own cookie, asserting the draft is still
+  // undecided and no decision row names it.
+  const afterCrossSite = await (
+    await api(`/v1/console/drafts/${clean.draft.draft_id}`, { headers: { Cookie: `skln_console=${cookie.value}` } })
+  ).json();
   check(
     "P2-FR-13 a real cross-site submission decided nothing",
-    afterCrossSite.revision.revision_id === revAfter,
-    `cross-site attempt returned ${crossSite}`,
+    afterCrossSite.state === "pending" && afterCrossSite.decision === null,
+    `cross-site attempt returned ${crossSite}; state=${afterCrossSite.state}`,
   );
   await attacker.close();
 

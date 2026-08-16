@@ -144,6 +144,29 @@ function mutationResponse(
 }
 
 /**
+ * The console's half of `mutationResponse` — `P2-R1-004`.
+ *
+ * EVERY console response carries `contract`, including the ones a mutation
+ * returns, because `console/app.ts` refuses a payload whose version it does not
+ * know BEFORE it reads a field of it. A surface with one unversioned answer is a
+ * surface where that check has a hole, and the hole is exactly where a payload
+ * from a server this build was not written for gets consumed.
+ *
+ * The version is added on the way out rather than stored in the idempotency
+ * record, so a replayed mutation is stamped with the version of the build that
+ * replayed it, and the machine-to-machine shape under `/v1/drafts/` is untouched
+ * (`P2-FR-15`, `INV-08`).
+ */
+function consoleMutationResponse(
+  out: { replayed: boolean; responseJson: string; response: unknown },
+  successStatus: number,
+): RestResponse {
+  const extra: Record<string, string> = out.replayed ? { "Idempotency-Replayed": "true" } : {};
+  const body = JSON.parse(out.responseJson) as Record<string, unknown>;
+  return json(successStatus, JSON.stringify({ contract: CONSOLE_CONTRACT_VERSION, ...body }), extra);
+}
+
+/**
  * Query string → surface-5 parameters. Every declared filter plus the two
  * pagination controls, passed through as strings: the service does the typing
  * and the validation, so REST and MCP cannot diverge (verdict 1 major #2).
@@ -287,7 +310,22 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       }
 
       if (method === "POST" && path === "/v1/console/logout") {
-        registry.revokeConsoleSession(session.session_id);
+        // `P2-R1-002`: the answer to a logout is the answer to "was the session
+        // revoked", and nothing else. A revocation that did not happen is a
+        // refusal naming the state the session is STILL in, not a 200 with a
+        // cleared cookie — a cleared cookie the server does not know about is a
+        // session an owner believes is closed and an attacker can still use.
+        try {
+          registry.revokeConsoleSession(session.session_id);
+        } catch {
+          // the driver's message is not repeated: it names a file path and this
+          // is a browser-facing surface
+          throw new ApiError(
+            "CONFLICT",
+            "the session could not be revoked, so the logout did not take effect — retry",
+            "active",
+          );
+        }
         return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_VERSION, logged_out: true }), {
           "Set-Cookie": clearedCookie(secureFor(req.headers["host"])),
           "Cache-Control": "no-store",
@@ -313,19 +351,19 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
         // the SAME service method the API-key surface calls: an edit is a new
         // revision with both previews re-run, and there is one implementation
         const out = registry.reviseDraft(cauth, m[1], body, idemKey(body));
-        return mutationResponse(out, 201);
+        return consoleMutationResponse(out, 201);
       }
 
       m = /^\/v1\/console\/drafts\/([^/]+)\/approve$/.exec(path);
       if (method === "POST" && m) {
         const body = parseBody(req);
-        return mutationResponse(registry.decideDraft(cauth, m[1], "approved", body, idemKey(body)), 201);
+        return consoleMutationResponse(registry.decideDraft(cauth, m[1], "approved", body, idemKey(body)), 201);
       }
 
       m = /^\/v1\/console\/drafts\/([^/]+)\/reject$/.exec(path);
       if (method === "POST" && m) {
         const body = parseBody(req);
-        return mutationResponse(registry.decideDraft(cauth, m[1], "rejected", body, idemKey(body)), 201);
+        return consoleMutationResponse(registry.decideDraft(cauth, m[1], "rejected", body, idemKey(body)), 201);
       }
 
       m = /^\/v1\/console\/drafts\/([^/]+)$/.exec(path);
