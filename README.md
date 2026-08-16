@@ -457,6 +457,11 @@ REST-only, and the table below ends with them.
 | `agent.capabilities` | `GET /v1/fleet/{agent_id}/capabilities` |
 | `capability.get` | `GET /v1/fleet/{agent_id}/capabilities/{name}` |
 | `observation.report` | `POST /v1/observations` |
+| `capture.submit` | `POST /v1/captures` |
+| `draft.list` | `GET /v1/drafts` |
+| `draft.get` | `GET /v1/drafts/{draft_id}`, `GET /v1/drafts/{draft_id}/revisions/{revision_id}` |
+| `draft.revise` | `POST /v1/drafts/{draft_id}/revisions` |
+| `draft.audit` | `GET /v1/drafts/{draft_id}/audit` |
 | `dashboard.view` | `GET /v1/dashboard/{view}` (`?format=html`) |
 | `migration.count` | `GET /v1/migrations?since_ms=&until_ms=` |
 | `tlog.read` | `GET /v1/tlog?cursor=` |

@@ -16,6 +16,7 @@ implements no product behaviour (`P0-FR-08`).
 | `P0-THREAT-MODEL.md` | the frozen V1 threat model, and what it means for a finding |
 | `P0-EVIDENCE-FORMAT.md` | the frozen evidence record, the session record, the mandatory gates per phase with a command each, and the append-only rule |
 | `P0-BRANCH-HISTORY.md` | the branch's history, the one rewrite that happened, and the audit boundary of P0 |
+| `P1-CAPTURE-DRAFT.md` | what P1 built — the capture/draft path, where each `P1-FR-*` is met, what the classifier and the redactor do and do not claim, and how the schema change comes back out |
 | `P0-RESIDUAL-LIMITATIONS.md` | what P0 leaves permanently unprovable, carried forward to the final report rather than forgotten |
 | `append-only-baseline.tsv` | the disclosed non-append-only reflog entries — the only ones the append-only check excuses |
 | `tools/p0-db-check.ts` | migration and schema checks on a throwaway database, through the repository's own runner |

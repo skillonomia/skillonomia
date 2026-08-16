@@ -163,6 +163,18 @@ import {
 } from "./fleet-scan.ts";
 import { StoredObservations, recordObservationInTx } from "./fleet-store.ts";
 import {
+  captureDraft,
+  draftAudit,
+  getDraft,
+  listDrafts,
+  reviseDraft,
+  type CaptureResponse,
+  type DraftAuditResponse,
+  type DraftDetail,
+  type DraftListItem,
+  type DraftRevisionView,
+} from "./capture.ts";
+import {
   createGrant,
   findGrant,
   listGrants,
@@ -4405,6 +4417,69 @@ export class Registry {
    * idempotency key. An admin/owner reads the workspace's deployments; anyone
    * else reads exactly the ones addressed to itself.
    */
+  // ---------------------------------------------------------------------
+  // V1 P1 — capture → draft. The five surfaces of the capture domain, each a
+  // thin call into `src/capture.ts`: this class holds no second copy of the
+  // classifier, the compiler or the redactor, exactly as it holds no second
+  // copy of the assignment state machine.
+  // ---------------------------------------------------------------------
+
+  /**
+   * Capture a workflow, a session or a supported native skill.
+   *
+   * The answer is a DRAFT or a structured REFUSAL, and both are ordinary
+   * successful responses: a capture the registry declined to carry as a skill
+   * is an answer about the capture, not a failure of the call. A request whose
+   * SHAPE is wrong still fails as `INVALID_SCHEMA`.
+   */
+  capture(auth: AuthContext, input: unknown, idempotencyKey?: string): IdempotentOutcome<CaptureResponse> {
+    return withIdempotency(this.db, auth.agent_id, "capture.submit", idempotencyKey, this.now(), () => {
+      if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+      return captureDraft(this.db, auth, (input ?? {}) as Record<string, unknown>, this.now());
+    });
+  }
+
+  /** Every draft of the caller's workspace, latest revision first-class. */
+  listDrafts(auth: AuthContext): { items: DraftListItem[] } {
+    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    return listDrafts(this.db, auth);
+  }
+
+  /** One draft: a revision — the latest, or the exact one asked for — and the
+   *  whole lineage, so a reader sees that nothing was replaced. */
+  getDraft(auth: AuthContext, draftId: unknown, revisionId?: unknown): DraftDetail {
+    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    return getDraft(this.db, auth, draftId, revisionId);
+  }
+
+  /**
+   * Edit or recompile a draft — as a NEW revision, always.
+   *
+   * Editing a draft is the owner's act, so the two human roles may do it. It
+   * never rewrites the revision it came from: the previous row is what an owner
+   * read, and P2's approval will name an exact revision and digest.
+   */
+  reviseDraft(
+    auth: AuthContext,
+    draftId: unknown,
+    input: unknown,
+    idempotencyKey?: string,
+  ): IdempotentOutcome<DraftRevisionView> {
+    return withIdempotency(this.db, auth.agent_id, "draft.revise", idempotencyKey, this.now(), () => {
+      if (auth.role !== "owner" && auth.role !== "admin") {
+        throw new ApiError("FORBIDDEN", "editing a draft is an owner or admin action");
+      }
+      return reviseDraft(this.db, auth, draftId, (input ?? {}) as Record<string, unknown>, this.now());
+    });
+  }
+
+  /** The structured audit of one draft: the capture, the classification, every
+   *  compilation and every revision, each in columns rather than in prose. */
+  draftAudit(auth: AuthContext, draftId: unknown): DraftAuditResponse {
+    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    return draftAudit(this.db, auth, draftId);
+  }
+
   listAssignments(auth: AuthContext): AssignmentListResponse {
     const wide = auth.role === "admin" || auth.role === "owner";
     const agentIds = wide

@@ -163,6 +163,101 @@ export interface JournalColumnClass {
 
 /** `<table>.<column>` → what that column is allowed to take, and from whom. */
 export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
+  // ---------------------------------------------------------------- captures
+  //
+  // The V1 capture domain (`migrations/0013`). Its text columns are the one
+  // place in this schema that holds a WORKFLOW somebody wrote, and they are
+  // declared limits for the reason the §5.3 reports are: an owner reads the
+  // draft to decide whether to approve it, and a digest of a procedure is not a
+  // procedure. What makes the limit narrower than the §5.3 one is that this
+  // text is REDACTED FIRST — `src/redaction.ts` runs at the boundary, before
+  // any of these rows exist, so what is admitted here is the caller's prose
+  // with its credential material already replaced by `⟦REDACTED:…⟧`.
+  "captures.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "captures.workspace_id": { intake: "registry_generated", note: "taken from AuthContext, never from the payload" },
+  "captures.captured_by_agent_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "captures.source_kind": { intake: "bounded_form", note: "workflow|session|native_skill" },
+  "captures.source_format": {
+    intake: "bounded_form",
+    note: "workflow_text|agent_session|claude_code_skill|codex_skill",
+  },
+  "captures.source_ref": {
+    intake: "declared_limit",
+    note: "THE STATED LIMIT OF V1 CAPTURE. The session id, native path or title the caller named, at most 200 characters, kept because an owner has to see WHICH session or file a draft came from and a digest of a reference is not a reference. It goes through `redactReference` first, so a reference that carries a token stores the token nowhere",
+  },
+  "captures.redacted_source": {
+    intake: "declared_limit",
+    note: "THE STATED LIMIT OF V1 CAPTURE. The normalised source a draft is compiled from, at most 200000 characters, AFTER redaction. It is kept as text because recompiling a draft means compiling this again and because an owner comparing a draft with what was captured needs the second half of that comparison; the credential material is already gone, and `src/redaction.ts` — not this column — is what makes that true",
+  },
+  "captures.source_digest": { intake: "digest", note: "`sha256:` of the redacted source, computed here" },
+  "captures.category": {
+    intake: "bounded_form",
+    note: "the seven classifier categories plus `ambiguous` — a closed set of `src/skillability.ts`",
+  },
+  "captures.skillable": { intake: "bounded_form", note: "0|1" },
+  "captures.reason_code": {
+    intake: "bounded_form",
+    note: "an identifier the classifier or the importer chose; no caller supplies one",
+  },
+  "captures.outcome": { intake: "bounded_form", note: "drafted|refused" },
+  "captures.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
+  // --------------------------------------------------------- draft_revisions
+  "draft_revisions.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "draft_revisions.draft_id": { intake: "registry_generated", note: "a ULID this registry mints for the lineage" },
+  "draft_revisions.revision": { intake: "registry_generated", note: "the head of the lineage plus one" },
+  "draft_revisions.parent_revision_id": { intake: "registry_generated", note: "a row of this registry" },
+  "draft_revisions.capture_id": { intake: "registry_generated", note: "a row of this registry" },
+  "draft_revisions.workspace_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "draft_revisions.author_agent_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "draft_revisions.origin": { intake: "bounded_form", note: "capture|edit|recompile" },
+  "draft_revisions.compiler_version": {
+    intake: "registry_generated",
+    note: "`COMPILER_VERSION` of `src/draft.ts`; no caller names one",
+  },
+  "draft_revisions.content_json": {
+    intake: "declared_limit",
+    note: "THE STATED LIMIT OF V1 CAPTURE. The ten canonical sections, compiled from the redacted source or supplied by an owner's edit, at most 200000 characters. This is the document a person reviews and later approves, so it is stored as text; every owner-supplied section goes through the same redaction the capture did",
+  },
+  "draft_revisions.content_digest": {
+    intake: "digest",
+    note: "`sha256:` of the JCS canonicalization of the compiler version and the content, computed here",
+  },
+  "draft_revisions.semantic_json": {
+    intake: "declared_limit",
+    note: "THE STATED LIMIT OF V1 CAPTURE. The structured semantic review, at most 100000 characters. Its codes, sections and severities are this registry's own; its `detail` fields quote the line of the redacted source a finding is about, which is the half a reader acts on",
+  },
+  "draft_revisions.security_json": {
+    intake: "declared_limit",
+    note: "THE STATED LIMIT OF V1 CAPTURE. The structured security review, at most 100000 characters: requested permissions and dependencies as the source declared them, the risky actions found in it, and the redaction findings — category, location and reason, never a value",
+  },
+  "draft_revisions.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
+  // ------------------------------------------------------------ draft_events
+  "draft_events.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "draft_events.draft_id": { intake: "registry_generated", note: "a row of this registry" },
+  "draft_events.draft_revision_id": { intake: "registry_generated", note: "a row of this registry" },
+  "draft_events.capture_id": { intake: "registry_generated", note: "a row of this registry" },
+  "draft_events.event": { intake: "bounded_form", note: "captured|classified|compiled|revised|refused" },
+  "draft_events.actor_agent_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "draft_events.actor_role": { intake: "bounded_form", note: "owner|admin|reviewer|member" },
+  "draft_events.source": { intake: "bounded_form", note: "registry|owner|agent" },
+  "draft_events.correlation_ref": {
+    intake: "declared_limit",
+    note: "THE STATED LIMIT OF V1 CAPTURE. The same reference `captures.source_ref` holds, on the audit row, so that an event can be correlated with the session it came from. Redacted at the same boundary and bounded at 200 characters",
+  },
+  "draft_events.reason_code": {
+    intake: "bounded_form",
+    note: "an identifier of the classifier or the importer; no caller supplies one",
+  },
+  "draft_events.result": { intake: "bounded_form", note: "drafted|refused|recorded" },
+  "draft_events.content_digest": { intake: "digest", note: "the revision's own digest, or NULL where no revision was written" },
+  "draft_events.provenance_json": {
+    intake: "registry_generated",
+    note: "composed by `src/capture.ts` out of this registry's own vocabulary — category, scores, marker ids, versions, counts and line numbers. No string a caller sent is copied into it",
+  },
+  "draft_events.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
   // ------------------------------------------------------- adoption_receipts
   "adoption_receipts.id": { intake: "registry_generated", note: "a ULID this registry mints" },
   "adoption_receipts.adoption_request_id": { intake: "registry_generated", note: "a row of this registry" },
@@ -343,6 +438,9 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
  */
 export const JOURNAL_WRITERS: Record<string, readonly string[]> = {
   adoption_receipts: ["src/service.ts", "src/transfer.ts"],
+  captures: ["src/capture.ts"],
+  draft_events: ["src/capture.ts"],
+  draft_revisions: ["src/capture.ts"],
   assignment_events: ["src/assignments.ts"],
   assignments: ["src/assignments.ts"],
   observed_records: ["src/fleet-store.ts"],

@@ -38,6 +38,7 @@ FILES=(
   test/p14-r9-probes.test.ts
   test/p14-r9b-probes.test.ts
   test/p14-r10-probes.test.ts
+  test/v1p1-redaction.test.ts
   test/bind-address.test.ts
   test/docker-network-boundary.test.ts
   test/transport.test.ts

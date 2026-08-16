@@ -1088,6 +1088,33 @@ class SwitchableInventoryRoots implements InventoryRoots {
 /** One argument set a tool is driven with. A tool may have several: the hints
  *  are statements about the TOOL, so what it does is the union over the calls
  *  it can be made, not one convenient call. */
+/** A workflow that IS one: a procedure heading, three steps, a reuse phrase and
+ *  the three sections the compiler reads — enough for the classifier to answer
+ *  `reusable_procedure` deterministically, so the sweep's draft always exists. */
+const SWEEP_WORKFLOW = [
+  "# Rotate the demo signing key",
+  "",
+  "## Purpose",
+  "Retire a demo signing key and put its replacement in service without downtime.",
+  "",
+  "## When to use",
+  "Whenever the demo key is older than ninety days.",
+  "",
+  "## Procedure",
+  "1. List the signing keys and note the active kid.",
+  "2. Register the replacement key under a new kid.",
+  "3. Revoke the retired kid once the replacement answers.",
+  "",
+  "## Inputs",
+  "- the kid to retire",
+  "",
+  "## Outputs",
+  "- the kid now in service",
+  "",
+  "## Failure modes",
+  "- the retired kid was already revoked, and the third step reports it",
+].join("\n");
+
 interface Drive {
   key: string;
   args: any;
@@ -1244,6 +1271,21 @@ function toolDrive(): ToolWorld {
 
   const O = fx.keys.owner!;
   const A = fx.keys.author!;
+
+  // V1 P1: one draft, made through the REAL capture surface, so the three
+  // reading draft tools and the revising one have a lineage to be driven
+  // against. A sweep that drove them against a draft inserted by hand would be
+  // measuring rows this suite wrote rather than rows the surface writes.
+  const captured = rest(fx, "POST", "/v1/captures", O, {
+    kind: "workflow",
+    title: "mcp-sweep-capture",
+    text: SWEEP_WORKFLOW,
+  });
+  assert.equal(captured.status, 201, captured.raw);
+  assert.equal(captured.body.outcome, "drafted", captured.raw);
+  const draftId: string = captured.body.draft.draft_id;
+  const draftRevisionId: string = captured.body.draft.revision_id;
+
   /** one argument set, when one is all the tool has */
   const one = (key: string, a: any, label = "the call"): Drive[] => [{ key, args: a, label }];
   const drives = new Map<string, Drive[]>([
@@ -1312,6 +1354,17 @@ function toolDrive(): ToolWorld {
     ["signing_key.list", one(O, {})],
     ["signing_key.revoke", one(O, { kid: "mcp-sweep-doomed" })],
     ["tlog.read", one(O, {})],
+    ["capture.submit", one(O, { kind: "workflow", title: "mcp-sweep-more", text: SWEEP_WORKFLOW })],
+    ["draft.list", one(O, {})],
+    [
+      "draft.get",
+      [
+        { key: O, args: { draft_id: draftId }, label: "the latest revision" },
+        { key: O, args: { draft_id: draftId, revision_id: draftRevisionId }, label: "one exact revision" },
+      ],
+    ],
+    ["draft.revise", one(O, { draft_id: draftId, sections: { purpose: "rotate the demo key on a schedule" } })],
+    ["draft.audit", one(O, { draft_id: draftId })],
     ["migration.count", one(O, {})],
     // EVERY VIEW, not the one that happens to touch nothing: three of the
     // eleven read a fleet member's own disk, and a sweep driven with `library`

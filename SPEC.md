@@ -1958,10 +1958,10 @@ installs none is conforming.
 
 ## Appendix D. NORMATIVE SQLite DDL
 
-The normative schema is given in **twelve** migrations, applied in ascending file
+The normative schema is given in **thirteen** migrations, applied in ascending file
 order, and the live schema of a conforming registry is their sum. Each is
 embedded below verbatim and is byte-identical to the file this repository ships;
-a test asserts that for all twelve. Schema version is tracked in
+a test asserts that for all thirteen. Schema version is tracked in
 `PRAGMA user_version` and nowhere else — there is no bookkeeping table, because
 the live schema is compared object for object against D.1 plus the deltas below,
 and a table this specification does not name would fail that comparison. A
@@ -2052,11 +2052,13 @@ path, and MUST NOT attempt it.
   to the count and is reported as unattributed. `PRAGMA user_version` = `9`.
 - **The live schema a fresh database reports is D.1 as edited by D.1b, D.1c,
   D.1d, D.1e, D.1f, D.1i and D.1j, plus the tables of D.1f, D.1g and D.1h**, and never
-  D.1 alone. Object counts are 26 tables, 20 triggers and 13 indexes: D.1's 20
-  tables plus D.1f's two, D.1g's two and D.1h's two, D.1's 10 triggers plus the
-  two INSERT-only triggers of `transfers`, D.1g's four and D.1h's four, and
-  D.1's 9 indexes plus `idx_transfers_version`, `idx_assignments_agent`,
-  `idx_runtime_observations_agent` and `idx_observed_records_agent`. D.1i moves
+  D.1 alone. Object counts are 29 tables, 26 triggers and 16 indexes: D.1's 20
+  tables plus D.1f's two, D.1g's two, D.1h's two and D.1m's three, D.1's 10
+  triggers plus the two INSERT-only triggers of `transfers`, D.1g's four, D.1h's
+  four and D.1m's six, and D.1's 9 indexes plus `idx_transfers_version`,
+  `idx_assignments_agent`, `idx_runtime_observations_agent`,
+  `idx_observed_records_agent`, `idx_captures_workspace`,
+  `idx_draft_revisions_draft` and `idx_draft_events_draft`. D.1i moves
   none of those counts: it rebuilds one table and re-creates its two triggers and
   its partial index verbatim, and D.1j moves none of them either: it adds one
   column to an existing table. D.1k moves none of them and EDITS NO STATEMENT: it
@@ -2066,10 +2068,16 @@ path, and MUST NOT attempt it.
   definition object for object to say so. D.1l moves none of them either: it
   rebuilds `receipt_events` a fourth time and re-creates every column,
   constraint, index and trigger of it verbatim, changing VALUES and no part of
-  the shape. After all twelve migrations
+  the shape. D.1m moves them by exactly its own three tables, six triggers and
+  three indexes: it is purely additive, it edits no statement of any earlier
+  delta, and it is the one migration of this schema that ships its own reversal
+  (`migrations/down/0013_capture_and_draft_revisions.down.sql`), which drops
+  exactly what it created and restores `PRAGMA user_version` to `12`. After all
+  thirteen migrations
   `PRAGMA user_version`
-  MUST report `12`. A test in this repository asserts the live schema equals D.1
-  plus exactly those twelve edits and the new objects of D.1f, D.1g and D.1h —
+  MUST report `13`. A test in this repository asserts the live schema equals D.1
+  plus exactly those twelve edits and the new objects of D.1f, D.1g, D.1h and
+  D.1m —
   the five of D.1b, the one of D.1c, the one of D.1d, the two of D.1e, the one
   rebuilt table of D.1f, the one further edit of D.1i to that same rebuilt table
   and the one column D.1j adds to `observed_records` — so any further divergence
@@ -3737,6 +3745,184 @@ DROP TABLE receipt_events_keymap;
 ```
 
 
+### D.1m NORMATIVE DELTA — thirteenth migration (verbatim)
+
+THE CAPTURE AND DRAFT DOMAIN OF V1. Three tables, three indexes and six
+triggers, added and nothing edited: `captures` records one arrival — a workflow,
+an agent session or a supported native skill — with the classifier's answer and
+the outcome; `draft_revisions` holds the immutable lineage of compiled drafts;
+`draft_events` is their audit, with every field a reader needs as a COLUMN
+rather than inside a serialised string.
+
+A CONFORMING REGISTRY MUST REDACT BEFORE IT WRITES. `captures.redacted_source`
+holds the normalised source AFTER credential material has been removed, and
+there is no column in this delta that holds the source before it. The same rule
+covers `captures.source_ref` and `draft_events.correlation_ref`, which carry the
+session id or native path the caller named, and `draft_revisions.content_json`,
+`semantic_json` and `security_json`, which are compiled from that redacted text
+or supplied by an owner's edit and are redacted on the same boundary. The
+redaction preview a draft carries states the CATEGORY, the LOCATION and the
+REASON of everything removed, and MUST NOT carry the value or a digest of it.
+
+ALL THREE TABLES ARE INSERT-ONLY, which is what makes a revision immutable: an
+edit or a recompile MUST append a row whose `parent_revision_id` names the row it
+came from, and MUST NOT alter that row. `UNIQUE(draft_id, revision)` makes the
+numbering of a lineage total.
+
+`draft_revisions.content_digest` is `sha256:` of the JCS canonicalization of the
+compiler version and the content together, so recompiling one normalised source
+at one compiler version yields one digest, and a compiler change is visible as a
+different digest rather than as a silent difference inside the same one. No
+identifier and no timestamp enters that digest.
+
+THIS MIGRATION IS ADDITIVE AND REVERSIBLE. It edits no statement of D.1 or of
+any earlier delta, and it ships its own reversal — the only one in this schema —
+as `migrations/down/0013_capture_and_draft_revisions.down.sql`, which drops the
+six triggers, the three indexes and the three tables it created and sets
+`PRAGMA user_version` back to `12`. Reversal discards the V1-only rows of those
+three tables and touches no table that existed before them.
+`PRAGMA user_version` = `13`.
+
+```sql
+-- 0013 — WHERE A CAPTURE BECOMES A DRAFT, AND WHY THAT IS THREE TABLES.
+--
+-- The V1 Skill Loop begins before a package exists: somebody finishes a piece
+-- of work in a session and says "make this a skill". What arrives is TEXT — a
+-- workflow somebody wrote down, the content of an agent session, or a native
+-- skill file one of the two supported runtimes already reads. None of that is a
+-- signed package, and none of it may be treated as one until a person has read
+-- what the registry made of it. So the shapes here sit BESIDE `skills` and
+-- `skill_versions` and never inside them: a draft is a proposal, a version is a
+-- published artifact, and the whole point of the loop is the gap between them.
+--
+-- ---------------------------------------------------------------------------
+-- `captures` — ONE ARRIVAL, ALREADY REDACTED.
+--
+-- `redacted_source` is the normalised input AFTER redaction, and there is no
+-- column anywhere in this migration that holds the input before it. That is the
+-- same discipline `0008` used for transcript text and `0010` for evidence: the
+-- boundary reduces, and the schema has nowhere to put what the boundary
+-- removed. A credential pasted into a workflow reaches `src/redaction.ts` and
+-- what continues past it is `⟦REDACTED:…⟧` — the token `src/gates.ts` already
+-- defines, so the secret scan that reads a package reads this the same way.
+--
+-- `source_digest` is the digest OF THE REDACTED SOURCE, for the same reason.
+-- It is what makes a recompile provable: the same arrival digests the same, and
+-- a draft that claims to descend from an arrival names the row it descends
+-- from.
+--
+-- `outcome` is on the arrival because A REFUSAL IS AN OUTCOME. A capture that
+-- was classified as a memory, a rule or a one-off produces no draft, and the
+-- row that says so is the evidence that the registry answered rather than lost
+-- it. `category` and `skillable` are the classifier's answer, stored as the
+-- machine-readable values they are and never as a sentence to be parsed back.
+--
+-- ---------------------------------------------------------------------------
+-- `draft_revisions` — THE IMMUTABLE LINEAGE.
+--
+-- `draft_id` is the LINEAGE and `id` is the REVISION. Editing a draft appends a
+-- row whose `parent_revision_id` names the row it was edited from; nothing
+-- rewrites the parent, and the triggers below are why that is a property of the
+-- database rather than a promise about the code. `UNIQUE(draft_id, revision)`
+-- makes the numbering of a lineage total: two rows cannot both be revision 2.
+--
+-- `content_digest` is over the CANONICAL content and the compiler version
+-- together (`src/draft.ts`), so the same normalised input compiled by the same
+-- compiler yields the same digest, and a compiler change is visible as a
+-- different digest rather than as a silent difference in the same one.
+--
+-- `semantic_json` and `security_json` are the two structured previews. They are
+-- stored WITH the revision they describe, because a preview recomputed later
+-- against a newer compiler is a statement about a different object than the one
+-- an owner read and approved.
+--
+-- ---------------------------------------------------------------------------
+-- `draft_events` — THE AUDIT, IN COLUMNS.
+--
+-- Every field the audit needs is a COLUMN: what happened, who did it, what it
+-- was about, which revision, which session it correlates with, when, why, with
+-- what result. `provenance_json` carries the structured payload and is never
+-- the place a reader has to go to find one of the fields above — a consumer
+-- that had to parse a serialised string to learn the event type would be the
+-- defect this shape exists to prevent.
+--
+-- `correlation_ref` is the session or invocation this event belongs to, as the
+-- caller declared it and after redaction. It is nullable because a workflow
+-- pasted by an owner correlates with no session, and an absent correlation is
+-- not an empty one.
+--
+-- All three tables are INSERT-only. A draft whose history could be edited is a
+-- draft whose history proves nothing, and the immutability of a revision is the
+-- one property every later phase — assignment, loadout, invocation, outcome —
+-- pins its own evidence to.
+
+CREATE TABLE captures(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT,
+  captured_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  source_kind TEXT NOT NULL CHECK(source_kind IN ('workflow','session','native_skill')),
+  source_format TEXT NOT NULL CHECK(source_format IN ('workflow_text','agent_session','claude_code_skill','codex_skill')),
+  source_ref TEXT CHECK(source_ref IS NULL OR length(source_ref) BETWEEN 1 AND 200),
+  redacted_source TEXT NOT NULL CHECK(length(redacted_source) BETWEEN 1 AND 200000),
+  source_digest TEXT NOT NULL CHECK(length(source_digest)=71),
+  category TEXT NOT NULL CHECK(category IN ('reusable_procedure','memory','rule','automation','connector','loadout','one_off','ambiguous')),
+  skillable INTEGER NOT NULL CHECK(skillable IN (0,1)),
+  reason_code TEXT NOT NULL CHECK(length(reason_code) BETWEEN 1 AND 64),
+  outcome TEXT NOT NULL CHECK(outcome IN ('drafted','refused')),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0)
+);
+CREATE INDEX idx_captures_workspace ON captures(workspace_id,server_at_ms);
+
+CREATE TABLE draft_revisions(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  draft_id TEXT NOT NULL CHECK(length(draft_id)=26),
+  revision INTEGER NOT NULL CHECK(revision>=1),
+  parent_revision_id TEXT REFERENCES draft_revisions(id) ON DELETE RESTRICT,
+  capture_id TEXT NOT NULL REFERENCES captures(id) ON DELETE RESTRICT,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT,
+  author_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  origin TEXT NOT NULL CHECK(origin IN ('capture','edit','recompile')),
+  compiler_version TEXT NOT NULL CHECK(length(compiler_version) BETWEEN 1 AND 32),
+  content_json TEXT NOT NULL CHECK(length(content_json) BETWEEN 2 AND 200000),
+  content_digest TEXT NOT NULL CHECK(length(content_digest)=71),
+  semantic_json TEXT NOT NULL CHECK(length(semantic_json) BETWEEN 2 AND 100000),
+  security_json TEXT NOT NULL CHECK(length(security_json) BETWEEN 2 AND 100000),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0),
+  UNIQUE(draft_id, revision)
+);
+CREATE INDEX idx_draft_revisions_draft ON draft_revisions(draft_id,revision);
+
+CREATE TABLE draft_events(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  draft_id TEXT CHECK(draft_id IS NULL OR length(draft_id)=26),
+  draft_revision_id TEXT REFERENCES draft_revisions(id) ON DELETE RESTRICT,
+  capture_id TEXT NOT NULL REFERENCES captures(id) ON DELETE RESTRICT,
+  event TEXT NOT NULL CHECK(event IN ('captured','classified','compiled','revised','refused')),
+  actor_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin','reviewer','member')),
+  source TEXT NOT NULL CHECK(source IN ('registry','owner','agent')),
+  correlation_ref TEXT CHECK(correlation_ref IS NULL OR length(correlation_ref) BETWEEN 1 AND 200),
+  reason_code TEXT CHECK(reason_code IS NULL OR length(reason_code) BETWEEN 1 AND 64),
+  result TEXT NOT NULL CHECK(result IN ('drafted','refused','recorded')),
+  content_digest TEXT CHECK(content_digest IS NULL OR length(content_digest)=71),
+  provenance_json TEXT NOT NULL CHECK(length(provenance_json) BETWEEN 2 AND 20000),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0)
+);
+CREATE INDEX idx_draft_events_draft ON draft_events(draft_id,server_at_ms);
+
+-- an arrival, a revision and an audit entry are written once — the rule
+-- `transfers`, `receipt_events`, `assignment_events` and `observed_records`
+-- already live under
+CREATE TRIGGER tg_captures_no_upd BEFORE UPDATE ON captures BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_captures_no_del BEFORE DELETE ON captures BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_draft_revisions_no_upd BEFORE UPDATE ON draft_revisions BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_draft_revisions_no_del BEFORE DELETE ON draft_revisions BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_draft_events_no_upd BEFORE UPDATE ON draft_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_draft_events_no_del BEFORE DELETE ON draft_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+```
+
+---
+
 ### D.2 SQL negative probes
 
 Every probe below is executed as a test in this repository; each names the
@@ -4335,6 +4521,11 @@ Internal worker surface (NOT public, service-authenticated, single-binary in-pro
 | — | `POST /v1/webhooks` | member+, own endpoint only | `{"url"}` — NO `idempotency_key`, for the reason §6.1 gives for the two secret-returning provisioning calls | `201 {"webhook_id","url","secret"}`; `secret` is shown ONCE and the URL is echoed exactly as written (§5.2). A URL the §5.2 registration rules refuse, or one longer than 2000 characters, or one Appendix D.1's `CHECK` cannot store → `INVALID_SCHEMA` with the reason |
 | — | `GET /v1/webhooks` | member+, own endpoints only | — | `200 {"items":[{"webhook_id","url","status","failure_count"}…]}` — never the secret, never its reference |
 | — | `DELETE /v1/webhooks/{id}` | the endpoint's own agent | — | `200 {"deleted":true}`; another agent's endpoint → `NOT_FOUND` |
+| `capture.submit` | `POST /v1/captures` | member+ | `{"kind":"workflow\|session\|native_skill", "text"?, "title"?, "source_ref"?, "session"?:{"session_ref"?,"turns":[{"role":"user\|assistant\|system\|tool","text"}…]}, "native"?:{"runtime":"claude_code\|codex","path","content"}, "idempotency_key"?}`. `text` is required for `workflow`, `session.turns` for `session` and the three `native` fields for `native_skill`; a source over 100000 characters is `LIMIT_EXCEEDED` | `201 {"outcome":"drafted\|refused","capture_id","source_kind","source_format","source_digest","classification","draft","refusal"}`. `classification` is `{"category","skillable","reason_code","reason","routing_reason","signals","scores","step_count","classifier_version"}` — `category` ∈ `reusable_procedure \| memory \| rule \| automation \| connector \| loadout \| one_off \| ambiguous`. On `drafted`, `draft` is the object surface `draft.get` returns and `refusal` is `null`; on `refused`, `draft` is `null` and `refusal` is `{"code","category","reason_code","reason","routing_reason"}`, where `code` is `NOT_SKILLABLE` for a capture the classifier declined and `MALFORMED_NATIVE_SOURCE`, `UNSUPPORTED_NATIVE_SOURCE` or `UNSAFE_NATIVE_PATH` for an import that could not be read. A CONFORMING REGISTRY MUST redact the normalised source before it classifies, compiles, stores, audits or returns any part of it, MUST NOT store a raw secret value in `captures.redacted_source`, `captures.source_ref`, `draft_revisions.content_json`, `draft_revisions.semantic_json`, `draft_revisions.security_json` or `draft_events.correlation_ref`, and MUST NOT emit a partial draft for a refused import |
+| `draft.list` | `GET /v1/drafts` | member+ (the caller's workspace) | — | `200 {"items":[{"draft_id","latest_revision_id","latest_revision","revisions","capture_id","title","content_digest","semantic_status","semantic_blocking","security_blocking","created_at_ms"}…]}` — one row per lineage, ordered by `draft_id` |
+| `draft.get` | `GET /v1/drafts/{draft_id}` · `GET /v1/drafts/{draft_id}/revisions/{revision_id}` | member+ (the caller's workspace) | `{"draft_id","revision_id"?}` over MCP; the REST forms take both from the path | `200 {"draft_id","revision","lineage":[{"revision_id","revision","parent_revision_id","origin","content_digest","created_at_ms"}…]}`. `revision` is `{"draft_id","revision_id","revision","parent_revision_id","capture_id","origin","author_agent_id","compiler_version","content_digest","created_at_ms","content","semantic_review","security_review"}`. `content` carries the ten canonical sections — `title`, `purpose`, `when_to_use`, `procedure`, `inputs`, `outputs`, `permissions`, `dependencies`, `failure_modes`, `redactions` and `provenance` — and a section the capture did not state is EMPTY and reported by the semantic review, never filled in. `semantic_review` is `{"status":"complete\|incomplete","blocking_count","missing_sections","findings":[{"code","section","severity","detail","line"}…],"compiler_version"}`; `security_review` is `{"requested_permissions","dependencies","risky_actions":[{"code","severity","detail","line"}…],"redactions":[{"category","detector","line","column","removed_characters","reason"}…],"blocking_count","compiler_version"}`. A redaction entry MUST NOT carry the removed value or a digest of it. Without `revision_id` the latest revision is returned; an unknown one is `NOT_FOUND` |
+| `draft.revise` | `POST /v1/drafts/{draft_id}/revisions` | owner/admin | `{"sections"?:{"title"?,"purpose"?,"when_to_use"?,"procedure"?,"inputs"?,"outputs"?,"permissions"?,"dependencies"?,"failure_modes"?},"idempotency_key"?}`; a body with no `sections` recompiles the stored redacted source at the current compiler version. A key outside that set is `INVALID_SCHEMA` | `201` — the same revision object `draft.get` returns, for the NEW revision. A CONFORMING REGISTRY MUST append a revision whose `parent_revision_id` names the previous one and MUST NOT alter the previous row, its digest or its reviews; owner-supplied text goes through the same redaction a capture does |
+| `draft.audit` | `GET /v1/drafts/{draft_id}/audit` | member+ (the caller's workspace) | `{"draft_id"}` over MCP | `200 {"draft_id","items":[{"event_id","event","draft_id","draft_revision_id","capture_id","actor_agent_id","actor_role","source","correlation_ref","reason_code","result","content_digest","provenance","server_at_ms"}…]}` — ascending by time, `event` ∈ `captured \| classified \| compiled \| revised \| refused`. Every field a consumer decides on is its own column of `draft_events`; `provenance` is the structured payload and is never where the event type, the actor or the result hides |
 | `migration.count` | `GET /v1/migrations?since_ms=&until_ms=&q=&capability=&runtime=&tool=&risk=&state=&min_adopted=&min_rating=&limit=&cursor=` | any authenticated; the counted skills are exactly those surface 5 makes visible to the caller | the surface-5 filters and pagination controls, plus an optional selection window: `since_ms`/`until_ms`, integer milliseconds, applied to the `server_at_ms` of the terminal event. A bound that is not an integer, or a pair in the wrong order, is `INVALID_SCHEMA` on BOTH adapters | `200 {"source","window","window_since_ms","window_until_ms","next_cursor","items":[{"skill_id","slug","migrations","distinct_recipients","distinct_runtimes","runtimes","runtimes_unknown","recipients_unattributed","recipient_sources","measurement_state","source","window"}…]}` — one row per visible SKILL. `migrations` counts DISTINCT (version, recipient) pairs whose receipt carries a terminal `adopted` event with server-validated evidence (§5.3); repeating a pair does not raise it. `distinct_recipients` counts the recipient agents among them — read from the `recipient_json` of the event that OPENED the chain, which is `transferred` when a sender opened it (§5.4) and `requested` when the recipient opened it itself (§5.2), never from `adoption_receipts` and never from `adoption_requests` — and `distinct_runtimes` the DIFFERENT declared `environment_descriptor.runtime.id` values, read from the `delivered` events of those receipts. Fail-closed on the recipient too: a chain whose opening event is absent, or whose `recipient_json` is absent or unparseable, contributes NOTHING — no migration, no recipient, no runtime — and is reported in `recipients_unattributed`, never answered from the receipt shell or from any other table, which would be answering from a journal the chain did not name. `recipient_sources` names the opening events the counted recipients were actually read from — every one of them a row of `receipt_events` — and `source` states them in words, so the provenance published beside a figure is derived from what that figure was obtained from and is never a constant. Every count MUST be computed from `receipt_events` and MUST NOT be computed from `adoption_receipts.adopter_agent_id` or from `adoption_requests.requester_context_json` (§5.3), and a conforming registry MUST make that literally true of every statement the counter runs rather than true of most of them. Fail-closed: a migration whose declared runtime cannot be read contributes no runtime id at all and is reported in `runtimes_unknown`, which is therefore never interchangeable with `distinct_runtimes: 0`. A visible skill with no qualifying receipt is a row of zeroes with `measurement_state:"not_migrated"`, never an absent row, and every row restates its `source` and its `window` so no number is published without its method. This surface is strictly reading: it appends nothing, transitions nothing and takes no `idempotency_key` |
 | `dashboard.view` | `GET /v1/dashboard/{view}?format=json\|html` · `GET /v1/dashboard` (the view list) | any authenticated; every row is scoped by the SAME ACL as the surface it is read from | `view` ∈ `library \| evidence \| receipts \| approvals \| dead_letters \| migrations \| fleet \| agent \| skill_approval \| capability \| outcomes`; `format` defaults to `json`, and any other value of either is `INVALID_SCHEMA` on BOTH adapters. The surface-5 filters and pagination controls are accepted by the views that page over versions | `200 {"view","title","views":[the eleven names],"sections":[{"key","title","fields":[…],"rows":[…],"empty","note"?,"row_class_field"?,"next_cursor"?}],"demo_mode","notices":[{"kind","subject","detail"}]}`. `fields` names, in column order, the API fields of the numbered surfaces that the section+s `rows` carry — the dashboard computes nothing of its own and is a rendering, never a second source of truth, which is why the CHOICE of sections is presentation and is not fixed here while the envelope, the eleven view names, the ACL scoping and `demo_mode` (§9.1) are. `note` is a sentence rendered with a section whether or not it has rows. `row_class_field` names the row field whose value becomes the row+s CSS class, which is how §9+s fleet screen makes the colour of a row mean the state of the reconciliation between intent and fact and nothing else. `notices` are the blocks of a view that are NOT tables: `kind` `capability_absent` states that a part of a screen does not exist in this build and names the work it belongs to — an absent capability is never rendered as an empty table, because an empty table reads as a claim about the data — and `kind` `legend` states what a rendering device means. `format=html` renders that same payload: over REST as `text/html`, over MCP as `{"view","html"}`. `GET /v1/dashboard` answers `200 {"views":[the eleven names]}`. The `migrations` view renders `migration.count` over all time; the `fleet`, `agent`, `skill_approval`, `capability` and `outcomes` views are §9+s five screens ([D-1]..[D-5]) and render §6 part A, §5.5 and §5.3+s own answers |
 

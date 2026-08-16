@@ -133,6 +133,25 @@ export const IDENTITY_INTAKE: Record<string, IdentityColumnClass> = {
 
   // ------------------------------------------------------- assignment_events
   "assignment_events.id": MINTED,
+
+  // ---------------------------------------------------------------- captures
+  "captures.id": MINTED,
+
+  // ------------------------------------------------------------ draft_events
+  "draft_events.id": MINTED,
+  "draft_events.capture_id": RESOLVED,
+  "draft_events.draft_id": RESOLVED,
+
+  // --------------------------------------------------------- draft_revisions
+  "draft_revisions.id": MINTED,
+  "draft_revisions.draft_id": {
+    intake: "registry_generated",
+    note:
+      "a ULID this registry mints for the LINEAGE, under `UNIQUE(draft_id, revision)`. No caller names a lineage: " +
+      "`captureDraft` mints one and `reviseDraft` copies the head's, so the unique key is over two values a caller " +
+      "cannot express",
+  },
+  "draft_revisions.workspace_id": FROM_AUTH,
   "assignment_events.assignment_id": RESOLVED,
   "assignment_events.idempotency_key": {
     intake: "registry_generated",

@@ -304,6 +304,15 @@ test("MCP: initialize + tools/list expose exactly the implemented surfaces", () 
       "signing_key.revoke",
       // auxiliary (Appendix H): the public transparency-log read
       "tlog.read",
+      // V1 P1: capture → draft. One write that takes a workflow, a session or a
+      // supported native skill and answers with a versioned draft or a
+      // structured refusal, one write that edits or recompiles AS A NEW
+      // REVISION, and three reads over the drafts and their audit
+      "capture.submit",
+      "draft.list",
+      "draft.get",
+      "draft.revise",
+      "draft.audit",
       // auxiliary (Appendix H): the per-skill migration counter — a READ, and
       // separate from every tool that appends a receipt event
       "migration.count",

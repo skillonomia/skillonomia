@@ -817,6 +817,144 @@ export const MCP_TOOLS = [
     },
   },
   {
+    name: "capture.submit",
+    description:
+      "V1 P1: capture a workflow, an agent session or a supported native skill and get back a versioned DRAFT or a structured REFUSAL. `kind` selects the input: `workflow` takes `text`, `session` takes `session.turns`, `native_skill` takes `native.runtime`, `native.path` and `native.content`. THIS TOOL WRITES: it records the arrival, the classification and — where one was produced — the first draft revision, in INSERT-only tables. REDACTION HAPPENS BEFORE ANY OF THAT: credential material is removed from the normalised source before it is classified, compiled, stored, audited or returned, and the preview reports category, location and reason without the value. A capture the classifier reads as a memory, a rule, an automation, a connector, a loadout or a one-off is REFUSED with its category and reason rather than dressed up as a skill, and an import that is malformed or in a form neither runtime reads is refused whole — never as a partial draft. Both refusals are ordinary successful responses whose `outcome` is `refused`; a request whose SHAPE is wrong is `INVALID_SCHEMA` and records nothing.",
+    // [I-8]: this WRITES — a capture row, its audit and possibly a revision.
+    // `destructiveHint` false: every table it touches is INSERT-only, so it can
+    // add and can disturb nothing already there. `idempotentHint` false: two
+    // captures of the same text are two arrivals, and the way to make a repeat
+    // converge is the `idempotency_key` every mutating surface takes.
+    // `openWorldHint` false: the native content is bytes the CALLER sent, and
+    // this call opens no file and reaches no runtime.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["workflow", "session", "native_skill"] },
+        text: { type: "string" },
+        title: { type: "string" },
+        source_ref: { type: "string" },
+        session: {
+          type: "object",
+          properties: {
+            session_ref: { type: "string" },
+            turns: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  role: { type: "string", enum: ["user", "assistant", "system", "tool"] },
+                  text: { type: "string" },
+                },
+                required: ["role", "text"],
+              },
+            },
+          },
+          required: ["turns"],
+        },
+        native: {
+          type: "object",
+          properties: {
+            runtime: { type: "string", enum: ["claude_code", "codex"] },
+            path: { type: "string" },
+            content: { type: "string" },
+          },
+          required: ["runtime", "path", "content"],
+        },
+        idempotency_key: { type: "string" },
+      },
+      required: ["kind"],
+    },
+  },
+  {
+    name: "draft.list",
+    description:
+      "V1 P1: the drafts of the caller's workspace — one row per lineage, carrying the latest revision, its content digest, how many revisions there are, and the blocking counts of the semantic and security reviews as NUMBERS rather than as prose to be parsed. Read-only.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "draft.get",
+    description:
+      "V1 P1: one draft — a revision and the whole lineage behind it. Without `revision_id` the latest revision is returned; with one, that exact revision, which is how a reader confirms that an edit added a row instead of rewriting one. The revision carries the ten canonical sections, the structured semantic review (missing, contradictory and unexecutable sections) and the structured security review (requested permissions, dependencies, risky actions and redactions). Read-only.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        draft_id: { type: "string" },
+        revision_id: { type: "string" },
+      },
+      required: ["draft_id"],
+    },
+  },
+  {
+    name: "draft.revise",
+    description:
+      "V1 P1: edit or recompile a draft AS A NEW REVISION. `sections` carries the sections an owner changed; a call with no sections recompiles the stored redacted source at the current compiler version. THE PREVIOUS REVISION IS NEVER TOUCHED — the table refuses an update, and the new row names its parent. Edited text goes through the same redaction as a capture, so an owner pasting a credential into a step does not put one in the database. Owner or admin only.",
+    // [I-8]: WRITES, and cannot destroy: `draft_revisions` is INSERT-only, so
+    // an edit is an append and the revision it came from stays readable.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        draft_id: { type: "string" },
+        sections: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            purpose: { type: "string" },
+            when_to_use: { type: "string" },
+            procedure: { type: "array", items: { type: "string" } },
+            inputs: { type: "array", items: { type: "string" } },
+            outputs: { type: "array", items: { type: "string" } },
+            permissions: { type: "array", items: { type: "string" } },
+            dependencies: { type: "array", items: { type: "string" } },
+            failure_modes: { type: "array", items: { type: "string" } },
+          },
+        },
+        idempotency_key: { type: "string" },
+      },
+      required: ["draft_id"],
+    },
+  },
+  {
+    name: "draft.audit",
+    description:
+      "V1 P1: the structured audit of one draft — the arrival, the classification, every compilation and every revision. Each event carries its type, actor, role, source, correlation reference, reason code, result, content digest and structured provenance AS SEPARATE FIELDS; no consumer has to parse a sentence to learn what happened. Read-only.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: { draft_id: { type: "string" } },
+      required: ["draft_id"],
+    },
+  },
+  {
     name: "migration.count",
     description:
       "How often each visible skill MIGRATED: distinct (version, recipient) pairs with a terminal `adopted` receipt, distinct recipients, and distinct declared runtimes — counted from the INSERT-only receipt journal. Optional since_ms/until_ms bound the selection window; every row states its source, window and measurement state. Read-only: it counts, and changes nothing.",
@@ -1076,6 +1214,20 @@ function callTool(registry: Registry, auth: AuthContext, name: string, args: any
     }
     case "tlog.read":
       return { json: JSON.stringify(registry.readTlog(auth, args ?? {})), replayed: false };
+    case "capture.submit": {
+      const out = registry.capture(auth, args ?? {}, idemKey(args));
+      return { json: out.responseJson, replayed: out.replayed };
+    }
+    case "draft.list":
+      return { json: JSON.stringify(registry.listDrafts(auth)), replayed: false };
+    case "draft.get":
+      return { json: JSON.stringify(registry.getDraft(auth, args?.draft_id, args?.revision_id)), replayed: false };
+    case "draft.revise": {
+      const out = registry.reviseDraft(auth, args?.draft_id, args ?? {}, idemKey(args));
+      return { json: out.responseJson, replayed: out.replayed };
+    }
+    case "draft.audit":
+      return { json: JSON.stringify(registry.draftAudit(auth, args?.draft_id)), replayed: false };
     case "migration.count":
       return { json: JSON.stringify(registry.migrationCounts(auth, (args ?? {}) as SearchParams)), replayed: false };
     case "dashboard.view": {

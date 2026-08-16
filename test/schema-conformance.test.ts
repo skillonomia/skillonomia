@@ -217,6 +217,27 @@ const NEW_OBJECTS: ReadonlyArray<{ file: string; names: readonly string[] }> = [
       "tg_obs_records_no_del",
     ],
   },
+  {
+    // D.1m — the V1 capture/draft domain. Purely additive: three tables, three
+    // indexes and six INSERT-only triggers, and no statement of any earlier
+    // migration edited, which is what makes `migrations/down/0013_…` a complete
+    // reversal rather than a partial one.
+    file: "0013_capture_and_draft_revisions.sql",
+    names: [
+      "captures",
+      "idx_captures_workspace",
+      "draft_revisions",
+      "idx_draft_revisions_draft",
+      "draft_events",
+      "idx_draft_events_draft",
+      "tg_captures_no_upd",
+      "tg_captures_no_del",
+      "tg_draft_revisions_no_upd",
+      "tg_draft_revisions_no_del",
+      "tg_draft_events_no_upd",
+      "tg_draft_events_no_del",
+    ],
+  },
 ];
 
 const ADDED_OBJECT_COUNT = NEW_OBJECTS.reduce((n, m) => n + m.names.length, 0);
@@ -312,7 +333,7 @@ test("live schema is Appendix D.1 plus exactly the Appendix D.1b delta", () => {
   assert.equal(liveSet.size, fileStatements.length + ADDED_OBJECT_COUNT, "live schema has no extra objects");
 });
 
-test("object counts: 26 tables, 20 triggers, 13 indexes; no bookkeeping table", () => {
+test("object counts: 29 tables, 26 triggers, 16 indexes; no bookkeeping table", () => {
   const db = openMigrated();
   const count = (type: string) =>
     (db
@@ -333,14 +354,16 @@ test("object counts: 26 tables, 20 triggers, 13 indexes; no bookkeeping table", 
   // D.1k and D.1l add neither: each rebuilds `receipt_events` and re-creates
   // every object of it verbatim, which `[11.7]` and `[12.5]` assert object for
   // object.
-  assert.equal(count("table"), 26);
-  assert.equal(count("trigger"), 20);
-  assert.equal(count("index"), 13);
+  // D.1m adds three tables, six triggers and three indexes and edits nothing,
+  // so each count moves by exactly what that migration creates.
+  assert.equal(count("table"), 29);
+  assert.equal(count("trigger"), 26);
+  assert.equal(count("index"), 16);
   const uv = db.prepare("PRAGMA user_version").get() as { user_version: number };
   assert.equal(
     uv.user_version,
-    12,
-    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote; tracked in user_version",
+    13,
+    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote, 0013 = D.1m the capture and draft domain of V1 — three INSERT-only tables added and nothing edited; tracked in user_version",
   );
 });
 

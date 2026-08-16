@@ -454,7 +454,11 @@ test("[12.4] a base-build database upgrades and answers the standard scenario th
 
 test("[12.5] the definition of `receipt_events` after 0012 is the definition after 0011, object for object", () => {
   const before = databaseAtVersion(11);
-  const after = openMigrated();
+  // `0012` and not "the latest": this probe is about what THIS migration left,
+  // and reading it off `openMigrated()` made the assertion move every time a
+  // later migration landed — which is how a probe about one rebuild becomes a
+  // probe about the head of the schema.
+  const after = databaseAtVersion(12);
   assert.equal(userVersion(before), 11);
   assert.equal(userVersion(after), 12);
   assert.deepEqual(

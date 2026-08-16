@@ -282,6 +282,41 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       return json(200, JSON.stringify(registry.listGrants(auth)));
     }
 
+    // ---- V1 P1: capture → draft. `POST /v1/captures` answers 201 for a draft
+    //      AND for a refusal, because both record an arrival the registry
+    //      answered; the `outcome` field of the body is which. A request whose
+    //      shape is wrong never reaches here as a 201: it is INVALID_SCHEMA.
+
+    if (method === "POST" && path === "/v1/captures") {
+      const body = parseBody(req);
+      return mutationResponse(registry.capture(auth, body, idemKey(body)), 201);
+    }
+
+    if (method === "GET" && path === "/v1/drafts") {
+      return json(200, JSON.stringify(registry.listDrafts(auth)));
+    }
+
+    m = /^\/v1\/drafts\/([^/]+)\/revisions$/.exec(path);
+    if (method === "POST" && m) {
+      const body = parseBody(req);
+      return mutationResponse(registry.reviseDraft(auth, m[1], body, idemKey(body)), 201);
+    }
+
+    m = /^\/v1\/drafts\/([^/]+)\/revisions\/([^/]+)$/.exec(path);
+    if (method === "GET" && m) {
+      return json(200, JSON.stringify(registry.getDraft(auth, m[1], m[2])));
+    }
+
+    m = /^\/v1\/drafts\/([^/]+)\/audit$/.exec(path);
+    if (method === "GET" && m) {
+      return json(200, JSON.stringify(registry.draftAudit(auth, m[1])));
+    }
+
+    m = /^\/v1\/drafts\/([^/]+)$/.exec(path);
+    if (method === "GET" && m) {
+      return json(200, JSON.stringify(registry.getDraft(auth, m[1])));
+    }
+
     // ---- §5.5: deployment assignments. The activation ROOT is never taken
     //      from a request: it is deployment configuration, and a route that
     //      accepted a path from a caller would be a route that let a caller

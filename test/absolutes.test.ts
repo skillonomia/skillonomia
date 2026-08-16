@@ -99,6 +99,17 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["CONTRIBUTING.md", "ae41cb1364a3b2ef", "intent", "the published mirror may be force-updated; about a repository that is not this one"],
     ["CONTRIBUTING.md", "59cffc87b5626c56", "editorial", "invites a report of a SPEC.md defect; a statement about how to talk to the maintainers"],
   ],
+  // ---------------------------------------------------------------- docs/API
+  //
+  // The V1 P1 capture surfaces. Each of these is a statement about product
+  // behaviour with a test behind it, named here rather than left for a reader
+  // to take on trust.
+  [
+    ["docs/API.md", "2740e2a65f0e2410", "behaviour", "a refusal is a 201 whose outcome is `refused`, never a partial draft: test/v1p1-refusals.test.ts"],
+    ["docs/API.md", "9a95a14393c11eb1", "behaviour", "a redaction finding carries category, location and reason and no value: test/v1p1-redaction.test.ts"],
+    ["docs/API.md", "f764db4f16194e1b", "behaviour", "a revise body with no sections recompiles the stored source: test/v1p1-capture.test.ts"],
+    ["docs/API.md", "df1532107e84787c", "behaviour", "an edit appends a revision and the previous row is unchanged: test/v1p1-capture.test.ts"],
+  ],
   // ------------------------------------------------------------------ README
   [
     ["README.md", "30dbd7abb8b0bb13", "behaviour", "a checkout runs without a build: exercised on both runtimes by test/readme-quickstart.test.ts"],
@@ -854,7 +865,7 @@ test("the true form of each planted family passes", () => {
     "Only four packaging paths exist, and all of them are local.",
     "The threat model and the ten red-team tests that cover it are shipped.",
     "Gate 5 admits only what it can read: ten classes are refused.",
-    "The normative schema is given in **twelve** migrations, applied in ascending order.",
+    "The normative schema is given in **thirteen** migrations, applied in ascending order.",
     "The package ships four classes of defective bundle and one positive control.",
   ];
   assert.equal(TRUE_FORMS.length, PLANTINGS.length, "every planted family needs its true form beside it");

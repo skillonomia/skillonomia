@@ -35,6 +35,7 @@ FILES=(
   test/schema-conformance.test.ts
   test/insert-only.test.ts
   test/lifecycle-surfaces.test.ts
+  test/v1p1-compat.test.ts
 )
 
 missing=0
