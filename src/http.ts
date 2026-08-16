@@ -326,7 +326,14 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       return html(200, consolePage());
     }
 
-    if (path === "/v1/console/session" || path === "/v1/console/logout" || path.startsWith("/v1/console/drafts")) {
+    if (
+      path === "/v1/console/session" ||
+      path === "/v1/console/logout" ||
+      path === "/v1/console/fleet" ||
+      path.startsWith("/v1/console/drafts") ||
+      path.startsWith("/v1/console/capabilities") ||
+      path.startsWith("/v1/console/assignments")
+    ) {
       if (!session) throw new ApiError("UNAUTHORIZED", "the owner console requires a session");
       // Every MUTATION under the console carries both defences: the request must
       // come from this origin, and it must echo the token only this page holds
@@ -422,6 +429,57 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
         });
       }
 
+      // ------------------------------------------- V1 P3: the capability and
+      // its assignments. Reads answer the console's contract; mutations go
+      // through the same idempotency and precondition machinery every other
+      // mutation of this registry uses, and their refusals — `409` and `412` —
+      // carry `current_state` so the page refetches rather than guessing
+      // (`P3-FR-12`).
+      if (method === "GET" && path === "/v1/console/capabilities") {
+        return json(200, JSON.stringify(registry.consoleCapabilities(cauth)), { "Cache-Control": "no-store" });
+      }
+
+      m = /^\/v1\/console\/capabilities\/([^/]+)$/.exec(path);
+      if (method === "GET" && m) {
+        return json(200, JSON.stringify(registry.consoleCapability(cauth, m[1])), { "Cache-Control": "no-store" });
+      }
+
+      if (method === "GET" && path === "/v1/console/fleet") {
+        return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_VERSION, agents: registry.fleetAgents(cauth) }), {
+          "Cache-Control": "no-store",
+        });
+      }
+
+      if (method === "POST" && path === "/v1/console/assignments") {
+        const body = parseBody(req);
+        return consoleMutationResponse(registry.assignRevision(cauth, body, idemKey(body)), 201);
+      }
+
+      m = /^\/v1\/console\/assignments\/([^/]+)\/audit$/.exec(path);
+      if (method === "GET" && m) {
+        return json(200, JSON.stringify(registry.assignmentAudit(cauth, m[1])), { "Cache-Control": "no-store" });
+      }
+
+      m = /^\/v1\/console\/assignments\/([^/]+)\/(activate|pause|revoke)$/.exec(path);
+      if (method === "POST" && m) {
+        const body = parseBody(req);
+        return consoleMutationResponse(
+          registry.assignmentLifecycle(cauth, m[1], m[2] as "activate" | "pause" | "revoke", body, idemKey(body)),
+          200,
+        );
+      }
+
+      m = /^\/v1\/console\/assignments\/([^/]+)\/revision$/.exec(path);
+      if (method === "POST" && m) {
+        const body = parseBody(req);
+        return consoleMutationResponse(registry.selectAssignmentRevision(cauth, m[1], body, idemKey(body)), 200);
+      }
+
+      m = /^\/v1\/console\/assignments\/([^/]+)$/.exec(path);
+      if (method === "GET" && m) {
+        return json(200, JSON.stringify(registry.consoleAssignment(cauth, m[1])), { "Cache-Control": "no-store" });
+      }
+
       throw new ApiError("NOT_FOUND", `no route ${method} ${path}`);
     }
 
@@ -438,6 +496,20 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       return json(201, JSON.stringify({ contract: CONSOLE_CONTRACT_VERSION, ...minted }), {
         "Cache-Control": "no-store",
       });
+    }
+
+    // `INV-02`: THE OBSERVED-STATE INTAKE, AND WHY IT IS HERE RATHER THAN UNDER
+    // `/v1/console/`. Observed state changes only on structured backend,
+    // adapter or runtime evidence. A route reachable with a console session
+    // would be a route an owner action could reach, so it is mounted on the
+    // machine-to-machine surface, behind a Bearer key, and the console client
+    // never calls it. `P3-FR-06` is three things: this placement, the absence of
+    // an `owner` member in the `source` vocabulary, and the fact that no
+    // lifecycle writer can reach the observation table.
+    m = /^\/v1\/assignments\/([^/]+)\/observations$/.exec(path);
+    if (method === "POST" && m) {
+      const body = parseBody(req);
+      return mutationResponse(registry.recordAssignmentObservation(auth, m[1], body, idemKey(body)), 201);
     }
 
     if (method === "POST" && path === "/mcp") {

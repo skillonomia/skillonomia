@@ -187,12 +187,43 @@ import {
   type MintedTicket,
   type OpenedSession,
 } from "./console-session.ts";
-import { decideDraftInTx, requireRevisable, type Decision, type DecisionResponse } from "./draft-decision.ts";
 import {
+  approvalOfRevision,
+  decideDraftInTx,
+  requireRevisable,
+  type Decision,
+  type DecisionResponse,
+} from "./draft-decision.ts";
+import {
+  applyLifecycleActionInTx,
+  assignmentDetail,
+  assignmentEligibility,
+  createAssignmentInTx,
+  fleetAgents,
+  lifecycleEvents,
+  loadAssignment as loadSkillAssignment,
+  recordObservation,
+  requestDigest,
+  selectRevisionInTx,
+  validateObservation,
+  type AssignmentResponse,
+  type AssignmentRow as SkillAssignmentRow,
+  type FleetAgent,
+  type LifecycleAction,
+  type ObservedView,
+} from "./assignment-lifecycle.ts";
+import {
+  CONSOLE_CONTRACT_VERSION,
+  consoleAssignmentView,
   consoleAudit,
+  consoleCapabilities,
+  consoleCapability,
   consoleDraft,
   consoleInbox,
+  type ConsoleAssignmentView,
   type ConsoleAudit,
+  type ConsoleCapability,
+  type ConsoleCapabilityLibrary,
   type ConsoleDraft,
   type ConsoleInbox,
 } from "./console-view.ts";
@@ -4622,6 +4653,224 @@ export class Registry {
         (text) => redact(text).text,
       ),
     );
+  }
+
+  // ------------------------------------- V1 P3: assignment and lifecycle
+  //
+  // The same service layer, the same access rules and the same database as
+  // every method above. An owner command writes DESIRED state; the one method
+  // that writes observed state takes evidence and is reached by a different
+  // route with a different authentication (`INV-02`, `P3-FR-06`).
+
+  /** The closed fleet: the active agents of the caller's own workspace. */
+  fleetAgents(auth: AuthContext): FleetAgent[] {
+    this.requireOwnerOrAdmin(auth, "reading the fleet");
+    return fleetAgents(this.db, auth);
+  }
+
+  /** `GET /v1/console/capabilities` — the library: every lineage that has an
+   *  approved revision, with the assignments made of it. */
+  consoleCapabilities(auth: AuthContext): ConsoleCapabilityLibrary {
+    this.requireOwnerOrAdmin(auth, "reading the capability library");
+    return consoleCapabilities(this.db, auth);
+  }
+
+  /** `GET /v1/console/capabilities/{draft_id}` — the capability detail
+   *  (`P3` deliverable 4). */
+  consoleCapability(auth: AuthContext, draftId: unknown): ConsoleCapability {
+    this.requireOwnerOrAdmin(auth, "reading a capability");
+    return consoleCapability(this.db, auth, draftId);
+  }
+
+  /** One assignment, desired and observed side by side (`P3-FR-07`). */
+  consoleAssignment(auth: AuthContext, assignmentId: unknown): ConsoleAssignmentView {
+    this.requireOwnerOrAdmin(auth, "reading an assignment");
+    const row = this.requireAssignmentOfWorkspace(auth, assignmentId);
+    return consoleAssignmentView(this.db, assignmentDetail(this.db, row));
+  }
+
+  /** The lifecycle journal of one assignment: every desired-state event, in
+   *  structured columns (`P3-FR-13`, `INV-05`). */
+  assignmentAudit(auth: AuthContext, assignmentId: unknown): { contract: string; assignment_id: string; items: unknown[] } {
+    this.requireOwnerOrAdmin(auth, "reading an assignment audit");
+    const row = this.requireAssignmentOfWorkspace(auth, assignmentId);
+    const items = lifecycleEvents(this.db, row.id).map((e) => ({
+      entry_id: e.id,
+      assignment_id: e.assignment_id,
+      event_seq: e.event_seq,
+      event: e.event,
+      desired_state: e.desired_state,
+      desired_revision_id: e.desired_revision_id,
+      effective_from: e.effective_from,
+      actor_agent_id: e.actor_agent_id,
+      actor_role: e.actor_role,
+      source: e.source,
+      reason_code: e.reason_code,
+      reason: e.reason,
+      content_digest: e.content_digest,
+      provenance: JSON.parse(e.provenance_json),
+      server_at_ms: e.server_at_ms,
+    }));
+    return { contract: CONSOLE_CONTRACT_VERSION, assignment_id: row.id, items };
+  }
+
+  /**
+   * `P3-FR-01`, `P3-FR-02`: assign an APPROVED revision to an agent of the
+   * closed fleet. The eligibility rule is computed once, in
+   * `src/assignment-lifecycle.ts`, and this is the call that cannot be bypassed.
+   */
+  assignRevision(auth: AuthContext, input: unknown, idempotencyKey?: string): IdempotentOutcome<AssignmentResponse> {
+    this.requireOwnerOrAdmin(auth, "assigning a revision");
+    const body = (input ?? {}) as Record<string, unknown>;
+    const agentId = body.agent_id;
+    const revisionId = body.revision_id;
+    if (typeof agentId !== "string" || agentId.length !== 26) {
+      throw new ApiError("INVALID_SCHEMA", "agent_id must be a 26-character id");
+    }
+    if (typeof revisionId !== "string" || revisionId.length !== 26) {
+      throw new ApiError("INVALID_SCHEMA", "revision_id must be a 26-character id");
+    }
+    return withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "assignment.create",
+      idempotencyKey,
+      this.now(),
+      () => {
+        const approval = approvalOfRevision(this.db, revisionId);
+        const verdict = assignmentEligibility(this.db, auth, agentId, approval, revisionId, approval?.draft_id ?? null);
+        if (!verdict.assignable) {
+          throw new ApiError(
+            "PRECONDITION_FAILED",
+            `this revision cannot be assigned to this agent: ${verdict.reason_code}`,
+            verdict.reason_code,
+          );
+        }
+        return createAssignmentInTx(this.db, auth, agentId, approval!, this.assignmentReason(body), this.now());
+      },
+      requestDigest(body),
+    );
+  }
+
+  /** `P3-FR-03`, `P3-FR-04`: activate, pause, revoke. */
+  assignmentLifecycle(
+    auth: AuthContext,
+    assignmentId: unknown,
+    action: LifecycleAction,
+    input: unknown,
+    idempotencyKey?: string,
+  ): IdempotentOutcome<AssignmentResponse> {
+    this.requireOwnerOrAdmin(auth, `${action} of an assignment`);
+    const body = (input ?? {}) as Record<string, unknown>;
+    const row = this.requireAssignmentOfWorkspace(auth, assignmentId);
+    return withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      `assignment.${action}`,
+      idempotencyKey,
+      this.now(),
+      () =>
+        applyLifecycleActionInTx(
+          this.db,
+          auth,
+          row,
+          action,
+          this.assignmentReason(body),
+          body.if_version,
+          this.now(),
+        ),
+      requestDigest({ ...body, assignment_id: row.id }),
+    );
+  }
+
+  /** `P3-FR-05`: revision selection, which is also rollback. */
+  selectAssignmentRevision(
+    auth: AuthContext,
+    assignmentId: unknown,
+    input: unknown,
+    idempotencyKey?: string,
+  ): IdempotentOutcome<AssignmentResponse> {
+    this.requireOwnerOrAdmin(auth, "selecting a revision");
+    const body = (input ?? {}) as Record<string, unknown>;
+    const row = this.requireAssignmentOfWorkspace(auth, assignmentId);
+    return withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "assignment.select_revision",
+      idempotencyKey,
+      this.now(),
+      () =>
+        selectRevisionInTx(
+          this.db,
+          auth,
+          row,
+          body.revision_id,
+          this.assignmentReason(body),
+          body.if_version,
+          this.now(),
+        ),
+      requestDigest({ ...body, assignment_id: row.id }),
+    );
+  }
+
+  /**
+   * THE ONE METHOD THAT WRITES OBSERVED STATE — `INV-02`, `INV-03`.
+   *
+   * It is authenticated as a machine-to-machine call, it takes an evidence
+   * payload whose `source` vocabulary has no `owner` member, and it is not
+   * reachable from a console session: `src/http.ts` mounts it outside the
+   * console surface. Nothing an owner does in the Console can reach it.
+   */
+  recordAssignmentObservation(
+    auth: AuthContext,
+    assignmentId: unknown,
+    input: unknown,
+    idempotencyKey?: string,
+  ): IdempotentOutcome<{ assignment_id: string; observed: ObservedView }> {
+    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    const row = this.requireAssignmentOfWorkspace(auth, assignmentId);
+    const body = (input ?? {}) as Record<string, unknown>;
+    const evidence = validateObservation(body, this.now());
+    return withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "assignment.observe",
+      idempotencyKey,
+      this.now(),
+      () => ({
+        assignment_id: row.id,
+        observed: recordObservation(this.db, row, auth.agent_id, evidence, this.now()),
+      }),
+      requestDigest({ ...body, assignment_id: row.id }),
+    );
+  }
+
+  private requireOwnerOrAdmin(auth: AuthContext, what: string): void {
+    if (auth.role !== "owner" && auth.role !== "admin") {
+      throw new ApiError("FORBIDDEN", `${what} is an owner or admin action`);
+    }
+  }
+
+  /** An assignment of ANOTHER workspace is `NOT_FOUND`, never `FORBIDDEN`: the
+   *  rule `getDraft` already applies, for the reason it applies there. */
+  private requireAssignmentOfWorkspace(auth: AuthContext, assignmentId: unknown): SkillAssignmentRow {
+    const row = loadSkillAssignment(this.db, assignmentId);
+    if (row.workspace_id !== auth.workspace_id) {
+      throw new ApiError("NOT_FOUND", `no assignment ${row.id}`);
+    }
+    return row;
+  }
+
+  /** An owner's prose on its way to a row and an audit — redacted at the same
+   *  boundary a capture body is, which is the rule P1 established. */
+  private assignmentReason(body: Record<string, unknown>): string | null {
+    const raw = body.reason;
+    if (raw === undefined || raw === null) return null;
+    if (typeof raw !== "string") throw new ApiError("INVALID_SCHEMA", "reason must be a string");
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return null;
+    if (trimmed.length > 2000) throw new ApiError("LIMIT_EXCEEDED", "reason exceeds 2000 characters");
+    return redact(trimmed).text;
   }
 
   listAssignments(auth: AuthContext): AssignmentListResponse {

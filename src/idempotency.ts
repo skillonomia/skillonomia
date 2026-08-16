@@ -158,10 +158,11 @@ function insertReplayRow(
   stored: string,
   responseJson: string,
   nowMs: number,
+  requestDigest?: string,
 ): void {
   db.prepare(
-    "INSERT INTO idempotency_keys(id, actor_agent_id, surface, key, response_json, created_at_ms) VALUES (?,?,?,?,?,?)",
-  ).run(ulid(nowMs), actorAgentId, surface, stored, responseJson, nowMs);
+    "INSERT INTO idempotency_keys(id, actor_agent_id, surface, key, response_json, created_at_ms, request_digest) VALUES (?,?,?,?,?,?,?)",
+  ).run(ulid(nowMs), actorAgentId, surface, stored, responseJson, nowMs, requestDigest ?? null);
 }
 
 /**
@@ -193,16 +194,18 @@ export function withIdempotencyInTx<T>(
   key: string | undefined,
   nowMs: number,
   fnInTx: () => T,
+  requestDigest?: string,
 ): IdempotentOutcome<T> {
   const lookup = db.prepare(
-    "SELECT response_json FROM idempotency_keys WHERE actor_agent_id=? AND surface=? AND key=?",
+    "SELECT response_json, request_digest FROM idempotency_keys WHERE actor_agent_id=? AND surface=? AND key=?",
   );
   let stored: string | undefined;
   if (key !== undefined) {
     validateIdempotencyKey(key);
     stored = storedKeyFor(surface, key);
-    const existing = lookup.get(actorAgentId, surface, stored) as { response_json: string } | undefined;
+    const existing = lookup.get(actorAgentId, surface, stored) as ReplayRow | undefined;
     if (existing) {
+      requireSamePayload(existing, requestDigest, surface);
       return { replayed: true, response: JSON.parse(existing.response_json) as T, responseJson: existing.response_json };
     }
   }
@@ -213,16 +216,52 @@ export function withIdempotencyInTx<T>(
   try {
     response = fnInTx();
     responseJson = JSON.stringify(response);
-    if (stored !== undefined) insertReplayRow(db, actorAgentId, surface, stored, responseJson, nowMs);
+    if (stored !== undefined) insertReplayRow(db, actorAgentId, surface, stored, responseJson, nowMs, requestDigest);
     db.exec("COMMIT");
   } catch (e: any) {
     db.exec("ROLLBACK");
     if (stored === undefined || !String(e.message ?? e).includes("UNIQUE")) throw e;
-    const winner = lookup.get(actorAgentId, surface, stored) as { response_json: string } | undefined;
+    const winner = lookup.get(actorAgentId, surface, stored) as ReplayRow | undefined;
     if (winner) {
+      requireSamePayload(winner, requestDigest, surface);
       return { replayed: true, response: JSON.parse(winner.response_json) as T, responseJson: winner.response_json };
     }
     throw e;
   }
   return { replayed: false, response, responseJson };
+}
+
+interface ReplayRow {
+  response_json: string;
+  request_digest: string | null;
+}
+
+/**
+ * `P3-FR-09` AND `P3-FR-10`, WHICH ARE ONE COMPARISON WITH TWO ANSWERS.
+ *
+ * A key identifies A REQUEST, not a caller's mood. The released column stored
+ * the key and the response and could tell a repeat from a first call but not a
+ * repeat from a DIFFERENT call wearing the same key — so the second one replayed
+ * the first one's response and the caller was told its operation had succeeded
+ * when nothing of it had run. `0015` adds `request_digest`, and this is where it
+ * is read: same key and same payload replays (`P3-FR-09`), same key and a
+ * different payload is `CONFLICT` (`P3-FR-10`).
+ *
+ * THE NULL CASE IS NOT A CONFLICT, and that is deliberate. A row written before
+ * `0015` — or by a surface that passes no digest — carries NULL, which means
+ * "this was recorded before payloads were fingerprinted" and never "the payload
+ * was empty". Reading NULL as a mismatch would turn every pre-existing key of a
+ * released deployment into a `409` on its first retry, which is the migration
+ * `INV-08` forbids requiring.
+ */
+function requireSamePayload(row: ReplayRow, requestDigest: string | undefined, surface: string): void {
+  if (requestDigest === undefined || row.request_digest === null) return;
+  if (row.request_digest !== requestDigest) {
+    throw new ApiError(
+      "CONFLICT",
+      `this idempotency key was already used on ${surface} with a different payload; ` +
+        "a key names one request, so reusing it for another is refused rather than replayed",
+      "used_with_a_different_payload",
+    );
+  }
 }

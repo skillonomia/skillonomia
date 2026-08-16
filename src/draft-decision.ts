@@ -108,6 +108,94 @@ export function decisionsOf(db: Db, workspaceId: string): Map<string, DecisionRe
   return new Map(rows.map((r) => [r.draft_id, viewOf(r)]));
 }
 
+// --------------------------------------------- V1 P3: approval per REVISION
+//
+// WHY THERE ARE TWO TABLES AND WHY THIS FILE IS THE ONLY PLACE THAT KNOWS IT.
+//
+// `0014` gave a LINEAGE one decision, `UNIQUE(draft_id)`. `P3-FR-05` and
+// `INV-06` need something that table cannot hold: a rollback selects a
+// PREVIOUSLY APPROVED REVISION, and a lineage that can carry exactly one
+// approval has nothing to roll back to. `0015` adds `revision_approvals`, one
+// row per revision, and does not alter `draft_decisions` — rebuilding a
+// populated table to widen a UNIQUE is neither additive nor reversible, and the
+// first decision an owner took on a lineage is a fact worth keeping as it was.
+//
+// So the first approval writes BOTH rows and every later one writes only the
+// new table. Every reader in the tree goes through the functions below, which
+// is the `INV-01` line: two tables, one answer, one module that composes it.
+
+/** An approval of ONE revision: what a rollback may select. */
+export interface RevisionApproval {
+  approval_id: string;
+  draft_id: string;
+  draft_revision_id: string;
+  capture_id: string;
+  revision: number;
+  actor_agent_id: string;
+  actor_role: string;
+  content_digest: string;
+  provenance: unknown;
+  server_at_ms: number;
+}
+
+interface ApprovalRow {
+  id: string;
+  draft_id: string;
+  draft_revision_id: string;
+  capture_id: string;
+  workspace_id: string;
+  revision: number;
+  actor_agent_id: string;
+  actor_role: string;
+  source: string;
+  reason_code: string;
+  content_digest: string;
+  provenance_json: string;
+  server_at_ms: number;
+}
+
+function approvalOf(row: ApprovalRow): RevisionApproval {
+  return {
+    approval_id: row.id,
+    draft_id: row.draft_id,
+    draft_revision_id: row.draft_revision_id,
+    capture_id: row.capture_id,
+    revision: row.revision,
+    actor_agent_id: row.actor_agent_id,
+    actor_role: row.actor_role,
+    content_digest: row.content_digest,
+    provenance: JSON.parse(row.provenance_json),
+    server_at_ms: row.server_at_ms,
+  };
+}
+
+/** Every approved revision of one lineage, oldest first. The rollback targets
+ *  (`P3-FR-05`), and the eligible set an assignment may select from. */
+export function approvedRevisionsOf(db: Db, draftId: string): RevisionApproval[] {
+  const rows = db
+    .prepare("SELECT * FROM revision_approvals WHERE draft_id=? ORDER BY revision ASC")
+    .all(draftId) as ApprovalRow[];
+  return rows.map(approvalOf);
+}
+
+/** One revision's approval, or null — the question "may this exact revision be
+ *  assigned?" asked of one revision (`P3-FR-01`). */
+export function approvalOfRevision(db: Db, revisionId: string): RevisionApproval | null {
+  const row = db.prepare("SELECT * FROM revision_approvals WHERE draft_revision_id=?").get(revisionId) as
+    | ApprovalRow
+    | undefined;
+  return row ? approvalOf(row) : null;
+}
+
+/** The approved revision ids of a workspace — what the Inbox reads so that
+ *  listing N drafts stays one query. */
+export function approvedRevisionIds(db: Db, workspaceId: string): Set<string> {
+  const rows = db
+    .prepare("SELECT draft_revision_id FROM revision_approvals WHERE workspace_id=?")
+    .all(workspaceId) as Array<{ draft_revision_id: string }>;
+  return new Set(rows.map((r) => r.draft_revision_id));
+}
+
 /**
  * `P2-FR-09`, as a value.
  *
@@ -181,10 +269,21 @@ export interface DraftActions {
  */
 export function draftActions(eligibility: ApprovalEligibility, decided: DecisionRecord | null): DraftActions {
   const closed: ActionEligibility = { allowed: false, reason_code: "ALREADY_DECIDED" };
+  // V1 P3 narrows ONE half of this rule and leaves the other exactly as P2 left
+  // it. A REJECTED lineage is closed to everything, as before. An APPROVED one
+  // is closed to a second lineage-level DECISION — an approval is not undone by
+  // a rejection — but not to a further revision: `P3-FR-05` and `P5` both
+  // require a lineage to be able to carry more than one approved revision, and
+  // the defect `P2-R1-003` closed was a lineage whose reported state disagreed
+  // with its head. That disagreement is what `revision_approvals` removes:
+  // approval is now a fact about a revision, `eligibility` above is computed
+  // about the revision in hand, and the head's own approval state is a field
+  // rather than an inference from the lineage's first decision.
+  const rejected = decided !== null && decided.decision === "rejected";
   return {
     approve: { allowed: eligibility.approvable, reason_code: eligibility.reason_code },
     reject: decided ? closed : { allowed: true, reason_code: "REJECTABLE" },
-    revise: decided ? closed : { allowed: true, reason_code: "REVISABLE" },
+    revise: rejected ? closed : { allowed: true, reason_code: "REVISABLE" },
   };
 }
 
@@ -199,10 +298,10 @@ export function draftActions(eligibility: ApprovalEligibility, decided: Decision
  */
 export function requireRevisable(db: Db, draftId: string): void {
   const decided = decisionOf(db, draftId);
-  if (decided) {
+  if (decided && decided.decision === "rejected") {
     throw new ApiError(
       "CONFLICT",
-      `draft ${draftId} is already ${decided.decision}; a decided draft takes no further revision`,
+      `draft ${draftId} is already rejected; a rejected draft takes no further revision`,
       decided.decision,
     );
   }
@@ -211,6 +310,9 @@ export function requireRevisable(db: Db, draftId: string): void {
 export interface DecisionResponse {
   draft_id: string;
   decision: DecisionRecord;
+  /** the approval of the exact revision this call decided, when it approved
+   *  one. `decision` above is the lineage's FIRST decision and stays that. */
+  revision_approval?: RevisionApproval | null;
   /** the eligibility AFTER the decision — so a console renders the new state
    *  from the same field it rendered the old one from */
   eligibility: ApprovalEligibility;
@@ -277,8 +379,15 @@ export function decideDraftInTx(
     throw new ApiError("CONFLICT", "the draft has a newer revision than the one this decision names", "pending");
   }
   const already = decisionOf(db, detail.draft_id);
-  if (already) {
+  // A rejection is terminal for the lineage, and a decided lineage takes no
+  // SECOND lineage-level decision — both as P2 left them. What P3 changes is
+  // that an approved lineage may approve a LATER revision, which is a fact
+  // about a revision and lands in `revision_approvals`.
+  if (already && (already.decision === "rejected" || decision === "rejected")) {
     throw new ApiError("CONFLICT", `draft ${detail.draft_id} is already ${already.decision}`, already.decision);
+  }
+  if (approvalOfRevision(db, detail.revision.revision_id)) {
+    throw new ApiError("CONFLICT", `revision ${detail.revision.revision_id} is already approved`, "approved");
   }
 
   const eligibility = approvalEligibility(detail.revision, detail.revision.revision_id, null);
@@ -300,26 +409,56 @@ export function decideDraftInTx(
     semantic_status: detail.revision.semantic_review.status,
     compiler_version: detail.revision.compiler_version,
   };
-  db.prepare(
-    `INSERT INTO draft_decisions(id, draft_id, draft_revision_id, capture_id, workspace_id, decision,
-                                 actor_agent_id, actor_role, source, reason_code, reason, content_digest,
-                                 provenance_json, server_at_ms)
-     VALUES (?,?,?,?,?,?,?,?,'owner',?,?,?,?,?)`,
-  ).run(
-    id,
-    detail.draft_id,
-    detail.revision.revision_id,
-    detail.revision.capture_id,
-    auth.workspace_id,
-    decision,
-    auth.agent_id,
-    auth.role,
-    reasonCode,
-    reason,
-    detail.revision.content_digest,
-    JSON.stringify(provenance),
-    nowMs,
-  );
+  // The FIRST decision of a lineage writes `0014`'s row, and only the first:
+  // that table's `UNIQUE(draft_id)` is what makes it the record of the first
+  // decision, and it is not altered by this phase.
+  if (!already) {
+    db.prepare(
+      `INSERT INTO draft_decisions(id, draft_id, draft_revision_id, capture_id, workspace_id, decision,
+                                   actor_agent_id, actor_role, source, reason_code, reason, content_digest,
+                                   provenance_json, server_at_ms)
+       VALUES (?,?,?,?,?,?,?,?,'owner',?,?,?,?,?)`,
+    ).run(
+      id,
+      detail.draft_id,
+      detail.revision.revision_id,
+      detail.revision.capture_id,
+      auth.workspace_id,
+      decision,
+      auth.agent_id,
+      auth.role,
+      reasonCode,
+      reason,
+      detail.revision.content_digest,
+      JSON.stringify(provenance),
+      nowMs,
+    );
+  }
+  // EVERY approval writes the per-revision row, including the first. A rollback
+  // target is an approved REVISION (`P3-FR-05`), so the set of them has to be
+  // complete in one place — a set that is the union of "the first, over there"
+  // and "the rest, over here" is a set two readers assemble differently.
+  if (decision === "approved") {
+    db.prepare(
+      `INSERT INTO revision_approvals(id, draft_id, draft_revision_id, capture_id, workspace_id, revision,
+                                      actor_agent_id, actor_role, source, reason_code, content_digest,
+                                      provenance_json, server_at_ms)
+       VALUES (?,?,?,?,?,?,?,?,'owner',?,?,?,?)`,
+    ).run(
+      ulid(nowMs),
+      detail.draft_id,
+      detail.revision.revision_id,
+      detail.revision.capture_id,
+      auth.workspace_id,
+      detail.revision.revision,
+      auth.agent_id,
+      auth.role,
+      reasonCode,
+      detail.revision.content_digest,
+      JSON.stringify(provenance),
+      nowMs,
+    );
+  }
   // Read back rather than reconstructed: what the response reports is what the
   // row says, so a CHECK this code did not anticipate surfaces as a failure here
   // instead of as an answer that disagrees with the database.
@@ -329,5 +468,8 @@ export function decideDraftInTx(
     draft_id: detail.draft_id,
     decision: record,
     eligibility: approvalEligibility(detail.revision, detail.revision.revision_id, record),
+    /** `P3`: the approval of THIS revision, which is what an assignment names.
+     *  `decision` above stays the lineage's first decision, unchanged. */
+    revision_approval: decision === "approved" ? approvalOfRevision(db, detail.revision.revision_id) : null,
   };
 }

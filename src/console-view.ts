@@ -38,11 +38,48 @@ import {
   decisionsOf,
   eligibilityFrom,
   approvalEligibility,
+  approvalOfRevision,
+  approvedRevisionIds,
+  approvedRevisionsOf,
   draftActions,
   type ApprovalEligibility,
   type DecisionRecord,
   type DraftActions,
+  type RevisionApproval,
 } from "./draft-decision.ts";
+import {
+  DESIRED_STATES,
+  DESIRED_STATE_SOURCE,
+  EFFECTIVE_FROM,
+  OBSERVED_STATE_SOURCE,
+  assignmentDetail,
+  assignmentEligibility,
+  assignmentsOfWorkspace,
+  fleetAgents,
+  type AssignmentDetail,
+  type AssignmentEligibility,
+  type FleetAgent,
+} from "./assignment-lifecycle.ts";
+
+/**
+ * THE DECISION THAT CLOSES *THIS* REVISION — V1 P3.
+ *
+ * `eligibilityFrom` refuses a revision whose `decided` argument is non-null.
+ * Before P3 that argument was the lineage's decision, which was the same thing:
+ * a lineage had one decision and no revision could follow it. `revision_approvals`
+ * separates the two, so the argument becomes the decision that closes THE
+ * REVISION IN HAND — a rejection, which closes the lineage, or this revision's
+ * own approval. A newer revision of an approved lineage is open, which is what
+ * makes a second approved revision, and therefore a rollback target, reachable.
+ */
+function closingDecision(
+  decision: DecisionRecord | null,
+  revisionApproved: boolean,
+): DecisionRecord | null {
+  if (decision === null) return null;
+  if (decision.decision === "rejected") return decision;
+  return revisionApproved ? decision : null;
+}
 
 /** The version of these shapes. A console reads it and refuses a payload it was
  *  not built for, which is what "versioned structured API contracts" means in
@@ -51,6 +88,9 @@ export const CONSOLE_CONTRACT_VERSION = "console.v1";
 
 export interface ConsoleInboxItem extends DraftListItem {
   decision: DecisionRecord | null;
+  /** whether the head revision of this lineage carries its own approval — the
+   *  field that replaces "the lineage is decided, therefore its head is" */
+  head_approved: boolean;
   eligibility: ApprovalEligibility;
   /** `pending` until an owner decides; then the decision. A field, not a
    *  computation the page performs over other fields. */
@@ -74,6 +114,11 @@ export interface ConsoleDraft {
    *  this draft — three fields the page renders instead of three rules it holds. */
   actions: DraftActions;
   state: ConsoleInboxItem["state"];
+  /** the approval of the revision being shown, or null */
+  revision_approval: RevisionApproval | null;
+  /** every approved revision of the lineage — what an assignment may select
+   *  and what a rollback may return to (`P3-FR-05`) */
+  approved_revisions: RevisionApproval[];
 }
 
 export interface ConsoleAuditEntry {
@@ -116,14 +161,22 @@ function stateOf(decision: DecisionRecord | null): ConsoleInboxItem["state"] {
 export function consoleInbox(db: Db, auth: AuthContext): ConsoleInbox {
   const drafts = listDrafts(db, auth);
   const decisions = decisionsOf(db, auth.workspace_id);
+  const approved = approvedRevisionIds(db, auth.workspace_id);
   const items = drafts.items.map((item) => {
     const decision = decisions.get(item.draft_id) ?? null;
+    const headApproved = approved.has(item.latest_revision_id);
     return {
       ...item,
       decision,
+      head_approved: headApproved,
       // the Inbox row IS the latest revision — `listDrafts` selects the head of
       // each lineage — so `isLatest` is true by construction here
-      eligibility: eligibilityFrom(item.semantic_blocking, item.security_blocking, true, decision),
+      eligibility: eligibilityFrom(
+        item.semantic_blocking,
+        item.security_blocking,
+        true,
+        closingDecision(decision, headApproved),
+      ),
       state: stateOf(decision),
     };
   });
@@ -140,10 +193,11 @@ export function consoleDraft(db: Db, auth: AuthContext, draftId: unknown, revisi
   const detail = getDraft(db, auth, draftId, revisionId);
   const latest = detail.lineage[detail.lineage.length - 1];
   const decision = decisionOf(db, detail.draft_id);
+  const thisApproval = approvalOfRevision(db, detail.revision.revision_id);
   const eligibility = approvalEligibility(
     detail.revision,
     latest ? latest.revision_id : detail.revision.revision_id,
-    decision,
+    closingDecision(decision, thisApproval !== null),
   );
   return {
     contract: CONSOLE_CONTRACT_VERSION,
@@ -152,6 +206,132 @@ export function consoleDraft(db: Db, auth: AuthContext, draftId: unknown, revisi
     eligibility,
     actions: draftActions(eligibility, decision),
     state: stateOf(decision),
+    revision_approval: thisApproval,
+    approved_revisions: approvedRevisionsOf(db, detail.draft_id),
+  };
+}
+
+// ------------------------------------------- V1 P3: the capability / library
+//
+// A CAPABILITY IS A LINEAGE THAT HAS AN APPROVED REVISION. The library is the
+// list of them, and the detail is that lineage's approved revisions beside the
+// assignments made of it. Both are read contracts of the same version, and both
+// carry the server's verdicts as FIELDS — `P3-FR-16` says the frontend holds no
+// second copy of the transition rules, and the way to mean it is that every
+// button on the page is a rendering of an `allowed`/`reason_code` pair computed
+// in `src/assignment-lifecycle.ts`.
+
+export interface ConsoleCapabilityItem {
+  draft_id: string;
+  title: string;
+  latest_revision_id: string;
+  latest_revision: number;
+  approved_revisions: RevisionApproval[];
+  /** the newest approved revision — what an assignment gets by default */
+  head_approval: RevisionApproval | null;
+  assignment_count: number;
+  active_assignment_count: number;
+}
+
+export interface ConsoleCapabilityLibrary {
+  contract: string;
+  items: ConsoleCapabilityItem[];
+}
+
+export interface ConsoleCapability {
+  contract: string;
+  draft_id: string;
+  title: string;
+  approved_revisions: RevisionApproval[];
+  head_approval: RevisionApproval | null;
+  /** the closed fleet this capability may be assigned into (`P3-FR-01`) */
+  fleet: FleetAgent[];
+  /** per fleet agent, whether the server would accept an assignment now */
+  eligibility: AssignmentEligibility[];
+  assignments: AssignmentDetail[];
+  /** `INV-07` / `P3-FR-14`, as a field rather than a sentence the page holds */
+  effective_from: string;
+  desired_state_source: string;
+  observed_state_source: string;
+  lifecycle_states: readonly string[];
+}
+
+export interface ConsoleAssignmentView {
+  contract: string;
+  assignment: AssignmentDetail;
+  effective_from: string;
+  desired_state_source: string;
+  observed_state_source: string;
+}
+
+function titleOfDraft(db: Db, auth: AuthContext, draftId: string): string {
+  const found = listDrafts(db, auth).items.find((i) => i.draft_id === draftId);
+  return found ? found.title : draftId;
+}
+
+export function consoleCapabilities(db: Db, auth: AuthContext): ConsoleCapabilityLibrary {
+  const assignments = assignmentsOfWorkspace(db, auth.workspace_id);
+  const items: ConsoleCapabilityItem[] = [];
+  for (const item of listDrafts(db, auth).items) {
+    const approvals = approvedRevisionsOf(db, item.draft_id);
+    if (approvals.length === 0) continue; // not a capability until something is approved
+    const mine = assignments.filter((a) => a.draft_id === item.draft_id);
+    items.push({
+      draft_id: item.draft_id,
+      title: item.title,
+      latest_revision_id: item.latest_revision_id,
+      latest_revision: item.latest_revision,
+      approved_revisions: approvals,
+      head_approval: approvals[approvals.length - 1] ?? null,
+      assignment_count: mine.length,
+      active_assignment_count: mine.filter((a) => assignmentDetail(db, a).desired.state === "active").length,
+    });
+  }
+  return { contract: CONSOLE_CONTRACT_VERSION, items };
+}
+
+export function consoleCapability(db: Db, auth: AuthContext, draftId: unknown): ConsoleCapability {
+  // `getDraft` is the read that resolves the lineage and refuses one of another
+  // workspace — the same access rule every other draft surface goes through.
+  const detail = getDraft(db, auth, draftId);
+  const approvals = approvedRevisionsOf(db, detail.draft_id);
+  const head = approvals[approvals.length - 1] ?? null;
+  const fleet = fleetAgents(db, auth);
+  const assignments = assignmentsOfWorkspace(db, auth.workspace_id)
+    .filter((a) => a.draft_id === detail.draft_id)
+    .map((a) => assignmentDetail(db, a));
+  return {
+    contract: CONSOLE_CONTRACT_VERSION,
+    draft_id: detail.draft_id,
+    title: titleOfDraft(db, auth, detail.draft_id),
+    approved_revisions: approvals,
+    head_approval: head,
+    fleet,
+    eligibility: fleet.map((agent) =>
+      assignmentEligibility(
+        db,
+        auth,
+        agent.agent_id,
+        head,
+        head ? head.draft_revision_id : detail.revision.revision_id,
+        detail.draft_id,
+      ),
+    ),
+    assignments,
+    effective_from: EFFECTIVE_FROM,
+    desired_state_source: DESIRED_STATE_SOURCE,
+    observed_state_source: OBSERVED_STATE_SOURCE,
+    lifecycle_states: DESIRED_STATES,
+  };
+}
+
+export function consoleAssignmentView(db: Db, assignment: AssignmentDetail): ConsoleAssignmentView {
+  return {
+    contract: CONSOLE_CONTRACT_VERSION,
+    assignment,
+    effective_from: EFFECTIVE_FROM,
+    desired_state_source: DESIRED_STATE_SOURCE,
+    observed_state_source: OBSERVED_STATE_SOURCE,
   };
 }
 
