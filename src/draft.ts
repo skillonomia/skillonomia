@@ -67,6 +67,32 @@ export interface DraftProvenance {
   source_digest: string;
 }
 
+/**
+ * How many findings of one list a stored preview LISTS.
+ *
+ * The three JSON columns of a revision are bounded (`migrations/0013`), and the
+ * lists below are the only fields of a draft whose length is decided by the
+ * SOURCE rather than by the schema: one redaction finding per credential, one
+ * semantic finding per bad line, one risky action per risky line. A capture
+ * inside the published input bound can carry a thousand of each, and P1
+ * BUILD-1 answered that with `500 INTERNAL` after the arrival was already
+ * written — finding `P1-R1-002`.
+ *
+ * So the LIST is capped and the COUNT is not. `blocking_count` and every
+ * `*_total` are computed over the whole set before the cap applies, so nothing
+ * that decides whether a draft may be approved is affected by how much of the
+ * detail an owner can read. This is the narrowing contract section 8.10 permits
+ * rather than a rebuild of the bounded column: the bound is a `CHECK` on a
+ * table that already holds rows, and widening it is a table rebuild, which is
+ * neither additive nor reversible.
+ */
+export const MAX_LISTED_FINDINGS = 200;
+
+/** The first `MAX_LISTED_FINDINGS` of a list, and how many there really were. */
+export function capFindings<T>(all: readonly T[]): { listed: T[]; total: number } {
+  return { listed: all.slice(0, MAX_LISTED_FINDINGS), total: all.length };
+}
+
 export interface DraftContent {
   title: string;
   purpose: string;
@@ -78,6 +104,9 @@ export interface DraftContent {
   dependencies: string[];
   failure_modes: string[];
   redactions: RedactionFinding[];
+  /** how many pieces of credential material were removed in total — never
+   *  smaller than `redactions.length`, and larger when the list was capped */
+  redactions_total: number;
   provenance: DraftProvenance;
 }
 
@@ -96,6 +125,8 @@ export interface SemanticReview {
   blocking_count: number;
   missing_sections: DraftSection[];
   findings: SemanticFinding[];
+  /** how many findings there were before the list was capped */
+  findings_total: number;
   compiler_version: string;
 }
 
@@ -110,9 +141,13 @@ export interface SecurityReview {
   requested_permissions: string[];
   dependencies: string[];
   risky_actions: RiskyAction[];
+  /** how many risky actions there were before the list was capped */
+  risky_actions_total: number;
   /** category, location and reason of everything redaction removed — never the
    *  value. The preview an owner reads is this list. */
   redactions: RedactionFinding[];
+  /** how many pieces of material were removed before the list was capped */
+  redactions_total: number;
   blocking_count: number;
   compiler_version: string;
 }
@@ -262,7 +297,8 @@ export function compileDraft(input: CompileInput): DraftContent {
     permissions: declaredPermissions(text),
     dependencies: [...new Set([...listItems(sectionBody(body, ["dependencies", "requirements", "prerequisites"])), ...derivedDependencies(body)])],
     failure_modes: listItems(sectionBody(body, ["failure modes", "failures", "troubleshooting", "when it fails", "errors"])),
-    redactions: [...input.redactions],
+    redactions: capFindings(input.redactions).listed,
+    redactions_total: input.redactions.length,
     provenance: input.provenance,
   };
 }
@@ -413,12 +449,15 @@ export function semanticReview(content: DraftContent, source: string): SemanticR
     });
   }
 
+  // the counts are over the WHOLE set; only the listed detail is capped
   const blocking = findings.filter((f) => f.severity === "blocking").length;
+  const capped = capFindings(findings);
   return {
     status: blocking === 0 ? "complete" : "incomplete",
     blocking_count: blocking,
     missing_sections: missing,
-    findings,
+    findings: capped.listed,
+    findings_total: capped.total,
     compiler_version: COMPILER_VERSION,
   };
 }
@@ -514,20 +553,23 @@ export function securityReview(content: DraftContent, source: string): SecurityR
     }
   }
 
-  if (content.redactions.length > 0) {
+  if (content.redactions_total > 0) {
     risky.push({
       code: "credential_material_removed",
       severity: "warn",
-      detail: `${content.redactions.length} piece(s) of credential material were removed from the source before it was stored`,
-      line: content.redactions[0]!.line,
+      detail: `${content.redactions_total} piece(s) of credential material were removed from the source before it was stored`,
+      line: content.redactions[0]?.line ?? null,
     });
   }
 
+  const cappedRisky = capFindings(risky);
   return {
     requested_permissions: content.permissions,
     dependencies: content.dependencies,
-    risky_actions: risky,
+    risky_actions: cappedRisky.listed,
+    risky_actions_total: cappedRisky.total,
     redactions: content.redactions,
+    redactions_total: content.redactions_total,
     blocking_count: risky.filter((r) => r.severity === "fail").length,
     compiler_version: COMPILER_VERSION,
   };

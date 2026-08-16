@@ -33,6 +33,7 @@ import { redact, redactReference, type RedactionFinding } from "./redaction.ts";
 import { classify, type Classification, type SkillCategory } from "./skillability.ts";
 import {
   COMPILER_VERSION,
+  MAX_LISTED_FINDINGS,
   compileDraft,
   contentDigest,
   securityReview,
@@ -58,6 +59,10 @@ export type CaptureFormat = (typeof CAPTURE_FORMATS)[number];
  *  the column is bounded, and a bound that is only enforced by SQLite is one
  *  that reports as a constraint failure instead of as an answer. */
 export const MAX_SOURCE_CHARS = 100_000;
+
+/** Re-exported so a caller reading this module's contract does not have to
+ *  know which file the cap on a stored finding list lives in. */
+export { MAX_LISTED_FINDINGS };
 
 export interface SessionTurn {
   role: string;
@@ -245,9 +250,15 @@ function readNative(runtime: CaptureRuntime, path: string, content: string): Nor
     };
   }
   if (!expected.includes(path)) {
+    // THE PATH IS NAMED, REDACTED. A refusal that echoed the caller's path
+    // verbatim put whatever was in it — a token spelled as a directory name —
+    // into the structured answer, the audit's correlation field and the log
+    // that carries them (`P1-R1-001`). A refusal that named no path at all
+    // would be one an owner cannot act on, so it is the same rule as the body:
+    // the shape survives, the material does not.
     return {
       code: "UNSUPPORTED_NATIVE_SOURCE",
-      reason: `\`${path}\` is not a location ${runtime === "codex" ? "Codex" : "Claude Code"} reads a skill from`,
+      reason: `\`${redactReference(path)}\` is not a location ${runtime === "codex" ? "Codex" : "Claude Code"} reads a skill from`,
     };
   }
   if (content.trim().length === 0) {
@@ -398,6 +409,55 @@ function digestOfSource(text: string): string {
   return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
 }
 
+/**
+ * A metadata field, redacted, with the findings labelled by the field.
+ *
+ * `P1-R1-001` was that redaction was applied to `text` and to nothing else. A
+ * title, a session reference or a file path is a field an owner types into the
+ * same terminal, it reaches the same draft, the same API response, the same
+ * row and the same audit event, and `P1-FR-08` does not distinguish them. So
+ * every field that travels goes through this, and the finding says which field
+ * it came out of — the convention an edited section already used.
+ */
+function cleanField(value: string, field: string): { text: string; findings: RedactionFinding[] } {
+  const out = redact(value);
+  return {
+    text: out.text,
+    findings: out.findings.map((f) => ({ ...f, reason: `in the capture ${field}: ${f.reason}` })),
+  };
+}
+
+/** The bounds `migrations/0013` puts on the three JSON columns of a revision.
+ *  Stated here because the alternative is finding out from SQLite, which
+ *  reports a bound as a constraint failure rather than as an answer. */
+const COLUMN_BOUNDS = {
+  content_json: 200_000,
+  semantic_json: 100_000,
+  security_json: 100_000,
+} as const;
+
+/**
+ * Which column, if any, this revision would not fit in.
+ *
+ * The lists a source can inflate are capped in `src/draft.ts`, so what is left
+ * here is the draft's own declared content — a permissions block of a hundred
+ * thousand characters is inside the input bound and outside the storage bound.
+ * That is a capture this registry cannot store, and `P1-FR-10` says what it
+ * owes: a controlled structured refusal with a reason, not a partial draft and
+ * not a `500`.
+ */
+function oversizeColumn(content: DraftContent, semantic: SemanticReview, security: SecurityReview): string | null {
+  const sizes: Array<[string, number]> = [
+    ["content_json", JSON.stringify(content).length],
+    ["semantic_json", JSON.stringify(semantic).length],
+    ["security_json", JSON.stringify(security).length],
+  ];
+  for (const [column, size] of sizes) {
+    if (size > COLUMN_BOUNDS[column as keyof typeof COLUMN_BOUNDS]) return column;
+  }
+  return null;
+}
+
 interface EventInput {
   event: "captured" | "classified" | "compiled" | "revised" | "refused";
   captureId: string;
@@ -532,12 +592,30 @@ function insertRevision(
 /**
  * Capture one input and answer with a draft or with a refusal.
  *
- * The transaction boundary is the caller's (`src/service.ts` runs this under
- * the same idempotency wrapper every other mutating surface uses), so a repeat
- * with one idempotency key replays the first answer rather than compiling
- * twice.
+ * THE TRANSACTION IS THIS FUNCTION'S OWN. An earlier version of this comment
+ * said the boundary was the caller's, and it was not: `withIdempotency` calls
+ * its handler directly and opens no transaction, so a failure between the
+ * arrival row and the revision row left an arrival recorded as `drafted` with
+ * neither draft nor refusal behind it (`P1-R1-002`). Every write below happens
+ * inside one `BEGIN IMMEDIATE` — the same shape every other mutating surface
+ * of this registry uses — so a failure at any boundary leaves zero rows.
+ *
+ * `src/service.ts` still runs it under the idempotency wrapper, so a repeat
+ * with one key replays the first answer rather than compiling twice.
  */
 export function captureDraft(db: Db, auth: AuthContext, input: Record<string, unknown>, nowMs: number): CaptureResponse {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const out = captureWithin(db, auth, input, nowMs);
+    db.exec("COMMIT");
+    return out;
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+function captureWithin(db: Db, auth: AuthContext, input: Record<string, unknown>, nowMs: number): CaptureResponse {
   const normalised = normalise(input);
 
   // ---- the refusal that happens BEFORE any content is admitted: a native
@@ -598,16 +676,23 @@ export function captureDraft(db: Db, auth: AuthContext, input: Record<string, un
     };
   }
 
-  // ---- REDACTION, before anything at all is written
+  // ---- REDACTION, before anything at all is written. THE BODY AND EVERY
+  // METADATA FIELD THAT TRAVELS WITH IT: the title (which becomes the draft's
+  // own title when the source states none), and the reference (which becomes a
+  // column and the audit's correlation field).
   const redacted = redact(normalised.text);
   const text = redacted.text;
-  const ref = normalised.ref === null ? null : redactReference(normalised.ref);
+  const cleanRef = normalised.ref === null ? null : cleanField(normalised.ref, "reference");
+  const ref = cleanRef === null ? null : cleanRef.text;
+  const cleanTitle = cleanField(normalised.fallbackTitle, "title");
+  const metadataFindings = [...cleanTitle.findings, ...(cleanRef?.findings ?? [])];
+  const allFindings = [...redacted.findings, ...metadataFindings];
   const sourceDigest = digestOfSource(text);
 
   const classification = classify(text);
   const captureId = ulid(nowMs);
 
-  const insertCapture = (outcome: "drafted" | "refused"): void => {
+  const insertCapture = (outcome: "drafted" | "refused", reasonCode = classification.reason_code): void => {
     db.prepare(
       `INSERT INTO captures(id, workspace_id, captured_by_agent_id, source_kind, source_format, source_ref,
          redacted_source, source_digest, category, skillable, reason_code, outcome, server_at_ms)
@@ -623,7 +708,7 @@ export function captureDraft(db: Db, auth: AuthContext, input: Record<string, un
       sourceDigest,
       classification.category,
       classification.skillable ? 1 : 0,
-      classification.reason_code,
+      reasonCode,
       outcome,
       nowMs,
     );
@@ -642,7 +727,7 @@ export function captureDraft(db: Db, auth: AuthContext, input: Record<string, un
         source_kind: normalised.kind,
         source_format: normalised.format,
         source_digest: sourceDigest,
-        redactions: redacted.findings.length,
+        redactions: allFindings.length,
       },
       nowMs,
     });
@@ -711,11 +796,49 @@ export function captureDraft(db: Db, auth: AuthContext, input: Record<string, un
   const content = compileDraft({
     text,
     provenance,
-    redactions: redacted.findings,
-    fallbackTitle: normalised.fallbackTitle,
+    redactions: allFindings,
+    fallbackTitle: cleanTitle.text,
   });
   const semantic = semanticReview(content, text);
   const security = securityReview(content, text);
+
+  // ---- the second refusal: a capture inside the input bound whose compiled
+  // draft is outside the storage bound. It is answered rather than attempted,
+  // because attempting it is what produced a `500` and a half-written arrival.
+  const oversize = oversizeColumn(content, semantic, security);
+  if (oversize !== null) {
+    insertCapture("refused", "DRAFT_TOO_LARGE");
+    appendEvent(db, {
+      event: "refused",
+      captureId,
+      draftId: null,
+      revisionId: null,
+      auth,
+      source: "registry",
+      correlationRef: ref,
+      reasonCode: "DRAFT_TOO_LARGE",
+      result: "refused",
+      contentDigest: null,
+      provenance: { stage: "compile", column: oversize, limit: COLUMN_BOUNDS[oversize as keyof typeof COLUMN_BOUNDS] },
+      nowMs,
+    });
+    return {
+      outcome: "refused",
+      capture_id: captureId,
+      source_kind: normalised.kind,
+      source_format: normalised.format,
+      source_digest: sourceDigest,
+      classification,
+      draft: null,
+      refusal: {
+        code: "DRAFT_TOO_LARGE",
+        category: classification.category,
+        reason_code: "DRAFT_TOO_LARGE",
+        reason: `the compiled draft does not fit \`${oversize}\`, which holds at most ${COLUMN_BOUNDS[oversize as keyof typeof COLUMN_BOUNDS]} characters`,
+        routing_reason: "a capture this large is refused whole rather than stored in part: split it into smaller procedures",
+      },
+    };
+  }
 
   insertCapture("drafted");
   const draftId = ulid(nowMs);
@@ -747,7 +870,7 @@ export function captureDraft(db: Db, auth: AuthContext, input: Record<string, un
       semantic_status: semantic.status,
       semantic_blocking: semantic.blocking_count,
       security_blocking: security.blocking_count,
-      redactions: redacted.findings.length,
+      redactions: allFindings.length,
       revision: 1,
     },
     nowMs,
@@ -790,6 +913,24 @@ export function reviseDraft(
   input: Record<string, unknown>,
   nowMs: number,
 ): DraftRevisionView {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const out = reviseWithin(db, auth, draftId, input, nowMs);
+    db.exec("COMMIT");
+    return out;
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+function reviseWithin(
+  db: Db,
+  auth: AuthContext,
+  draftId: unknown,
+  input: Record<string, unknown>,
+  nowMs: number,
+): DraftRevisionView {
   const latest = latestRevisionRow(db, auth, draftId);
   const previous = JSON.parse(latest.content_json) as DraftContent;
   const capture = db
@@ -803,7 +944,7 @@ export function reviseDraft(
   const edits = (sections ?? {}) as Record<string, unknown>;
   for (const key of Object.keys(edits)) {
     if (![...EDITABLE_STRINGS, ...EDITABLE_LISTS].includes(key as never)) {
-      throw new ApiError("INVALID_SCHEMA", `sections.${key} is not an editable section of a draft`);
+      throw new ApiError("INVALID_SCHEMA", `sections.${redactReference(key.slice(0, 200))} is not an editable section of a draft`);
     }
   }
 
@@ -815,12 +956,17 @@ export function reviseDraft(
       redactions: previous.redactions,
       fallbackTitle: previous.title,
     });
+    // the LIST a recompile carries forward may already have been capped, so
+    // the count comes from the revision it descends from rather than from the
+    // length of what survived the cap
+    content.redactions_total = previous.redactions_total;
     return appendRevision(db, auth, latest, content, capture.redacted_source, "recompile", nowMs);
   }
 
   const content: DraftContent = {
     ...previous,
     redactions: [...previous.redactions],
+    redactions_total: previous.redactions_total,
     provenance: previous.provenance,
   };
   const added: RedactionFinding[] = [];
@@ -842,7 +988,8 @@ export function reviseDraft(
     if (value.length > 200) throw new ApiError("LIMIT_EXCEEDED", `sections.${key} carries more than 200 entries`);
     content[key] = value.map((item, i) => clean(asString(item, `sections.${key}[${i}]`, 4000), key));
   }
-  content.redactions = [...content.redactions, ...added];
+  content.redactions_total = previous.redactions_total + added.length;
+  content.redactions = [...content.redactions, ...added].slice(0, MAX_LISTED_FINDINGS);
 
   // the semantic and security previews are recomputed against the EDITED
   // draft, rendered back into the same line-oriented form the reviews read
@@ -879,6 +1026,17 @@ function appendRevision(
 ): DraftRevisionView {
   const semantic = semanticReview(content, reviewSource);
   const security = securityReview(content, reviewSource);
+  // the same bound the capture path answers with a refusal. An edit is a
+  // request rather than an arrival, so the honest answer here is a refusal of
+  // the REQUEST — `LIMIT_EXCEEDED`, which the error model maps to 413 — and
+  // not a `500` from the column that could not hold it.
+  const oversize = oversizeColumn(content, semantic, security);
+  if (oversize !== null) {
+    throw new ApiError(
+      "LIMIT_EXCEEDED",
+      `the edited revision does not fit ${oversize}, which holds at most ${COLUMN_BOUNDS[oversize as keyof typeof COLUMN_BOUNDS]} characters`,
+    );
+  }
   const row = insertRevision(db, {
     draftId: latest.draft_id,
     revision: latest.revision + 1,
@@ -931,7 +1089,7 @@ function latestRevisionRow(db: Db, auth: AuthContext, draftId: unknown): Revisio
   const row = db
     .prepare("SELECT * FROM draft_revisions WHERE draft_id=? AND workspace_id=? ORDER BY revision DESC LIMIT 1")
     .get(id, auth.workspace_id) as RevisionRow | undefined;
-  if (row === undefined) throw new ApiError("NOT_FOUND", `no draft ${id}`);
+  if (row === undefined) throw new ApiError("NOT_FOUND", `no draft ${redactReference(id)}`);
   return row;
 }
 
@@ -973,12 +1131,12 @@ export function getDraft(db: Db, auth: AuthContext, draftId: unknown, revisionId
   const all = db
     .prepare("SELECT * FROM draft_revisions WHERE draft_id=? AND workspace_id=? ORDER BY revision")
     .all(id, auth.workspace_id) as RevisionRow[];
-  if (all.length === 0) throw new ApiError("NOT_FOUND", `no draft ${id}`);
+  if (all.length === 0) throw new ApiError("NOT_FOUND", `no draft ${redactReference(id)}`);
   let chosen = all[all.length - 1]!;
   if (revisionId !== undefined && revisionId !== null) {
     if (typeof revisionId !== "string") throw new ApiError("INVALID_SCHEMA", "revision_id must be a string");
     const found = all.find((r) => r.id === revisionId);
-    if (found === undefined) throw new ApiError("NOT_FOUND", `no revision ${revisionId} of draft ${id}`);
+    if (found === undefined) throw new ApiError("NOT_FOUND", `no revision ${redactReference(revisionId)} of draft ${redactReference(id)}`);
     chosen = found;
   }
   return {
