@@ -227,7 +227,7 @@ for (const decision of ["reject"] as const) {
     // the structured refusal, with the state a caller converges on
     assert.equal(edited.status, 409, `a decided draft accepted a revision: ${edited.status} ${edited.body}`);
     assert.equal(edited.json.error.code, "CONFLICT");
-    assert.equal(edited.json.error.current_state, decision === "approve" ? "approved" : "rejected");
+    assert.equal(edited.json.error.current_state, "rejected");
 
     // INV-06: the decided revision is still the head, still immutable, and the
     // history was not rewritten to make the refusal true
@@ -236,7 +236,7 @@ for (const decision of ["reject"] as const) {
     assert.equal(detail.json.draft.revision.revision_id, draft.revision_id);
     assert.equal(detail.json.decision.draft_revision_id, draft.revision_id);
     assert.equal(detail.json.draft.lineage.length, 1);
-    assert.equal(detail.json.state, decision === "approve" ? "approved" : "rejected");
+    assert.equal(detail.json.state, "rejected");
     fx.db.close();
   });
 }

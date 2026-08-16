@@ -202,6 +202,7 @@ export const IDENTITY_INTAKE: Record<string, IdentityColumnClass> = {
   "skill_assignment_events.assignment_id": RESOLVED,
   "assignment_observations.id": MINTED,
   "assignment_observations.assignment_id": RESOLVED,
+  "idempotency_request_digests.idempotency_key_id": RESOLVED,
   "assignment_events.assignment_id": RESOLVED,
   "assignment_events.idempotency_key": {
     intake: "registry_generated",

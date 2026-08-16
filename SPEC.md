@@ -2078,11 +2078,11 @@ path, and MUST NOT attempt it.
   them by exactly its own five tables, ten triggers and two indexes, on the same
   terms and with its own reversal
   (`migrations/down/0014_owner_console_sessions_and_decisions.down.sql`), which
-  restores `PRAGMA user_version` to `13`. D.1o moves them by exactly its own four
-  tables, eight triggers and five indexes, and by ONE column added to
-  `idempotency_keys`, on the same terms and with its own reversal
+  restores `PRAGMA user_version` to `13`. D.1o moves them by exactly its own five
+  tables, nine triggers and five indexes, on the same terms and with its own
+  reversal
   (`migrations/down/0015_assignment_and_lifecycle_control.down.sql`), which drops
-  those objects and that column and restores `PRAGMA user_version` to `14`.
+  exactly those objects and restores `PRAGMA user_version` to `14`.
   Those three are the migrations of this
   schema that ship a reversal; D.1 through D.1l ship none, which
   `v1/P0-BASELINE.md` records as a fact about the released base. After all
@@ -4149,13 +4149,14 @@ CREATE TRIGGER tg_draft_decisions_no_del BEFORE DELETE ON draft_decisions BEGIN 
 
 ### D.1o NORMATIVE DELTA — fifteenth migration (verbatim)
 
-ASSIGNMENT AND LIFECYCLE CONTROL. Four tables, five indexes, eight triggers and
-one added column, with nothing edited: `revision_approvals` is the approval of
+ASSIGNMENT AND LIFECYCLE CONTROL. Five tables, five indexes and nine triggers,
+with nothing edited: `revision_approvals` is the approval of
 one REVISION; `skill_assignments` and `skill_assignment_events` are one owner
 decision to put a capability at an agent and the INSERT-only journal that is its
 DESIRED state; `assignment_observations` is what an adapter or a runtime
-REPORTED SEEING; and `idempotency_keys.request_digest` is the fingerprint of the
-payload a key was first used with.
+REPORTED SEEING; and `idempotency_request_digests` holds the fingerprint of the
+payload a key was first used with, in a row BESIDE the key rather than a column
+inside it.
 
 DESIRED STATE AND OBSERVED STATE ARE DIFFERENT COLUMNS OF DIFFERENT TABLES. A
 conforming registry MUST NOT write an observation as a consequence of an owner
@@ -4179,13 +4180,13 @@ more than one approved revision — which is what a rollback selects among.
 remains the record of the FIRST decision taken on a lineage.
 
 THIS MIGRATION IS ADDITIVE AND REVERSIBLE. It edits no statement of D.1 or of
-any earlier delta; the one column it adds to `idempotency_keys` is nullable, so
-every row a released build wrote keeps its meaning, and NULL means "recorded
-before payloads were fingerprinted" rather than "the payload was empty". It
-ships its own reversal as
+any earlier delta and alters no table that existed before it; a key recorded
+before it, or by a surface that passes no digest, simply has no fingerprint row,
+which means "recorded before payloads were fingerprinted" rather than "the
+payload was empty". It ships its own reversal as
 `migrations/down/0015_assignment_and_lifecycle_control.down.sql`, which drops the
-eight triggers, the five indexes, the four tables and that column and sets
-`PRAGMA user_version` back to `14`. Reversal discards the rows of those four
+nine triggers, the five indexes and the five tables and sets
+`PRAGMA user_version` back to `14`. Reversal discards the rows of those five
 tables and touches no table that existed before them.
 `PRAGMA user_version` = `15`.
 
@@ -4269,16 +4270,23 @@ tables and touches no table that existed before them.
 -- written by somebody and the only honest writer of it is the reader.
 --
 -- ---------------------------------------------------------------------------
--- `idempotency_keys.request_digest` — the one ALTER, and why.
+-- `idempotency_request_digests` — a table beside `idempotency_keys`, not a
+-- column inside it.
 --
--- `P3-FR-09` and `P3-FR-10` split what the released column could not: the same
--- key with the same payload replays, the same key with a DIFFERENT payload is a
+-- `P3-FR-09` and `P3-FR-10` split what the released row could not: the same key
+-- with the same payload replays, the same key with a DIFFERENT payload is a
 -- `409`. Telling those apart needs the payload, and the released table stores
--- only the key and the response. The column is nullable, so every row a
--- released build wrote keeps its meaning — NULL is "recorded before payloads
--- were fingerprinted", never "the payload was empty" — and only a row that
--- carries a digest can produce a conflict. `ALTER TABLE ... ADD COLUMN` is the
--- shape `0002`, `0003`, `0004`, `0005` and `0010` of this tree already use.
+-- only the key and the response.
+--
+-- IT IS A SIDE TABLE BECAUSE ADDING A COLUMN WOULD CHANGE A STATEMENT OF THE
+-- PREVIOUS SCHEMA. `ALTER TABLE ... ADD COLUMN` is a shape this tree uses, and
+-- the additive rule this contract is held to is stricter than SQLite's: the
+-- round-trip gate compares the previous schema STATEMENT BY STATEMENT and a
+-- rewritten `CREATE TABLE idempotency_keys(...)` is a statement that changed.
+-- A row here is optional by construction — a key recorded before this migration,
+-- or by a surface that passes no digest, simply has no row, which means
+-- "recorded before payloads were fingerprinted" and never "the payload was
+-- empty". Only a key that HAS a row can produce a conflict.
 PRAGMA defer_foreign_keys=ON;
 
 CREATE TABLE revision_approvals(
@@ -4347,8 +4355,11 @@ CREATE TABLE assignment_observations(
 );
 CREATE INDEX idx_assignment_observations_assignment ON assignment_observations(assignment_id,observed_at_ms);
 
--- `P3-FR-10`: the fingerprint of the payload a key was first used with.
-ALTER TABLE idempotency_keys ADD COLUMN request_digest TEXT;
+CREATE TABLE idempotency_request_digests(
+  idempotency_key_id TEXT PRIMARY KEY REFERENCES idempotency_keys(id) ON DELETE CASCADE,
+  request_digest TEXT NOT NULL CHECK(length(request_digest)=71),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0)
+);
 
 -- an approval, an assignment, a lifecycle event and an observation are each
 -- written once — the rule `captures`, `draft_revisions`, `draft_events`,
@@ -4361,6 +4372,7 @@ CREATE TRIGGER tg_skill_assignment_events_no_upd BEFORE UPDATE ON skill_assignme
 CREATE TRIGGER tg_skill_assignment_events_no_del BEFORE DELETE ON skill_assignment_events BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 CREATE TRIGGER tg_assignment_observations_no_upd BEFORE UPDATE ON assignment_observations BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 CREATE TRIGGER tg_assignment_observations_no_del BEFORE DELETE ON assignment_observations BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_idempotency_request_digests_no_upd BEFORE UPDATE ON idempotency_request_digests BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 ```
 
 ### D.2 SQL negative probes

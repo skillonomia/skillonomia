@@ -451,6 +451,17 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
   },
   "assignment_observations.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
 
+  // ------------------------------------------------ idempotency_request_digests
+  "idempotency_request_digests.idempotency_key_id": {
+    intake: "registry_generated",
+    note: "the id of the `idempotency_keys` row this fingerprint belongs to; a row of this registry",
+  },
+  "idempotency_request_digests.request_digest": {
+    intake: "digest",
+    note: "`sha256:` of the canonical form of the request payload, computed by `requestDigest` in `src/assignment-lifecycle.ts`. The payload itself is stored nowhere",
+  },
+  "idempotency_request_digests.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
   // ------------------------------------------------------- adoption_receipts
   "adoption_receipts.id": { intake: "registry_generated", note: "a ULID this registry mints" },
   "adoption_receipts.adoption_request_id": { intake: "registry_generated", note: "a row of this registry" },
@@ -633,6 +644,7 @@ export const JOURNAL_WRITERS: Record<string, readonly string[]> = {
   adoption_receipts: ["src/service.ts", "src/transfer.ts"],
   assignment_observations: ["src/assignment-lifecycle.ts"],
   captures: ["src/capture.ts"],
+  idempotency_request_digests: ["src/idempotency.ts"],
   revision_approvals: ["src/draft-decision.ts"],
   skill_assignment_events: ["src/assignment-lifecycle.ts"],
   skill_assignments: ["src/assignment-lifecycle.ts"],

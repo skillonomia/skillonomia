@@ -160,9 +160,18 @@ function insertReplayRow(
   nowMs: number,
   requestDigest?: string,
 ): void {
+  const id = ulid(nowMs);
   db.prepare(
-    "INSERT INTO idempotency_keys(id, actor_agent_id, surface, key, response_json, created_at_ms, request_digest) VALUES (?,?,?,?,?,?,?)",
-  ).run(ulid(nowMs), actorAgentId, surface, stored, responseJson, nowMs, requestDigest ?? null);
+    "INSERT INTO idempotency_keys(id, actor_agent_id, surface, key, response_json, created_at_ms) VALUES (?,?,?,?,?,?)",
+  ).run(id, actorAgentId, surface, stored, responseJson, nowMs);
+  // The fingerprint is a row BESIDE the key rather than a column inside it —
+  // `migrations/0015` says why. A surface that passes none writes none, and the
+  // absence is what "recorded before payloads were fingerprinted" looks like.
+  if (requestDigest !== undefined) {
+    db.prepare(
+      "INSERT INTO idempotency_request_digests(idempotency_key_id, request_digest, server_at_ms) VALUES (?,?,?)",
+    ).run(id, requestDigest, nowMs);
+  }
 }
 
 /**
@@ -197,7 +206,10 @@ export function withIdempotencyInTx<T>(
   requestDigest?: string,
 ): IdempotentOutcome<T> {
   const lookup = db.prepare(
-    "SELECT response_json, request_digest FROM idempotency_keys WHERE actor_agent_id=? AND surface=? AND key=?",
+    `SELECT k.response_json AS response_json, d.request_digest AS request_digest
+       FROM idempotency_keys k
+       LEFT JOIN idempotency_request_digests d ON d.idempotency_key_id = k.id
+      WHERE k.actor_agent_id=? AND k.surface=? AND k.key=?`,
   );
   let stored: string | undefined;
   if (key !== undefined) {
