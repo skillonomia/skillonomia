@@ -1,7 +1,12 @@
 #!/usr/bin/env node
-// `P0-FR-04` — every mandatory gate is a RUNNABLE COMMAND or a justified N/A.
+// `P0-FR-04` — every mandatory gate is PRESENT, and is a RUNNABLE COMMAND or a
+// justified N/A.
 //
-//   node --experimental-strip-types --no-warnings v1/tools/p0-gate-table-check.ts
+//   node --experimental-strip-types --no-warnings v1/tools/p0-gate-table-check.ts [table.md]
+//
+// The optional argument names the document to read, so the negative probes in
+// `v1/tools/p0-negative-probes.sh` can point this at a deliberately damaged copy of
+// the table and watch it refuse. Commands are still resolved against THIS tree.
 //
 // P0 REVIEW-1 finding `P0-R1-002`: the frozen gate table named its phase-specific
 // gates — reversible migration, security regression, browser E2E, actual Codex
@@ -31,15 +36,76 @@
 // whether there is anything to run at all. That is a narrower claim than "the gate
 // works", and stating the narrower claim is the point — a checker that implied the
 // wider one would be the same defect in a new place.
+//
+// P0 REVIEW-2, non-blocking backlog: everything above validates the rows that ARE
+// there and nothing about the rows that should be. REVIEW-2 deleted the security
+// regression row from a copy of the table and this checker reported 24/24 commands
+// resolving and exited 0 — a gate table that loses a mandatory category passes,
+// which makes the check an argument for whatever the table happens to say.
+//
+// So the set below is PINNED. It is the frozen table as P0 leaves it: every gate
+// contract section 9 names as a mandatory category, and the phases in which each
+// must carry `✓` rather than `—` or `cond`. A later phase may ADD rows and may
+// upgrade a `—` to a `✓`. It may not delete a pinned row, rename one, or downgrade
+// a pinned `✓` — any of those fails here, and the only way to change the pinned set
+// is to edit this file, which is a tracked, reviewable, deliberate act rather than a
+// row quietly going missing from a document.
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const DOC = join(REPO, "v1", "P0-EVIDENCE-FORMAT.md");
+const DOC = process.argv[2] ? resolve(process.argv[2]) : join(REPO, "v1", "P0-EVIDENCE-FORMAT.md");
 const PHASES = ["P0", "P1", "P2", "P3", "P4", "P5", "P6"] as const;
 const CELLS = new Set(["✓", "—", "cond"]);
+
+/** The pinned mandatory set: gate name exactly as the table's first column writes it,
+ *  and the phases whose cell must be `✓`. Sources, per contract section 9's list of
+ *  mandatory categories:
+ *
+ *   * tests, typecheck and build — every phase, so nothing regresses unobserved;
+ *   * schema/migration checks — "for schema-changing phases": the disposable-DB check
+ *     runs everywhere, the reversible round trip is required from P1 (the first schema
+ *     change) onward, and P2 stays `cond` on its own diff;
+ *   * security regressions and Registry backwards-compatibility — every phase;
+ *   * browser E2E — the Console phases: P2 builds it, P3 drives 409/412 reconciliation
+ *     through it, P5 drives the outcome and rollback views, P6 walks it clean-room;
+ *   * actual Codex and Claude Code runtime — P4, P5, P6, where contract section 9 states
+ *     outright that mocked adapters do not substitute;
+ *   * final clean-room journey and dogfood validation — P6;
+ *   * the evidence machinery itself — traceability, record completeness, this table,
+ *     append-only history and the secret sweep — every phase, since each is what makes
+ *     the others' results readable as evidence rather than as claims.
+ */
+const ALL = [...PHASES];
+const REQUIRED_GATES: Array<{ gate: string; ticked: string[] }> = [
+  { gate: "install, npm toolchain", ticked: ALL },
+  { gate: "install, Bun toolchain", ticked: ALL },
+  { gate: "typecheck", ticked: ALL },
+  { gate: "unit and integration suite, Node", ticked: ALL },
+  { gate: "unit and integration suite, Bun", ticked: ALL },
+  { gate: "build, JS entry point", ticked: ALL },
+  { gate: "build, single-file binary", ticked: ALL },
+  { gate: "migration / schema on a disposable DB", ticked: ALL },
+  { gate: "reversible migration round trip", ticked: ["P1", "P3", "P4", "P5", "P6"] },
+  { gate: "Registry API / CLI / MCP contract smoke", ticked: ALL },
+  { gate: "Registry backwards-compatibility suite", ticked: ALL },
+  { gate: "security regression on the threat-model surface", ticked: ALL },
+  { gate: "secret-absence sweep of evidence", ticked: ALL },
+  { gate: "traceability completeness", ticked: ALL },
+  { gate: "evidence-record completeness", ticked: ALL },
+  { gate: "gate-table validity", ticked: ALL },
+  { gate: "append-only branch history", ticked: ALL },
+  { gate: "browser E2E", ticked: ["P2", "P3", "P5", "P6"] },
+  { gate: "actual Codex runtime session", ticked: ["P4", "P5", "P6"] },
+  { gate: "actual Claude Code runtime session", ticked: ["P4", "P5", "P6"] },
+  { gate: "upgrade from a `v0.1.6` copy", ticked: ["P1", "P6"] },
+  { gate: "containerised quickstart", ticked: ["P6"] },
+  { gate: "high-risk exercise", ticked: ["P6"] },
+  { gate: "dogfood ledger metrics", ticked: ["P6"] },
+  { gate: "clean-room owner journey", ticked: ["P6"] },
+];
 
 if (!existsSync(DOC)) {
   console.error(`REFUSED: ${DOC} is missing. A table check with no table has checked nothing.`);
@@ -151,8 +217,33 @@ for (const row of rows) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the pinned mandatory set: present, and ticked where the contract requires it
+const byGate = new Map(rows.map((r) => [r.gate, r]));
+let pinnedPresent = 0;
+for (const req of REQUIRED_GATES) {
+  const row = byGate.get(req.gate);
+  if (!row) {
+    problems.push(
+      `required gate "${req.gate}" is not in the table. Contract section 9 makes it a mandatory category; ` +
+        "a row that stops being written stops being run, and nothing else in this check would notice.",
+    );
+    continue;
+  }
+  pinnedPresent++;
+  const missing = req.ticked.filter((p) => row.cells[PHASES.indexOf(p as (typeof PHASES)[number])] !== "✓");
+  if (missing.length) {
+    problems.push(
+      `required gate "${req.gate}": ${missing.join(", ")} must be "✓" and ${missing.length > 1 ? "are" : "is"} ` +
+        `"${missing.map((p) => row.cells[PHASES.indexOf(p as (typeof PHASES)[number])] ?? "<no cell>").join('", "')}". ` +
+        "A mandatory gate downgraded to N/A is a check removed, not a check excused.",
+    );
+  }
+}
+
 console.log(`document:            ${DOC}`);
 console.log(`gate rows parsed:    ${rows.length}`);
+console.log(`pinned mandatory gates present: ${pinnedPresent}/${REQUIRED_GATES.length}`);
 console.log(`commands that resolve: ${runnable}/${rows.length}`);
 console.log(`rows with an N/A or conditional cell: ${naRows}`);
 console.log(`justification entries: ${justif.size}`);
@@ -162,4 +253,4 @@ if (problems.length) {
   for (const p of problems) console.error(`  - ${p}`);
   process.exit(1);
 }
-console.log("\nPASS  every gate row names a command that resolves, and every N/A or conditional cell is justified");
+console.log("\nPASS  every mandatory gate is present and ticked where the contract requires it, every row names a command that resolves, and every N/A or conditional cell is justified");

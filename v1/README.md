@@ -16,14 +16,16 @@ implements no product behaviour (`P0-FR-08`).
 | `P0-THREAT-MODEL.md` | the frozen V1 threat model, and what it means for a finding |
 | `P0-EVIDENCE-FORMAT.md` | the frozen evidence record, the session record, the mandatory gates per phase with a command each, and the append-only rule |
 | `P0-BRANCH-HISTORY.md` | the branch's history, the one rewrite that happened, and the audit boundary of P0 |
+| `P0-RESIDUAL-LIMITATIONS.md` | what P0 leaves permanently unprovable, carried forward to the final report rather than forgotten |
 | `append-only-baseline.tsv` | the disclosed non-append-only reflog entries — the only ones the append-only check excuses |
 | `tools/p0-db-check.ts` | migration and schema checks on a throwaway database, through the repository's own runner |
 | `tools/p0-registry-smoke.sh` | Registry API and CLI smoke over the existing public contracts, no SQL |
 | `tools/p0-traceability-check.ts` | refuses if any contract requirement is missing from the matrix |
 | `tools/p0-secret-scan.sh` | refuses if any evidence artifact carries a credential |
-| `tools/p0-evidence-check.ts` | refuses on an incomplete run record, or an artifact under `logs/` that no record owns |
-| `tools/p0-gate-table-check.ts` | refuses if a gate row has no runnable command, or an N/A cell with no justification |
+| `tools/p0-evidence-check.ts` | refuses on an incomplete run record, an invented session id, a role under the wrong model contract, or an artifact under `logs/` that no record owns |
+| `tools/p0-gate-table-check.ts` | refuses if a mandatory gate is missing, renamed or downgraded, if a row has no runnable command, or if an N/A cell has no justification |
 | `tools/p0-append-only-check.sh` | refuses on an undisclosed amend, rebase, reset or non-fast-forward move of the branch |
+| `tools/p0-negative-probes.sh` | runs every validator against a deliberately damaged copy and fails unless each one refuses, for the stated reason |
 | `tools/gates/` | one entry point per mandatory gate category: two real, seven executable interfaces that exit `3` until their phase implements them |
 
 ## Running the P0 harnesses
@@ -40,6 +42,7 @@ v1/tools/p0-secret-scan.sh <evidence-dir>
 node --experimental-strip-types --no-warnings v1/tools/p0-evidence-check.ts <evidence-dir>
 node --experimental-strip-types --no-warnings v1/tools/p0-gate-table-check.ts
 v1/tools/p0-append-only-check.sh
+v1/tools/p0-negative-probes.sh <evidence-dir> <workdir>
 v1/tools/gates/registry-compat.sh
 v1/tools/gates/security-regression.sh
 ```

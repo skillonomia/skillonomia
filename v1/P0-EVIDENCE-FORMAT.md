@@ -17,7 +17,8 @@ JSON object per run, appended to evidence/<phase>/runs.jsonl.
   "provider": "claude",
   "model": "opus",
   "reasoning_effort": "high",
-  "input_base_sha": "eeefbe66098d6f93807383480790f9800335b516",
+  "phase_base_sha": "eeefbe66098d6f93807383480790f9800335b516",
+  "input_sha": "<the SHA this session started from>",
   "output_sha": "<the commit this run produced, or the SHA reviewed>",
   "command": "npm test",
   "cwd": "<absolute path>",
@@ -32,9 +33,53 @@ JSON object per run, appended to evidence/<phase>/runs.jsonl.
 ```
 
 Required for every record: `phase`, `role`, `task_id`, `session_id`, `provider`,
-`model`, `reasoning_effort`, `input_base_sha`, `output_sha`, `command`, `cwd`,
-`tool_versions`, `exit_code`, `timestamp_utc`, `gate_verdict`, and an **output
-reference** — `artifact` (a path that resolves) or a non-empty `stdout_tail`.
+`model`, `reasoning_effort`, `phase_base_sha`, `input_sha`, `output_sha`,
+`command`, `cwd`, `tool_versions`, `exit_code`, `timestamp_utc`, `gate_verdict`,
+and an **output reference** — `artifact` (a path that resolves) or a non-empty
+`stdout_tail`.
+
+### Two SHAs, two fields
+
+Contract section 9 requires the "input/base SHA" of every run. P0 FIX-1 read that as
+one value and wrote `input_base_sha` — the phase base — in all 21 of its records,
+while FIX-1 had in fact started from BUILD-1's commit
+`3927571a8349e215aff096ee3ac58135435f4b51`. Both facts matter and they are different
+facts, so they are two required fields:
+
+* `phase_base_sha` — the commit the phase branched from. The same value for every
+  session of a phase; for P0, `eeefbe66098d6f93807383480790f9800335b516`.
+* `input_sha` — the exact SHA this session started from. For a BUILD-1 that is the
+  phase base; for a FIX it is the SHA whose findings it received; for a REVIEW it is
+  the SHA under review.
+
+`input_base_sha` is now **refused**, not silently accepted as either one. A record
+still carrying it has not been migrated, and reading it as one of the two would be
+guessing which the writer meant — the ambiguity that produced the defect.
+
+### The identifiers are the isolation
+
+Contract section 7.3 gives every BUILD, FIX and REVIEW its own `task_id` and
+`session_id` and forbids one role continuing in another's provider session. That is
+only checkable if the values are the provider's. P0 FIX-1 wrote
+`session_id: "fix1-P0-0c453cad"` in every record — a label built from its own role
+and task id, which is a restatement of the record rather than evidence about it —
+and the checker accepted it, together with a FIX record declaring
+`codex` / `gpt-5.6-sol` / `low`. That was P0 REVIEW-2's finding `P0-R2-001`. So:
+
+* `session_id` must have the shape a provider session id has: a canonical UUID.
+  Claude's are v4, Codex's are v7; both are 8-4-4-4-12 lowercase hex. A constructed
+  label, the nil UUID, or an id embedding its own `task_id` is refused.
+* `role` fixes `provider`, `model` and `reasoning_effort` exactly — BUILD and FIX are
+  `claude` / `opus` / `high`, REVIEW is `codex` / `gpt-5.6-sol` / `high`, per contract
+  section 7. The aliases contract section 7.1 forbids by name, `opus-5` and
+  `claude-opus-5-high`, are refused by name.
+* One role holds one `(task_id, session_id)` pair, and no two roles share either
+  value.
+
+The authoritative values are written once, in `evidence/SESSIONS.md`, from the
+provider's own task ledger. A well-shaped id is not proof that the session ran the
+command — nothing local can establish that after the fact — but a badly-shaped one is
+proof that it did not.
 
 The last two entries of that list were added by P0 FIX-1, closing finding
 `P0-R1-003`. Contract section 9 names "релевантные tool/runtime versions" and
@@ -46,8 +91,33 @@ whole point of a version field is that a rerun on a different toolchain is
 distinguishable from a rerun on the same one.
 
 Enforced, not asked for: `v1/tools/p0-evidence-check.ts` validates every record
-against this list and refuses on a missing field, an abbreviated SHA, a model
-alias, or a `fail`/`skipped` verdict with no `notes`.
+against this list and refuses on a missing field, an abbreviated SHA, an invented
+session id, a role declaring the wrong model contract, a model alias, or a
+`fail`/`skipped` verdict with no `notes`.
+
+**And the refusals are watched.** `v1/tools/p0-negative-probes.sh` runs each rule
+against a deliberately damaged copy of the evidence and of the gate table, and fails
+unless every copy is refused *for the stated reason*, with the unmodified inputs
+passing before and after. `P0-R2-001` was not a missing checker; it was a checker
+nobody had seen refuse anything. A rule added without a probe repeats that.
+
+### Archived ledgers
+
+A phase has one ledger, `runs.jsonl`. Any other `runs*.jsonl` in the phase directory
+is an **archived ledger** — a frozen record of what an earlier session wrote, kept
+because merging it would misrepresent something. P0 has one:
+`runs-build1-superseded.jsonl`.
+
+* It must carry a `<name>.README.md` sidecar saying why it exists. Otherwise every
+  rule above is satisfiable by renaming a file.
+* Its records are **exempt from the field schema of this section**, because a
+  preserved ledger is kept for the single property of being what that session
+  actually recorded, and rewriting it to satisfy a schema invented later destroys
+  that property while looking like tidiness.
+* Its records are **never exempt from identity**: real session id, real task id, the
+  role → model mapping of contract section 7, no id shared with another role.
+  Identity was never a matter of schema version, and an exemption covering it would
+  make "archive it" the way to launder a bad record.
 
 ### One artifact, one record
 
@@ -111,14 +181,23 @@ one row:
 | provider | claude |
 | model | opus |
 | reasoning_effort | high |
-| task_id | recorded in evidence/P0/04-session-record.md |
-| session_id | recorded in evidence/P0/04-session-record.md |
+| task_id | recorded in evidence/SESSIONS.md |
+| session_id | recorded in evidence/SESSIONS.md |
+| phase base SHA | `eeefbe66098d6f93807383480790f9800335b516` |
 | input SHA | `eeefbe66098d6f93807383480790f9800335b516` |
 | output SHA | the commit this build produced |
 
 The identifiers are written in the evidence file rather than restated here,
 because a document that carries a value in two places will eventually carry two
 different values.
+
+`evidence/SESSIONS.md` is the ledger, and it carries `task_id` and `session_id`
+as columns of the session table — one row per session of this contract, taken
+from the provider's own task ledger. P0 FIX-2 added the `session_id` column: until
+then the real ids appeared nowhere in the evidence package, which is what let the
+constructed labels in `runs.jsonl` go unnoticed. Contract sections 7.3 and 9
+require both identifiers of every run to be preserved in evidence, and a column
+that is absent cannot disagree with a record that is wrong.
 
 ## 3. Mandatory gates per phase
 
@@ -163,6 +242,7 @@ A phase runs everything marked `✓` in its column.
 | traceability completeness | `node --experimental-strip-types --no-warnings v1/tools/p0-traceability-check.ts` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | evidence-record completeness | `node --experimental-strip-types --no-warnings v1/tools/p0-evidence-check.ts <evidence-dir>` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | gate-table validity | `node --experimental-strip-types --no-warnings v1/tools/p0-gate-table-check.ts` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| validator negative probes | `v1/tools/p0-negative-probes.sh <evidence-dir> <workdir>` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | append-only branch history | `v1/tools/p0-append-only-check.sh` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | browser E2E | `v1/tools/gates/browser-e2e.sh` | — | — | ✓ | ✓ | — | ✓ | ✓ |
 | actual Codex runtime session | `v1/tools/gates/runtime-codex.sh` | — | — | — | — | ✓ | ✓ | ✓ |
@@ -182,6 +262,23 @@ exist.
 command, if a command does not resolve to something runnable in this tree, if a
 cell holds a word outside that vocabulary, or if a row carrying a `—` or a `cond`
 has no justification below naming every phase it applies to.
+
+### The set is pinned, not merely well-formed
+
+Everything in the paragraph above validates the rows that ARE here. P0 REVIEW-2
+deleted the security-regression row from a copy of this table and the checker
+reported 24 of 24 commands resolving and exited 0 — a table that loses a mandatory
+category passed, which made the check an argument for whatever the table happened to
+say.
+
+So the mandatory set is pinned inside `p0-gate-table-check.ts`: every row above, and
+the phases whose cell must be `✓`. A later phase may **add** a row and may **upgrade**
+a `—` to a `✓`. It may not delete a pinned row, rename one, or downgrade a pinned
+`✓` — each of those fails the gate. The pinned list can only change by editing the
+tracked checker, which is a deliberate reviewable act rather than a row quietly going
+missing from a document. Proved, not asserted: probes 15–18 of
+`v1/tools/p0-negative-probes.sh` delete a mandatory row, delete another, downgrade a
+`✓` and rename a row, and require a refusal each time.
 
 ### N/A and conditional justifications
 
@@ -239,8 +336,13 @@ and only with a concrete reason. One entry per gate that carries a `—` or a
 
 ## 4. Where evidence lives
 
+The listing is complete: a file added to the phase directory is added here. P0
+REVIEW-2 noted that FIX-1 wrote `12-` and `13-` and left this block naming eleven
+files, which turns a frozen layout into a stale one.
+
 ```
 evidence/
+  SESSIONS.md                      the session ledger: role, task_id, session_id, model contract, SHAs
   P0/
     00-refs-tags-before.txt        refs and tags before any change
     01-base-sha-ancestry.txt       base SHA, tree, ancestry, v0.1.6 relationship
@@ -249,13 +351,22 @@ evidence/
     04-session-record.md           this session's role, model contract, task and session IDs
     05-forbidden-actions-log.md    the log of forbidden production and history-rewriting actions
     06-refs-tags-after.txt         refs and tags after the commit
-    07-gate-summary.md             every gate, its command and its exit code
-    08-secret-scan.txt             the secret-absence sweep over every artifact
+    07-gate-summary.md             every gate, its command and its exit code, per session
+    08-secret-scan.txt             the secret-absence sweep, BUILD-1
     09-refs-before-after-diff.txt  the before/after ref comparison
     10-branch-reflog.txt           the full branch reflog — the append-only record
     11-append-only-check.txt       the append-only check, positive and negative runs
+    12-secret-scan-fix1.txt        the secret-absence sweep, FIX-1
+    13-evidence-check-fix1.txt     the evidence-record check, FIX-1
+    14-secret-scan-fix2.txt        the secret-absence sweep, FIX-2
+    15-evidence-check-fix2.txt     the evidence-record check, FIX-2
+    16-residual-limitations.md     P0's standing residual audit limitations, carried forward
     runs.jsonl                     one record per run, in the schema of section 1
+    runs-build1-superseded.jsonl   archived ledger: BUILD-1's 11 records, byte-identical
+    runs-build1-superseded.jsonl.README.md   why that ledger is archived (required sidecar)
     logs/                          full captured output of each command, one file per record
+    logs-build1/                   what survives of BUILD-1's artifacts, with its own README.md
+    probes-fix2/                   one transcript per negative probe, with its own README.md
 ```
 
 evidence/ is listed in the repository's `.gitignore`, so these artifacts live
