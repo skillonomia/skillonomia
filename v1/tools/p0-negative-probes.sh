@@ -148,8 +148,24 @@ probe nil-uuid-session 1 "session identity:" -- "${EVCHECK[@]}" "$D"
 
 # --- 07 two roles, one session ------------------------------------------------
 # Contract section 7.3 forbids continuing one role's work in another's session.
+#
+# THE ROLE THIS PATCHES IN IS COMPUTED, NOT FIXED, and that is the whole of the
+# repair P1 made here. The probe used to write `BUILD-1` into record 0
+# unconditionally, which produced a second role only because P0's first record
+# happened to be a FIX. On a phase ledger written entirely by one role — which is
+# what a BUILD-only phase produces — it wrote the role that was already there,
+# changed nothing, and the checker correctly found nothing to refuse. A probe
+# that passes by asserting an unchanged file is a probe that measures nothing, so
+# the value is now the OTHER builder role of contract section 7.1: `BUILD-1` and
+# `FIX-1` share a provider, a model and a reasoning effort, so the only rule the
+# patch can trip is the one this probe is about.
 D="$(fresh_copy shared-session)"
-patch "$D/runs.jsonl" 0 '{"role":"BUILD-1"}'
+OTHER_ROLE="$(node -e '
+  const fs = require("fs");
+  const first = JSON.parse(fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)[0]);
+  process.stdout.write(first.role === "BUILD-1" ? "FIX-1" : "BUILD-1");
+' "$D/runs.jsonl")"
+patch "$D/runs.jsonl" 0 "{\"role\":\"$OTHER_ROLE\"}"
 probe two-roles-one-session 1 "is shared by roles" -- "${EVCHECK[@]}" "$D"
 
 # --- 08 the split SHA fields --------------------------------------------------
