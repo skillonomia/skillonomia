@@ -116,9 +116,9 @@ block — are removed from the normalised source before anything is stored, and
 the preview reports category, location and reason with no field that could carry
 the value.
 
-What is not promised: that no secret can ever be in the database. A credential
-nothing recognises as one is a credential that reaches the column, and the
-categories above are recognisers rather than a proof of absence. That limit is
+What is not promised: absence. A credential nothing recognises as one is a
+credential that reaches the column, and the categories above are recognisers
+rather than a proof that the database holds none. That limit is
 the same one `src/journal.ts` states about its own boundary columns, and the
 columns this phase adds are classified there as declared limits for that reason.
 

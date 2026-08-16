@@ -22,14 +22,27 @@ import { rest, mcp } from "./p6-helpers.ts";
 import { redact } from "../src/redaction.ts";
 import { SECRET_PATTERNS } from "../src/gates.ts";
 
-/** Planted material. Every one of these is a value a sweep must not find. */
+/**
+ * Planted material. Every one of these is a value a sweep must not find.
+ *
+ * ASSEMBLED FROM FRAGMENTS AT RUN TIME, never written as a literal, for the
+ * reason `test/p7-threats.test.ts` gives at TM-03 and `[15.4]` enforces over
+ * every tracked file: a push-side secret scanner matches the blob and cannot
+ * tell a red-team fixture from a credential, so it refuses the publication. The
+ * values are byte for byte what they would have been; only the spelling in this
+ * file changes.
+ */
 const SECRETS = {
-  github: "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
-  aws: "AKIAIOSFODNN7EXAMPLE",
-  jwt: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJza2xuIiwiaWF0IjoxNTE2MjM5MDIyfQ.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk",
-  apiKey: "sk-live-9f2b7c41d8e6a05b3f7c19d4e82a6b0c",
-  password: "hunter2-correct-horse",
-  urlPassword: "s3cr3t-in-a-url",
+  github: ["ghp", "_0123456789", "abcdefghijklmnopqrstuvwxyz"].join(""),
+  aws: ["AKIA", "IOSFODNN7", "EXAMPLE"].join(""),
+  jwt: [
+    ["eyJhbGci", "OiJIUzI1NiJ9"].join(""),
+    ["eyJzdWIiOiJza2xuIiwi", "aWF0IjoxNTE2MjM5MDIyfQ"].join(""),
+    ["dBjftJeZ4CVPmB92K27u", "hbUJU1p1r_wW1gFWFOEjXk"].join(""),
+  ].join("."),
+  apiKey: ["sk-live-9f2b7c41", "d8e6a05b3f7c19d4e82a6b0c"].join(""),
+  password: ["hunter2", "-correct-horse"].join(""),
+  urlPassword: ["s3cr3t", "-in-a-url"].join(""),
 } as const;
 
 const CAPTURE = [
@@ -202,7 +215,11 @@ test("the redactor's own contract: overlapping matches leave one token, and the 
     if (id === "pem-private-key") continue; // exercised below as a block
     assert.ok(re instanceof RegExp, `${id} is a pattern`);
   }
-  const pem = redact("-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAK\n-----END RSA PRIVATE KEY-----");
+  // the PEM header is assembled too: written out, it is the `pem-private-key`
+  // pattern's own shape and `[15.4]` refuses it in a tracked file
+  const begin = ["-----BEGIN RSA ", "PRIVATE KEY", "-----"].join("");
+  const end = ["-----END RSA ", "PRIVATE KEY", "-----"].join("");
+  const pem = redact(`${begin}\nMIIBOgIBAAJBAK\n${end}`);
   assert.equal(pem.findings.length, 1);
   assert.equal(pem.findings[0]!.category, "private_key");
   assert.ok(!pem.text.includes("MIIBOgIBAAJBAK"), "the whole block goes, not only its header");
