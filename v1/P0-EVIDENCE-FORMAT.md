@@ -358,16 +358,32 @@ evidence/
     11-append-only-check.txt       the append-only check, positive and negative runs
     12-secret-scan-fix1.txt        the secret-absence sweep, FIX-1
     13-evidence-check-fix1.txt     the evidence-record check, FIX-1
-    14-secret-scan-fix2.txt        the secret-absence sweep, FIX-2
-    15-evidence-check-fix2.txt     the evidence-record check, FIX-2
+    14-secret-scan-fix2.txt        the secret-absence sweep, FIX-2 gate run
+    15-evidence-check-fix2.txt     the evidence-record check, FIX-2 gate run
     16-residual-limitations.md     P0's standing residual audit limitations, carried forward
+    17-secret-scan-final.txt       the closing secret sweep, run after the last word was written
+    18-evidence-check-final.txt    the closing evidence-record check — the last file P0 writes
     runs.jsonl                     one record per run, in the schema of section 1
     runs-build1-superseded.jsonl   archived ledger: BUILD-1's 11 records, byte-identical
     runs-build1-superseded.jsonl.README.md   why that ledger is archived (required sidecar)
     logs/                          full captured output of each command, one file per record
     logs-build1/                   what survives of BUILD-1's artifacts, with its own README.md
+    logs-fix2-attempt1/            an aborted gate run kept with its red log, with its own README.md
     probes-fix2/                   one transcript per negative probe, with its own README.md
 ```
+
+Two things this layout does not promise. **logs/ holds more than one session's
+artifacts** — FIX-1's and FIX-2's live side by side under distinct names, because a
+name reused is an artifact destroyed (`L-P0-01`); the one-to-one rule is per file, not
+per session. And **the numbered files are per event, not per session**: a phase that
+runs its gates twice writes two sweeps rather than overwriting one.
+
+**The closing pair runs last, in this order.** Every document in the package —
+including the gate summary and this ledger's prose — is finished before
+`17-secret-scan-final.txt` sweeps it, and the evidence-record check that writes
+`18-evidence-check-final.txt` is the last thing the phase does. Otherwise the closing
+check certifies a package that then changes, which is a certificate for a state
+nobody inspected.
 
 evidence/ is listed in the repository's `.gitignore`, so these artifacts live
 outside the tracked tree by design and are handed to the reviewer as a directory.
