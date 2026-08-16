@@ -129,6 +129,19 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["docs/API.md", "02349c162935ec56", "behaviour", "nine protected routes answer 401 without a session, and the two pages are byte-equal to their fixed shells with no draft content in them: test/v1p2-console.test.ts"],
     ["docs/API.md", "42f369386590fd61", "behaviour", "a planted script tag and an onerror attribute render as characters and execute nothing, and the client source contains no markup-writing API: v1/tools/e2e/console-e2e.mjs, test/v1p2-console.test.ts"],
   ],
+  // ---------------------------------------------------------- docs/API, V1 P3
+  //
+  // Assignment and lifecycle control. Each of these is a statement about the
+  // server's behaviour with a run behind it in `test/v1p3-assignment.test.ts`,
+  // which drives the real router against a real database.
+  [
+    ["docs/API.md", "f1c52c30b6b76a2e", "behaviour", "the transition table and the conflict rules are the server's, and the client bundle is searched for a second copy of either: test/v1p3-assignment.test.ts"],
+    ["docs/API.md", "882479ce3070047b", "behaviour", "three owner commands leave assignment_observations empty and an observation claiming source `owner` is refused: test/v1p3-assignment.test.ts"],
+    ["docs/API.md", "df60801236f6f604", "behaviour", "with nothing reported the observed status is `unknown` carrying all four required fields, and only a structured report on the machine-to-machine route moves it: test/v1p3-assignment.test.ts"],
+    ["docs/API.md", "02cce8630330cf27", "behaviour", "every lifecycle answer and every journal row carries effective_from `next_session`: test/v1p3-assignment.test.ts"],
+    ["docs/API.md", "d95e5c94a095bca0", "behaviour", "the journal APPENDS — the earlier rows are byte-for-byte what they were after a later command, and the database refuses an UPDATE: test/v1p3-assignment.test.ts"],
+    ["docs/API.md", "8b3e4899496681fb", "behaviour", "entity_version is on the assignment answer and a stale if_version is 412 with the current state: test/v1p3-assignment.test.ts"],
+  ],
   // ------------------------------------------------------------------ README
   [
     ["README.md", "30dbd7abb8b0bb13", "behaviour", "a checkout runs without a build: exercised on both runtimes by test/readme-quickstart.test.ts"],
@@ -884,7 +897,7 @@ test("the true form of each planted family passes", () => {
     "Only four packaging paths exist, and all of them are local.",
     "The threat model and the ten red-team tests that cover it are shipped.",
     "Gate 5 admits only what it can read: ten classes are refused.",
-    "The normative schema is given in **fourteen** migrations, applied in ascending order.",
+    "The normative schema is given in **fifteen** migrations, applied in ascending order.",
     "The package ships four classes of defective bundle and one positive control.",
   ];
   assert.equal(TRUE_FORMS.length, PLANTINGS.length, "every planted family needs its true form beside it");

@@ -495,3 +495,53 @@ The registry only connects to `https` endpoints on public addresses, follows no
 redirects, resolves your hostname once and pins the connection to the address it
 checked, and enforces connect/total deadlines and a response-size cap.
 `OPERATIONS.md` has the full list and the knobs.
+
+## Assignment and lifecycle control (V1 P3)
+
+An approved revision is put at an agent of your own workspace — the closed
+fleet — and its lifecycle is controlled from the Owner Console. The rules below
+are the server's; the page renders them and holds none of them.
+
+```
+GET  /v1/console/fleet                                 the active agents of your workspace
+GET  /v1/console/capabilities                          every lineage with an approved revision
+GET  /v1/console/capabilities/{draft_id}               its approved revisions, the fleet, the assignments
+POST /v1/console/assignments                           {"agent_id","revision_id","reason"?}
+GET  /v1/console/assignments/{assignment_id}           desired and observed, side by side
+POST /v1/console/assignments/{id}/activate             {"if_version"?,"reason"?}
+POST /v1/console/assignments/{id}/pause                {"if_version"?,"reason"?}
+POST /v1/console/assignments/{id}/revoke               {"if_version"?,"reason"?}
+POST /v1/console/assignments/{id}/revision             {"revision_id","if_version"?,"reason"?}
+GET  /v1/console/assignments/{assignment_id}/audit     the lifecycle journal, structured
+POST /v1/assignments/{assignment_id}/observations      Bearer — the observed-state intake
+```
+
+**Desired is not observed.** `desired` is what you asked for and `observed` is
+what an adapter or a runtime reported seeing. They are separate objects of the
+answer, they come from separate tables, and no owner command writes an
+observation: the `source` of an observation is one of `backend`, `adapter` or
+`runtime`, and there is no `owner` member. If nothing has been reported, the
+observed status is `unknown` — with a `reason_code`, a `reason`, a `source` and,
+once something has been reported, the reporter's own `observed_at_ms` and
+`session_ref` and its `provenance_json` payload. An `unknown` never becomes a
+success by itself.
+
+**Changes take effect in the NEXT session.** Every lifecycle answer carries
+`effective_from: "next_session"`. The loadout of a session that has already
+started is not rewritten, and there is no call in this API that would rewrite
+one.
+
+**Concurrency.** `entity_version` is on every assignment answer; send it back as
+`if_version` and a stale one is `412 PRECONDITION_FAILED` with `current_state`.
+A transition the lifecycle does not allow is the same `412`. `revoked` is
+terminal — taking a capability back again is a new assignment, not a
+reactivation.
+
+**Idempotency.** Send `idempotency_key` and a repeat with the same payload
+replays the first answer; the same key with a different payload is `409
+CONFLICT`. On either refusal the Console refetches the canonical state and shows
+the conflict rather than a success it did not get.
+
+**Rollback deletes nothing.** `POST .../revision` selects any approved revision
+of the lineage. Selecting an earlier one is a rollback and is recorded as one;
+the newer revision keeps its row, its approval and its place in the lineage.
