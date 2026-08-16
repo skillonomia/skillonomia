@@ -405,6 +405,21 @@ evidence/
     logs/                          full captured output of each command, one file per record
     logs-baseline/                 the pre-change reading at the phase base, with its own README.md
     probes/                        one transcript per negative probe, with its own README.md
+  P2/
+    00-browser-feasibility.txt     whether a real browser can be driven in this container at all, answered first
+    01-refs-tags-and-base.txt      refs, tags, ancestry and clean-worktree at the output SHA, and why there is no before-snapshot
+    02-branch-reflog.txt           the full branch reflog — the append-only record
+    03-session-record.md           this session's role, model contract, task and session IDs, and its commits
+    04-forbidden-actions-log.md    the log of forbidden production and history-rewriting actions
+    05-p2-record.md                what P2 built, per deliverable and per requirement, at the exact SHA
+    06-gate-summary.md             every mandatory P2 gate, its command and its exit code
+    07-browser-e2e-trace.txt       the browser run's sanitised network trace, one line per exchange
+    08-negative-probes.txt         the validator negative probes
+    09-secret-scan-final.txt       the closing secret sweep, run after the last word was written
+    10-evidence-check-final.txt    the closing evidence-record check — the last file P2 writes
+    runs.jsonl                     one record per run, in the schema of section 1
+    logs/                          full captured output of each command, one file per record
+    e2e-development-runs/          the browser gate's development runs, with its own README.md
 ```
 
 A phase directory follows the same rules: the numbered files are per event, the
