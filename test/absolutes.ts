@@ -158,6 +158,18 @@ export const REFERENCED_ONLY: ReadonlyArray<{ pattern: RegExp; why: string }> = 
       "a shipped skill package under the no-touch rule: its `SKILL.md` is the runbook an adopter executes and its " +
       "bytes are covered by test/skill-git-bundle-verify.test.ts. Its claims are checked, never rewritten.",
   },
+  {
+    pattern: /^v1\/[A-Za-z0-9_.-]+\.md$/,
+    why:
+      "the V1 -> FINAL DONE working record: a baseline of what this tree already is, a requirement traceability " +
+      "matrix, a frozen threat model and a frozen evidence format. These describe a BUILD rather than this software, " +
+      "and most of their absolute sentences quote a contract's obligations on future phases — a requirement that " +
+      "`every observed unknown carries a reason_code` is a rule P3 must meet, not a claim about this tree, and " +
+      "declaring several hundred of them against code that does not exist yet would be a table of guesses. Their " +
+      "references and counts ARE checked here, which is the half that can be true today: a path they name must " +
+      "exist and a number they state must match. Each row's own check is named in v1/P0-TRACEABILITY.md and is owed " +
+      "by the phase that lands the behaviour.",
+  },
 ];
 
 export function rosterOf(name: string): "partitioned" | "referenced-only" | null {
