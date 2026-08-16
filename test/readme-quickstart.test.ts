@@ -274,48 +274,68 @@ test("the README's quickstart block, run verbatim, reaches a terminal `adopted` 
 });
 
 test("the README promises no artifact that does not exist", () => {
-  // §1's rule, kept mechanical, and NARROWED BY B1/B2 rather than dropped.
+  // §1's rule, kept mechanical, and NARROWED TWICE rather than dropped.
   //
-  // Two commands a reader could copy now name artifacts this project intends to
-  // publish and has not: `docker run ghcr.io/...` and
-  // `npm install -g @skillonomia/cli`. Writing them down is right — they are the
-  // documented shapes — and writing them as if they WORKED is the defect. So:
+  // B1/B2 wrote down two commands for artifacts that were not published yet —
+  // `docker run ghcr.io/...` and `npm install -g @skillonomia/cli` — and the
+  // guard required the README to say so. BOTH ARE PUBLISHED NOW, so that
+  // requirement inverted: a document repeating the absence would be the false
+  // statement. What survives is the part that was never about the calendar:
   //
   //   * `npx skillonomia` stays forbidden outright. That name on the public
-  //     registry is somebody else's package, and `npx` would run it.
-  //   * a `docker run`/`pull` of the published image must carry the `<digest>`
-  //     PLACEHOLDER. A concrete digest would be a pull a reader can attempt and
-  //     an artifact this repository invented.
-  //   * and the README must say, in prose, that neither has been published.
+  //     registry is a different package — a name-holding placeholder under the
+  //     same account, carrying none of this software — and `npx` would run it.
+  //   * a `docker run`/`pull` of the published image is named by an IMMUTABLE
+  //     reference: `@sha256:` and a digest, or the `<digest>` placeholder. A
+  //     tag in a runnable block is a pointer that moves after it was smoked.
+  //   * a concrete digest is a claim about a MOMENT, so the prose has to say
+  //     which tag it was resolved from and how a reader resolves another. A
+  //     bare 64-hex string reads as the image's permanent identity, which is
+  //     the "always this digest" promise this project does not make.
+  //   * and the README must still say where a reader checks what is published,
+  //     rather than being the evidence for its own claim.
   const blocks = [...README.matchAll(/```bash\n([\s\S]*?)\n```/g)].map((m) => m[1]);
+  let concrete = 0;
   for (const b of blocks) {
     for (const line of b.split("\n")) {
       const cmd = line.trim();
       assert.doesNotMatch(
         cmd,
         /^npx\s/,
-        `README runnable block: \`${cmd}\` — the public npm name is an unrelated placeholder (§Availability)`,
+        `README runnable block: \`${cmd}\` — the unscoped npm name is a placeholder, not this software (§Availability)`,
       );
       if (/^docker\s+(run|pull)\b/.test(cmd) || /ghcr\.io/.test(cmd)) {
         const local = /skillonomia:local\b/.test(cmd) || /skillonomia:ci\b/.test(cmd);
-        const placeholder = /@sha256:<digest>/.test(cmd) || /\\$/.test(cmd);
+        const digest = /@sha256:(?:<digest>|[0-9a-f]{64})\b/.test(cmd);
+        if (/@sha256:[0-9a-f]{64}\b/.test(cmd)) concrete += 1;
         assert.ok(
-          local || placeholder,
-          `README runnable block: \`${cmd}\` — an image is either built locally or named by the \`<digest>\` ` +
-            "placeholder; a concrete reference here would be a pull of something nobody published",
+          local || digest || /\\$/.test(cmd),
+          `README runnable block: \`${cmd}\` — an image is either built locally or named by digest; a tag here ` +
+            "would be a pointer that moves after it was smoked",
         );
       }
     }
   }
 
-  // The prose half. A placeholder a reader does not notice is a promise, so the
-  // absence is stated in words as well as in syntax.
-  assert.match(README, /No digest has been published/, "README says the image has no published digest");
+  // The prose half. A published artifact still needs the reader to be able to
+  // check it somewhere that is not this file.
   assert.match(
     README,
-    /`@skillonomia\/cli` is \*\*not on the npm registry yet\*\*/,
-    "README says the CLI is not on the registry yet",
+    /npm view @skillonomia\/cli versions/,
+    "README says where to ask npm what it holds, rather than answering for the registry itself",
   );
+  assert.match(
+    README,
+    /docker buildx imagetools inspect/,
+    "README says how to resolve a tag of the image to the digest to pull by",
+  );
+  if (concrete > 0) {
+    assert.match(
+      README,
+      /That digest is what the `0\.1\.6` tag resolved to when this line was written/,
+      "a concrete digest in the README is dated and attributed to the tag it came from, not offered as permanent",
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------

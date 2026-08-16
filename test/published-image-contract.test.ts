@@ -10,14 +10,15 @@
 //   * a TAG can be documented where a digest is meant — `:latest` is a pointer
 //     that moves after it was smoked, so what a reader pulls is not what CI ran;
 //   * a PUBLISH can appear outside `release.yml`;
-//   * and, until an image actually exists, the documents can promise a digest
-//     nobody can pull.
+//   * and a documented digest can outlive the version it was resolved from.
 //
-// The last one is the live question at this commit: NOTHING HAS BEEN PUBLISHED.
-// The workflow that would publish exists and is armed behind the owner's
-// approval; the registry holds no image. So the documents must state the command
-// AND state that it has no digest yet, and this file requires both — a document
-// that printed a plausible 64-hex digest would be inventing an artifact.
+// The last one is the live question at this commit. THE IMAGE IS PUBLISHED: the
+// registry holds a tag per version, so the B1 rule — documents must say no digest
+// exists — inverted, and a document still saying it would be the false statement.
+// What replaces it is the DATING CLAUSE below: a concrete digest is a claim about
+// one moment and one version, so the document that prints one names the tag it
+// resolved from and the command that resolves another. A bare 64-hex string with
+// neither is the "always this digest" promise this project does not make.
 //
 // AND THE IMAGE IS A LINUX ARTIFACT. The owner deferred Docker Desktop on macOS
 // and every Windows lane, so `qualify-docker-linux` is the one container
@@ -120,13 +121,17 @@ test("the smoke REFUSES a tag, and refuses to run on a host it is not", () => {
   assert.doesNotMatch(wrongHost.stdout, /docker pull/, "…before anything is pulled");
 });
 
-test("the documents give the loopback-only command, by digest, and say no digest exists yet", () => {
+test("the documents give the loopback-only command, pinned by digest and dated where the digest is concrete", () => {
   const image = publishedImage();
+  const quoted = image.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   for (const doc of ["README.md", "docs/OPERATIONS.md"]) {
     const text = read(doc);
     assert.ok(text.includes(image), `${doc} names the image the workflow publishes`);
+    const pinned = [...text.matchAll(new RegExp(`${quoted}@sha256:(<digest>|[0-9a-f]{64})(?![0-9a-f])`, "g"))].map(
+      (m) => m[1],
+    );
     assert.ok(
-      text.includes(`${image}@sha256:<digest>`),
+      pinned.length > 0,
       `${doc} pins the image by digest — a tag is a pointer that moves after it was smoked`,
     );
     assert.match(
@@ -134,18 +139,31 @@ test("the documents give the loopback-only command, by digest, and say no digest
       /docker run[^\n]*-p 127\.0\.0\.1:7431:7431/,
       `${doc}'s container command publishes on the loopback and nowhere else`,
     );
+    // A TAG IN A RUNNABLE PULL is what stays refused. `imagetools inspect` on a
+    // tag is the resolution step and is not a pull, so it is allowed to name one.
+    const tagged = [...text.matchAll(new RegExp(`docker\\s+(?:run|pull)[^\\n]*${quoted}:\\S`, "g"))].map((m) => m[0]);
+    assert.deepEqual(tagged, [], `${doc} runs or pulls the image by tag: ${tagged[0]}`);
 
-    // THE HONESTY CLAUSE. No image is published at this commit, so a document
-    // must not read as though one is: a reader following the command gets a
-    // manifest-unknown error, and the document has to have said so first.
-    assert.match(
-      text,
-      /no published digest|no digest has been published/i,
-      `${doc} must say that no digest exists yet — the command is a shape, not a working pull`,
-    );
-    // …and it must not contain something that LOOKS like a real digest.
-    const looksReal = [...text.matchAll(/@sha256:([0-9a-f]{64})/g)].map((m) => m[1]);
-    assert.deepEqual(looksReal, [], `${doc} prints a concrete digest (${looksReal[0]}) for an image nobody published`);
+    // THE DATING CLAUSE, which replaces B1's honesty clause. The image IS
+    // published now — a document repeating "no digest exists" would be the false
+    // statement — but a 64-hex digest written into prose is a claim about ONE
+    // MOMENT and one version. Whichever document writes one has to say which tag
+    // it resolved from and how a reader resolves another, or the digest reads as
+    // the image's permanent identity: a promise nobody here can keep, because
+    // the next version's digest is a different string.
+    const concrete = pinned.filter((p) => p !== "<digest>");
+    if (concrete.length > 0) {
+      assert.match(
+        text,
+        /resolved to when this line was written/,
+        `${doc} writes a concrete digest (${concrete[0].slice(0, 12)}…) without dating it to the tag it came from`,
+      );
+      assert.match(
+        text,
+        /imagetools inspect/,
+        `${doc} writes a concrete digest without saying how a reader resolves another version's`,
+      );
+    }
   }
 });
 

@@ -311,17 +311,19 @@ for the same reason: a CI runner is a host on a network like any other. It
 builds the image from this repository's `Dockerfile` and pulls nothing; it is
 the product quickstart, not the acceptance check for a published image.
 
-**The published image, and the digest that is not there yet.**
-No digest has been published for `ghcr.io/skillonomia/skillonomia`: the registry
-holds nothing under that name, and the row
-above is the shape the command will have, not a pull that works today. The
-publishing path exists and is armed — `.github/workflows/candidate.yml` builds
+**The published image, and the digest the row above wants.**
+`ghcr.io/skillonomia/skillonomia` is published, with a tag per released version.
+`docker buildx imagetools inspect ghcr.io/skillonomia/skillonomia:0.1.6`
+resolves a tag to the digest to pin, and an anonymous pull works. Resolve the
+tag yourself rather than copying a digest out of a document: a digest names one
+version, and this page is not the registry. The publishing path is
+`.github/workflows/candidate.yml`, which builds
 `linux/amd64` and `linux/arm64` on every push and pushes neither (two Linux
 architectures, not two operating systems: the image is qualified on Linux and
-the other two container jobs are deferred by the owner);
-`.github/workflows/release.yml` pushes on a version tag out of the protected
-`release` environment, then resolves the manifest back from the registry and
-smokes it. The acceptance check is:
+the other two container jobs are deferred by the owner), and
+`.github/workflows/release.yml`, which pushes on a version tag out of the
+protected `release` environment, then resolves the manifest back from the
+registry and smokes it. The acceptance check is:
 
 ```bash
 docker buildx imagetools inspect ghcr.io/skillonomia/skillonomia@sha256:<digest>
@@ -357,9 +359,13 @@ the plain-JS entry point the installed package runs — and npm runs `prepack`
 when a tarball is PACKED, never when one is installed. There is no `install`,
 `postinstall` or `prepare` script in this package.
 
-**Nothing has been published to npm yet.** The unscoped name `skillonomia` on
-the public registry is an unrelated third-party placeholder; do not install it.
-Until a version of `@skillonomia/cli` exists, the path is exercised from a file:
+**`@skillonomia/cli` is published; the unscoped name beside it is not this
+software.** What the registry holds under the scoped name is what `npm view
+@skillonomia/cli versions` prints. The unscoped name `skillonomia` on the public
+registry is a name-holding placeholder published from the same npm account, with
+an empty `bin` and nothing of this software in it; do not install it. The path
+is also exercised from a packed file, which is how a version is checked before
+it reaches the registry:
 
 ```bash
 npm pack
@@ -377,9 +383,9 @@ different markers, because only one of them exercised the registry.
 
 One executable, six subcommands — the same set on all four packaging paths
 (the container image, a checkout run with Node ≥22.6, the `@skillonomia/cli`
-tarball, the compiled binary). Only the binary is a published artifact today:
-the image and the npm package have a publishing path that is armed and has not
-run, so both are used from this repository until then.
+tarball, the compiled binary). Three of the four have a published artifact — the
+compiled binary as a release asset, the tarball as `@skillonomia/cli` on npm and
+the image on GHCR — and a checkout is run in place.
 
 ```
 skillonomia serve [--port N] [--data DIR] [--host H]

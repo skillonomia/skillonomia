@@ -2,12 +2,15 @@
 
 ## Read this first — what this does not do
 
-Source-only release under Apache-2.0. There is no hosted service, no published
-build artifact, no support commitment and no external pilot. You run it
-yourself, from this repository, or you do not run it. The registry provisions
-its own principals and keys through its own API (§6.1) and the quickstart below
-really does work on a clean machine — that is a self-service path, not an
-offer of one.
+Apache-2.0, and self-hosted. There is no support commitment and no external
+pilot, and nothing here is offered as a service: what is published is
+artifacts — the release binary, `@skillonomia/cli` on npm and the container
+image `ghcr.io/skillonomia/skillonomia`, listed under [Availability of prebuilt
+artifacts](#availability-of-prebuilt-artifacts) — and running one of them is
+your side of the line. You run it yourself, from this repository or from one of
+those artifacts, or you do not run it. The registry provisions its own
+principals and keys through its own API (§6.1) and the quickstart below really
+does work on a clean machine — that is a self-service path, not an offer of one.
 
 The boundaries come before the description, because every one of them is a way
 this software can be misread. Read them first; what it *is* follows in "What
@@ -111,32 +114,34 @@ on the road from a clone to a running registry.
 
 ## Availability of prebuilt artifacts
 
-**One prebuilt artifact is published: the Linux x86_64 binary.** A tagged
-release carries the source and a git bundle you can verify yourself, and — from
-a version tag after `v0.1.0` — `skillonomia-linux-x86_64.tar.gz` with
-`SHA256SUMS` beside it.
+**Three prebuilt artifacts are published: the Linux x86_64 release binary, the
+npm package `@skillonomia/cli`, and the container image
+`ghcr.io/skillonomia/skillonomia`.** `.github/workflows/candidate.yml` builds
+them on every push and pushes none; `.github/workflows/release.yml` publishes
+them on a version tag, out of an environment the owner approves by hand.
 
-Two more artifacts have a publishing path that is BUILT AND ARMED and has not
-run. `.github/workflows/candidate.yml` builds both on every push and pushes
-neither; `.github/workflows/release.yml` publishes them on a version tag, out of
-an environment the owner approves by hand. Until that happens:
+Where to check, so that this paragraph is not the evidence:
 
-- **No digest has been published** for the container image
-  `ghcr.io/skillonomia/skillonomia`, so the `docker pull` below resolves to
-  nothing. The command is written here as the shape it will have, with the
-  digest left as `<digest>`, because an image is pinned by digest, never by a
-  tag.
-- `@skillonomia/cli` is **not on the npm registry yet**. The unscoped name
-  `skillonomia` there is an unrelated third-party placeholder — `npx
-  skillonomia` would install *that*, not this software. Do not run it.
+- **The binary** is a release asset: `skillonomia-linux-x86_64.tar.gz` with
+  `SHA256SUMS` beside it, on the release page of a version tag after `v0.1.0`.
+- **The npm package** is `@skillonomia/cli`; what the registry holds is what
+  `npm view @skillonomia/cli versions` prints. The unscoped name `skillonomia`
+  there is a different package: a name-holding placeholder published from the
+  same npm account, with an empty `bin` and nothing of this software in it —
+  `npm view skillonomia` is what that name answers. `npx skillonomia` would run
+  *that*. Do not run it.
+- **The image** is `ghcr.io/skillonomia/skillonomia`, tagged with the version it
+  was built from. `docker buildx imagetools inspect
+  ghcr.io/skillonomia/skillonomia:0.1.6` resolves a tag to the digest to pull
+  by, and answers without a credential; the pull does too.
 - `v0.1.0` carries source only and keeps carrying source only:
   `.github/workflows/release.yml` refuses that tag by name. A published release
   that grows an asset later changes what its own checksum meant to everyone who
   already read it, so a new artifact gets a new version instead.
 
-Apart from the binary, every path below starts from a checkout of this
-repository, and the Docker path builds the image locally from the `Dockerfile`
-in it.
+The quickstart below still starts from a checkout of this repository, and its
+Docker section builds the image from the `Dockerfile` in it rather than pulling
+one. The published forms are the section after it.
 
 ## Install the released binary
 
@@ -156,21 +161,26 @@ at the first-start credentials. `node ci/mvp-release.mjs binary --tag <tag>` is
 the same check run against the published release: it downloads the assets,
 verifies the checksum, and starts the unpacked binary outside any checkout.
 
-## The two published paths, once they exist
+## The two published paths
 
-Both are written here as the shapes they will have. Neither works today — no
-digest and no npm version have been published — and the section above says so
-rather than leaving a reader to find out from an error message. They are also
-not the same width: the CLI is the macOS path and the container is not
-qualified there, which [Supported platforms](#supported-platforms) states.
+Both work today, against the artifacts [Availability of prebuilt
+artifacts](#availability-of-prebuilt-artifacts) says how to check. They are not
+the same width: the CLI is the macOS path and the container is not qualified
+there, which [Supported platforms](#supported-platforms) states.
 
 **The container.** One image, pinned by digest, published on the LOOPBACK and
 nowhere else:
 
 ```bash
 docker run -p 127.0.0.1:7431:7431 -v skillonomia-data:/data \
-  ghcr.io/skillonomia/skillonomia@sha256:<digest>
+  ghcr.io/skillonomia/skillonomia@sha256:07e79b1c5b9394019a019da04ec7b60633b19d6e1ed8edcb7e403d6b4459a8de
 ```
+
+That digest is what the `0.1.6` tag resolved to when this line was written, and
+it pins that version and nothing later. An image is pinned by digest, never by a
+tag: a tag is a pointer that can be moved after the thing it pointed at was
+tested. Resolve the one you want with `docker buildx imagetools inspect` and
+paste it in place of the digest above.
 
 The `127.0.0.1:` is not decoration, and it is the whole of the boundary here.
 This listener speaks plain HTTP and prints two one-time credentials on its
@@ -494,15 +504,16 @@ See `docs/API.md` for the full request and response shapes, and
 
 ## Packaging
 
-Four paths. Three of them are built from this checkout; the binary is the one
-that is also published, as a release asset a tag away from this table (see
-[Availability of prebuilt artifacts](#availability-of-prebuilt-artifacts)).
+Four paths. They are built from this checkout; three of them also have a
+published artifact — the release binary, `@skillonomia/cli` on npm, and the
+image on GHCR (see [Availability of prebuilt
+artifacts](#availability-of-prebuilt-artifacts)).
 
 | Path | Command | Notes |
 |---|---|---|
 | Docker | `docker build -t skillonomia:local .` → `docker run -p 127.0.0.1:7431:7431 -v skillonomia-data:/data skillonomia:local` | the normative quickstart target; the publish is loopback-only |
 | Node | `npm ci` → `npm start -- --port 7431 --data ./skillonomia-data` | needs Node ≥22.6 |
-| npm tarball | `npm pack` → `npm install -g ./skillonomia-cli-0.1.6.tgz` → `skillonomia serve` | the `@skillonomia/cli` package, packed here and installed **from the file** until a version is published; `prepack` builds the plain-JS entry point the installed package runs, and it is the maintainer's step — a consumer install runs no Bun |
+| npm tarball | `npm pack` → `npm install -g ./skillonomia-cli-0.1.6.tgz` → `skillonomia serve` | the `@skillonomia/cli` package, packed here and installed **from the file**; the published form of the same package is the global install below; `prepack` builds the plain-JS entry point the installed package runs, and it is the maintainer's step — a consumer install runs no Bun |
 | Linux x86_64 binary | `npm run build:binary` → `dist/skillonomia serve`, or the released `skillonomia-linux-x86_64.tar.gz` | ships `migrations/`, `schema/` and `seed/` next to the executable |
 
 All four rows are **local**: each one puts a plain-HTTP listener on the
@@ -513,8 +524,8 @@ with the registry port not published at all (see
 
 The published forms of the first and third rows — `docker pull` by digest and
 `npm install -g @skillonomia/cli` — are given under [The two published
-paths](#the-two-published-paths-once-they-exist), together with the statement
-that neither has been published yet.
+paths](#the-two-published-paths), together with the digest the `0.1.6` tag
+resolved to and the command that resolves any other.
 
 ### Supported platforms
 

@@ -102,9 +102,6 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
   // ------------------------------------------------------------------ README
   [
     ["README.md", "30dbd7abb8b0bb13", "behaviour", "a checkout runs without a build: exercised on both runtimes by test/readme-quickstart.test.ts"],
-    ["README.md", "3302f5a81cc00960", "external", "what the npm registry and GHCR carry today is not readable from this tree"],
-    ["README.md", "0a5e27c0fc76536c", "external", "whether GHCR holds a digest for this image is a property of that registry"],
-    ["README.md", "5fc10604045d611d", "editorial", "says where the paths below start, now that one of them does not; about the document's own structure"],
     ["README.md", "6b4fbfc701c8952c", "editorial", "names the one non-literal step of the transcript; about the document"],
     ["README.md", "8324343cd261dc26", "editorial", "defines the `# →` convention the quickstart transcript is written in"],
     ["README.md", "db0351bb0784e0b7", "editorial", "claims the README cannot drift; the mechanism is test/readme-quickstart.test.ts"],
@@ -129,7 +126,7 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["README.md", "591ffd55b670d997", "behaviour", "every packaging row listens on the loopback: test/bind-address.test.ts and test/docker-network-boundary.test.ts"],
     ["README.md", "809e73863b64d7c0", "intent", "serving another host is a different topology, not a flag; a support boundary"],
     ["README.md", "543ab46ce04a2c1f", "intent", "a loopback publish is a local trial and not a way to serve another host; a support boundary"],
-    ["README.md", "edfcc408cc28f15e", "behaviour", "an image is pinned by digest and a tag is refused: test/published-image-contract.test.ts"],
+    ["README.md", "5e7fbc1bff8b29b8", "behaviour", "an image is pinned by digest and a tag is refused: test/published-image-contract.test.ts"],
     ["README.md", "ce778aeb74d8b1f6", "behaviour", "the CLI needs Node and no Bun, bash, curl or tar: test/npm-consumer.test.ts"],
     ["README.md", "09da2477dd1e08af", "behaviour", "`demo` needs none of the transcript's shell tools: test/npm-consumer.test.ts"],
     ["README.md", "54a1182959065f0a", "behaviour", "`demo` spawns exactly one program, the declared step: test/npm-consumer.test.ts"],
@@ -167,7 +164,8 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["SECURITY.md", "00017c15de658726", "intent", "no security maintenance commitment at any version; a maintenance policy"],
     ["SECURITY.md", "d002d8a5033c2268", "intent", "only the tip of the published branch is looked at; a maintenance policy"],
     ["SECURITY.md", "de117bedc0e8ec40", "intent", "the supported-versions row restating that policy"],
-    ["SECURITY.md", "522306027724c905", "intent", "the supported-versions row for the version this tree declares, restating that policy"],
+    ["SECURITY.md", "aaf5c03f9bdb6429", "intent", "the supported-versions row for the version this tree declares, restating that policy"],
+    ["SECURITY.md", "6702c7076146000d", "intent", "the owner's pilot instance is not a service this project offers and carries no uptime or response commitment; a support boundary, not a fact of the tree"],
     ["SECURITY.md", "a8ea82542519eb4c", "intent", "versions between the baseline and this one carry the same absence of commitment; a maintenance policy"],
     ["SECURITY.md", "e0c0cc07ec2fc4ca", "definition", "introduces the list of parts that make a security claim; defines the section's scope"],
     ["SECURITY.md", "5c767d464feceeb8", "definition", "assigns three attack shapes to the signing surface; a classification"],
@@ -269,7 +267,6 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
   [
     ["docs/OPERATIONS.md", "7cba9cf255642c1d", "behaviour", "the compiled binary targets Linux x86_64 and no other: test/platform.test.ts"],
     ["docs/OPERATIONS.md", "b2cd59fa936e9a5d", "behaviour", "the Windows ACL check reads the ACL and runs a second-account probe, failing closed: test/windows-security.test.ts"],
-    ["docs/OPERATIONS.md", "6b23af1d966ed581", "external", "whether GHCR holds a digest for this image is a property of that registry"],
     ["docs/OPERATIONS.md", "f2549d1d0fe06bdd", "behaviour", "the CLI needs Node and no Bun, bash, curl or tar: test/npm-consumer.test.ts"],
     ["docs/OPERATIONS.md", "6ce22276f2e3fdcf", "external", "when npm runs `prepack` is npm's own lifecycle, not a fact of this tree"],
     ["docs/OPERATIONS.md", "b561dd70d0febbbd", "behaviour", "no install, postinstall or prepare script exists: test/npm-consumer.test.ts"],
@@ -306,7 +303,6 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["docs/OPERATIONS.md", "7131c613333314bb", "external", "why a firewall in front is not the boundary; about the operator's estate"],
     ["docs/OPERATIONS.md", "2aa6bc7c9fce75b9", "intent", "the compose recipe's first rule; a support boundary"],
     ["docs/OPERATIONS.md", "60cb61e268f7df48", "external", "the proxy is the only public listener in the operator's project"],
-    ["docs/OPERATIONS.md", "1a38c34920c32449", "external", "which artifacts exist on a registry today is not readable from this tree"],
     ["docs/OPERATIONS.md", "8b3fec11c8d01d3d", "behaviour", "verify and verify-log need no path on a running deployment: test/cli.test.ts"],
     ["docs/OPERATIONS.md", "217e562748f2a229", "behaviour", "credentials are issued at first start only: test/p5-e2e.test.ts"],
     ["docs/OPERATIONS.md", "a6cd6e33f5aae00f", "behaviour", "both credentials are printed once and not stored retrievably: test/p2-auth.test.ts"],
@@ -370,7 +366,7 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     // them and the partition would fail on all fifteen. Each is classified on
     // the same five grounds as the rest of this table, and each digest is the
     // digest of the sentence as this file's own reader yields it.
-    ["README.md", "112f75508908cb11", "intent", "declares what this release is and is not offered as; the automation half — that no workflow publishes anything — is checked by test/source-only.test.ts"],
+    ["README.md", "7f4ed457c4335e18", "intent", "declares what this release is and is not offered as — no support commitment, no external pilot, no service — while naming the artifacts that ARE published; a support boundary. The automation half, that publication happens in release.yml alone and on a version tag, is checked by test/source-only.test.ts"],
     ["README.md", "7d9c8ad2c339b10a", "editorial", "says why the boundaries are placed before the description; about the document's own order"],
     ["README.md", "d8746380edea0754", "intent", "declares two scope boundaries — no sandbox is created or enforced, and the truth of an adopter's attestation is not this software's subject"],
     ["README.md", "d59b3e41e9ef9f5f", "intent", "declares the network boundary as a support boundary: plain HTTP on the listener, and serving another host is a different topology rather than a flag"],
@@ -520,21 +516,31 @@ test("the shipped skill's vector set is the size skills/README.md says it is", (
 // anybody's claim; the release-asset half moved to `test/source-only.test.ts`,
 // which reads the trigger, the tag rule and the one file allowed to publish.
 //
-// B1 and B2 add a container image and `@skillonomia/cli`. The documents no
-// longer assert a permanent ABSENCE about either — they assert a CURRENT one:
-// the publishing path exists, is armed behind the owner's approval, and has not
-// run. That is a weaker sentence and it is the true one, so the guard tests the
-// pair that can still disagree:
+// B1 and B2 added a container image and `@skillonomia/cli`, and the documents
+// asserted a CURRENT absence about both: the publishing path exists, is armed
+// behind the owner's approval, and has not run.
+//
+// THAT SENTENCE EXPIRED, AND EXPIRING IS THE WHOLE POINT OF THIS FILE. Both
+// artifacts are on their registries now — `@skillonomia/cli` on npm and a tag
+// per version of `ghcr.io/skillonomia/skillonomia` on GHCR — so a document
+// still saying "not published yet" is exactly the defect family this suite was
+// written for, only pointing the other way: the automation acted, and the
+// documents were the ones left behind. A guard that REQUIRED that sentence
+// would have made the build enforce it.
+//
+// So the pair the guard tests is now:
 //
 //   * a publish of either artifact may exist ONLY in `release.yml`, which runs
 //     on a version tag out of the protected environment — nothing on a push;
-//   * and every delivered document that names one of them must say it has not
-//     been published, so a reader is never sent to an artifact that is not there.
+//   * and no delivered document may still claim either one is unpublished. This
+//     is a DATED PROHIBITION, not a permanent one: if a future artifact is
+//     documented before it is published, its absence gets said in words that
+//     are true then, and this list is what has to change with it.
 //
 // The document half is what makes this a pair rather than a duplicate of
 // `test/source-only.test.ts`: that file guards the automation, this one guards
 // the automation AGAINST THE DOCUMENTS, which is the defect family it belongs to.
-test("no workflow publishes what every delivered document says is unpublished", () => {
+test("no delivered document still calls a published artifact unpublished", () => {
   const PUBLISHERS = [
     [/^\s*(?:run:\s*)?.*\bnpm\s+publish\b/m, "`npm publish`"],
     [/^\s*(?:run:\s*)?.*\bdocker\s+push\b/m, "`docker push`"],
@@ -566,21 +572,26 @@ test("no workflow publishes what every delivered document says is unpublished", 
   }
 
   // THE DOCUMENT HALF. Both artifacts are named in the delivered documents, and
-  // both must be named together with the fact that they are not there yet.
+  // neither may still be described as one that has not been published.
   const docs = deliveredDocuments();
-  for (const [what, names, absence] of [
-    ["the container image", /ghcr\.io\/skillonomia/, /no digest has been published/i],
-    ["`@skillonomia/cli`", /npm install -g @skillonomia\/cli/, /not on the npm registry yet|nothing has been published to npm yet/i],
+  for (const [what, names, stale] of [
+    ["the container image", /ghcr\.io\/skillonomia/, /no digest has been published|no published digest|digest that is not there yet/i],
+    [
+      "`@skillonomia/cli`",
+      /npm install -g @skillonomia\/cli/,
+      /not on the npm registry yet|nothing has been published to npm yet|until a version of `@skillonomia\/cli` exists/i,
+    ],
   ] as const) {
     const naming = docs.filter(([, text]) => names.test(text));
     assert.ok(naming.length >= 2, `${what} is named in ${naming.length} delivered document(s) — this guard reads two`);
     for (const [name, text] of naming) {
-      assert.match(
-        text,
-        absence,
-        `${name} tells a reader how to consume ${what} without saying it has not been published. A reader follows ` +
-          "the command and meets an error the document could have prevented — and the last time a document and the " +
-          "automation disagreed, the automation was the one that acted.",
+      const said = stale.exec(text);
+      assert.equal(
+        said,
+        null,
+        `${name} still says ${what} has not been published (“${said?.[0]}”), and it has. A reader is told to build ` +
+          "or pack what a registry already serves — the same document-versus-automation disagreement as before, with " +
+          "the document on the losing side this time.",
       );
     }
   }

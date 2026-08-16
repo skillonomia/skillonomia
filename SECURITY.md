@@ -24,8 +24,10 @@ rather than publishing it.
 ## Supported versions
 
 `0.1.0` is published and is source only. Version `0.1.6` is the version this
-tree declares; a release tagged `v0.1.6` carries a Linux x86_64 binary and its
-checksum alongside the source. `v0.1.0` is refused by name, so the published
+tree declares; the release tagged `v0.1.6` carries a Linux x86_64 binary and its
+checksum alongside the source, and the same version is published as
+`@skillonomia/cli` on npm and as a tag of the container image
+`ghcr.io/skillonomia/skillonomia`. `v0.1.0` is refused by name, so the published
 source-only release is never amended. Every version between the baseline and
 the one this tree declares is published history and carries the same absence of
 commitment as the two rows below. There is **no security maintenance
@@ -35,8 +37,8 @@ feed. Only the tip of the published branch is looked at.
 | Version | Supported |
 |---|---|
 | `0.1.0` | source published; no maintenance commitment |
-| `0.1.6` | what a `v0.1.6` tag carries — source and a Linux x86_64 binary; no maintenance commitment |
-| the unscoped `skillonomia` package on npm | unrelated placeholder — not this software |
+| `0.1.6` | what `v0.1.6` carries — source, a Linux x86_64 binary, `@skillonomia/cli` on npm and a tag of `ghcr.io/skillonomia/skillonomia`; no maintenance commitment |
+| the unscoped `skillonomia` package on npm | a name-holding placeholder under the same npm account — not this software, and out of scope here |
 
 ## Scope — what a security report would be about
 
@@ -83,7 +85,15 @@ prevent them. They are documented in the README's boundaries section.
 - **Copying a package after delivery.** Once handed over, a package is bytes on
   the adopter's machine. Revocation changes what the registry answers, not what
   someone already holds.
-- **Anything about a hosted service.** There isn't one.
+- **A deployment somebody is running, the owner's own included.** One exists: a
+  private pilot at `registry.skillonomia.ai`, which answers `/health` with the
+  version it runs and refuses everything else without a key. It is not a service
+  this project offers, takes sign-ups for, or invites reports about, and it
+  carries no uptime and no response commitment. What this policy answers for is
+  the code in this repository and the artifacts a release publishes: a defect
+  you can reproduce against those is in scope wherever you happened to see it.
+  The pilot itself — its availability, its data, its configuration — is outside
+  that, and it is not a host to point a scanner at.
 
 ## What a good report contains
 
