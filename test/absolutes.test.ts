@@ -116,6 +116,19 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["docs/API.md", "9f77c151c1d5d2f6", "behaviour", "the capture and its replay row are one transaction, proved by injecting a failure at that boundary: test/v1p1-r2-fixes.test.ts"],
     ["docs/API.md", "48fc7738ef86d1cf", "behaviour", "every redaction finding names its source field as a structured value: test/v1p1-r2-fixes.test.ts"],
   ],
+  // ---------------------------------------------------------- docs/API, V1 P2
+  //
+  // The Owner Console. Each of these is a statement about product behaviour with
+  // a test behind it — the browser gate where the claim is about a browser, the
+  // node suite where it is about the server.
+  [
+    ["docs/API.md", "a4230649adac9cf5", "behaviour", "an API key does not authenticate a console route and a session does not authenticate an API route, and the browser gate inspects every exchange of a full workflow for the key: test/v1p2-console.test.ts, v1/tools/e2e/console-e2e.mjs"],
+    ["docs/API.md", "d6c4443fd31af1ba", "behaviour", "the ticket is posted in a body — the route takes it from the body and from nowhere else: test/v1p2-console.test.ts — and the browser gate asserts no credential is in the URL after the whole run: v1/tools/e2e/console-e2e.mjs"],
+    ["docs/API.md", "e30ee4f10038b3b4", "behaviour", "the eligibility verdict is a server field the page renders, and the server refuses the write when the control is bypassed: test/v1p2-console.test.ts"],
+    ["docs/API.md", "376905edad52a2e5", "behaviour", "a stale revision and a decided lineage are both CONFLICT, with the current state on the envelope: test/v1p2-console.test.ts"],
+    ["docs/API.md", "02349c162935ec56", "behaviour", "nine protected routes answer 401 without a session, and the two pages are byte-equal to their fixed shells with no draft content in them: test/v1p2-console.test.ts"],
+    ["docs/API.md", "42f369386590fd61", "behaviour", "a planted script tag and an onerror attribute render as characters and execute nothing, and the client source contains no markup-writing API: v1/tools/e2e/console-e2e.mjs, test/v1p2-console.test.ts"],
+  ],
   // ------------------------------------------------------------------ README
   [
     ["README.md", "30dbd7abb8b0bb13", "behaviour", "a checkout runs without a build: exercised on both runtimes by test/readme-quickstart.test.ts"],
