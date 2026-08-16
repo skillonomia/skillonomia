@@ -441,7 +441,8 @@ evidence/
     08-negative-probes.txt         the validator negative probes
     09-output-sha-agreement.txt    the output-SHA agreement across the phase package
     10-secret-scan-final.txt       the closing secret sweep, run after the last word was written
-    11-evidence-check-final.txt    the closing evidence-record check — the last file P3 writes
+    11-evidence-check-final.txt    the closing evidence-record check
+    12-clean-clone.txt             the clean-clone transcript: clone, npm ci, npm test, nothing between
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
 ```
