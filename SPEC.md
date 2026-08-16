@@ -1958,10 +1958,10 @@ installs none is conforming.
 
 ## Appendix D. NORMATIVE SQLite DDL
 
-The normative schema is given in **thirteen** migrations, applied in ascending file
+The normative schema is given in **fourteen** migrations, applied in ascending file
 order, and the live schema of a conforming registry is their sum. Each is
 embedded below verbatim and is byte-identical to the file this repository ships;
-a test asserts that for all thirteen. Schema version is tracked in
+a test asserts that for all fourteen. Schema version is tracked in
 `PRAGMA user_version` and nowhere else — there is no bookkeeping table, because
 the live schema is compared object for object against D.1 plus the deltas below,
 and a table this specification does not name would fail that comparison. A
@@ -2052,13 +2052,15 @@ path, and MUST NOT attempt it.
   to the count and is reported as unattributed. `PRAGMA user_version` = `9`.
 - **The live schema a fresh database reports is D.1 as edited by D.1b, D.1c,
   D.1d, D.1e, D.1f, D.1i and D.1j, plus the tables of D.1f, D.1g and D.1h**, and never
-  D.1 alone. Object counts are 29 tables, 26 triggers and 16 indexes: D.1's 20
-  tables plus D.1f's two, D.1g's two, D.1h's two and D.1m's three, D.1's 10
+  D.1 alone. Object counts are 34 tables, 36 triggers and 18 indexes: D.1's 20
+  tables plus D.1f's two, D.1g's two, D.1h's two, D.1m's three and D.1n's five,
+  D.1's 10
   triggers plus the two INSERT-only triggers of `transfers`, D.1g's four, D.1h's
-  four and D.1m's six, and D.1's 9 indexes plus `idx_transfers_version`,
+  four, D.1m's six and D.1n's ten, and D.1's 9 indexes plus `idx_transfers_version`,
   `idx_assignments_agent`, `idx_runtime_observations_agent`,
   `idx_observed_records_agent`, `idx_captures_workspace`,
-  `idx_draft_revisions_draft` and `idx_draft_events_draft`. D.1i moves
+  `idx_draft_revisions_draft`, `idx_draft_events_draft`,
+  `idx_owner_sessions_agent` and `idx_draft_decisions_workspace`. D.1i moves
   none of those counts: it rebuilds one table and re-creates its two triggers and
   its partial index verbatim, and D.1j moves none of them either: it adds one
   column to an existing table. D.1k moves none of them and EDITS NO STATEMENT: it
@@ -2070,14 +2072,20 @@ path, and MUST NOT attempt it.
   constraint, index and trigger of it verbatim, changing VALUES and no part of
   the shape. D.1m moves them by exactly its own three tables, six triggers and
   three indexes: it is purely additive, it edits no statement of any earlier
-  delta, and it is the one migration of this schema that ships its own reversal
+  delta, and it ships its own reversal
   (`migrations/down/0013_capture_and_draft_revisions.down.sql`), which drops
-  exactly what it created and restores `PRAGMA user_version` to `12`. After all
-  thirteen migrations
+  exactly what it created and restores `PRAGMA user_version` to `12`. D.1n moves
+  them by exactly its own five tables, ten triggers and two indexes, on the same
+  terms and with its own reversal
+  (`migrations/down/0014_owner_console_sessions_and_decisions.down.sql`), which
+  restores `PRAGMA user_version` to `13`. Those two are the migrations of this
+  schema that ship a reversal; D.1 through D.1l ship none, which
+  `v1/P0-BASELINE.md` records as a fact about the released base. After all
+  fourteen migrations
   `PRAGMA user_version`
-  MUST report `13`. A test in this repository asserts the live schema equals D.1
-  plus exactly those twelve edits and the new objects of D.1f, D.1g, D.1h and
-  D.1m —
+  MUST report `14`. A test in this repository asserts the live schema equals D.1
+  plus exactly those twelve edits and the new objects of D.1f, D.1g, D.1h, D.1m
+  and D.1n —
   the five of D.1b, the one of D.1c, the one of D.1d, the two of D.1e, the one
   rebuilt table of D.1f, the one further edit of D.1i to that same rebuilt table
   and the one column D.1j adds to `observed_records` — so any further divergence
@@ -3796,7 +3804,7 @@ different digest rather than as a silent difference inside the same one. No
 identifier and no timestamp enters that digest.
 
 THIS MIGRATION IS ADDITIVE AND REVERSIBLE. It edits no statement of D.1 or of
-any earlier delta, and it ships its own reversal — the only one in this schema —
+any earlier delta, and it ships its own reversal
 as `migrations/down/0013_capture_and_draft_revisions.down.sql`, which drops the
 six triggers, the three indexes and the three tables it created and sets
 `PRAGMA user_version` back to `12`. Reversal discards the V1-only rows of those
@@ -3942,6 +3950,196 @@ CREATE TRIGGER tg_draft_events_no_del BEFORE DELETE ON draft_events BEGIN SELECT
 ```
 
 ---
+
+### D.1n NORMATIVE DELTA — fourteenth migration (verbatim)
+
+THE OWNER CONSOLE OF V1. Five tables, two indexes and ten triggers, added and
+nothing edited: `owner_sessions` and `owner_session_revocations` are the
+server-side browser session and its end; `console_tickets` and
+`console_ticket_uses` are the one-time credential a session is opened with and
+the row that spends it; `draft_decisions` is the owner's approval or rejection
+of one draft lineage.
+
+A CONFORMING REGISTRY MUST NOT SEND A SERVICE CREDENTIAL TO A BROWSER. The
+console session is carried in an `HttpOnly` cookie whose value is opaque and
+whose SHA-256 is what `owner_sessions.token_hash` holds; the API key that
+authenticates a machine-to-machine caller stays on the server. The absolute
+lifetime of a session is at most 3600000 milliseconds and the CHECK on
+`owner_sessions` is where that bound is enforced, so a deployment cannot
+configure a longer one. Logout and expiry MUST invalidate the session on the
+SERVER: validity is the row, the absolute expiry and the absence of a revocation
+row, and a client that keeps its cookie after either gains nothing by it.
+
+A DECISION NAMES THE EXACT REVISION IT WAS TAKEN ON.
+`draft_decisions.draft_revision_id` and `draft_decisions.content_digest` are the
+revision an owner read and its digest, `actor_agent_id` and `actor_role` are the
+principal the request authenticated as rather than anything the payload said, and
+`server_at_ms` is the registry clock. A rejection MUST carry a reason and the
+CHECK refuses one without it. `UNIQUE(draft_id)` makes the decision on a lineage
+singular, so a resent form is a `CONFLICT` rather than a second decision.
+
+THIS MIGRATION IS ADDITIVE AND REVERSIBLE. It edits no statement of D.1 or of
+any earlier delta, and it ships its own reversal as
+`migrations/down/0014_owner_console_sessions_and_decisions.down.sql`, which drops
+the ten triggers, the two indexes and the five tables it created and sets
+`PRAGMA user_version` back to `13`. Reversal discards the rows of those five
+tables and touches no table that existed before them.
+`PRAGMA user_version` = `14`.
+
+```sql
+-- 0014 — THE OWNER CONSOLE: A BROWSER SESSION THAT CARRIES NO KEY, AND THE
+--        DECISION AN OWNER TAKES ON A DRAFT.
+--
+-- ---------------------------------------------------------------------------
+-- WHY A SESSION IS A ROW AND NOT A SIGNED COOKIE.
+--
+-- `INV-04` requires logout and expiry to invalidate the session ON THE SERVER.
+-- A self-contained signed cookie cannot be invalidated: revocation of one is a
+-- server-side list of the revoked, which is this table with the storage turned
+-- inside out. So the session IS the row, the browser holds an opaque random
+-- value, and what the browser holds is worth nothing without the row.
+--
+-- `token_hash` is the SHA-256 of that opaque value and there is no column here
+-- that holds the value itself — the same discipline `0013` used for a redacted
+-- source. A database file that leaks does not thereby leak live sessions.
+--
+-- `absolute_expires_at_ms` is a stored instant rather than a duration, and the
+-- 60-minute cap of `INV-04` is a CHECK on this table. A deployment may configure
+-- a SHORTER lifetime; it cannot configure a longer one, because the constraint
+-- that refuses is in the schema rather than in the code that reads a setting.
+--
+-- `csrf_token` is the second value the session mints. It is delivered in a
+-- RESPONSE BODY, is held in the page's memory, and is echoed in a request HEADER
+-- on every mutation (`P2-FR-13`). It is not a cookie: a JS-readable cookie is
+-- exactly the storage `P2-FR-14` has to be able to say is empty, and a token
+-- that has to be readable by script has no business also being a cookie.
+--
+-- IT IS STORED IN THE CLEAR, AND `token_hash` BESIDE IT IS NOT. That difference
+-- is the point rather than an inconsistency. The session token AUTHENTICATES —
+-- holding it is being the owner — so the server keeps only what it needs to
+-- recognise one. The CSRF token authenticates NOTHING: presenting it without the
+-- cookie achieves nothing at all, and its whole job is to be a value a
+-- cross-site page cannot obtain. A reload has to be able to get it back, which
+-- means the server has to be able to read it, which means hashing it would buy
+-- no secrecy and cost the property the token exists for.
+--
+-- ---------------------------------------------------------------------------
+-- WHY REVOCATION IS ITS OWN TABLE.
+--
+-- Every table this contract has added is INSERT-only, and a session that could
+-- be UPDATEd is a session whose history proves nothing. Logout is therefore an
+-- INSERT into `owner_session_revocations`, which is also the audit record of the
+-- logout. Validity is: the row exists, now is before its absolute expiry, and no
+-- revocation names it. Three facts, none of them a mutation.
+--
+-- ---------------------------------------------------------------------------
+-- WHY A TICKET EXISTS AT ALL.
+--
+-- The owner has to get a session somehow, and `INV-04` forbids the API key
+-- reaching the browser. A login form that took the Registry API key would put a
+-- service credential into a browser form, which is the thing the invariant is
+-- about. So the exchange runs the other way: a machine-to-machine call the OWNER
+-- makes from the CLI mints a one-time ticket (`POST /v1/console/tickets`, Bearer,
+-- server side), and the browser trades that ticket — in a POST body, never in a
+-- URL — for the session cookie.
+--
+-- A ticket is single-use because `console_ticket_uses.ticket_id` is UNIQUE: the
+-- second use collides in the database rather than in a check somebody could
+-- forget to write. Its lifetime is capped at five minutes by a CHECK, for the
+-- same reason the session's is.
+--
+-- ---------------------------------------------------------------------------
+-- `draft_decisions` — WHAT AN OWNER DECIDED, ABOUT WHICH EXACT REVISION.
+--
+-- `P2-FR-08` requires an approval to fix the exact revision, the digest, the
+-- owner actor and the timestamp; they are four columns. `P2-FR-10` requires a
+-- rejection to carry a reason and to preserve the revision and the audit; the
+-- reason is a column whose CHECK refuses a rejection without one, and preservation
+-- is the INSERT-only trigger the other tables already live under.
+--
+-- `UNIQUE(draft_id)` makes a lineage's decision TERMINAL and singular. That is
+-- the narrow claim: a draft is decided once. A second approve — a double click, a
+-- resent form, a retried fetch — collides here and is answered `CONFLICT` rather
+-- than recorded twice (`P2-FR-13`). It is not a general state machine and does
+-- not pretend to be one; P3 owns what happens to an approved draft afterwards.
+--
+-- The columns are the same shape `draft_events` uses, deliberately, because the
+-- audit an owner reads is the UNION of the two and a union of two different
+-- shapes is a shape a reader has to reconcile. `INV-05` asks for structured
+-- fields, so the fields are the same fields.
+
+CREATE TABLE owner_sessions(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin')),
+  token_hash TEXT NOT NULL UNIQUE CHECK(length(token_hash)=71),
+  csrf_token TEXT NOT NULL CHECK(length(csrf_token) BETWEEN 16 AND 128),
+  created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0),
+  absolute_expires_at_ms INTEGER NOT NULL,
+  CHECK(absolute_expires_at_ms - created_at_ms BETWEEN 1 AND 3600000)
+);
+CREATE INDEX idx_owner_sessions_agent ON owner_sessions(agent_id,created_at_ms);
+
+CREATE TABLE owner_session_revocations(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  session_id TEXT NOT NULL UNIQUE REFERENCES owner_sessions(id) ON DELETE RESTRICT,
+  reason_code TEXT NOT NULL CHECK(reason_code IN ('logout','superseded')),
+  revoked_at_ms INTEGER NOT NULL CHECK(revoked_at_ms>0)
+);
+
+CREATE TABLE console_tickets(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin')),
+  ticket_hash TEXT NOT NULL UNIQUE CHECK(length(ticket_hash)=71),
+  created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0),
+  expires_at_ms INTEGER NOT NULL,
+  CHECK(expires_at_ms - created_at_ms BETWEEN 1 AND 300000)
+);
+
+CREATE TABLE console_ticket_uses(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  ticket_id TEXT NOT NULL UNIQUE REFERENCES console_tickets(id) ON DELETE RESTRICT,
+  session_id TEXT NOT NULL REFERENCES owner_sessions(id) ON DELETE RESTRICT,
+  used_at_ms INTEGER NOT NULL CHECK(used_at_ms>0)
+);
+
+CREATE TABLE draft_decisions(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  draft_id TEXT NOT NULL UNIQUE CHECK(length(draft_id)=26),
+  draft_revision_id TEXT NOT NULL REFERENCES draft_revisions(id) ON DELETE RESTRICT,
+  capture_id TEXT NOT NULL REFERENCES captures(id) ON DELETE RESTRICT,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT,
+  decision TEXT NOT NULL CHECK(decision IN ('approved','rejected')),
+  actor_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin')),
+  source TEXT NOT NULL CHECK(source IN ('owner')),
+  reason_code TEXT NOT NULL CHECK(length(reason_code) BETWEEN 1 AND 64),
+  reason TEXT CHECK(reason IS NULL OR length(reason) BETWEEN 1 AND 2000),
+  content_digest TEXT NOT NULL CHECK(length(content_digest)=71),
+  provenance_json TEXT NOT NULL CHECK(length(provenance_json) BETWEEN 2 AND 20000),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0),
+  CHECK(decision='approved' OR reason IS NOT NULL)
+);
+CREATE INDEX idx_draft_decisions_workspace ON draft_decisions(workspace_id,server_at_ms);
+
+-- a session, its revocation, a ticket, its use and a decision are each written
+-- once — the rule `captures`, `draft_revisions` and `draft_events` already live
+-- under, and the rule that makes every one of these tables a journal in the
+-- sense `src/journal.ts` reads out of the schema
+CREATE TRIGGER tg_owner_sessions_no_upd BEFORE UPDATE ON owner_sessions BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_owner_sessions_no_del BEFORE DELETE ON owner_sessions BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_owner_session_revocations_no_upd BEFORE UPDATE ON owner_session_revocations BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_owner_session_revocations_no_del BEFORE DELETE ON owner_session_revocations BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_console_tickets_no_upd BEFORE UPDATE ON console_tickets BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_console_tickets_no_del BEFORE DELETE ON console_tickets BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_console_ticket_uses_no_upd BEFORE UPDATE ON console_ticket_uses BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_console_ticket_uses_no_del BEFORE DELETE ON console_ticket_uses BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_draft_decisions_no_upd BEFORE UPDATE ON draft_decisions BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_draft_decisions_no_del BEFORE DELETE ON draft_decisions BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+```
 
 ### D.2 SQL negative probes
 
@@ -4546,6 +4744,22 @@ Internal worker surface (NOT public, service-authenticated, single-binary in-pro
 | `draft.get` | `GET /v1/drafts/{draft_id}` · `GET /v1/drafts/{draft_id}/revisions/{revision_id}` | member+ (the caller's workspace) | `{"draft_id","revision_id"?}` over MCP; the REST forms take both from the path | `200 {"draft_id","revision","lineage":[{"revision_id","revision","parent_revision_id","origin","content_digest","created_at_ms"}…]}`. `revision` is `{"draft_id","revision_id","revision","parent_revision_id","capture_id","origin","author_agent_id","compiler_version","content_digest","created_at_ms","content","semantic_review","security_review"}`. `content` carries the ten canonical sections — `title`, `purpose`, `when_to_use`, `procedure`, `inputs`, `outputs`, `permissions`, `dependencies`, `failure_modes`, `redactions` and `provenance` — and a section the capture did not state is EMPTY and reported by the semantic review, never filled in. `semantic_review` is `{"status":"complete\|incomplete","blocking_count","missing_sections","findings":[{"code","section","severity","detail","line"}…],"compiler_version"}`; `security_review` is `{"requested_permissions","dependencies","risky_actions":[{"code","severity","detail","line"}…],"redactions":[{"category","source_field","detector","line","column","removed_characters","reason"}…],"blocking_count","compiler_version"}`. A redaction entry MUST NOT carry the removed value or a digest of it. Without `revision_id` the latest revision is returned; an unknown one is `NOT_FOUND` |
 | `draft.revise` | `POST /v1/drafts/{draft_id}/revisions` | owner/admin | `{"sections"?:{"title"?,"purpose"?,"when_to_use"?,"procedure"?,"inputs"?,"outputs"?,"permissions"?,"dependencies"?,"failure_modes"?},"idempotency_key"?}`; a body with no `sections` recompiles the stored redacted source at the current compiler version. A key outside that set is `INVALID_SCHEMA` | `201` — the same revision object `draft.get` returns, for the NEW revision. A CONFORMING REGISTRY MUST append a revision whose `parent_revision_id` names the previous one and MUST NOT alter the previous row, its digest or its reviews; owner-supplied text goes through the same redaction a capture does |
 | `draft.audit` | `GET /v1/drafts/{draft_id}/audit` | member+ (the caller's workspace) | `{"draft_id"}` over MCP | `200 {"draft_id","items":[{"event_id","event","draft_id","draft_revision_id","capture_id","actor_agent_id","actor_role","source","correlation_ref","reason_code","result","content_digest","provenance","server_at_ms"}…]}` — ascending by time, `event` ∈ `captured \| classified \| compiled \| revised \| refused`. Every field a consumer decides on is its own column of `draft_events`; `provenance` is the structured payload and is never where the event type, the actor or the result hides |
+| — | `GET /console/login` | unauthenticated | — | `200 text/html` — the sign-in shell. It carries no draft, no identifier and no credential, and the one field of its form is the one-time ticket. Served with `X-Content-Type-Options: nosniff` and a Content-Security-Policy whose `frame-ancestors` is `'none'` |
+| — | `GET /console/app.js` | unauthenticated | — | `200 text/javascript` — the built console bundle, the same bytes for every visitor. A conforming registry MUST NOT embed a credential, a session value or draft content in this asset or in either page |
+| — | `GET /console` | a live console session | — | `200 text/html` — the console shell, fixed markup with no draft content in it. With no live session: `401` and the sign-in shell as the body |
+| — | `POST /v1/console/tickets` | owner/admin, Bearer API key | `{}` | `201 {"contract","ticket","ticket_id","expires_at_ms"}`. The machine-to-machine half of the login: `ticket` is single-use, expires in at most 300000 milliseconds and confers nothing but the right to open one browser session. A conforming registry MUST NOT return an API key here or anywhere a browser can read |
+| — | `POST /v1/console/session` | unauthenticated, a valid ticket in the body | `{"ticket"}` | `201 {"contract","agent_id","actor_role","expires_at_ms","csrf_token"}` and a `Set-Cookie` carrying an opaque session value with `HttpOnly`, `SameSite=Strict`, `Path=/`, a `Max-Age` no greater than 3600 and `Secure` outside localhost. The ticket MUST be spent by this call: a second use is `UNAUTHORIZED`, as are an unknown and an expired one, and the three are not distinguished. The request is refused unless its `Origin` matches this origin |
+| — | `GET /v1/console/session` | a live console session | — | `200 {"contract","agent_id","actor_role","expires_at_ms","csrf_token"}` — what a reloaded page reads its CSRF token back from. No session → `UNAUTHORIZED` |
+| — | `POST /v1/console/logout` | a live console session | `{}` | `200 {"contract","logged_out":true}` and a cleared cookie. The session MUST be invalidated on the SERVER: a request presenting the same cookie afterwards is `UNAUTHORIZED` |
+| — | `GET /v1/console/drafts` | a live console session | — | `200 {"contract","states":["pending","approved","rejected"],"items":[{…`draft.list`'s fields…,"decision","eligibility","state"}…]}`. `eligibility` is `{"approvable","reason_code","semantic_blocking","security_blocking","decided"}` and `reason_code` ∈ `APPROVABLE \| BLOCKING_SEMANTIC_FINDINGS \| BLOCKING_SECURITY_FINDINGS \| ALREADY_DECIDED \| NOT_LATEST_REVISION`. The verdict is computed by the registry and published as a field: a conforming console MUST NOT recompute it, and MUST NOT read a product decision out of a human-readable string |
+| — | `GET /v1/console/drafts/{draft_id}?revision_id=` | a live console session | — | `200 {"contract","draft":<the `draft.get` object>,"decision","eligibility","state"}` |
+| — | `GET /v1/console/drafts/{draft_id}/audit` | a live console session | — | `200 {"contract","draft_id","items":[{"entry_id","event","draft_id","draft_revision_id","capture_id","actor_agent_id","actor_role","source","correlation_ref","reason_code","result","content_digest","reason","provenance","server_at_ms"}…]}` — the `draft_events` history and the owner's decision in one field set, ascending by time. `event` ∈ `captured \| classified \| compiled \| revised \| refused \| approved \| rejected` |
+| — | `POST /v1/console/drafts/{draft_id}/revisions` | a live console session (owner/admin) | the body of `draft.revise` | `201` — the same new revision object `draft.revise` returns, with both previews re-run. A decided draft is `CONFLICT` |
+| — | `POST /v1/console/drafts/{draft_id}/approve` | a live console session (owner/admin) | `{"revision_id"?,"reason"?,"idempotency_key"?}` | `201 {"draft_id","decision":{"decision_id","draft_id","draft_revision_id","capture_id","decision","actor_agent_id","actor_role","source","reason_code","reason","content_digest","provenance","server_at_ms"},"eligibility"}`. A draft carrying an unresolved blocking semantic or security finding MUST NOT be approved: the answer is `PRECONDITION_FAILED` with the `reason_code` the eligibility field published. A `revision_id` naming anything but the head of the lineage is `CONFLICT`, and so is a lineage that already carries a decision |
+| — | `POST /v1/console/drafts/{draft_id}/reject` | a live console session (owner/admin) | `{"revision_id"?,"reason","idempotency_key"?}` | `201` — the same shape as `approve`. A rejection without a reason is `INVALID_SCHEMA`; the reason is redacted at the same boundary a capture body is. Rejection preserves the revision and the audit and deletes nothing |
+
+Every mutating console route above is refused unless the request carries an `Origin` matching this origin AND the `X-Skillonomia-Console-CSRF` header holding the session's own token; either missing or wrong is `FORBIDDEN`. The console routes take the same `idempotency_key` the rest of this appendix does, so a resent form replays the stored response rather than deciding twice.
+
 | `migration.count` | `GET /v1/migrations?since_ms=&until_ms=&q=&capability=&runtime=&tool=&risk=&state=&min_adopted=&min_rating=&limit=&cursor=` | any authenticated; the counted skills are exactly those surface 5 makes visible to the caller | the surface-5 filters and pagination controls, plus an optional selection window: `since_ms`/`until_ms`, integer milliseconds, applied to the `server_at_ms` of the terminal event. A bound that is not an integer, or a pair in the wrong order, is `INVALID_SCHEMA` on BOTH adapters | `200 {"source","window","window_since_ms","window_until_ms","next_cursor","items":[{"skill_id","slug","migrations","distinct_recipients","distinct_runtimes","runtimes","runtimes_unknown","recipients_unattributed","recipient_sources","measurement_state","source","window"}…]}` — one row per visible SKILL. `migrations` counts DISTINCT (version, recipient) pairs whose receipt carries a terminal `adopted` event with server-validated evidence (§5.3); repeating a pair does not raise it. `distinct_recipients` counts the recipient agents among them — read from the `recipient_json` of the event that OPENED the chain, which is `transferred` when a sender opened it (§5.4) and `requested` when the recipient opened it itself (§5.2), never from `adoption_receipts` and never from `adoption_requests` — and `distinct_runtimes` the DIFFERENT declared `environment_descriptor.runtime.id` values, read from the `delivered` events of those receipts. Fail-closed on the recipient too: a chain whose opening event is absent, or whose `recipient_json` is absent or unparseable, contributes NOTHING — no migration, no recipient, no runtime — and is reported in `recipients_unattributed`, never answered from the receipt shell or from any other table, which would be answering from a journal the chain did not name. `recipient_sources` names the opening events the counted recipients were actually read from — every one of them a row of `receipt_events` — and `source` states them in words, so the provenance published beside a figure is derived from what that figure was obtained from and is never a constant. Every count MUST be computed from `receipt_events` and MUST NOT be computed from `adoption_receipts.adopter_agent_id` or from `adoption_requests.requester_context_json` (§5.3), and a conforming registry MUST make that literally true of every statement the counter runs rather than true of most of them. Fail-closed: a migration whose declared runtime cannot be read contributes no runtime id at all and is reported in `runtimes_unknown`, which is therefore never interchangeable with `distinct_runtimes: 0`. A visible skill with no qualifying receipt is a row of zeroes with `measurement_state:"not_migrated"`, never an absent row, and every row restates its `source` and its `window` so no number is published without its method. This surface is strictly reading: it appends nothing, transitions nothing and takes no `idempotency_key` |
 | `dashboard.view` | `GET /v1/dashboard/{view}?format=json\|html` · `GET /v1/dashboard` (the view list) | any authenticated; every row is scoped by the SAME ACL as the surface it is read from | `view` ∈ `library \| evidence \| receipts \| approvals \| dead_letters \| migrations \| fleet \| agent \| skill_approval \| capability \| outcomes`; `format` defaults to `json`, and any other value of either is `INVALID_SCHEMA` on BOTH adapters. The surface-5 filters and pagination controls are accepted by the views that page over versions | `200 {"view","title","views":[the eleven names],"sections":[{"key","title","fields":[…],"rows":[…],"empty","note"?,"row_class_field"?,"next_cursor"?}],"demo_mode","notices":[{"kind","subject","detail"}]}`. `fields` names, in column order, the API fields of the numbered surfaces that the section+s `rows` carry — the dashboard computes nothing of its own and is a rendering, never a second source of truth, which is why the CHOICE of sections is presentation and is not fixed here while the envelope, the eleven view names, the ACL scoping and `demo_mode` (§9.1) are. `note` is a sentence rendered with a section whether or not it has rows. `row_class_field` names the row field whose value becomes the row+s CSS class, which is how §9+s fleet screen makes the colour of a row mean the state of the reconciliation between intent and fact and nothing else. `notices` are the blocks of a view that are NOT tables: `kind` `capability_absent` states that a part of a screen does not exist in this build and names the work it belongs to — an absent capability is never rendered as an empty table, because an empty table reads as a claim about the data — and `kind` `legend` states what a rendering device means. `format=html` renders that same payload: over REST as `text/html`, over MCP as `{"view","html"}`. `GET /v1/dashboard` answers `200 {"views":[the eleven names]}`. The `migrations` view renders `migration.count` over all time; the `fleet`, `agent`, `skill_approval`, `capability` and `outcomes` views are §9+s five screens ([D-1]..[D-5]) and render §6 part A, §5.5 and §5.3+s own answers |
 

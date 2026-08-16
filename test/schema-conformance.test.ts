@@ -238,6 +238,32 @@ const NEW_OBJECTS: ReadonlyArray<{ file: string; names: readonly string[] }> = [
       "tg_draft_events_no_del",
     ],
   },
+  {
+    // D.1n — the V1 Owner Console. Purely additive again: five tables, two
+    // indexes and ten INSERT-only triggers, and no statement of any earlier
+    // migration edited, which is what makes `migrations/down/0014_…` a complete
+    // reversal rather than a partial one.
+    file: "0014_owner_console_sessions_and_decisions.sql",
+    names: [
+      "owner_sessions",
+      "idx_owner_sessions_agent",
+      "owner_session_revocations",
+      "console_tickets",
+      "console_ticket_uses",
+      "draft_decisions",
+      "idx_draft_decisions_workspace",
+      "tg_owner_sessions_no_upd",
+      "tg_owner_sessions_no_del",
+      "tg_owner_session_revocations_no_upd",
+      "tg_owner_session_revocations_no_del",
+      "tg_console_tickets_no_upd",
+      "tg_console_tickets_no_del",
+      "tg_console_ticket_uses_no_upd",
+      "tg_console_ticket_uses_no_del",
+      "tg_draft_decisions_no_upd",
+      "tg_draft_decisions_no_del",
+    ],
+  },
 ];
 
 const ADDED_OBJECT_COUNT = NEW_OBJECTS.reduce((n, m) => n + m.names.length, 0);
@@ -333,7 +359,7 @@ test("live schema is Appendix D.1 plus exactly the Appendix D.1b delta", () => {
   assert.equal(liveSet.size, fileStatements.length + ADDED_OBJECT_COUNT, "live schema has no extra objects");
 });
 
-test("object counts: 29 tables, 26 triggers, 16 indexes; no bookkeeping table", () => {
+test("object counts: 34 tables, 36 triggers, 18 indexes; no bookkeeping table", () => {
   const db = openMigrated();
   const count = (type: string) =>
     (db
@@ -356,14 +382,17 @@ test("object counts: 29 tables, 26 triggers, 16 indexes; no bookkeeping table", 
   // object.
   // D.1m adds three tables, six triggers and three indexes and edits nothing,
   // so each count moves by exactly what that migration creates.
-  assert.equal(count("table"), 29);
-  assert.equal(count("trigger"), 26);
-  assert.equal(count("index"), 16);
+  // D.1n adds five tables, ten triggers and two indexes — the Owner Console's
+  // sessions, its one-time tickets and the owner's decision on a draft — and
+  // edits nothing either.
+  assert.equal(count("table"), 34);
+  assert.equal(count("trigger"), 36);
+  assert.equal(count("index"), 18);
   const uv = db.prepare("PRAGMA user_version").get() as { user_version: number };
   assert.equal(
     uv.user_version,
-    13,
-    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote, 0013 = D.1m the capture and draft domain of V1 — three INSERT-only tables added and nothing edited; tracked in user_version",
+    14,
+    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote, 0013 = D.1m the capture and draft domain of V1 — three INSERT-only tables added and nothing edited, 0014 = D.1n the Owner Console of V1 — five INSERT-only tables added and nothing edited; tracked in user_version",
   );
 });
 

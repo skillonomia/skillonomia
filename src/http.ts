@@ -20,7 +20,7 @@ import {
   type ConsoleSession,
 } from "./console-session.ts";
 import { CONSOLE_CONTRACT_VERSION } from "./console-view.ts";
-import { CONSOLE_SCRIPT_PATH, consolePage, consoleScript, loginPage } from "./console-page.ts";
+import { consolePage, consoleScript, loginPage } from "./console-page.ts";
 
 /** Reported by `/health`; the release version of the running build.
  *  Re-exported from src/version.ts — the literal lives in package.json only. */
@@ -170,6 +170,12 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
     const url = new URL(req.url, "http://registry.local");
     const path = url.pathname;
     const method = req.method.toUpperCase();
+    // One capture variable for the whole router. It is declared here rather than
+    // at its first use because the console's routes now come first and the rest
+    // of the file has always shared one — two variables would be two things to
+    // keep in step, and `test/spec-parity.test.ts` reads this file's routes by
+    // the shape of these lines.
+    let m: RegExpExecArray | null;
 
     // -- unauthenticated: liveness. Launch plus a `/health` smoke is the whole
     // acceptance requirement of the packaged-tarball and binary release paths,
@@ -197,7 +203,13 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       return html(200, loginPage());
     }
 
-    if (method === "GET" && path === CONSOLE_SCRIPT_PATH) {
+    // The literal is written out here rather than compared against the constant,
+    // because `test/spec-parity.test.ts` reads the routes of this file out of its
+    // TEXT and a route named by a constant is a route Appendix H cannot be
+    // checked against. That the constant and this literal agree is asserted by
+    // `test/v1p2-console-api.test.ts`, which asks the router for the path the
+    // page references and requires the bundle back.
+    if (method === "GET" && path === "/console/app.js") {
       return html(200, consoleScript(), "text/javascript; charset=utf-8");
     }
 
@@ -290,31 +302,36 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
         return json(200, JSON.stringify(registry.consoleInbox(cauth)), { "Cache-Control": "no-store" });
       }
 
-      let cm = /^\/v1\/console\/drafts\/([^/]+)\/audit$/.exec(path);
-      if (method === "GET" && cm) {
-        return json(200, JSON.stringify(registry.consoleAudit(cauth, cm[1])), { "Cache-Control": "no-store" });
+      m = /^\/v1\/console\/drafts\/([^/]+)\/audit$/.exec(path);
+      if (method === "GET" && m) {
+        return json(200, JSON.stringify(registry.consoleAudit(cauth, m[1])), { "Cache-Control": "no-store" });
       }
 
-      cm = /^\/v1\/console\/drafts\/([^/]+)\/revisions$/.exec(path);
-      if (method === "POST" && cm) {
+      m = /^\/v1\/console\/drafts\/([^/]+)\/revisions$/.exec(path);
+      if (method === "POST" && m) {
         const body = parseBody(req);
         // the SAME service method the API-key surface calls: an edit is a new
         // revision with both previews re-run, and there is one implementation
-        const out = registry.reviseDraft(cauth, cm[1], body, idemKey(body));
+        const out = registry.reviseDraft(cauth, m[1], body, idemKey(body));
         return mutationResponse(out, 201);
       }
 
-      cm = /^\/v1\/console\/drafts\/([^/]+)\/(approve|reject)$/.exec(path);
-      if (method === "POST" && cm) {
+      m = /^\/v1\/console\/drafts\/([^/]+)\/approve$/.exec(path);
+      if (method === "POST" && m) {
         const body = parseBody(req);
-        const out = registry.decideDraft(cauth, cm[1], cm[2] === "approve" ? "approved" : "rejected", body, idemKey(body));
-        return mutationResponse(out, 201);
+        return mutationResponse(registry.decideDraft(cauth, m[1], "approved", body, idemKey(body)), 201);
       }
 
-      cm = /^\/v1\/console\/drafts\/([^/]+)$/.exec(path);
-      if (method === "GET" && cm) {
+      m = /^\/v1\/console\/drafts\/([^/]+)\/reject$/.exec(path);
+      if (method === "POST" && m) {
+        const body = parseBody(req);
+        return mutationResponse(registry.decideDraft(cauth, m[1], "rejected", body, idemKey(body)), 201);
+      }
+
+      m = /^\/v1\/console\/drafts\/([^/]+)$/.exec(path);
+      if (method === "GET" && m) {
         const revision = url.searchParams.get("revision_id");
-        return json(200, JSON.stringify(registry.consoleDraft(cauth, cm[1], revision ?? undefined)), {
+        return json(200, JSON.stringify(registry.consoleDraft(cauth, m[1], revision ?? undefined)), {
           "Cache-Control": "no-store",
         });
       }
@@ -350,7 +367,7 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       return mutationResponse(out, 201);
     }
 
-    let m = /^\/v1\/skills\/([^/]+)\/versions$/.exec(path);
+    m = /^\/v1\/skills\/([^/]+)\/versions$/.exec(path);
     if (method === "POST" && m) {
       const body = parseBody(req);
       const out = registry.createVersion(auth, { skill_id: m[1], archive: decodeArchive(body) }, idemKey(body));

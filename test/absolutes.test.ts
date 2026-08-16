@@ -871,7 +871,7 @@ test("the true form of each planted family passes", () => {
     "Only four packaging paths exist, and all of them are local.",
     "The threat model and the ten red-team tests that cover it are shipped.",
     "Gate 5 admits only what it can read: ten classes are refused.",
-    "The normative schema is given in **thirteen** migrations, applied in ascending order.",
+    "The normative schema is given in **fourteen** migrations, applied in ascending order.",
     "The package ships four classes of defective bundle and one positive control.",
   ];
   assert.equal(TRUE_FORMS.length, PLANTINGS.length, "every planted family needs its true form beside it");
