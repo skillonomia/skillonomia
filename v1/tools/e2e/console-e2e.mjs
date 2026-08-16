@@ -30,11 +30,19 @@
 // whether the exchange carried the API key. The key itself is never written —
 // what is recorded is the ANSWER to "did this carry it", which is the fact the
 // requirement is about.
-import { chromium } from "playwright";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { mkdtempSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// PLAYWRIGHT IS A HARNESS DEPENDENCY, NOT A PACKAGE OF THIS TREE, so it is
+// REQUIRED rather than imported: `npm ci` prunes anything `package.json` does not
+// name, the browser gate therefore keeps Playwright outside the checkout, and an
+// ESM `import` does not consult `NODE_PATH` while `require` does. The gate's own
+// preflight uses `require.resolve` for the same reason.
+const require = createRequire(import.meta.url);
+const { chromium } = require("playwright");
 
 const PORT = Number(process.env.SKLN_E2E_PORT ?? "7993");
 const BASE = `http://127.0.0.1:${PORT}`;
