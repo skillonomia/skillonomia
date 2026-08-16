@@ -81,8 +81,17 @@ export function loginPage(): string {
   );
 }
 
-/** The console shell: an inbox region, a detail region and an audit region, all
- *  empty. What fills them is JSON over the session cookie. */
+/** The console shell: an inbox region, a detail region, an audit region, and —
+ *  V1 P3 — the capability library with its detail. All empty. What fills them is
+ *  JSON over the session cookie.
+ *
+ *  THE INBOX CARRIES TWO COLUMNS WHERE P2 HAD ONE. `State` is the LINEAGE's
+ *  decision and `Head approved` is whether the revision at the head of that
+ *  lineage carries an approval of its own. P3 made approval a fact about a
+ *  revision, so those two can disagree — an approved lineage whose head is a
+ *  newer, unapproved revision is the ordinary case after an edit — and a page
+ *  that showed only the first would be showing a lineage state its head does not
+ *  have. Both are server fields. */
 export function consolePage(): string {
   return shell(
     "Skillonomia — owner console",
@@ -96,10 +105,15 @@ export function consolePage(): string {
 </div>
 <p id="error" class="blocking" role="alert"></p>
 <table id="inbox"><thead><tr>
-  <th>Title</th><th>State</th><th>Rev</th><th>Semantic</th><th>Security</th><th>Approvable</th><th></th>
+  <th>Title</th><th>State</th><th>Head approved</th><th>Rev</th><th>Semantic</th><th>Security</th><th>Approvable</th><th></th>
 </tr></thead><tbody id="inbox-rows"></tbody></table>
 <div id="detail" class="panel" hidden></div>
-<div id="audit" class="panel" hidden></div>`,
+<div id="audit" class="panel" hidden></div>
+<div class="row"><h1>Capabilities</h1><button id="refresh-capabilities" type="button">Refresh</button></div>
+<table id="capabilities"><thead><tr>
+  <th>Capability</th><th>Approved revisions</th><th>Head approval</th><th>Assignments</th><th>Active</th><th></th>
+</tr></thead><tbody id="capability-rows"></tbody></table>
+<div id="capability" class="panel" hidden></div>`,
     true,
   );
 }

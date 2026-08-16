@@ -61,6 +61,10 @@ interface InboxItem {
   semantic_blocking: number;
   security_blocking: number;
   state: string;
+  /** whether the HEAD revision carries an approval of its own — V1 P3 made
+   *  approval a fact about a revision, so this and `state` can disagree and the
+   *  page shows both rather than the lineage's alone */
+  head_approved: boolean;
   eligibility: Eligibility;
   created_at_ms: number;
 }
@@ -105,12 +109,27 @@ interface DraftActions {
   revise: ActionEligibility;
 }
 
+/** An approval of ONE revision — what an assignment may name and what a
+ *  rollback may return to (`P3-FR-05`). */
+interface RevisionApproval {
+  approval_id: string;
+  draft_id: string;
+  draft_revision_id: string;
+  revision: number;
+  actor_agent_id: string;
+  content_digest: string;
+  server_at_ms: number;
+}
+
 interface DraftDetail {
   contract: string;
   state: string;
   decision: DecisionRecord | null;
   eligibility: Eligibility;
   actions: DraftActions;
+  /** the approval of the revision being shown, or null */
+  revision_approval: RevisionApproval | null;
+  approved_revisions: RevisionApproval[];
   draft: {
     draft_id: string;
     revision: {
@@ -345,6 +364,12 @@ function renderInbox(inbox: Inbox, filter: string): void {
     const tr = el("tr");
     tr.appendChild(el("td", item.title));
     tr.appendChild(el("td", item.state));
+    // the lineage's state and the head's own approval are two server fields and
+    // two columns: an approved lineage whose head is a newer revision reads
+    // `approved` / `no`, which is what it is
+    const headCell = el("td", item.head_approved ? "yes" : "no");
+    headCell.dataset.headApproved = String(item.head_approved);
+    tr.appendChild(headCell);
     tr.appendChild(el("td", String(item.latest_revision)));
     const sem = el("td", String(item.semantic_blocking));
     if (item.semantic_blocking > 0) sem.className = "blocking";
@@ -368,7 +393,7 @@ function renderInbox(inbox: Inbox, filter: string): void {
   if (shown.length === 0) {
     const tr = el("tr");
     const td = el("td", "no drafts", "muted");
-    td.colSpan = 7;
+    td.colSpan = 8;
     tr.appendChild(td);
     rows.appendChild(tr);
   }
@@ -462,6 +487,22 @@ function renderDetail(detail: DraftDetail): void {
     "Lineage",
     detail.draft.lineage.map((l) => `revision ${l.revision} · ${l.origin} · ${l.content_digest}`),
   );
+
+  // THE REVISION IN HAND, AND WHETHER IT IS APPROVED. The line above is the
+  // LINEAGE's decision; this one is the server's answer about THIS revision
+  // (`revision_approval`), and they are shown apart because since V1 P3 they can
+  // differ — an approved lineage whose head is a later revision has an
+  // unapproved head, and only an APPROVED revision can be assigned.
+  const revisionApproval = el(
+    "p",
+    detail.revision_approval
+      ? `this revision is approved (${detail.revision_approval.content_digest})`
+      : "this revision carries no approval of its own",
+  );
+  revisionApproval.id = "revision-approval";
+  revisionApproval.dataset.approved = String(detail.revision_approval !== null);
+  revisionApproval.dataset.approvedRevisions = String(detail.approved_revisions.length);
+  box.appendChild(revisionApproval);
 
   if (detail.decision) {
     const d = el("p", `${detail.decision.decision} by ${detail.decision.actor_agent_id}`);
@@ -629,6 +670,508 @@ async function saveEdit(detail: DraftDetail): Promise<void> {
   if (failure) showError(`${failure.code}: ${failure.message}`);
 }
 
+// --------------------------------------------- V1 P3: the capability screen
+//
+// WHAT THIS HALF OF THE PAGE IS, AND THE FOUR RULES IT IS WRITTEN UNDER.
+//
+//   `P3-FR-07` / `INV-02` — DESIRED AND OBSERVED ARE TWO BLOCKS. They are
+//     rendered by two functions from two fields of two shapes, each naming its
+//     own `source`, and there is no place below where one is written from the
+//     other. An owner command changes desired state only: the mutations at the
+//     bottom of this file POST to the lifecycle routes, and nothing in this file
+//     writes an observed status anywhere — the intake for those is a Bearer
+//     route this console never calls.
+//
+//   `P3-FR-08` / `INV-03` — AN OBSERVED `unknown` IS RENDERED WITH ITS REASON
+//     AND ITS SOURCE. Never blank, and never quietly shown as a success: the
+//     status is printed as the word the server sent, and the reason code, the
+//     reason and the source are printed beside it whatever that word is.
+//
+//   `P3-FR-14` / `INV-07` — THE PAGE SAYS THE CHANGE IS FOR THE NEXT SESSION.
+//     The server sends `effective_from`; this file maps that field to a sentence
+//     through a lookup table, the way `REASON_LABEL` maps a reason code. A value
+//     this build does not know is printed as itself rather than guessed at.
+//
+//   `P3-FR-16` / `INV-01` — THE TRANSITION RULES ARE NOT HERE. Whether activate,
+//     pause, revoke or a revision selection is possible is `actions.<x>.allowed`,
+//     computed in `src/assignment-lifecycle.ts`; whether an agent may be assigned
+//     is `eligibility.assignable`. Every `disabled` line below is `!` applied to
+//     one of those booleans, which `test/v1p3-assignment.test.ts` asserts by
+//     reading this file: a line that compared a state to a string instead would
+//     fail that test.
+
+interface FleetAgent {
+  agent_id: string;
+  name: string;
+  type: string;
+  status: string;
+}
+
+interface AssignmentEligibility {
+  assignable: boolean;
+  reason_code: string;
+  agent_id: string;
+  draft_id: string | null;
+  revision_id: string;
+}
+
+/** The owner's intent. Its `source` is the registry journal, and it is named. */
+interface DesiredView {
+  state: string;
+  revision_id: string;
+  content_digest: string;
+  effective_from: string;
+  entity_version: number;
+  event: string;
+  reason_code: string;
+  reason: string | null;
+  decided_at_ms: number;
+  source: string;
+}
+
+/** What somebody SAW, or the honest absence of it (`INV-03`). */
+interface ObservedView {
+  status: string;
+  reason_code: string;
+  reason: string;
+  source: string;
+  observed_at_ms: number | null;
+  revision_id: string | null;
+  session_ref: string | null;
+  agent_id: string | null;
+  observation_id: string | null;
+}
+
+interface ActionVerdict {
+  allowed: boolean;
+  reason_code: string;
+}
+
+interface AssignmentActions {
+  activate: ActionVerdict;
+  pause: ActionVerdict;
+  revoke: ActionVerdict;
+  select_revision: ActionVerdict;
+}
+
+interface AssignmentDetail {
+  assignment_id: string;
+  agent_id: string;
+  draft_id: string;
+  desired: DesiredView;
+  observed: ObservedView;
+  actions: AssignmentActions;
+  approved_revisions: RevisionApproval[];
+  entity_version: number;
+  created_at_ms: number;
+}
+
+interface CapabilityItem {
+  draft_id: string;
+  title: string;
+  latest_revision_id: string;
+  latest_revision: number;
+  approved_revisions: RevisionApproval[];
+  head_approval: RevisionApproval | null;
+  assignment_count: number;
+  active_assignment_count: number;
+}
+
+interface CapabilityLibrary {
+  contract: string;
+  items: CapabilityItem[];
+}
+
+interface Capability {
+  contract: string;
+  draft_id: string;
+  title: string;
+  approved_revisions: RevisionApproval[];
+  head_approval: RevisionApproval | null;
+  fleet: FleetAgent[];
+  eligibility: AssignmentEligibility[];
+  assignments: AssignmentDetail[];
+  effective_from: string;
+  desired_state_source: string;
+  observed_state_source: string;
+  lifecycle_states: string[];
+}
+
+/** `P3-FR-14` / `INV-07`, as a lookup rather than a rule: the server's field
+ *  becomes the sentence an owner reads. */
+const EFFECTIVE_LABEL: Record<string, string> = {
+  next_session:
+    "takes effect in the NEXT session — the current session's loadout is unchanged",
+};
+
+function effectiveLabel(value: string): string {
+  return EFFECTIVE_LABEL[value] ?? value;
+}
+
+/** Why a control is off, in words, from the server's machine-readable code. The
+ *  DECISION is the server's; this names it. */
+const LIFECYCLE_REASON_LABEL: Record<string, string> = {
+  ASSIGNABLE: "ready to assign",
+  REVISION_NOT_APPROVED: "the revision is not approved",
+  AGENT_NOT_IN_FLEET: "the agent is not in this fleet",
+  AGENT_NOT_ACTIVE: "the agent is not active",
+  ALREADY_ASSIGNED: "already assigned to this agent",
+  TRANSITION_ALLOWED: "allowed",
+  ALREADY_IN_STATE: "already in this state",
+  SELECTABLE: "another approved revision exists",
+  NO_OTHER_APPROVED_REVISION: "no other approved revision",
+  NO_OBSERVATION: "nothing has been reported yet",
+};
+
+function lifecycleLabel(code: string): string {
+  return LIFECYCLE_REASON_LABEL[code] ?? code;
+}
+
+let openCapabilityId: string | null = null;
+
+function renderCapabilityRows(library: CapabilityLibrary): void {
+  const rows = byId("capability-rows");
+  clear(rows);
+  for (const item of library.items) {
+    const tr = el("tr");
+    tr.dataset.capabilityId = item.draft_id;
+    tr.appendChild(el("td", item.title));
+    tr.appendChild(el("td", String(item.approved_revisions.length)));
+    tr.appendChild(el("td", item.head_approval ? `revision ${item.head_approval.revision}` : "—"));
+    tr.appendChild(el("td", String(item.assignment_count)));
+    tr.appendChild(el("td", String(item.active_assignment_count)));
+    const actions = el("td");
+    const open = el("button", "Open");
+    open.type = "button";
+    open.dataset.capabilityId = item.draft_id;
+    open.addEventListener("click", () => guard(() => openCapability(item.draft_id)));
+    actions.appendChild(open);
+    tr.appendChild(actions);
+    rows.appendChild(tr);
+  }
+  if (library.items.length === 0) {
+    const tr = el("tr");
+    const td = el("td", "no approved capabilities", "muted");
+    td.colSpan = 6;
+    tr.appendChild(td);
+    rows.appendChild(tr);
+  }
+  rows.dataset.count = String(library.items.length);
+}
+
+async function loadCapabilities(): Promise<void> {
+  const library = await api<CapabilityLibrary>("GET", "/v1/console/capabilities");
+  renderCapabilityRows(library);
+  byId("capabilities").dataset.loaded = "true";
+}
+
+/** The desired half: the owner's intent, its revision, its version and the
+ *  source it was read from — beside a statement of when it takes effect. */
+function renderDesired(parent: HTMLElement, assignment: AssignmentDetail, effectiveFrom: string, source: string): void {
+  const box = el("div", undefined, "panel");
+  box.className = "panel desired";
+  box.dataset.assignmentId = assignment.assignment_id;
+  box.dataset.desiredState = assignment.desired.state;
+  box.dataset.desiredRevisionId = assignment.desired.revision_id;
+  box.dataset.entityVersion = String(assignment.entity_version);
+  box.appendChild(el("h4", "Desired — what the owner asked for"));
+  box.appendChild(el("p", `state: ${assignment.desired.state}`));
+  box.appendChild(el("p", `revision: ${assignment.desired.revision_id} · ${assignment.desired.content_digest}`));
+  box.appendChild(el("p", `version: ${assignment.entity_version} · last event: ${assignment.desired.event}`));
+  box.appendChild(el("p", `source: ${source}`, "muted"));
+  const effective = el("p", `This is an intent, not an observation — it ${effectiveLabel(effectiveFrom)}.`);
+  effective.className = "effective-from";
+  effective.dataset.effectiveFrom = effectiveFrom;
+  box.appendChild(effective);
+  parent.appendChild(box);
+}
+
+/**
+ * The observed half — `P3-FR-08`, `INV-03`.
+ *
+ * The status is printed as the word the server sent, and the reason code, the
+ * reason, the source and the time are printed beside it WHATEVER that word is.
+ * There is no branch here that hides a field when the status is `unknown` and no
+ * branch that turns an `unknown` into anything else: the one thing the render
+ * does with the status is put it on the screen and in an attribute.
+ */
+function renderObserved(parent: HTMLElement, assignment: AssignmentDetail, source: string): void {
+  const o = assignment.observed;
+  const box = el("div", undefined, "panel");
+  box.className = "panel observed";
+  box.dataset.assignmentId = assignment.assignment_id;
+  box.dataset.observedStatus = o.status;
+  box.dataset.observedReasonCode = o.reason_code;
+  box.dataset.observedSource = o.source;
+  box.appendChild(el("h4", "Observed — what evidence reported"));
+  box.appendChild(el("p", `status: ${o.status}`));
+  box.appendChild(el("p", `reason (${o.reason_code}): ${o.reason}`));
+  box.appendChild(el("p", `source: ${o.source}`, "muted"));
+  box.appendChild(
+    el("p", `observed at: ${o.observed_at_ms === null ? "never" : new Date(o.observed_at_ms).toISOString()}`, "muted"),
+  );
+  box.appendChild(el("p", `session: ${o.session_ref ?? "—"} · revision: ${o.revision_id ?? "—"}`, "muted"));
+  box.appendChild(el("p", `this deployment reads observations from: ${source}`, "muted"));
+  parent.appendChild(box);
+}
+
+/** One lifecycle button: a rendering of `verdict.allowed` and nothing else. */
+function lifecycleButton(
+  parent: HTMLElement,
+  assignment: AssignmentDetail,
+  action: "activate" | "pause" | "revoke",
+  verdict: ActionVerdict,
+): void {
+  const button = el("button", action[0]!.toUpperCase() + action.slice(1));
+  button.type = "button";
+  button.dataset.action = action;
+  button.dataset.assignmentId = assignment.assignment_id;
+  button.dataset.reasonCode = verdict.reason_code;
+  button.disabled = !verdict.allowed;
+  button.addEventListener("click", () => guard(() => lifecycle(assignment, action)));
+  parent.appendChild(button);
+  parent.appendChild(el("span", lifecycleLabel(verdict.reason_code), "muted"));
+}
+
+function renderAssignment(parent: HTMLElement, capability: Capability, assignment: AssignmentDetail): void {
+  const box = el("div", undefined, "panel");
+  box.className = "panel assignment";
+  box.dataset.assignmentId = assignment.assignment_id;
+  box.dataset.agentId = assignment.agent_id;
+  box.dataset.entityVersion = String(assignment.entity_version);
+  const agent = capability.fleet.find((a) => a.agent_id === assignment.agent_id);
+  box.appendChild(el("h3", `Assignment to ${agent ? agent.name : assignment.agent_id}`));
+
+  renderDesired(box, assignment, capability.effective_from, capability.desired_state_source);
+  renderObserved(box, assignment, capability.observed_state_source);
+
+  const controls = el("div", undefined, "row");
+  lifecycleButton(controls, assignment, "activate", assignment.actions.activate);
+  lifecycleButton(controls, assignment, "pause", assignment.actions.pause);
+  lifecycleButton(controls, assignment, "revoke", assignment.actions.revoke);
+  box.appendChild(controls);
+
+  // Revision selection, which is also rollback: one control, because forward and
+  // back are one operation on the server (`P3-FR-05`).
+  const revisionRow = el("div", undefined, "row");
+  revisionRow.appendChild(el("label", "Revision for the next session"));
+  const select = el("select");
+  select.id = `revision-${assignment.assignment_id}`;
+  select.dataset.assignmentId = assignment.assignment_id;
+  for (const approval of assignment.approved_revisions) {
+    const option = el("option", `revision ${approval.revision} · ${approval.content_digest}`);
+    option.value = approval.draft_revision_id;
+    if (approval.draft_revision_id === assignment.desired.revision_id) option.selected = true;
+    select.appendChild(option);
+  }
+  revisionRow.appendChild(select);
+  const apply = el("button", "Use this revision");
+  apply.type = "button";
+  apply.dataset.action = "select_revision";
+  apply.dataset.assignmentId = assignment.assignment_id;
+  apply.dataset.reasonCode = assignment.actions.select_revision.reason_code;
+  apply.disabled = !assignment.actions.select_revision.allowed;
+  apply.addEventListener("click", () => guard(() => selectRevision(assignment, select.value)));
+  revisionRow.appendChild(apply);
+  revisionRow.appendChild(el("span", lifecycleLabel(assignment.actions.select_revision.reason_code), "muted"));
+  box.appendChild(revisionRow);
+
+  parent.appendChild(box);
+}
+
+function renderCapability(capability: Capability): void {
+  const box = byId("capability");
+  clear(box);
+  box.hidden = false;
+  box.dataset.capabilityId = capability.draft_id;
+  box.dataset.assignmentCount = String(capability.assignments.length);
+
+  box.appendChild(el("h2", capability.title));
+  const effective = el(
+    "p",
+    `Every assignment, update, pause, revoke and rollback below ${effectiveLabel(capability.effective_from)}.`,
+  );
+  effective.id = "effective-from";
+  effective.dataset.effectiveFrom = capability.effective_from;
+  box.appendChild(effective);
+
+  section(
+    box,
+    `Approved revisions (${capability.approved_revisions.length})`,
+    capability.approved_revisions.map((a) => `revision ${a.revision} · ${a.draft_revision_id} · ${a.content_digest}`),
+  );
+
+  // the fleet, with the server's per-agent verdict beside each name
+  box.appendChild(el("h3", "Fleet"));
+  const fleet = el("div");
+  fleet.id = "fleet";
+  fleet.dataset.count = String(capability.fleet.length);
+  for (const agent of capability.fleet) {
+    // An agent the server sent no verdict for is NOT assignable here. That is
+    // not this file deciding the rule: it is this file refusing to invent one
+    // the server did not send.
+    const verdict: AssignmentEligibility = capability.eligibility.find((e) => e.agent_id === agent.agent_id) ?? {
+      assignable: false,
+      reason_code: "NO_SERVER_VERDICT",
+      agent_id: agent.agent_id,
+      draft_id: capability.draft_id,
+      revision_id: "",
+    };
+    const row = el("div", undefined, "row");
+    row.dataset.agentId = agent.agent_id;
+    row.dataset.assignable = String(verdict.assignable);
+    row.dataset.reasonCode = verdict.reason_code;
+    row.appendChild(el("span", `${agent.name} · ${agent.type}`));
+    const assign = el("button", "Assign");
+    assign.type = "button";
+    assign.dataset.assignAgentId = agent.agent_id;
+    assign.dataset.reasonCode = verdict.reason_code;
+    // the server's boolean, and nothing else, decides this
+    assign.disabled = !verdict.assignable;
+    assign.addEventListener("click", () => guard(() => assign_(capability, agent.agent_id)));
+    row.appendChild(assign);
+    row.appendChild(el("span", lifecycleLabel(verdict.reason_code), "muted"));
+    fleet.appendChild(row);
+  }
+  box.appendChild(fleet);
+
+  const reasonRow = el("div", undefined, "row");
+  reasonRow.appendChild(el("label", "Note for the journal"));
+  const reason = el("input");
+  reason.id = "lifecycle-reason";
+  reason.type = "text";
+  reason.size = 40;
+  reasonRow.appendChild(reason);
+  box.appendChild(reasonRow);
+
+  const result = el("p", "");
+  result.id = "lifecycle-result";
+  result.dataset.result = "";
+  result.dataset.code = "";
+  result.dataset.currentState = "";
+  box.appendChild(result);
+
+  box.appendChild(el("h3", `Assignments (${capability.assignments.length})`));
+  const list = el("div");
+  list.id = "assignments";
+  list.dataset.count = String(capability.assignments.length);
+  for (const assignment of capability.assignments) renderAssignment(list, capability, assignment);
+  box.appendChild(list);
+}
+
+async function openCapability(draftId: string): Promise<void> {
+  showError("");
+  openCapabilityId = draftId;
+  const capability = await api<Capability>("GET", `/v1/console/capabilities/${encodeURIComponent(draftId)}`);
+  renderCapability(capability);
+}
+
+/** The refetch that follows EVERY owner command, successful or refused. */
+async function refreshCapability(): Promise<void> {
+  if (openCapabilityId === null) return;
+  const capability = await api<Capability>("GET", `/v1/console/capabilities/${encodeURIComponent(openCapabilityId)}`);
+  renderCapability(capability);
+  await loadCapabilities();
+}
+
+/**
+ * What the owner is told a command did — `P3-FR-12`.
+ *
+ * A refusal is shown AS a refusal, with the server's code and the state the
+ * server says the assignment is in. There is no branch here that reports a
+ * refused command as applied, and the caller has already refetched the canonical
+ * state before this runs, so what is on the screen beside this line is the
+ * server's answer rather than the owner's request.
+ */
+function reportLifecycle(action: string, failure: ApiFailure | null): void {
+  const box = byId("lifecycle-result");
+  if (failure === null) {
+    box.dataset.result = "applied";
+    box.dataset.code = "";
+    box.dataset.currentState = "";
+    box.textContent = `${action}: accepted by the registry`;
+    return;
+  }
+  box.dataset.result = "refused";
+  box.dataset.code = failure.code;
+  box.dataset.currentState = failure.current_state ?? "";
+  box.textContent =
+    `${action}: REFUSED — ${failure.code}` +
+    (failure.current_state ? ` · the registry says the state is ${failure.current_state}` : "") +
+    `: ${failure.message}`;
+}
+
+/**
+ * One owner command.
+ *
+ * The idempotency key is derived from what the command IS — the assignment, the
+ * action and the version it was issued against — rather than minted per click.
+ * A command re-sent at the same version is the SAME command and replays
+ * (`P3-FR-09`); the same command re-sent with a DIFFERENT note at the same
+ * version is a different payload under one key, which the registry refuses with
+ * `409` (`P3-FR-10`). Both answers are the server's.
+ *
+ * WHATEVER HAPPENS, the canonical state is refetched BEFORE anything is
+ * reported, and the report is the server's answer (`P3-FR-12`). A page that
+ * skipped the refetch on failure, or wrote "applied" without one, would be
+ * showing the owner their own request back — which is the defect the browser
+ * gate's negative demonstration rebuilds on purpose.
+ */
+async function ownerCommand(action: string, path: string, body: Record<string, unknown>, key: string): Promise<void> {
+  showError("");
+  let failure: ApiFailure | null = null;
+  try {
+    await api("POST", path, body, key);
+  } catch (e) {
+    failure = failureOf(e);
+  }
+  await refreshCapability();
+  reportLifecycle(action, failure);
+}
+
+function noteText(): string | undefined {
+  const field = document.getElementById("lifecycle-reason") as HTMLInputElement | null;
+  const value = field ? field.value.trim() : "";
+  return value.length > 0 ? value : undefined;
+}
+
+/** `P3-FR-01` / `P3-FR-02`: assign the head APPROVED revision to one agent. The
+ *  revision is the server's `head_approval`; this file picks nothing. */
+async function assign_(capability: Capability, agentId: string): Promise<void> {
+  const approval = capability.head_approval;
+  if (!approval) {
+    showError("this capability has no approved revision to assign");
+    return;
+  }
+  const note = noteText();
+  await ownerCommand(
+    "assign",
+    "/v1/console/assignments",
+    { agent_id: agentId, revision_id: approval.draft_revision_id, reason: note },
+    `assign:${agentId}:${approval.draft_revision_id}:${note ?? ""}`,
+  );
+}
+
+async function lifecycle(assignment: AssignmentDetail, action: "activate" | "pause" | "revoke"): Promise<void> {
+  await ownerCommand(
+    action,
+    `/v1/console/assignments/${encodeURIComponent(assignment.assignment_id)}/${action}`,
+    { if_version: assignment.entity_version, reason: noteText() },
+    `${assignment.assignment_id}:${action}:${assignment.entity_version}`,
+  );
+}
+
+/** Revision selection, which is rollback when the target is older. Which it is
+ *  is the server's word, in the journal it writes. */
+async function selectRevision(assignment: AssignmentDetail, revisionId: string): Promise<void> {
+  await ownerCommand(
+    "select_revision",
+    `/v1/console/assignments/${encodeURIComponent(assignment.assignment_id)}/revision`,
+    { revision_id: revisionId, if_version: assignment.entity_version, reason: noteText() },
+    `${assignment.assignment_id}:revision:${revisionId}:${assignment.entity_version}`,
+  );
+}
+
 // ------------------------------------------------------------------ the boot
 
 async function boot(): Promise<void> {
@@ -651,8 +1194,11 @@ async function boot(): Promise<void> {
       window.location.assign("/console/login");
     });
   });
+  byId("refresh-capabilities").addEventListener("click", () => guard(() => loadCapabilities()));
   await loadInbox();
+  await loadCapabilities();
   if (openDraftId) await openDraft(openDraftId);
+  if (openCapabilityId) await openCapability(openCapabilityId);
 }
 
 if (document.getElementById("login")) {

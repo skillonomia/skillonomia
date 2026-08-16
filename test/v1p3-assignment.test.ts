@@ -618,6 +618,32 @@ test("P3-FR-16: the transition table and the conflict rules exist once, on the s
   // the server's table is the one thing that decides, and it is data
   assert.deepEqual(Object.keys(LIFECYCLE_TRANSITIONS).sort(), [...DESIRED_STATES].sort());
   assert.deepEqual(LIFECYCLE_TRANSITIONS.revoked, []);
+
+  // EVERY CONTROL ON THE PAGE IS A RENDERING OF A SERVER FIELD, and this is the
+  // check that fails the moment one stops being. The P3 screen adds five more
+  // controls — assign, activate, pause, revoke and revision selection — and the
+  // way a second implementation of the rules would enter this file is a line
+  // like `button.disabled = assignment.desired.state === "revoked"`. So every
+  // `disabled` assignment in the client is read, and each one must be either the
+  // in-flight `true` or a negation of a boolean the SERVER computed:
+  // `.allowed`, `.assignable` or `.approvable`.
+  const disabled = [...source.matchAll(/\.disabled\s*=\s*([^;]+);/g)].map((m) => m[1]!.trim());
+  assert.ok(disabled.length >= 8, `only ${disabled.length} disabled assignments found in console/app.ts`);
+  for (const expression of disabled) {
+    assert.match(
+      expression,
+      /^(true|![A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*\.(allowed|assignable|approvable))$/,
+      `console/app.ts decides a control from \`${expression}\` instead of from a server verdict`,
+    );
+  }
+  // and the states the SERVER names are rendered, not recomputed: the client
+  // reads `actions.<action>.allowed` for each lifecycle action it offers
+  for (const action of ["activate", "pause", "revoke", "select_revision"]) {
+    assert.ok(
+      new RegExp(`actions\\.${action}`).test(source),
+      `console/app.ts offers no control driven by the server's \`actions.${action}\` verdict`,
+    );
+  }
 });
 
 test("P3-FR-12: a 409 and a 412 both carry the state and the contract the console refetches on", () => {
