@@ -242,6 +242,56 @@ export const IDENTITY_INTAKE: Record<string, IdentityColumnClass> = {
     note:
       "one of `loaded` or `invoked` — `validateReceipt` in `src/session-loadout.ts` refuses anything else before a row exists, and the CHECK in `0016` refuses it again in the database. `proposed` is not a member, because no runtime confirms it",
   },
+  "agent_sessions.workspace_id": FROM_AUTH,
+
+  // --------------------------------------------------------- V1 P5 identities
+  // The outcome of an invocation, and the loop that comes back from it. Two
+  // columns here take a CALLER's string and both are bounded and checked before
+  // a row exists: `session_outcomes.outcome_ref`, which is the reporter's own
+  // identifier for the outcome and is what makes a redelivery idempotent, and
+  // `session_outcomes.outcome`, which is one of exactly four values. Everything
+  // else is resolved out of this registry's own rows.
+  "session_closures.id": MINTED,
+  "session_closures.session_id": {
+    intake: "registry_generated",
+    note:
+      "the session this closure ends, loaded and workspace-checked before the row exists. UNIQUE, which is what makes closing twice one closure in the database rather than in a check",
+  },
+  "session_outcomes.id": MINTED,
+  "session_outcomes.session_id": RESOLVED,
+  "session_outcomes.draft_id": {
+    intake: "registry_generated",
+    note: "copied from the loadout entry this outcome is filed against; no caller names a lineage here",
+  },
+  "session_outcomes.loadout_entry_id": {
+    intake: "registry_generated",
+    note:
+      "resolved by looking the REPORTED revision up in this session's own frozen loadout, exactly as a receipt's is, with the digest compared against the entry's before the row exists",
+  },
+  "session_outcomes.outcome_ref": {
+    intake: "declared_limit",
+    note:
+      "the REPORTER's own identifier for this outcome, 1..200 and trimmed by `validateOutcomeReceipt`. It is the replay key of `P5-FR-06`, and it is scoped by `UNIQUE(loadout_entry_id,outcome_ref)` so one reporter's ref cannot collide with another entry's; the registry mints it itself for a closure and for a rollback confirmation, where no reporter supplied one",
+  },
+  "outcome_conflicts.id": MINTED,
+  "outcome_conflicts.loadout_entry_id": RESOLVED,
+  "revision_sources.id": MINTED,
+  "revision_sources.draft_id": {
+    intake: "registry_generated",
+    note: "read from the outcome the revision was created from, never from the body",
+  },
+  "revision_sources.draft_revision_id": {
+    intake: "registry_generated",
+    note:
+      "the revision the compiler has just produced, in the same transaction. UNIQUE, so one revision carries at most one lineage claim",
+  },
+  "revision_comparisons.id": MINTED,
+  "revision_comparisons.workspace_id": FROM_AUTH,
+  "revision_comparisons.draft_id": {
+    intake: "registry_generated",
+    note: "read from the candidate outcome, which was loaded and workspace-checked first",
+  },
+
   "assignment_events.assignment_id": RESOLVED,
   "assignment_events.idempotency_key": {
     intake: "registry_generated",

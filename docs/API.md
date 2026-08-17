@@ -620,24 +620,28 @@ POST /v1/console/comparisons                            a console session — ol
 GET  /v1/console/capabilities/{draft_id}/outcomes       a console session — the history of one lineage
 ```
 
-**There are four outcomes and no fifth.** `worked`, `failed`, `rolled_back` and
-`nothing_reported`. A runtime reports the first two; the third is written when a
-new session carries a rolled-back revision; the fourth is written by the closure
-of a session.
+**The outcome vocabulary has exactly four members**, fixed by the CHECK in
+`migrations/0017_outcomes_and_the_revision_loop.sql`: `worked`, `failed`,
+`rolled_back` and `nothing_reported`. A runtime reports the first two; the third
+is written when a new session carries a rolled-back revision; the fourth is
+written by the closure of a session.
 
-**`worked` is never reached from a stage.** An outcome receipt is refused unless
-an `invoked` receipt of the same session names the same `invocation_ref` and
-`runtime_session_ref`, so a skill that was proposed, or loaded, or even invoked
-without a reported outcome, does not become a success. The one other way to
+**A `worked` outcome rests on an invocation receipt.**
+`POST /v1/sessions/{session_id}/outcomes` refuses one unless an `invoked` receipt
+of the same session names the same `invocation_ref` and `runtime_session_ref`, so
+a skill that was proposed, or loaded, or even invoked without a reported outcome,
+stays short of a success. The one other way to
 `worked` is an explicit owner confirmation, and such a row carries
 `source: owner`, `evidence_class: owner_confirmation` and a
-`confirmation_source` naming where the owner saw it. It writes no observation
-and no stage: an owner's word is recorded as an owner's word.
+`confirmation_source` naming where the owner saw it. It writes one row of
+`session_outcomes`, and the stage of the entry stays what a receipt filed at
+`POST /v1/sessions/{session_id}/receipts` made it: an owner's word is recorded as
+an owner's word.
 
-**A session that ends with nothing said says so.** Closing a session writes
-`nothing_reported` for every entry with no outcome — including one that reached
-`invoked`. Closing twice is one closure, and after it the outcome intake of that
-session is refused.
+**A session that ends with nothing said says so.**
+`POST /v1/sessions/{session_id}/close` writes `nothing_reported` for each entry
+that has no outcome, including one that reached `invoked`. Closing twice is one
+closure, and after it the outcome intake of that session is refused.
 
 **Redelivery is free; contradiction is recorded.** `outcome_ref` is the
 reporter's own identifier for the outcome and is the replay key: the same ref
