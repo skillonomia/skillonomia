@@ -443,9 +443,32 @@ evidence/
     10-secret-scan-final.txt       the closing secret sweep, run after the last word was written
     11-evidence-check-final.txt    the closing evidence-record check
     12-clean-clone.txt             the clean-clone transcript: clone, npm ci, npm test, nothing between
+    13-browser-e2e-trace-cont.txt  the P2 console browser run's trace, from the continuation session
+    14-p3-screen-e2e-trace.txt     the P3 assignment/lifecycle screen run's trace, one line per exchange
+    15-session-record-cont.md      the continuation session's role, model contract, task and session IDs, and its commits
+    16-p3-record-cont.md           what the continuation session delivered, and what it did not
+    17-gate-summary-cont.md        every mandatory P3 gate at the final SHA, its command and its exit code
+    18-refs-tags-and-base-cont.txt refs, tags, ancestry and clean-worktree at the final SHA
+    19-branch-reflog-cont.txt      the branch reflog after the continuation session's commits
+    20-forbidden-actions-log-cont.md  the continuation session's log of forbidden production and history-rewriting actions
+    21-clean-clone-cont.txt        the clean-clone transcript at the final SHA: clone, npm ci, npm test, nothing between
+    22-negative-probes-cont.txt    the validator negative probes at the final SHA
+    23-output-sha-agreement-cont.txt  the output-SHA agreement across the extended package
+    24-secret-scan-final-cont.txt  the closing secret sweep of the extended package
+    25-evidence-check-final-cont.txt  the closing evidence-record check — the last file P3 writes
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
 ```
+
+P3 was built by TWO sessions: `BUILD-1`, which built the backend and recorded
+that the console screen and its browser end-to-end were not delivered, and
+`BUILD-2`, the continuation that built them. They are two roles in this ledger
+because they are two provider sessions with two task ids, which is what section
+7.3's isolation is checked by; the phase automaton has still run one BUILD step
+and no review. Files `01`–`12` are BUILD-1's and are not rewritten, except for
+their `OUTPUT_SHA` marker, which names the phase's exact final SHA — one marker
+per artifact is what `v1/tools/p0-output-sha-check.ts` requires, so it is
+re-pointed rather than doubled.
 
 A phase directory follows the same rules: the numbered files are per event, the
 `logs/` correspondence is one file to one record, and the closing pair runs last.
