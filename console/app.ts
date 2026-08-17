@@ -1066,15 +1066,20 @@ async function openCapability(draftId: string): Promise<void> {
   showError("");
   openCapabilityId = draftId;
   const capability = await api<Capability>("GET", `/v1/console/capabilities/${encodeURIComponent(draftId)}`);
+  openCapabilityView = capability;
   renderCapability(capability);
+  // V1 P5: the outcomes OF this lineage, in their own region below.
+  await loadOutcomes(draftId);
 }
 
 /** The refetch that follows EVERY owner command, successful or refused. */
 async function refreshCapability(): Promise<void> {
   if (openCapabilityId === null) return;
   const capability = await api<Capability>("GET", `/v1/console/capabilities/${encodeURIComponent(openCapabilityId)}`);
+  openCapabilityView = capability;
   renderCapability(capability);
   await loadCapabilities();
+  await refreshOutcomes();
 }
 
 /**
@@ -1175,6 +1180,551 @@ async function selectRevision(assignment: AssignmentDetail, revisionId: string):
   );
 }
 
+// ----------------------------------------------- V1 P5: the outcome screen
+//
+// WHAT THIS THIRD REGION IS, AND THE FIVE RULES IT IS WRITTEN UNDER.
+//
+//   `INV-03` / `P5-FR-04` — AN OUTCOME IS PRINTED AS THE WORD THE SERVER SENT.
+//     `renderOutcome` puts `o.outcome` on the screen and in an attribute and does
+//     nothing else with it: there is no branch here that reads one value and
+//     shows another, so a `nothing_reported` cannot appear as a success and an
+//     entry with no outcome cannot appear as one either. Beside the word go its
+//     reason code, its reason, its source, its evidence class and its time —
+//     whatever the word is.
+//
+//   `P5-FR-12` — THE IMPROVEMENT VERDICT IS THE SERVER'S. `comparison.verdict`
+//     is rendered, together with the reason code the registry decided it by,
+//     whether the two runs were comparable at all, and the goal that was stated
+//     in advance. This file compares no outcomes to each other. A client that
+//     read `candidate_outcome` and concluded `improved` would be inventing a
+//     confirmed improvement out of a run nobody judged, which is the thing
+//     `P5-FR-12` exists to forbid, and it is what the browser gate's negative
+//     demonstration rebuilds on purpose.
+//
+//   `P5-FR-14` / `INV-05` — every payload below arrives through `api()`, so its
+//     contract version was checked before a field of it was read. There is still
+//     exactly one such check in this file.
+//
+//   `INV-07` — THE PAGE SAYS WHEN A ROLLBACK TAKES EFFECT, and says that the
+//     registry — not the click — is what confirms it. The rollback control here
+//     is a confirmation step in front of the SAME server operation P3 already
+//     owns (`select_revision` on the assignment), driven by the same server
+//     verdict; the CONFIRMATION OF FACT is a `rolled_back` outcome a later
+//     session filed, and it is displayed as evidence rather than produced here.
+//
+//   `INV-02` / `P4-FR-13` — nothing in this region writes observed state. The
+//     three mutations it offers are the owner's three: a confirmation labelled as
+//     the owner's word, a new revision, and a comparison. Filing a receipt, an
+//     outcome, a closure or a rollback confirmation is a machine surface behind
+//     an evidence principal, and this console has no call to any of them.
+
+interface OutcomeConflictRow {
+  conflict_id: string;
+  outcome_ref: string;
+  existing_outcome_id: string;
+  existing_outcome: string;
+  claimed_outcome: string;
+  conflict_digest: string;
+  observed_at_ms: number;
+}
+
+interface OutcomeRow {
+  outcome_id: string;
+  session_id: string;
+  loadout_entry_id: string;
+  assignment_id: string;
+  draft_revision_id: string;
+  content_digest: string;
+  outcome: string;
+  evidence_class: string | null;
+  reason_code: string;
+  reason: string;
+  source: string;
+  confirmation_source: string | null;
+  invocation_receipt_id: string | null;
+  rollback_to_revision_id: string | null;
+  rollback_action_event_id: string | null;
+  outcome_digest: string;
+  observed_at_ms: number;
+  conflicts: OutcomeConflictRow[];
+}
+
+/** Where a revision CAME FROM: the parent, the outcome that prompted it, the
+ *  receipt behind that outcome and the goal stated before it ran (`P5-FR-08`). */
+interface LineageRow {
+  revision_source_id: string;
+  draft_revision_id: string;
+  parent_revision_id: string;
+  origin: string;
+  source_outcome_id: string;
+  source_session_id: string;
+  source_receipt_id: string | null;
+  observation: string;
+  improvement_goal: string;
+  goal_kind: string;
+  created_at_ms: number;
+}
+
+interface ComparisonRow {
+  comparison_id: string;
+  baseline_revision_id: string;
+  candidate_revision_id: string;
+  baseline_outcome_id: string;
+  candidate_outcome_id: string;
+  baseline_outcome: string;
+  candidate_outcome: string;
+  comparable: boolean;
+  improvement_goal: string;
+  goal_kind: string;
+  verdict: string;
+  verdict_reason_code: string;
+  verdict_reason: string;
+  created_at_ms: number;
+}
+
+interface OutcomeHistory {
+  contract: string;
+  draft_id: string;
+  outcomes: OutcomeRow[];
+  lineage: LineageRow[];
+  comparisons: ComparisonRow[];
+}
+
+/** Names for the four normalised outcomes and for the three verdicts — LABELS,
+ *  in the shape `REASON_LABEL` already has. A word this build does not know is
+ *  printed as itself, because the alternative is a page that hides a value the
+ *  server sent. */
+const OUTCOME_LABEL: Record<string, string> = {
+  worked: "worked — an invocation reported success",
+  failed: "failed — an invocation reported a failure",
+  rolled_back: "rolled back — a later session carried the rollback target",
+  nothing_reported: "nothing reported — the session ended without an outcome, which is not a success",
+  unknown: "unknown — nothing has been reported for this entry yet",
+};
+
+const VERDICT_LABEL: Record<string, string> = {
+  improved: "confirmed improvement",
+  not_improved: "no improvement",
+  not_comparable: "not comparable — the two runs are not the same scenario",
+};
+
+let outcomeHistory: OutcomeHistory | null = null;
+let openCapabilityView: Capability | null = null;
+/** The rollback the owner has PREPARED but not yet confirmed, per assignment. */
+const rollbackPlans = new Map<string, string>();
+
+function label(table: Record<string, string>, value: string): string {
+  return table[value] ?? value;
+}
+
+function iso(ms: number): string {
+  return new Date(ms).toISOString();
+}
+
+/** What the owner is told a P5 command did. A refusal is shown AS a refusal,
+ *  with the server's code and the state the server named — the same rule
+ *  `reportLifecycle` follows, on this region's own line. */
+function reportOutcome(action: string, failure: ApiFailure | null): void {
+  const box = document.getElementById("outcome-result");
+  if (!box) return;
+  if (failure === null) {
+    box.dataset.result = "applied";
+    box.dataset.code = "";
+    box.dataset.currentState = "";
+    box.textContent = `${action}: accepted by the registry`;
+    return;
+  }
+  box.dataset.result = "refused";
+  box.dataset.code = failure.code;
+  box.dataset.currentState = failure.current_state ?? "";
+  box.textContent =
+    `${action}: REFUSED — ${failure.code}` +
+    (failure.current_state ? ` · the registry says ${failure.current_state}` : "") +
+    `: ${failure.message}`;
+}
+
+/**
+ * One owner command on this region.
+ *
+ * WHATEVER HAPPENS, the canonical state is refetched BEFORE anything is
+ * reported, and what is reported is the server's answer — the rule `P3-FR-12`
+ * wrote for the lifecycle screen, which is no weaker here: a create-revision
+ * refused as a precondition failure, reported as applied, would be the console
+ * telling an owner they have a revision the registry never made.
+ */
+async function ownerOutcomeCommand(action: string, path: string, body: Record<string, unknown>, key: string): Promise<void> {
+  showError("");
+  let failure: ApiFailure | null = null;
+  try {
+    await api("POST", path, body, key);
+  } catch (e) {
+    failure = failureOf(e);
+  }
+  await refreshCapability();
+  reportOutcome(action, failure);
+}
+
+function renderOutcome(parent: HTMLElement, o: OutcomeRow): void {
+  const box = el("div", undefined, "panel outcome");
+  box.dataset.outcomeId = o.outcome_id;
+  // THE WORD THE SERVER SENT, in an attribute and on the screen. Both come from
+  // the same field and nothing between them looks at its value (`INV-03`).
+  const shown = o.outcome;
+  box.dataset.outcome = shown;
+  box.dataset.evidenceClass = o.evidence_class ?? "";
+  box.dataset.source = o.source;
+  box.dataset.reasonCode = o.reason_code;
+  box.dataset.revisionId = o.draft_revision_id;
+  box.dataset.sessionId = o.session_id;
+  box.dataset.invocationReceiptId = o.invocation_receipt_id ?? "";
+  box.appendChild(el("h4", `outcome: ${shown} — ${label(OUTCOME_LABEL, shown)}`));
+  box.appendChild(el("p", `reason (${o.reason_code}): ${o.reason}`));
+  box.appendChild(
+    el(
+      "p",
+      `source: ${o.source} · evidence: ${o.evidence_class ?? "—"} · the owner saw it at: ${o.confirmation_source ?? "—"}`,
+      "muted",
+    ),
+  );
+  box.appendChild(el("p", `revision: ${o.draft_revision_id} · ${o.content_digest}`, "muted"));
+  box.appendChild(
+    el("p", `session: ${o.session_id} · invocation receipt: ${o.invocation_receipt_id ?? "—"} · entry: ${o.loadout_entry_id}`, "muted"),
+  );
+  const at = el("p", `outcome digest: ${o.outcome_digest} · observed at: ${iso(o.observed_at_ms)}`, "muted");
+  at.dataset.observedAtMs = String(o.observed_at_ms);
+  box.appendChild(at);
+
+  // A ROLLBACK CONFIRMATION, when the row carries one. It is a FIELD being
+  // present, not a verdict being computed: the registry writes the target
+  // revision and the lifecycle event the rollback was, and this prints them.
+  if (o.rollback_to_revision_id !== null) {
+    const confirmed = el(
+      "p",
+      `ROLLBACK CONFIRMED: a session that opened after the decision carried revision ${o.rollback_to_revision_id}, ` +
+        `selected by lifecycle event ${o.rollback_action_event_id ?? "—"}. The outcomes before it are untouched.`,
+      "rollback-confirmation",
+    );
+    confirmed.dataset.rollbackToRevisionId = o.rollback_to_revision_id;
+    confirmed.dataset.rollbackActionEventId = o.rollback_action_event_id ?? "";
+    box.appendChild(confirmed);
+  }
+
+  for (const c of o.conflicts) {
+    const line = el(
+      "p",
+      `CONFLICT: a redelivery under ${c.outcome_ref} claimed ${c.claimed_outcome}; the filed ${c.existing_outcome} stands ` +
+        `and the claim is kept as its own evidence · ${c.conflict_digest}`,
+      "conflict",
+    );
+    line.dataset.conflictId = c.conflict_id;
+    line.dataset.claimedOutcome = c.claimed_outcome;
+    line.dataset.existingOutcome = c.existing_outcome;
+    box.appendChild(line);
+  }
+
+  // THE FORM THAT CLOSES THE LOOP — a new draft revision out of this outcome.
+  // It is offered for every outcome and gated by NEITHER a rule of this file's
+  // making: whether a revision may be made from a particular outcome is the
+  // server's answer (`origin: failure` on an outcome that did not fail is a
+  // `412`), and the refusal is shown as one.
+  const form = el("div", undefined, "row revision-form");
+  form.dataset.outcomeId = o.outcome_id;
+  const observationLabel = el("label", "What was observed");
+  observationLabel.htmlFor = `observation-${o.outcome_id}`;
+  form.appendChild(observationLabel);
+  const observation = el("textarea");
+  observation.id = `observation-${o.outcome_id}`;
+  observation.rows = 2;
+  observation.cols = 40;
+  form.appendChild(observation);
+  const goalLabel = el("label", "The goal, stated in advance");
+  goalLabel.htmlFor = `goal-${o.outcome_id}`;
+  form.appendChild(goalLabel);
+  const goal = el("input");
+  goal.id = `goal-${o.outcome_id}`;
+  goal.type = "text";
+  goal.size = 30;
+  form.appendChild(goal);
+  const origin = el("select");
+  origin.id = `origin-${o.outcome_id}`;
+  for (const value of ["failure", "feedback"]) {
+    const option = el("option", value);
+    option.value = value;
+    origin.appendChild(option);
+  }
+  form.appendChild(origin);
+  const procedureLabel = el("label", "The corrected procedure");
+  procedureLabel.htmlFor = `procedure-${o.outcome_id}`;
+  form.appendChild(procedureLabel);
+  const procedure = el("textarea");
+  procedure.id = `procedure-${o.outcome_id}`;
+  procedure.rows = 2;
+  procedure.cols = 40;
+  form.appendChild(procedure);
+  const create = el("button", "Create a revision from this outcome");
+  create.type = "button";
+  create.className = "create-revision";
+  create.dataset.outcomeId = o.outcome_id;
+  create.addEventListener("click", () => guard(() => createRevision(o.outcome_id)));
+  form.appendChild(create);
+  box.appendChild(form);
+  parent.appendChild(box);
+}
+
+/** `P5-FR-08`, `P5-FR-09`: the new revision is created through the ordinary
+ *  revise path, so it faces the same semantic and security preview and the same
+ *  owner approval. This console sends the observation, the goal and the text; it
+ *  compiles nothing and approves nothing by asking. */
+async function createRevision(outcomeId: string): Promise<void> {
+  const observation = (document.getElementById(`observation-${outcomeId}`) as HTMLTextAreaElement | null)?.value ?? "";
+  const goal = (document.getElementById(`goal-${outcomeId}`) as HTMLInputElement | null)?.value ?? "";
+  const origin = (document.getElementById(`origin-${outcomeId}`) as HTMLSelectElement | null)?.value ?? "failure";
+  const procedure = (document.getElementById(`procedure-${outcomeId}`) as HTMLTextAreaElement | null)?.value ?? "";
+  const lines = procedure.split("\n").filter((line) => line.trim().length > 0);
+  await ownerOutcomeCommand(
+    "create_revision",
+    `/v1/console/outcomes/${encodeURIComponent(outcomeId)}/revision`,
+    {
+      origin,
+      observation,
+      improvement_goal: goal,
+      revision: lines.length > 0 ? { sections: { procedure: lines } } : {},
+    },
+    `revision-from:${outcomeId}:${origin}:${goal}`,
+  );
+}
+
+function renderLineage(parent: HTMLElement, l: LineageRow): void {
+  const box = el("div", undefined, "panel lineage");
+  box.dataset.revisionSourceId = l.revision_source_id;
+  box.dataset.revisionId = l.draft_revision_id;
+  box.dataset.parentRevisionId = l.parent_revision_id;
+  box.dataset.sourceOutcomeId = l.source_outcome_id;
+  box.dataset.goalKind = l.goal_kind;
+  box.appendChild(el("h4", `revision ${l.draft_revision_id} came from ${l.origin}`));
+  box.appendChild(el("p", `parent revision: ${l.parent_revision_id}`));
+  box.appendChild(el("p", `from outcome: ${l.source_outcome_id} · session ${l.source_session_id}`));
+  box.appendChild(el("p", `on the receipt: ${l.source_receipt_id ?? "—"}`, "muted"));
+  box.appendChild(el("p", `what was observed: ${l.observation}`));
+  box.appendChild(el("p", `the goal, stated in advance (${l.goal_kind}): ${l.improvement_goal}`));
+  parent.appendChild(box);
+}
+
+function renderComparison(parent: HTMLElement, c: ComparisonRow): void {
+  const box = el("div", undefined, "panel comparison");
+  box.dataset.comparisonId = c.comparison_id;
+  box.dataset.verdict = c.verdict;
+  box.dataset.verdictReasonCode = c.verdict_reason_code;
+  box.dataset.comparable = String(c.comparable);
+  box.dataset.baselineRevisionId = c.baseline_revision_id;
+  box.dataset.candidateRevisionId = c.candidate_revision_id;
+  // THE SERVER'S VERDICT, RENDERED (`P5-FR-12`). The registry decided it from a
+  // comparable scenario and a goal stated in advance; this line is a rendering of
+  // that decision and there is no expression here that could produce another.
+  const verdictLine = el("p", `verdict: ${c.verdict} — ${label(VERDICT_LABEL, c.verdict)}`);
+  verdictLine.dataset.verdict = c.verdict;
+  box.appendChild(verdictLine);
+  box.appendChild(el("p", `the registry's reason (${c.verdict_reason_code}): ${c.verdict_reason}`));
+  box.appendChild(el("p", `comparable scenario: ${String(c.comparable)}`));
+  box.appendChild(el("p", `the goal, stated in advance (${c.goal_kind}): ${c.improvement_goal}`));
+  box.appendChild(el("p", `old: revision ${c.baseline_revision_id} · outcome ${c.baseline_outcome}`));
+  box.appendChild(el("p", `new: revision ${c.candidate_revision_id} · outcome ${c.candidate_outcome}`));
+  box.appendChild(
+    el("p", "This verdict is the registry's, computed from the two runs and the goal; the console displays it.", "muted"),
+  );
+  parent.appendChild(box);
+}
+
+function outcomeOption(o: OutcomeRow): HTMLOptionElement {
+  const option = el("option", `${o.outcome} · revision ${o.draft_revision_id} · ${iso(o.observed_at_ms)}`);
+  option.value = o.outcome_id;
+  return option;
+}
+
+/** `P5-FR-11`: the owner names two runs. Everything else — the exact revisions,
+ *  the original observation, whether the two are the same scenario, and the
+ *  verdict — is the server's. */
+async function compare(): Promise<void> {
+  const baseline = (document.getElementById("baseline-outcome") as HTMLSelectElement | null)?.value ?? "";
+  const candidate = (document.getElementById("candidate-outcome") as HTMLSelectElement | null)?.value ?? "";
+  await ownerOutcomeCommand(
+    "compare",
+    "/v1/console/comparisons",
+    { baseline_outcome_id: baseline, candidate_outcome_id: candidate },
+    `compare:${baseline}:${candidate}`,
+  );
+}
+
+/**
+ * THE ROLLBACK, IN TWO ACTS, AND WHAT EACH ONE IS.
+ *
+ * The first act is the owner's: choose an earlier APPROVED revision and read back
+ * what selecting it would mean before confirming it. The second act is not the
+ * owner's at all — a rollback is CONFIRMED when a session that opened after the
+ * decision reports carrying the target revision, which arrives as a
+ * `rolled_back` outcome above (`P5-FR-13`, `INV-02`).
+ *
+ * The command the confirm button sends is the SAME one P3's revision control
+ * sends, to the same route, gated by the same server verdict
+ * (`actions.select_revision.allowed`) — a rollback is not a second operation and
+ * this file does not make it one.
+ */
+function renderRollback(parent: HTMLElement, capability: Capability, assignment: AssignmentDetail): void {
+  const box = el("div", undefined, "panel rollback");
+  box.dataset.assignmentId = assignment.assignment_id;
+  box.dataset.desiredRevisionId = assignment.desired.revision_id;
+  box.appendChild(el("h4", `Roll back the assignment to ${assignment.agent_id}`));
+  const select = el("select");
+  select.id = `rollback-target-${assignment.assignment_id}`;
+  for (const approval of assignment.approved_revisions) {
+    const option = el("option", `revision ${approval.revision} · ${approval.content_digest}`);
+    option.value = approval.draft_revision_id;
+    select.appendChild(option);
+  }
+  box.appendChild(select);
+
+  const plan = el("p", "");
+  plan.className = "rollback-plan";
+  plan.dataset.assignmentId = assignment.assignment_id;
+  plan.dataset.targetRevisionId = "";
+
+  const confirm = el("button", "Confirm the rollback");
+  confirm.type = "button";
+  confirm.className = "confirm-rollback";
+  confirm.dataset.assignmentId = assignment.assignment_id;
+  confirm.dataset.reasonCode = assignment.actions.select_revision.reason_code;
+  // the server's boolean, and nothing else, decides whether this is possible
+  confirm.disabled = !assignment.actions.select_revision.allowed;
+  // …and the owner has not confirmed anything they have not been shown, so the
+  // button appears only once the plan has been read back. `hidden` is a step in
+  // the owner's own act of confirming; it is not a rule about the registry.
+  confirm.hidden = true;
+  confirm.addEventListener("click", () => guard(() => confirmRollback(assignment, select.value)));
+
+  const prepare = el("button", "Prepare the rollback");
+  prepare.type = "button";
+  prepare.className = "prepare-rollback";
+  prepare.dataset.assignmentId = assignment.assignment_id;
+  prepare.addEventListener("click", () => {
+    const target = select.value;
+    rollbackPlans.set(assignment.assignment_id, target);
+    plan.dataset.targetRevisionId = target;
+    plan.textContent =
+      `This selects revision ${target} for the assignment to ${assignment.agent_id}. It ` +
+      `${effectiveLabel(capability.effective_from)}, and it is CONFIRMED only when a session that opens ` +
+      `after this decision reports carrying that revision — not by this click.`;
+    confirm.hidden = false;
+  });
+  box.appendChild(prepare);
+  box.appendChild(confirm);
+  box.appendChild(plan);
+  parent.appendChild(box);
+}
+
+async function confirmRollback(assignment: AssignmentDetail, fallbackTarget: string): Promise<void> {
+  const target = rollbackPlans.get(assignment.assignment_id) ?? fallbackTarget;
+  await ownerOutcomeCommand(
+    "rollback",
+    `/v1/console/assignments/${encodeURIComponent(assignment.assignment_id)}/revision`,
+    { revision_id: target, if_version: assignment.entity_version, reason: noteText() },
+    `${assignment.assignment_id}:revision:${target}:${assignment.entity_version}`,
+  );
+}
+
+function renderOutcomes(history: OutcomeHistory, capability: Capability | null): void {
+  const box = byId("outcomes");
+  clear(box);
+  box.hidden = false;
+  box.dataset.capabilityId = history.draft_id;
+  box.dataset.outcomeCount = String(history.outcomes.length);
+  box.dataset.lineageCount = String(history.lineage.length);
+  box.dataset.comparisonCount = String(history.comparisons.length);
+
+  box.appendChild(el("h2", "Outcomes and the revision loop"));
+  const effective = el(
+    "p",
+    capability
+      ? `A new revision or a rollback chosen here ${effectiveLabel(capability.effective_from)}.`
+      : "Open a capability to see its outcomes.",
+  );
+  effective.id = "outcome-effective-from";
+  effective.dataset.effectiveFrom = capability ? capability.effective_from : "";
+  box.appendChild(effective);
+
+  const result = el("p", "");
+  result.id = "outcome-result";
+  result.dataset.result = "";
+  result.dataset.code = "";
+  result.dataset.currentState = "";
+  box.appendChild(result);
+
+  box.appendChild(el("h3", `Outcomes (${history.outcomes.length})`));
+  const rows = el("div");
+  rows.id = "outcome-rows";
+  rows.dataset.count = String(history.outcomes.length);
+  for (const o of history.outcomes) renderOutcome(rows, o);
+  if (history.outcomes.length === 0) rows.appendChild(el("p", "no outcome has been filed for this capability", "muted"));
+  box.appendChild(rows);
+
+  box.appendChild(el("h3", `Revisions made from an outcome (${history.lineage.length})`));
+  const lineage = el("div");
+  lineage.id = "lineage";
+  lineage.dataset.count = String(history.lineage.length);
+  for (const l of history.lineage) renderLineage(lineage, l);
+  box.appendChild(lineage);
+
+  box.appendChild(el("h3", "Compare an old run with a new one"));
+  const form = el("div", undefined, "row");
+  form.id = "comparison-form";
+  const baselineLabel = el("label", "Old");
+  baselineLabel.htmlFor = "baseline-outcome";
+  form.appendChild(baselineLabel);
+  const baseline = el("select");
+  baseline.id = "baseline-outcome";
+  for (const o of history.outcomes) baseline.appendChild(outcomeOption(o));
+  form.appendChild(baseline);
+  const candidateLabel = el("label", "New");
+  candidateLabel.htmlFor = "candidate-outcome";
+  form.appendChild(candidateLabel);
+  const candidate = el("select");
+  candidate.id = "candidate-outcome";
+  for (const o of history.outcomes) candidate.appendChild(outcomeOption(o));
+  form.appendChild(candidate);
+  const run = el("button", "Compare");
+  run.type = "button";
+  run.id = "compare";
+  run.addEventListener("click", () => guard(() => compare()));
+  form.appendChild(run);
+  box.appendChild(form);
+
+  const comparisons = el("div");
+  comparisons.id = "comparisons";
+  comparisons.dataset.count = String(history.comparisons.length);
+  for (const c of history.comparisons) renderComparison(comparisons, c);
+  box.appendChild(comparisons);
+
+  box.appendChild(el("h3", "Rollback"));
+  const rollbacks = el("div");
+  rollbacks.id = "rollbacks";
+  const assignments = capability ? capability.assignments : [];
+  rollbacks.dataset.count = String(assignments.length);
+  for (const assignment of assignments) renderRollback(rollbacks, capability!, assignment);
+  if (assignments.length === 0) rollbacks.appendChild(el("p", "no assignment to roll back", "muted"));
+  box.appendChild(rollbacks);
+}
+
+async function loadOutcomes(draftId: string): Promise<void> {
+  const history = await api<OutcomeHistory>("GET", `/v1/console/capabilities/${encodeURIComponent(draftId)}/outcomes`);
+  outcomeHistory = history;
+  renderOutcomes(history, openCapabilityView);
+}
+
+/** The refetch of this region, after an owner command and on demand. */
+async function refreshOutcomes(): Promise<void> {
+  if (openCapabilityId === null) return;
+  await loadOutcomes(openCapabilityId);
+}
+
 // ------------------------------------------------------------------ the boot
 
 async function boot(): Promise<void> {
@@ -1198,6 +1748,7 @@ async function boot(): Promise<void> {
     });
   });
   byId("refresh-capabilities").addEventListener("click", () => guard(() => loadCapabilities()));
+  byId("refresh-outcomes").addEventListener("click", () => guard(() => refreshOutcomes()));
   await loadInbox();
   await loadCapabilities();
   if (openDraftId) await openDraft(openDraftId);

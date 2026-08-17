@@ -13,6 +13,7 @@
 // file their outcomes from the runtimes' own output; neither this file nor those
 // gates is dogfood, which is P6's job and cannot be manufactured.
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { handleRest, type RestResponse } from "../src/http.ts";
 import { CONSOLE_COOKIE } from "../src/console-session.ts";
@@ -1181,3 +1182,63 @@ for (const runtime of ["codex", "claude_code"] as const) {
     assert.equal(history.json.lineage[0].parent_revision_id, draft.revision_id);
   });
 }
+
+// ===========================================================================
+// P5-FR-12, P5-FR-14 — THE OUTCOME SCREEN RENDERS THE VERDICTS AND HOLDS NONE
+//
+// The same check P3 wrote for the lifecycle screen, on this phase's surface: the
+// client bundle is read, and the way a second implementation of the rules would
+// enter it is a line that compares an outcome or a verdict to a literal —
+// `candidate.outcome === "worked" ? "improved" : …`, or a `nothing_reported`
+// quietly shown as a success. Both are the defects the browser gate's negative
+// demonstration rebuilds on purpose; this is the check that fails the moment one
+// of them is written for real.
+// ===========================================================================
+
+test("P5-FR-12: the console displays the registry's outcome and verdict and derives neither", () => {
+  const source = readFileSync(new URL("../console/app.ts", import.meta.url), "utf8");
+
+  // The four outcomes and the three verdicts may be LABELLED — a lookup table
+  // that names a value the server sent is what P2's `REASON_LABEL` already is —
+  // but they may not be COMPARED. A comparison is where a decision lives.
+  for (const value of [...OUTCOMES, "improved", "not_improved", "not_comparable", "unknown"]) {
+    for (const operator of ["===", "!==", "==", "!="]) {
+      assert.ok(
+        !source.includes(`${operator} "${value}"`),
+        `console/app.ts compares something to \`${value}\` with \`${operator}\`, which is where a client-side verdict starts`,
+      );
+    }
+  }
+
+  // …and the fields it must be reading instead are read.
+  for (const field of ["c.verdict", "c.verdict_reason_code", "c.comparable", "o.outcome", "o.reason_code", "o.source"]) {
+    assert.ok(source.includes(field), `console/app.ts does not read \`${field}\``);
+  }
+
+  // Every label table maps only values this contract defines, so a table cannot
+  // become a place where a value is renamed into a better one.
+  const outcomeLabels = /const OUTCOME_LABEL: Record<string, string> = \{([^}]*)\}/.exec(source);
+  assert.ok(outcomeLabels, "the outcome label table is not in the shape this test reads");
+  const labelled = [...outcomeLabels![1]!.matchAll(/^\s*([a-z_]+):/gm)].map((m) => m[1]!);
+  assert.deepEqual(labelled.sort(), [...OUTCOMES, "unknown"].sort());
+
+  // The rule P3 wrote, re-asserted over the controls P5 adds: every `disabled`
+  // in the client is the in-flight `true` or a negation of a boolean the SERVER
+  // computed.
+  const disabled = [...source.matchAll(/\.disabled\s*=\s*([^;]+);/g)].map((m) => m[1]!.trim());
+  for (const expression of disabled) {
+    assert.match(
+      expression,
+      /^(true|![A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*\.(allowed|assignable|approvable))$/,
+      `console/app.ts decides a control from \`${expression}\` instead of from a server verdict`,
+    );
+  }
+
+  // And the P5 region writes no observed state: the machine intakes are not
+  // reachable from the console, and the console does not name them (`INV-02`,
+  // `P4-FR-13`).
+  for (const path of ["/receipts", "/outcomes`", "/close", "/rollback-confirmations"]) {
+    assert.ok(!source.includes(`/v1/sessions/${path}`), `console/app.ts posts to the machine surface ${path}`);
+  }
+  assert.ok(!/\/v1\/sessions\//.test(source), "console/app.ts names the machine session surface at all");
+});

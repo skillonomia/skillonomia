@@ -81,9 +81,15 @@ export function loginPage(): string {
   );
 }
 
-/** The console shell: an inbox region, a detail region, an audit region, and —
- *  V1 P3 — the capability library with its detail. All empty. What fills them is
- *  JSON over the session cookie.
+/** The console shell: an inbox region, a detail region, an audit region, the
+ *  V1 P3 capability library with its detail, and — V1 P5 — the outcome region
+ *  beneath it. All empty. What fills them is JSON over the session cookie.
+ *
+ *  THE OUTCOME REGION IS SEPARATE FROM THE CAPABILITY REGION, and it is separate
+ *  for the reason `INV-02` separates desired from observed: what an owner ASKED
+ *  for and what a run REPORTED are two facts, and a page that drew them in one
+ *  box would be inviting the next edit to read one out of the other. It is empty
+ *  until a capability is open, because an outcome is an outcome OF a lineage.
  *
  *  THE INBOX CARRIES TWO COLUMNS WHERE P2 HAD ONE. `State` is the LINEAGE's
  *  decision and `Head approved` is whether the revision at the head of that
@@ -113,7 +119,9 @@ export function consolePage(): string {
 <table id="capabilities"><thead><tr>
   <th>Capability</th><th>Approved revisions</th><th>Head approval</th><th>Assignments</th><th>Active</th><th></th>
 </tr></thead><tbody id="capability-rows"></tbody></table>
-<div id="capability" class="panel" hidden></div>`,
+<div id="capability" class="panel" hidden></div>
+<div class="row"><h1>Outcomes</h1><button id="refresh-outcomes" type="button">Refresh</button></div>
+<div id="outcomes" class="panel" hidden></div>`,
     true,
   );
 }
