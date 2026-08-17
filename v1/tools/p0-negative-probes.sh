@@ -222,15 +222,19 @@ RECORD="$(cd "$EV" && grep -l "$ROLE" *session-record*.md 2>/dev/null | head -1)
 D="$(fresh_copy ledger-pending-session)"
 node -e '
   const fs = require("fs");
-  const [file, role] = process.argv.slice(1);
+  const [file, role, phase] = process.argv.slice(1);
   const lines = fs.readFileSync(file, "utf8").split("\n");
-  const i = lines.findIndex((l) => l.startsWith("|") && l.split("|")[2]?.trim() === role);
-  if (i < 0) { console.error("no ledger row for " + role); process.exit(3); }
+  // THE PHASE AS WELL AS THE ROLE. Matching on the role alone found P0`s
+  // `BUILD-1` row, which this phase`s checker does not read, so the damage was
+  // planted somewhere nothing was looking and the probe passed by measuring
+  // nothing — the exact failure mode this harness exists to prevent.
+  const i = lines.findIndex((l) => l.startsWith("|") && l.split("|")[1]?.trim() === phase && l.split("|")[2]?.trim() === role);
+  if (i < 0) { console.error("no ledger row for " + phase + " " + role); process.exit(3); }
   const c = lines[i].split("|");
   c[4] = " (pending) ";
   lines[i] = c.join("|");
   fs.writeFileSync(file, lines.join("\n"));
-' "$D/../SESSIONS.md" "$ROLE"
+' "$D/../SESSIONS.md" "$ROLE" "$PHASE_DIR_NAME"
 probe ledger-pending-session-id 1 "a pending value in the authoritative ledger" -- "${EVCHECK[@]}" "$D"
 
 # (ii) a session record under ANOTHER role than the one the runs bind to it
