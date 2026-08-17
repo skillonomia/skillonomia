@@ -80,10 +80,28 @@ node --experimental-strip-types --no-warnings v1/tools/p0-db-check.ts       # sc
 bash v1/tools/p0-registry-smoke.sh                             # a real listener on a free port
 ```
 
-`GET /v1/migrations` answers with the schema version the database is at. The
-schema check refuses on a database whose `PRAGMA user_version` disagrees with
-the migration set of the checkout, which is the state an interrupted upgrade
-leaves.
+`GET /v1/migrations` is the ADOPTION-migration counter of Appendix H: it answers
+how many times each skill reached a recipient, out of the registry's own
+INSERT-only journal. It says nothing about the schema. A sentence claiming
+otherwise stood here until BUILD-4 followed this runbook and read what the
+endpoint returned; `src/http.ts` dispatches it to `registry.migrationCounts`.
+
+THE SCHEMA VERSION HAS NO READ SURFACE, so it is read where it lives:
+
+```sh
+DB="$DATA/skillonomia.db" node --experimental-strip-types --no-warnings -e '
+  import("./src/db.ts").then(async ({ openDb }) => {
+    const db = openDb(process.env.DB);
+    console.log("user_version", db.prepare("PRAGMA user_version").get().user_version);
+  });'
+```
+
+Starting the server migrates the data directory to the checkout's head, and
+`src/db.ts` refuses exactly one state on the way — a database at `user_version`
+10, which the withdrawn intermediate build left and which this build declines to
+upgrade, with a message naming the state and the way out. `p0-db-check.ts` is
+the schema and integrity harness, and it builds disposable databases of its own
+rather than reading a deployment's.
 
 For a question about a particular capability rather than the deployment, the
 console is the surface: the capability screen shows desired beside observed with
@@ -176,9 +194,18 @@ head migration under `migrations/down/`. Each migration ships its own reversal
 there; the head one of this tree is
 `migrations/down/0017_outcomes_and_the_revision_loop.down.sql`.
 
-3. Start the previous code against the rolled-back copy and check `/health` and
-   `GET /v1/migrations` as in runbook 2.
+3. Start the previous code against the rolled-back copy and check three things:
+   `/health` for the version it is, `PRAGMA user_version` for the schema it is
+   on, and one authenticated read surface for whether it serves.
 4. Only when the copy answers correctly does the copy replace the original.
+
+WHAT WILL NOT TELL YOU THAT THE ORDER WAS WRONG, and the reason step 2 is not
+optional. `migrate()` skips every migration numbered at or below the database's
+own `user_version`, so the previous code started against a database AHEAD of it
+serves rather than refuses: the tables that build has no knowledge of sit there
+untouched, and `/health` answers `ok`. BUILD-4 ran that counter-case on a
+disposable copy and the previous code said nothing at all about the mismatch.
+Reading the version is the operator's job here, not the server's.
 
 WHAT THIS TOUCHES. The reversal drops the tables the head migration added and
 nothing else. In this tree those hold V1-only data — captures, drafts, revisions,
@@ -193,9 +220,15 @@ are not read or written by the reversal, which is what
 
 The migrate and application-rollback runbooks above were followed on a
 disposable database, and the transcript is in the P6 evidence package as
-`17-runbook-migrate-and-rollback.txt`. The revision-rollback runbook is the path
-the clean-room journey drives in a browser, and its transcript is
-`18-clean-room-journey.txt`.
+`17-runbook-migrate-and-rollback.txt`. That run reached step 2 of runbook 5 —
+the copy and the schema reversal — and stopped there, which BUILD-3 declared.
+BUILD-4 performed step 3: the previous application, extracted at the commit
+whose head migration is `0016`, started against the rolled-back copy, answering
+`/health` at its own version, reporting `user_version` 16 and serving an
+authenticated read surface. Its transcript is
+`27-runbook5-application-rollback.txt`, and it carries the counter-case above.
+The revision-rollback runbook is the path the clean-room journey drives in a
+browser, and its transcript is `18-clean-room-journey.txt`.
 
 The starting and diagnosing runbooks are the commands the dogfood deployment and
 the gate battery of this phase run; the parts of them a session executed appear
