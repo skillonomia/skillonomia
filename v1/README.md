@@ -19,6 +19,7 @@ implements no product behaviour (`P0-FR-08`).
 | `P2-OWNER-CONSOLE.md` | what P2 built — the browser session, the Inbox, the detail, approve/edit/reject, and what the session and the eligibility rule do and do not claim |
 | `P3-ASSIGNMENT-LIFECYCLE.md` | what P3 built — assignment, the lifecycle transition table, desired and observed as separate tables, idempotency and preconditions, rollback, and what the phase does not claim |
 | `P1-CAPTURE-DRAFT.md` | what P1 built — the capture/draft path, where each `P1-FR-*` is met, what the classifier and the redactor do and do not claim, and how the schema change comes back out |
+| `P5-OUTCOME-LOOP.md` | what P5 built — the four normalised outcomes, replay and conflict, the revision created from a failure, the comparison, the rollback confirmed by a new session, and what it does not claim |
 | `P0-RESIDUAL-LIMITATIONS.md` | what P0 leaves permanently unprovable, carried forward to the final report rather than forgotten |
 | `append-only-baseline.tsv` | the disclosed non-append-only reflog entries — the only ones the append-only check excuses |
 | `tools/p0-db-check.ts` | migration and schema checks on a throwaway database, through the repository's own runner |

@@ -567,6 +567,24 @@ evidence/
     logs/                          full captured output of each command, one file per record
     logs-fix1-aborted/             the first four logs of a FIX-1 battery stopped on purpose before this listing was committed, with its own README.md
     logs-fix1-aborted-2/           the logs of a second FIX-1 battery, stopped because its `npm test` gate FAILED and the package had to be corrected, with its own README.md
+  P5/
+    01-session-record.md           BUILD-1's role, model contract, task and session IDs, and its commits
+    02-p5-record.md                what P5 built, deliverable by deliverable and requirement by requirement — and what it does NOT claim
+    03-not-delivered.md            what BUILD-1 did NOT deliver, named plainly
+    04-forbidden-actions-log.md    BUILD-1's log of forbidden production and history-rewriting actions
+    05-gate-summary.md             every mandatory P5 gate at the final SHA, its command and its exit code
+    06-gate-results.tsv            the gate battery's raw per-gate results, one line per gate
+    07-runtime-codex.txt           the actual Codex runtime gate, reaching the outcome
+    08-runtime-claude-code.txt     the actual Claude Code runtime gate, reaching the outcome
+    09-refs-tags-and-base.txt      refs, tags, ancestry and clean-worktree at the phase's final SHA
+    10-branch-reflog.txt           the full branch reflog — the append-only record
+    11-clean-clone.txt             the clean-clone transcript at the final SHA: clone, npm ci, npm test, nothing between
+    12-negative-probes.txt         the validator negative probes at the final SHA
+    13-output-sha-agreement.txt    the output-SHA agreement across the phase package
+    14-secret-scan-final.txt       the closing secret sweep, run after the last word was written
+    15-evidence-check-final.txt    the closing evidence-record check — the last file P5 writes
+    runs.jsonl                     one record per run, in the schema of section 1
+    logs/                          full captured output of each command, one file per record
 ```
 
 **P4 REVIEW-1 returned one blocking finding, and `FIX-1` closed it.** The finding,

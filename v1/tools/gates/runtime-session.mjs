@@ -363,7 +363,7 @@ ok(run.observed_status === "invoked", "the observed state moved to `invoked` on 
 // this session froze or it did not, which is a fact the adapter can establish
 // without asking the runtime to grade itself.
 
-console.log(`outcome:             ${run.outcome} (${run.outcome_reason_code})`);
+console.log(`outcome:             ${run.outcome} (${run.outcome_id})`);
 ok(run.outcome === "worked", "the invocation produced a `worked` outcome, filed from the runtime's own output (P5-FR-15)", String(run.outcome));
 ok(run.outcome_evidence_class === "runtime_receipt", "and it rests on runtime evidence, not on an owner's word (P5-FR-02)");
 ok(typeof run.outcome_id === "string" && run.outcome_id.length === 26, "the outcome is a row with an id");
@@ -376,34 +376,41 @@ ok(
   "the outcome names the INVOCATION receipt it is the outcome of (P5-FR-02)",
 );
 
-// `P5-FR-06`: redelivering the same outcome is idempotent — one row, replayed.
-const replay = await api(adapterKey, "POST", `/v1/sessions/${session.session_id}/outcomes`, {
+// `P5-FR-06` and `P5-FR-07`, on this REAL session's real entry.
+//
+// The delivery below is the gate's own, filed twice byte-identically and then a
+// third time saying something else. It carries its own `outcome_ref` rather than
+// re-sending the adapter's, because reproducing another process's payload
+// exactly is a test of this file's bookkeeping and not of the registry's replay
+// rule — and a payload that differed by one field would look like a conflict
+// when nothing conflicted.
+const replayBody = {
   outcome: "worked",
-  outcome_ref: `${run.runtime_session_ref}#${entry.skill_name}#outcome`,
+  outcome_ref: `${run.runtime_session_ref}#gate-replay`,
   invocation_ref: run.invocation_ref,
   runtime_session_ref: run.runtime_session_ref,
   revision_id: revisionId,
   content_digest: entry.content_digest,
   reason_code: "MARKER_REPORTED_FOR_FROZEN_DIGEST",
-  reason:
-    "the runtime reported the canonical receipt line of the revision this session froze, which is the task the skill defines",
-  transcript_excerpt: null,
-});
+  reason: "the gate's own delivery of the outcome of this invocation, filed twice to prove a redelivery is idempotent",
+  observed_at_ms: 1700000000000,
+};
+const firstDelivery = await api(adapterKey, "POST", `/v1/sessions/${session.session_id}/outcomes`, replayBody);
+ok(firstDelivery.status === 201, "a second outcome of this invocation is accepted under its own ref", firstDelivery.text.slice(0, 200));
+ok(firstDelivery.json.replayed === false, "the first delivery writes a row");
+
+const replay = await api(adapterKey, "POST", `/v1/sessions/${session.session_id}/outcomes`, replayBody);
 ok(replay.status === 201, "a redelivered outcome is accepted", replay.text.slice(0, 200));
 ok(replay.json.replayed === true, "…and it REPLAYS rather than writing a second row (P5-FR-06)");
-ok(replay.json.outcome_id === run.outcome_id, "the same row comes back");
+ok(replay.json.outcome_id === firstDelivery.json.outcome_id, "the same row comes back");
+ok(replay.json.outcome_digest === firstDelivery.json.outcome_digest, "with the same digest");
 
 // `P5-FR-07`: a contradicting delivery under the same key does NOT overwrite.
 const contradicting = await api(adapterKey, "POST", `/v1/sessions/${session.session_id}/outcomes`, {
+  ...replayBody,
   outcome: "failed",
-  outcome_ref: `${run.runtime_session_ref}#${entry.skill_name}#outcome`,
-  invocation_ref: run.invocation_ref,
-  runtime_session_ref: run.runtime_session_ref,
-  revision_id: revisionId,
-  content_digest: entry.content_digest,
   reason_code: "SECOND_THOUGHTS",
   reason: "a contradicting redelivery of one outcome",
-  transcript_excerpt: null,
 });
 ok(contradicting.status === 409, "a contradicting redelivery is refused (P5-FR-07)", `got ${contradicting.status}`);
 const conflictState = JSON.parse(JSON.parse(contradicting.text).error.current_state);
@@ -411,7 +418,7 @@ ok(conflictState.existing_outcome === "worked", "the FIRST outcome stands");
 ok(conflictState.claimed_outcome === "failed", "and the contradiction is recorded with what it claimed");
 const afterConflict = await console_("GET", `/v1/console/sessions/${session.session_id}`);
 ok(afterConflict.json.outcomes[0].outcome === "worked", "the stored outcome was not overwritten");
-ok(afterConflict.json.outcomes[0].conflicts.length === 1, "and the owner sees the conflict as its own evidence");
+ok(afterConflict.json.outcomes[0].conflicts.length === 1, "and the owner sees the conflict as its own evidence", String(afterConflict.json.outcomes[0].conflicts.length));
 
 // ------------------------------------------------------- 5. the stage chain
 
