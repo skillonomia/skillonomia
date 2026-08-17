@@ -121,7 +121,12 @@ export function consolePage(): string {
 </tr></thead><tbody id="capability-rows"></tbody></table>
 <div id="capability" class="panel" hidden></div>
 <div class="row"><h1>Outcomes</h1><button id="refresh-outcomes" type="button">Refresh</button></div>
-<div id="outcomes" class="panel" hidden></div>`,
+<div id="outcomes" class="panel" hidden></div>
+<div class="row"><h1>Session</h1>
+  <label for="session-id">Session</label>
+  <input id="session-id" size="30" autocomplete="off">
+  <button id="open-session" type="button">Open session</button></div>
+<div id="session" class="panel" hidden></div>`,
     true,
   );
 }

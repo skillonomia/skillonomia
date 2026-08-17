@@ -1725,6 +1725,193 @@ async function refreshOutcomes(): Promise<void> {
   await loadOutcomes(openCapabilityId);
 }
 
+// ------------------------------------------------- V1 P6: the session region
+//
+// `P6-FR-14` — the owner runs a session and SEES proposed, loaded, invoked and
+// an outcome, EACH WITH ITS PROVENANCE. Until P6 this console had every one of
+// those facts on the server (`GET /v1/console/sessions/{id}` has answered with
+// the stage chain, the receipts and the outcomes since P4) and no place to read
+// them: the outcome region showed the outcome and named the receipt under it,
+// but the stages a run passed through were reachable only by reading the JSON.
+// A requirement whose answer is "open the API response in a tab" is not met by
+// a console, so the region below renders them.
+//
+// IT COMPUTES NOTHING. Every stage, every source and every time is a server
+// field; the page groups them by entry and prints them. `INV-05` is why: a
+// client that derived `invoked` from the presence of a receipt would be a
+// second implementation of a rule the registry already owns.
+
+interface SessionStage {
+  stage: string;
+  at_ms: number;
+  source: string;
+  receipt_id: string | null;
+  receipt_digest: string | null;
+  runtime_session_ref: string | null;
+  invocation_ref: string | null;
+}
+
+interface SessionEntryView {
+  entry_id: string;
+  draft_revision_id: string;
+  revision: number;
+  skill_name: string;
+  content_digest: string;
+  stage: string;
+  reason_code: string;
+  chain: SessionStage[];
+}
+
+/** The outcome OF AN ENTRY, which is not the same shape as the outcome rows the
+ *  capability screen reads: this one is per loadout entry, carries the latest
+ *  outcome as its own fields and every delivery under it as `history`. They are
+ *  rendered by different functions because they are different facts, and a
+ *  renderer shared between them would print `undefined` for whichever fields the
+ *  other one has — which is exactly what the first draft of this region did. */
+interface SessionOutcomeHistoryRow {
+  outcome_id: string;
+  outcome: string;
+  evidence_class: string | null;
+  reason_code: string;
+  reason: string;
+  source: string;
+  confirmation_source: string | null;
+  invocation_receipt_id: string | null;
+  observed_at_ms: number;
+}
+
+interface SessionEntryOutcome {
+  entry_id: string;
+  draft_revision_id: string;
+  skill_name: string;
+  outcome: string;
+  outcome_id: string | null;
+  evidence_class: string | null;
+  reason_code: string;
+  reason: string;
+  source: string;
+  observed_at_ms: number;
+  history: SessionOutcomeHistoryRow[];
+}
+
+function renderSessionOutcome(parent: HTMLElement, o: SessionEntryOutcome): void {
+  const latest = o.history.length > 0 ? o.history[o.history.length - 1]! : null;
+  const box = el("div", undefined, "panel outcome");
+  box.dataset.outcomeId = o.outcome_id ?? "";
+  box.dataset.entryId = o.entry_id;
+  box.dataset.outcome = o.outcome;
+  box.dataset.source = o.source;
+  box.dataset.evidenceClass = o.evidence_class ?? "";
+  box.dataset.invocationReceiptId = latest?.invocation_receipt_id ?? "";
+  box.appendChild(el("h4", `Outcome — ${o.outcome}: ${label(OUTCOME_LABEL, o.outcome)}`));
+  box.appendChild(el("p", `reason (${o.reason_code}): ${o.reason}`));
+  box.appendChild(
+    el("p", `source: ${o.source} · evidence: ${o.evidence_class ?? "—"} · skill: ${o.skill_name}`, "muted"),
+  );
+  box.appendChild(el("p", `revision: ${o.draft_revision_id} · entry: ${o.entry_id}`, "muted"));
+  box.appendChild(el("p", `observed at: ${new Date(o.observed_at_ms).toISOString()}`, "muted"));
+  for (const row of o.history) {
+    const line = el("p", undefined, "muted");
+    line.className = "muted outcome-delivery";
+    line.dataset.outcomeId = row.outcome_id;
+    line.dataset.invocationReceiptId = row.invocation_receipt_id ?? "";
+    line.textContent =
+      `delivery ${row.outcome_id}: ${row.outcome} (${row.reason_code}) · source ${row.source} · ` +
+      `invocation receipt: ${row.invocation_receipt_id ?? "—"} · at ${new Date(row.observed_at_ms).toISOString()}`;
+    box.appendChild(line);
+  }
+  parent.appendChild(box);
+}
+
+interface SessionView {
+  contract: string;
+  session: {
+    session_id: string;
+    agent_id: string;
+    runtime_kind: string;
+    runtime_version: string | null;
+    opened_by_agent_id: string;
+    opened_by_source: string;
+    opened_at_ms: number;
+  };
+  entries: SessionEntryView[];
+  outcomes: SessionEntryOutcome[];
+}
+
+function renderSessionView(view: SessionView): void {
+  const box = byId("session");
+  clear(box);
+  box.hidden = false;
+  box.dataset.sessionId = view.session.session_id;
+  box.dataset.runtimeKind = view.session.runtime_kind;
+  box.dataset.entryCount = String(view.entries.length);
+  box.dataset.outcomeCount = String(view.outcomes.length);
+
+  box.appendChild(el("h2", `Session ${view.session.session_id}`));
+  box.appendChild(
+    el(
+      "p",
+      `runtime: ${view.session.runtime_kind} ${view.session.runtime_version ?? "—"} · agent: ${view.session.agent_id}`,
+      "muted",
+    ),
+  );
+  box.appendChild(
+    el(
+      "p",
+      `opened by ${view.session.opened_by_agent_id} (${view.session.opened_by_source}) at ` +
+        `${new Date(view.session.opened_at_ms).toISOString()}`,
+      "muted",
+    ),
+  );
+
+  for (const entry of view.entries) {
+    const panel = el("div", undefined, "panel session-entry");
+    panel.dataset.entryId = entry.entry_id;
+    panel.dataset.revisionId = entry.draft_revision_id;
+    panel.dataset.stage = entry.stage;
+    panel.dataset.reasonCode = entry.reason_code;
+    panel.appendChild(el("h3", `${entry.skill_name} · revision ${entry.revision}`));
+    panel.appendChild(el("p", `revision ${entry.draft_revision_id} · ${entry.content_digest}`, "muted"));
+    panel.appendChild(el("p", `stage now: ${entry.stage} (${entry.reason_code})`));
+
+    const chain = el("div");
+    chain.className = "stage-chain";
+    chain.dataset.count = String(entry.chain.length);
+    chain.dataset.stages = entry.chain.map((s) => s.stage).join(",");
+    for (const step of entry.chain) {
+      const row = el("div", undefined, "stage");
+      row.dataset.stage = step.stage;
+      row.dataset.source = step.source;
+      row.dataset.receiptId = step.receipt_id ?? "";
+      row.dataset.runtimeSessionRef = step.runtime_session_ref ?? "";
+      row.dataset.atMs = String(step.at_ms);
+      row.appendChild(
+        el(
+          "p",
+          `${step.stage} · source: ${step.source} · receipt: ${step.receipt_id ?? "—"} · ` +
+            `runtime ref: ${step.runtime_session_ref ?? "—"} · invocation: ${step.invocation_ref ?? "—"} · ` +
+            `at ${new Date(step.at_ms).toISOString()}`,
+        ),
+      );
+      if (step.receipt_digest) row.appendChild(el("p", `receipt digest: ${step.receipt_digest}`, "muted"));
+      chain.appendChild(row);
+    }
+    panel.appendChild(chain);
+    box.appendChild(panel);
+  }
+
+  const outcomes = el("div");
+  outcomes.id = "session-outcomes";
+  outcomes.dataset.count = String(view.outcomes.length);
+  for (const outcome of view.outcomes) renderSessionOutcome(outcomes, outcome);
+  box.appendChild(outcomes);
+}
+
+async function openSessionView(sessionId: string): Promise<void> {
+  const view = await api<SessionView>("GET", `/v1/console/sessions/${encodeURIComponent(sessionId)}`);
+  renderSessionView(view);
+}
+
 // ------------------------------------------------------------------ the boot
 
 async function boot(): Promise<void> {
@@ -1749,6 +1936,9 @@ async function boot(): Promise<void> {
   });
   byId("refresh-capabilities").addEventListener("click", () => guard(() => loadCapabilities()));
   byId("refresh-outcomes").addEventListener("click", () => guard(() => refreshOutcomes()));
+  byId("open-session").addEventListener("click", () =>
+    guard(() => openSessionView(byId<HTMLInputElement>("session-id").value.trim())),
+  );
   await loadInbox();
   await loadCapabilities();
   if (openDraftId) await openDraft(openDraftId);
