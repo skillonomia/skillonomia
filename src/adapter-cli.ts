@@ -1,6 +1,6 @@
 // V1 P4 — THE ADAPTER AS A COMMAND.
 //
-// `skillonomia adapter open | invoke | cleanup`. This is the executable half of
+// `skillonomia adapter open | invoke | close | cleanup`. This is the executable half of
 // `P4-FR-07` and `INV-09`: the owner assigns a revision in the Console and does
 // nothing else. No manifest is written, no archive is packed, no signature is
 // made, and no runtime config is edited by hand — this command asks the registry
@@ -173,6 +173,13 @@ export interface InvokeResult {
   observed_status: string;
   exit_code: number;
   transcript_path: string;
+  /** V1 P5 — the OUTCOME of the invocation this run just made, filed from what
+   *  the runtime itself produced. `null` when the registry refused it, which is
+   *  reported rather than retried into a success. */
+  outcome: string | null;
+  outcome_id: string | null;
+  outcome_evidence_class: string | null;
+  outcome_reason_code: string | null;
 }
 
 /** What each runtime is asked, and how its own session id is found in what it
@@ -293,6 +300,42 @@ export async function adapterInvoke(opts: {
     transcript_excerpt: launch.finalText(stdout).slice(0, 3000),
   });
 
+  // V1 P5 — THE OUTCOME OF WHAT THE RUNTIME WAS ASKED TO DO.
+  //
+  // The task in `prompt` is objective: report the canonical receipt line of the
+  // skill it was given. The runtime either produced the line for the revision
+  // this session froze, or it did not, and the adapter can tell WITHOUT asking
+  // the runtime to grade itself. That is why the outcome is filed from the same
+  // output the receipt was lifted from, with `source: adapter`, rather than from
+  // a "did it work?" the runtime would answer about itself.
+  //
+  // A run that echoed nothing never reaches here: it threw above, no receipt was
+  // filed, and the entry stays `unknown` — which is the honest answer and is
+  // what `P5-FR-04`'s closure then turns into `nothing_reported`.
+  const worked = run.status === 0;
+  let outcome: any = null;
+  try {
+    outcome = await api(opts.client, "POST", `/v1/sessions/${opts.sessionId}/outcomes`, {
+      outcome: worked ? "worked" : "failed",
+      // the reporter's own identifier for THIS outcome: one invocation of one
+      // skill in one runtime session has one, so a redelivery is idempotent
+      outcome_ref: `${runtimeSessionRef}#${opts.skillName}#outcome`,
+      invocation_ref: `${runtimeSessionRef}#${opts.skillName}`,
+      runtime_session_ref: runtimeSessionRef,
+      revision_id: echoed.revision_id,
+      content_digest: echoed.content_digest,
+      reason_code: worked ? "MARKER_REPORTED_FOR_FROZEN_DIGEST" : "RUNTIME_EXITED_NONZERO",
+      reason: worked
+        ? "the runtime reported the canonical receipt line of the revision this session froze, which is the task the skill defines"
+        : `the runtime exited ${run.status ?? -1} after reporting the receipt line`,
+      transcript_excerpt: launch.finalText(stdout).slice(0, 3000),
+    });
+  } catch (e) {
+    // A refused outcome is REPORTED, not retried into a success: the registry
+    // refusing it is a fact about the run.
+    outcome = { outcome: null, outcome_id: null, evidence_class: null, reason_code: (e as Error).message.slice(0, 200) };
+  }
+
   return {
     session_id: opts.sessionId,
     skill_name: opts.skillName,
@@ -306,7 +349,25 @@ export async function adapterInvoke(opts: {
     observed_status: filed.observed?.status ?? "unknown",
     exit_code: run.status ?? -1,
     transcript_path: transcriptPath,
+    outcome: outcome?.outcome ?? null,
+    outcome_id: outcome?.outcome_id ?? null,
+    outcome_evidence_class: outcome?.evidence_class ?? null,
+    outcome_reason_code: outcome?.reason_code ?? null,
   };
+}
+
+/**
+ * V1 P5 — `skillonomia adapter close`.
+ *
+ * A runtime session that ended. Every entry with no outcome becomes
+ * `nothing_reported` (`P5-FR-04`), and that is a REGISTRY act on the adapter's
+ * report that the session is over — the adapter does not decide what each entry
+ * did, it reports that nothing more will be said about it.
+ */
+export async function adapterClose(opts: { client: Client; sessionId: string; reason?: string }): Promise<any> {
+  return api(opts.client, "POST", `/v1/sessions/${opts.sessionId}/close`, {
+    reason: opts.reason ?? "the adapter reported that this runtime session ended",
+  });
 }
 
 // ------------------------------------------------------------------ dispatch
@@ -361,6 +422,15 @@ export async function runAdapter(
         workdir: values["--workdir"] ?? process.cwd(),
         transcriptDir: need(values, "--transcripts"),
         binary: values["--binary"],
+      });
+      io.out(JSON.stringify(result));
+      return 0;
+    }
+    case "close": {
+      const result = await adapterClose({
+        client: clientFrom(values),
+        sessionId: need(values, "--session"),
+        reason: values["--reason"],
       });
       io.out(JSON.stringify(result));
       return 0;

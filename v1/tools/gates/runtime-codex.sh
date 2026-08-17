@@ -3,6 +3,12 @@
 #
 #   SKLN_RUNTIME_WORK=/some/writable/dir v1/tools/gates/runtime-codex.sh
 #
+# EXTENDED BY P5, which added the OUTCOME path to the same real run: the
+# invocation's outcome is filed from the runtime's own output, a redelivery of
+# it replays, a contradicting one is refused and recorded, and a second session
+# closed with nothing said yields `nothing_reported` (`P5-FR-02`, `P5-FR-04`,
+# `P5-FR-06`, `P5-FR-07`, `P5-FR-15`).
+#
 # IMPLEMENTED BY P4. It drives the SHIPPED product end to end against the REAL
 # `codex` binary: an owner captures, approves, assigns and activates through the
 # P1/P2/P3 surfaces; `skillonomia adapter open` freezes the session loadout and

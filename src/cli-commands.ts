@@ -71,7 +71,10 @@ export const HELP: string = [
   "  adapter invoke --session ID --skill NAME --runtime KIND --home DIR",
   "               --workdir DIR --transcripts DIR [--base-url URL] [--key KEY]",
   "        run the runtime against that home and file the `invoked` receipt the",
-  "        runtime's own output proves.",
+  "        runtime's own output proves, then the OUTCOME of that invocation.",
+  "  adapter close --session ID [--reason TEXT] [--base-url URL] [--key KEY]",
+  "        report that the runtime session ended. Every entry with no outcome",
+  "        becomes `nothing_reported`, which is not a success.",
   "  adapter cleanup --session ID --base DIR",
   "        remove the session's derived artifacts. Destroys no registry data.",
   "        The key is an EVIDENCE PRINCIPAL's, never the owner's: the registry",
@@ -331,7 +334,7 @@ const ADAPTER_VALUE_OPTS = [
 
 async function cmdAdapter(argv: readonly string[], io: CliIo): Promise<number> {
   const sub = argv[0];
-  if (sub === undefined) throw new UsageError("adapter needs a subcommand: open, invoke or cleanup");
+  if (sub === undefined) throw new UsageError("adapter needs a subcommand: open, invoke, close or cleanup");
   const parsed = parseArgs(argv.slice(1), ADAPTER_VALUE_OPTS, []);
   if (parsed.positional.length > 0) {
     throw new UsageError(`adapter ${sub} takes no positional arguments (got ${parsed.positional[0]})`);

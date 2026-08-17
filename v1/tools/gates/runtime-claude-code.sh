@@ -3,6 +3,12 @@
 #
 #   SKLN_RUNTIME_WORK=/some/writable/dir v1/tools/gates/runtime-claude-code.sh
 #
+# EXTENDED BY P5, which added the OUTCOME path to the same real run: the
+# invocation's outcome is filed from the runtime's own output, a redelivery of
+# it replays, a contradicting one is refused and recorded, and a second session
+# closed with nothing said yields `nothing_reported` (`P5-FR-02`, `P5-FR-04`,
+# `P5-FR-06`, `P5-FR-07`, `P5-FR-15`).
+#
 # IMPLEMENTED BY P4. It is a SEPARATE gate from the Codex one because the two
 # native mechanisms differ and a single harness with a runtime flag invites one
 # implementation to be proved and the other assumed — and it runs the SAME

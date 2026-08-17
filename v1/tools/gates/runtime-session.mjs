@@ -355,6 +355,64 @@ ok(run.echoed_revision_id === revisionId, "the runtime echoed the exact revision
 ok(run.echoed_content_digest === entry.content_digest, "the runtime echoed the exact content digest the loadout froze (P4-FR-19)");
 ok(run.observed_status === "invoked", "the observed state moved to `invoked` on that receipt");
 
+// -------------------------------------------- 4b. V1 P5: the OUTCOME of it
+//
+// `P5-FR-15`: the outcome path, end to end, on a REAL runtime. The outcome was
+// filed by `skillonomia adapter invoke` from the same output the receipt was
+// lifted from — the runtime either reported the canonical line of the revision
+// this session froze or it did not, which is a fact the adapter can establish
+// without asking the runtime to grade itself.
+
+console.log(`outcome:             ${run.outcome} (${run.outcome_reason_code})`);
+ok(run.outcome === "worked", "the invocation produced a `worked` outcome, filed from the runtime's own output (P5-FR-15)", String(run.outcome));
+ok(run.outcome_evidence_class === "runtime_receipt", "and it rests on runtime evidence, not on an owner's word (P5-FR-02)");
+ok(typeof run.outcome_id === "string" && run.outcome_id.length === 26, "the outcome is a row with an id");
+
+const outcomeRows = await console_("GET", `/v1/console/sessions/${session.session_id}`);
+const filedOutcome = outcomeRows.json.outcomes[0];
+ok(filedOutcome.outcome === "worked", "the owner READS the outcome beside the stage (P5-FR-14)", filedOutcome.outcome);
+ok(
+  filedOutcome.history[0].invocation_receipt_id !== null,
+  "the outcome names the INVOCATION receipt it is the outcome of (P5-FR-02)",
+);
+
+// `P5-FR-06`: redelivering the same outcome is idempotent — one row, replayed.
+const replay = await api(adapterKey, "POST", `/v1/sessions/${session.session_id}/outcomes`, {
+  outcome: "worked",
+  outcome_ref: `${run.runtime_session_ref}#${entry.skill_name}#outcome`,
+  invocation_ref: run.invocation_ref,
+  runtime_session_ref: run.runtime_session_ref,
+  revision_id: revisionId,
+  content_digest: entry.content_digest,
+  reason_code: "MARKER_REPORTED_FOR_FROZEN_DIGEST",
+  reason:
+    "the runtime reported the canonical receipt line of the revision this session froze, which is the task the skill defines",
+  transcript_excerpt: null,
+});
+ok(replay.status === 201, "a redelivered outcome is accepted", replay.text.slice(0, 200));
+ok(replay.json.replayed === true, "…and it REPLAYS rather than writing a second row (P5-FR-06)");
+ok(replay.json.outcome_id === run.outcome_id, "the same row comes back");
+
+// `P5-FR-07`: a contradicting delivery under the same key does NOT overwrite.
+const contradicting = await api(adapterKey, "POST", `/v1/sessions/${session.session_id}/outcomes`, {
+  outcome: "failed",
+  outcome_ref: `${run.runtime_session_ref}#${entry.skill_name}#outcome`,
+  invocation_ref: run.invocation_ref,
+  runtime_session_ref: run.runtime_session_ref,
+  revision_id: revisionId,
+  content_digest: entry.content_digest,
+  reason_code: "SECOND_THOUGHTS",
+  reason: "a contradicting redelivery of one outcome",
+  transcript_excerpt: null,
+});
+ok(contradicting.status === 409, "a contradicting redelivery is refused (P5-FR-07)", `got ${contradicting.status}`);
+const conflictState = JSON.parse(JSON.parse(contradicting.text).error.current_state);
+ok(conflictState.existing_outcome === "worked", "the FIRST outcome stands");
+ok(conflictState.claimed_outcome === "failed", "and the contradiction is recorded with what it claimed");
+const afterConflict = await console_("GET", `/v1/console/sessions/${session.session_id}`);
+ok(afterConflict.json.outcomes[0].outcome === "worked", "the stored outcome was not overwritten");
+ok(afterConflict.json.outcomes[0].conflicts.length === 1, "and the owner sees the conflict as its own evidence");
+
 // ------------------------------------------------------- 5. the stage chain
 
 const view = await console_("GET", `/v1/console/sessions/${session.session_id}`);
@@ -411,6 +469,18 @@ const forged = await api(adapterKey, "POST", `/v1/sessions/${second.json.session
   content_digest: `sha256:${"0".repeat(64)}`,
 });
 ok(forged.status === 412, "a receipt with the wrong digest is refused (P4-FR-19)", `got ${forged.status}`);
+
+// `P5-FR-04`: THE SECOND SESSION IS CLOSED WITH NOTHING SAID. It was
+// materialized and never invoked, so the honest record of it is
+// `nothing_reported` — never a success, and never left blank.
+const closed = cli(["adapter", "close", "--session", second.json.session_id, "--base-url", BASE, "--key", adapterKey]);
+ok((closed.status ?? 1) === 0, "`skillonomia adapter close` reported the session ended", closed.stderr);
+const closedView = await console_("GET", `/v1/console/sessions/${second.json.session_id}`);
+const nothing = closedView.json.outcomes[0];
+ok(nothing.outcome === "nothing_reported", "a session closed with nothing said yields nothing_reported (P5-FR-04)", nothing.outcome);
+ok(nothing.evidence_class === "session_closed", "and it is the CLOSURE that wrote it, not a reporter");
+ok(nothing.source === "backend", "the source is the registry's own observation of the closure");
+ok(closedView.json.entries[0].stage === "unknown", "the STAGE is still unknown: an outcome is not a stage");
 
 // ------------------------------------- 7. no raw secret in artifact or log
 
@@ -469,7 +539,10 @@ function runtimeVersion() {
 
 console.log("");
 if (failures === 0) {
-  console.log(`PASS  the ${RUNTIME} runtime gate: ${stages.join(" -> ")} for revision ${revisionId} digest ${entry.content_digest}`);
+  console.log(
+    `PASS  the ${RUNTIME} runtime gate: ${stages.join(" -> ")} -> outcome ${run.outcome} ` +
+      `for revision ${revisionId} digest ${entry.content_digest}`,
+  );
   process.exit(EXIT_PASS);
 }
 console.log(`FAIL  ${failures} assertion(s) failed in the ${RUNTIME} runtime gate`);

@@ -143,10 +143,13 @@ not themselves normative.
   - `verify <package> [<registry-db>] [--db PATH] [--json]` — the §4.4
     algorithm over a package directory, `.tar` or `.tar.gz`.
   - `verify-log [<registry-db>] [--db PATH] [--json]` — the §4.4 chain walk.
-  - `adapter open|invoke|cleanup` — the P4 native runtime adapter: open a
+  - `adapter open|invoke|close|cleanup` — the P4 native runtime adapter and the
+    P5 outcome path: open a
     session, freeze and materialize its loadout into a session-scoped runtime
     home, run the runtime against that home and file the receipts its own output
-    proves, and remove the derived artifacts afterwards. It is a PRODUCT command
+    proves together with the OUTCOME of that invocation, report the session
+    ended so that an entry nobody reported on becomes `nothing_reported`, and
+    remove the derived artifacts afterwards. It is a PRODUCT command
     and not a harness because `INV-09` is a claim about the product: the owner
     writes no manifest, no package, no signature and no runtime config.
   - `demo [--base-url URL] [--data DIR] [--json]` — the §9.1 quickstart end to
