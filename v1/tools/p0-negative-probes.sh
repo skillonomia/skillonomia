@@ -63,11 +63,17 @@ patch() {
 }
 
 # fresh_copy <slug>  — an untouched copy of the evidence directory; echoes its path.
+# The SESSION LEDGER travels with the copy. `p0-evidence-check.ts` reads
+# `<phase dir>/../SESSIONS.md`, so a copy without it would be refused for a
+# missing ledger rather than for the damage a probe planted — every probe below
+# would then pass for the wrong reason, which is the failure mode this whole
+# harness exists to prevent.
 fresh_copy() {
   local dest="$WORK/$1"
   rm -rf "$dest"
   mkdir -p "$dest"
   cp -r "$EV" "$dest/"
+  [ -f "$EV/../SESSIONS.md" ] && cp "$EV/../SESSIONS.md" "$dest/SESSIONS.md"
   echo "$dest/$PHASE_DIR_NAME"
 }
 
@@ -194,6 +200,59 @@ if [ -n "$ARCHIVED" ]; then
   probe archived-ledger-undisclosed 1 "archived ledger with no" -- "${EVCHECK[@]}" "$D"
 else
   echo "  --  archived-ledger probes                 SKIPPED (no runs-*.jsonl in $EV)"
+fi
+
+# --- 09b the three records of one session, made to disagree ------------------
+#
+# P3 REVIEW-1 finding `P3-R1-003`: the session ledger, the per-session records
+# and the run ledger described the same two build sessions differently, and this
+# checker passed because nothing compared them. Each probe below plants exactly
+# one of the three shapes the finding names.
+#
+# The FIRST role of the phase's runs is computed rather than assumed, so these
+# work on any phase directory.
+ROLE="$(node -e '
+  const fs = require("fs");
+  const first = JSON.parse(fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)[0]);
+  process.stdout.write(first.role);
+' "$EV/runs.jsonl")"
+RECORD="$(cd "$EV" && grep -l "$ROLE" *session-record*.md 2>/dev/null | head -1)"
+
+# (i) a PENDING identity in the authoritative ledger
+D="$(fresh_copy ledger-pending-session)"
+node -e '
+  const fs = require("fs");
+  const [file, role] = process.argv.slice(1);
+  const lines = fs.readFileSync(file, "utf8").split("\n");
+  const i = lines.findIndex((l) => l.startsWith("|") && l.split("|")[2]?.trim() === role);
+  if (i < 0) { console.error("no ledger row for " + role); process.exit(3); }
+  const c = lines[i].split("|");
+  c[4] = " (pending) ";
+  lines[i] = c.join("|");
+  fs.writeFileSync(file, lines.join("\n"));
+' "$D/../SESSIONS.md" "$ROLE"
+probe ledger-pending-session-id 1 "a pending value in the authoritative ledger" -- "${EVCHECK[@]}" "$D"
+
+# (ii) a session record under ANOTHER role than the one the runs bind to it
+if [ -n "$RECORD" ]; then
+  D="$(fresh_copy record-role-mismatch)"
+  OTHER="$([ "$ROLE" = "BUILD-1" ] && echo "FIX-9" || echo "BUILD-9")"
+  sed -i "s|$ROLE|$OTHER|g" "$D/$RECORD"
+  probe record-role-mismatch 1 "has no row for" -- "${EVCHECK[@]}" "$D"
+
+  # (iii) THE FINDING ITSELF: a record naming a stale output SHA
+  D="$(fresh_copy record-stale-output-sha)"
+  node -e '
+    const fs = require("fs");
+    const file = process.argv[1];
+    const text = fs.readFileSync(file, "utf8");
+    const out = text.replace(/(\| output SHA \| `?)[0-9a-f]{40}/, "$13b5acd417a15cd9f5b1a9b03faa6e7a90b0498ec");
+    if (out === text) { console.error("no output SHA row to make stale in " + file); process.exit(3); }
+    fs.writeFileSync(file, out);
+  ' "$D/$RECORD"
+  probe record-stale-output-sha 1 "is not the output SHA runs.jsonl records" -- "${EVCHECK[@]}" "$D"
+else
+  echo "  --  session-record probes                  SKIPPED (no *session-record*.md naming $ROLE in $EV)"
 fi
 
 # --- 10 the gate table: present, not merely well-formed -----------------------

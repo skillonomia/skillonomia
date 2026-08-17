@@ -44,6 +44,20 @@
 //      record, and every record naming a file under logs/ names one that exists.
 //      Both directions, because either alone leaves a hole: checking only that
 //      records resolve permits an unregistered log, which is exactly `P0-R1-003`.
+//   5b. THE THREE RECORDS OF ONE SESSION AGREE. P3 REVIEW-1 finding `P3-R1-003`:
+//      the same two build sessions were described three times and the three
+//      disagreed — the session ledger left the second one `(pending)` under the
+//      first one's role, `evidence/P3/03-session-record.md` named an INTERMEDIATE
+//      commit as BUILD-1's output, and `runs.jsonl` named a third value. Every
+//      artifact was individually well-formed, so this checker passed, exactly the
+//      way each individual checker passed the class of defect `P2-R1-005` closed.
+//      So the three are now compared against each other: the phase's rows in the
+//      session ledger evidence/SESSIONS.md, each `*session-record*.md` in the
+//      phase directory, and the unique role tuple each role holds in runs.jsonl
+//      must state the same task id, provider session id, phase base, input SHA
+//      and output SHA. A pending or placeholder value, a role bound to another
+//      role's identifiers, and an output SHA that is not the one the runs
+//      recorded are each a refusal.
 //   5. NO `.log` PARKED OUTSIDE logs/, AND NO LEDGER PARKED BESIDE runs.jsonl. A
 //      `.log` elsewhere under the phase directory must sit in a directory carrying a
 //      README.md that says what it is. Any other `runs*.jsonl` is an ARCHIVED LEDGER:
@@ -129,6 +143,8 @@ function resolveArtifact(a: string): string {
 
 const problems: string[] = [];
 const claimedLogs = new Map<string, number[]>(); // basename -> record line numbers
+/** role -> what the phase's own ledger says that role's session was. Rule 5b. */
+const runTuples = new Map<string, { task_id: string; session_id: string; phase_base_sha: string; input_sha: string; output_sha: string; where: string }>();
 /** role -> the (task_id, session_id) pairs seen for it, and where. */
 const identities = new Map<string, Map<string, string[]>>();
 let records = 0;
@@ -240,6 +256,28 @@ readFileSync(RUNS, "utf8").split("\n").forEach((line, i) => {
   }
   checkShaShapes(r, where);
   checkIdentity(r, where);
+  if (typeof r.role === "string" && r.role) {
+    const tuple = {
+      task_id: String(r.task_id ?? ""),
+      session_id: String(r.session_id ?? ""),
+      phase_base_sha: String(r.phase_base_sha ?? ""),
+      input_sha: String(r.input_sha ?? ""),
+      output_sha: String(r.output_sha ?? ""),
+      where,
+    };
+    const seen = runTuples.get(r.role);
+    if (!seen) runTuples.set(r.role, tuple);
+    else {
+      for (const f of ["phase_base_sha", "input_sha", "output_sha"] as const) {
+        if (seen[f] !== tuple[f]) {
+          problems.push(
+            `${where}: role "${r.role}" records ${f}="${tuple[f]}" while ${seen.where} records "${seen[f]}". ` +
+              "One session has one input and one output; two values for either is a ledger describing two different runs under one role.",
+          );
+        }
+      }
+    }
+  }
   if (typeof r.exit_code !== "number") problems.push(`${where}: "exit_code" must be a number, not ${typeof r.exit_code}`);
   const v = r.gate_verdict;
   if (typeof v === "string" && !VERDICTS.has(v)) problems.push(`${where}: gate_verdict "${v}" is outside {pass, fail, skipped}`);
@@ -335,16 +373,197 @@ function stray(dir: string): void {
 }
 stray(DIR);
 
+
+// --- 5b. the session ledger, the session records and the runs agree ----------
+//
+// The close of P3 REVIEW-1 finding `P3-R1-003`. Three files describe the same
+// session; until now nothing compared them, so the package could carry a
+// `(pending)` identity, a role label the runs contradicted and an output SHA
+// naming an intermediate commit, and still be certified.
+const LEDGER = process.env.SKLN_SESSION_LEDGER
+  ? resolve(process.env.SKLN_SESSION_LEDGER)
+  : join(DIR, "..", "SESSIONS.md");
+
+/** `(pending)`, `TBD`, `—`: a value that was going to be filled in. */
+const PLACEHOLDER = /^\(?\s*(pending|tbd|todo|to be recorded|unknown|n\/?a|-{1,2}|—|\?)\s*\)?$/i;
+/** The provider did not expose it. Permitted for a REVIEW row and nowhere else. */
+const NOT_RECORDED = "(not recorded)";
+
+interface LedgerRow {
+  phase: string; role: string; task_id: string; session_id: string;
+  provider: string; model: string; reasoning: string;
+  phase_base_sha: string; input_sha: string; output_sha: string;
+  where: string;
+}
+
+const cell = (v: string): string => v.replace(/`/g, "").trim();
+const sha40 = (v: string): string => (/([0-9a-f]{40})/.exec(v)?.[1] ?? "");
+const kind = (role: string): string => role.split("-")[0] ?? "";
+
+const ledgerRows: LedgerRow[] = [];
+if (!existsSync(LEDGER)) {
+  problems.push(
+    `session ledger: ${LEDGER} is missing. v1/P0-EVIDENCE-FORMAT.md section 2 makes it the authoritative record of ` +
+      "provider session identities; a phase package whose ledger is absent cannot be cross-checked against anything.",
+  );
+} else {
+  readFileSync(LEDGER, "utf8").split("\n").forEach((line, i) => {
+    if (!line.trim().startsWith("|")) return;
+    const c = line.split("|").slice(1, -1).map(cell);
+    if (c.length < 10) return;
+    if (!/^P\d$/.test(c[0]!)) return; // the header and the separator
+    if (c[0] !== PHASE) return;
+    ledgerRows.push({
+      phase: c[0]!, role: c[1]!, task_id: c[2]!, session_id: c[3]!, provider: c[4]!,
+      model: c[5]!, reasoning: c[6]!, phase_base_sha: c[7]!, input_sha: c[8]!, output_sha: c[9]!,
+      where: `SESSIONS.md line ${i + 1}`,
+    });
+  });
+  if (ledgerRows.length === 0) {
+    problems.push(`session ledger: ${LEDGER} carries no row for phase ${PHASE}. A phase with runs and no ledger row has no recorded session.`);
+  }
+}
+
+for (const row of ledgerRows) {
+  const isReview = kind(row.role) === "REVIEW";
+  if (!ROLE_FORM.test(row.role)) {
+    problems.push(`${row.where}: role "${row.role}" is not one of BUILD-<n>, FIX-<n>, REVIEW-<n>.`);
+    continue;
+  }
+  const want = ROLE_CONTRACT[kind(row.role)]!;
+  for (const [field, got] of [["provider", row.provider], ["model", row.model], ["reasoning_effort", row.reasoning]] as const) {
+    if (got !== want[field as "provider" | "model" | "reasoning_effort"]) {
+      problems.push(`${row.where}: role contract: role "${row.role}" requires ${field}="${want[field as "provider"]}", the ledger says "${got}".`);
+    }
+  }
+  for (const [field, got] of [["task_id", row.task_id], ["session_id", row.session_id], ["phase base SHA", row.phase_base_sha], ["input SHA", row.input_sha], ["output SHA", row.output_sha]] as const) {
+    if (PLACEHOLDER.test(got)) {
+      problems.push(
+        `${row.where}: ${row.role}'s ${field} is "${got}" — a pending value in the authoritative ledger. ` +
+          "Contract sections 7.3 and 9 require the real identifiers and the real SHAs of every session to be preserved, and a placeholder is the value that never gets corrected.",
+      );
+    }
+  }
+  if (!isReview) {
+    if (row.session_id === NOT_RECORDED || !UUID.test(row.session_id)) {
+      problems.push(`${row.where}: ${row.role}'s session_id is "${row.session_id}" — a BUILD or FIX session of this contract ran under a provider session whose id is a canonical UUID.`);
+    }
+    if (!TASK_ID.test(row.task_id)) problems.push(`${row.where}: ${row.role}'s task_id "${row.task_id}" is not a Ductor task id.`);
+    for (const [field, got] of [["phase base SHA", row.phase_base_sha], ["input SHA", row.input_sha], ["output SHA", row.output_sha]] as const) {
+      if (!sha40(got)) problems.push(`${row.where}: ${row.role}'s ${field} is "${got}" — an exact 40-hex SHA is required of a BUILD or FIX row.`);
+    }
+  }
+}
+
+const ledgerOf = (role: string): LedgerRow | undefined => ledgerRows.find((r) => r.role === role);
+
+// the runs and the ledger
+for (const [role, tuple] of runTuples) {
+  const row = ledgerOf(role);
+  if (!row) {
+    problems.push(
+      `session ledger: role "${role}" ran ${tuple.where === "" ? "" : ""}in this phase and has no row in ${basename(LEDGER)} for ${PHASE}. ` +
+        "The ledger is the authoritative list of this contract's sessions; a session that produced records and appears in no row is unrecorded.",
+    );
+    continue;
+  }
+  for (const [field, fromRun, fromLedger] of [
+    ["task_id", tuple.task_id, row.task_id],
+    ["session_id", tuple.session_id, row.session_id],
+    ["phase base SHA", tuple.phase_base_sha, sha40(row.phase_base_sha)],
+    ["input SHA", tuple.input_sha, sha40(row.input_sha)],
+    ["output SHA", tuple.output_sha, sha40(row.output_sha)],
+  ] as const) {
+    if (fromLedger !== fromRun) {
+      problems.push(
+        `session ledger: role "${role}": runs.jsonl records ${field}="${fromRun}" (${tuple.where}) and ${row.where} says "${fromLedger}". ` +
+          "The two must be the same fact; a package that disagrees with itself cannot support its own audit claim.",
+      );
+    }
+  }
+}
+
+// the session records
+const recordFiles = readdirSync(DIR).filter((f) => /session-record.*\.md$/i.test(f)).sort();
+for (const file of recordFiles) {
+  const text = readFileSync(join(DIR, file), "utf8");
+  const fields = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    if (!line.trim().startsWith("|")) continue;
+    const c = line.split("|").slice(1, -1).map(cell);
+    if (c.length !== 2) continue;
+    fields.set(c[0]!.toLowerCase(), c[1]!);
+  }
+  const declared = fields.get("phase / role") ?? "";
+  const roleMatch = /(BUILD|FIX|REVIEW)-\d+/.exec(declared) ?? /(BUILD|FIX|REVIEW)-\d+/.exec(text.split("\n")[0] ?? "");
+  if (!roleMatch) {
+    problems.push(`${file}: this session record names no role. A record of a session that does not say which session it is cannot be checked against anything.`);
+    continue;
+  }
+  const role = roleMatch[0];
+  const row = ledgerOf(role);
+  if (!row) {
+    problems.push(`${file}: role "${role}" has no row for ${PHASE} in ${basename(LEDGER)}.`);
+    continue;
+  }
+  const run = runTuples.get(role);
+  const compare: Array<[string, string | undefined, string]> = [
+    ["task_id", fields.get("task_id"), row.task_id],
+    ["session_id", fields.get("session_id"), row.session_id],
+    ["phase base SHA", fields.get("phase base sha"), sha40(row.phase_base_sha)],
+    ["input SHA", fields.get("input sha"), sha40(row.input_sha)],
+    ["output SHA", fields.get("output sha"), sha40(row.output_sha)],
+  ];
+  for (const [field, raw, expected] of compare) {
+    if (raw === undefined) continue; // a record that does not restate a value cannot contradict it
+    const got = cell(raw);
+    if (PLACEHOLDER.test(got)) {
+      problems.push(`${file}: ${role}'s ${field} is "${got}" — a pending value in a session record.`);
+      continue;
+    }
+    const deferred = /SESSIONS\.md|see the marker/i.test(got);
+    if (deferred) {
+      if (field === "output SHA" || field === "input SHA" || field === "phase base SHA") {
+        problems.push(
+          `${file}: ${role}'s ${field} defers instead of naming a SHA ("${got}"). ` +
+            "A record that will not state the commit it produced is the state finding `P3-R1-003` found this package in.",
+        );
+      }
+      continue;
+    }
+    const wantSha = field.endsWith("SHA");
+    const value = wantSha ? sha40(got) : got;
+    if (wantSha && !value) {
+      problems.push(`${file}: ${role}'s ${field} is "${got}" — an exact 40-hex SHA is required.`);
+      continue;
+    }
+    if (value !== expected) {
+      problems.push(
+        `${file}: ${role}'s ${field} is "${value}", while ${row.where} says "${expected}". ` +
+          "The session ledger is authoritative; a per-session record that names a different value is stale or belongs to another session.",
+      );
+    }
+    if (run && field === "output SHA" && value !== run.output_sha) {
+      problems.push(`${file}: ${role}'s output SHA "${value}" is not the output SHA runs.jsonl records for that role ("${run.output_sha}").`);
+    }
+  }
+}
+
 console.log(`phase directory: ${DIR}`);
 console.log(`run records:     ${records}`);
 console.log(`archived ledgers: ${archived.length}${archived.length ? ` (${archived.map((p) => relative(DIR, p)).join(", ")}), ${archivedRecords} record(s)` : ""}`);
 console.log(`files in logs/:  ${logFiles.length}`);
 console.log(`records naming a logs/ artifact: ${[...claimedLogs.values()].reduce((a, b) => a + b.length, 0)}`);
 console.log(`roles with a distinct (task_id, session_id): ${identities.size}`);
+console.log(`session ledger:  ${LEDGER}`);
+console.log(`ledger rows for ${PHASE}: ${ledgerRows.length}; session records cross-checked: ${recordFiles.length} (${recordFiles.join(", ") || "none"})`);
 
 if (problems.length) {
   console.error(`\nFAIL  ${problems.length} problem(s):`);
   for (const p of problems) console.error(`  - ${p}`);
   process.exit(1);
 }
-console.log("\nPASS  every run record is complete, every identifier is a real session under the model contract of section 7, and every execution artifact under logs/ has exactly one record");
+console.log(
+  "\nPASS  every run record is complete, every identifier is a real session under the model contract of section 7, " +
+    "every execution artifact under logs/ has exactly one record, and the session ledger, the session records and the run ledger state the same sessions",
+);

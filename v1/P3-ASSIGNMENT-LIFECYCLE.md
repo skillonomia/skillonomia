@@ -27,6 +27,17 @@ enforced in four places rather than asserted in one:
   (`POST /v1/assignments/{id}/observations`, Bearer), so a console session
   cannot reach it — `test/v1p3-assignment.test.ts` drives that route with a
   session and gets `401`;
+* and — the close of P3 REVIEW-1 finding `P3-R1-001` — that route does not take
+  the OWNER's key either. Reporting observed state requires a credential the
+  DEPLOYMENT registered as an evidence principal (`src/evidence-principal.ts`,
+  a file in the data directory beside the bootstrap hash, which no owner-reachable
+  surface writes); an owner or admin credential is `403` before the body is read,
+  and the `source` recorded against an observation is the kind that registration
+  gives. A body that names a `source` at all is `400`, because a field the server
+  overrides is a field the next reader believes. What this does NOT claim: that
+  whoever installs the deployment cannot also hold the adapter's key. No registry
+  can rule that out from inside; what is ruled out is any credential or session
+  that commands desired state writing observed state on any surface;
 * three owner commands in a row leave `assignment_observations` with zero rows,
   which is a counted assertion rather than a reading of the code.
 
@@ -72,7 +83,7 @@ named. That suite drives the real router against a real database.
 | `P3-FR-05` | `selectRevisionInTx`, `approvedRevisionsOf` | forward and back, then a count of revisions and approvals: nothing is deleted, and the journal holds all three events |
 | `P3-FR-06` | two tables, two writers, two routes | three owner commands leave the observation table empty, and an observation claiming `source: owner` is refused |
 | `P3-FR-07` | `AssignmentDetail.desired` / `.observed` | separate objects with separate `source` strings; neither is computed from the other |
-| `P3-FR-08` | `validateObservation`, `noObservation` | a report missing any of the four required fields is refused; the absence of any report is `unknown` carrying all four |
+| `P3-FR-08` | `validateObservation`, `noObservation` | a report missing any of the four required fields is refused; the absence of any report is `unknown` carrying all four — INCLUDING the time, which `noObservation` sets to the moment of the look. `observed_at_ms` is not nullable anywhere it is exposed (P3 REVIEW-1 finding `P3-R1-002`), and the browser gate asserts both the rendered timestamp and that the word `never` cannot come back |
 | `P3-FR-09` | `withIdempotencyInTx` | the replay returns the same assignment id, carries `Idempotency-Replayed`, and leaves one row |
 | `P3-FR-10` | `requireSamePayload`, `idempotency_request_digests` | the same key with another payload is `409` with `current_state` |
 | `P3-FR-11` | `requireVersion` | a stale `if_version` is `412` with the state to converge on |
