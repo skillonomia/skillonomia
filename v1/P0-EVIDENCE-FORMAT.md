@@ -248,7 +248,7 @@ A phase runs everything marked `✓` in its column.
 | browser E2E | `v1/tools/gates/browser-e2e.sh` | — | — | ✓ | ✓ | — | ✓ | ✓ |
 | actual Codex runtime session | `v1/tools/gates/runtime-codex.sh` | — | — | — | — | ✓ | ✓ | ✓ |
 | actual Claude Code runtime session | `v1/tools/gates/runtime-claude-code.sh` | — | — | — | — | ✓ | ✓ | ✓ |
-| upgrade from a `v0.1.6` copy | `v1/tools/gates/upgrade-from-v016.sh` | — | ✓ | ✓ | — | — | — | ✓ |
+| upgrade from a `v0.1.6` copy | `v1/tools/gates/upgrade-from-v016.sh` | — | ✓ | ✓ | — | ✓ | — | ✓ |
 | containerised quickstart | `ci/quickstart-docker.sh` | — | — | — | — | — | — | ✓ |
 | high-risk exercise | `node ci/high-risk-exercise.mjs` | — | — | — | — | — | — | ✓ |
 | dogfood ledger metrics | `v1/tools/gates/dogfood-metrics.sh` | — | — | — | — | — | — | ✓ |
@@ -312,7 +312,11 @@ and only with a concrete reason. One entry per gate that carries a `—` or a
   an interface there — it drives Chromium through Playwright against a real
   deployment (`v1/tools/e2e/console-e2e.mjs`). P4: P4 adds runtime adapters and touches no
   console surface, so there is nothing new to drive — but a P4 that does touch the
-  console owes this gate, and the same diff rule applies.
+  console owes this gate, and the same diff rule applies. The rule was applied rather
+  than assumed: P4's diff against `77f10b0537103e46d46b9c9b3a69f1b5d89813b6` names no
+  file under the console surface, so the cell stays `—`. P4's closing session ran the
+  gate anyway and recorded its exit code; an N/A cell is a statement that a phase does
+  not OWE a gate, never a licence to leave a runnable one unrun.
 * **actual Codex runtime session** — P0, P1, P2, P3: no adapter exists to load a
   skill into Codex before P4 builds one, so there is no runtime path to exercise.
   Contract section 9 is explicit that mocked adapter tests never substitute once P4
@@ -328,13 +332,17 @@ and only with a concrete reason. One entry per gate that carries a `—` or a
   the `v0.1.6` tag and changes no file under src/, migrations/ or schema/, so at P0
   the current schema and the `v0.1.6` schema are the same object and an upgrade has
   nothing to traverse; `v1/P0-BASELINE.md` records the `git diff` that shows it.
-  P3, P4, P5: these phases inherit the migration set P1 and P2 established, and the
-  upgrade path from `v0.1.6` is re-measured at P1 when the first schema change
+  P3, P5: these phases inherit the migration set the earlier phases established, and
+  the upgrade path from `v0.1.6` is re-measured at P1 when the first schema change
   lands and at P6 as final acceptance. A phase in that range whose diff adds a
   migration owes the gate — the same diff rule as the round trip. P2's diff adds
   `migrations/0014_owner_console_sessions_and_decisions.sql`, so P2 owed it and its
   cell is `✓` rather than the `—` P0 wrote there: the rule fired, exactly as
-  written, and the cell moved.
+  written, and the cell moved. It fired again at P4, whose diff against
+  `77f10b0537103e46d46b9c9b3a69f1b5d89813b6` adds
+  `migrations/0016_session_loadout_and_runtime_receipts.sql` and its reversal, so P4's
+  cell moved from `—` to `✓` too and the gate's exit code is in P4's gate summary. A
+  phase does not get to decide this: the diff decides it.
 * **containerised quickstart** — P0, P1, P2, P3, P4, P5: this exercises the packaged
   container against the published quickstart and is the final acceptance form of the
   owner path. Contract section 4.2 puts release and publish packaging out of V1, and
@@ -513,7 +521,69 @@ evidence/
     probes-fix2/                   FIX-2's reproducer transcripts for `P3-R2-001`, before and after
   P4/
     00-runtime-feasibility.txt     whether real Codex and Claude Code sessions can be driven in this container at all, answered first
+    01-feasibility-harness-run.txt the feasibility harness's own run: both runtimes loaded the materialised probe and returned its marker
+    02-runtime-receipts.txt        what each runtime actually returned in that feasibility run, reduced to the lines that carry the claim
+    03-session-record.md           BUILD-1's role, model contract, task and session IDs
+    04-not-delivered.md            what BUILD-1 did NOT deliver, per deliverable and per requirement
+    05-gate-table-check.txt        the gate-table validity check, BUILD-1
+    06-secret-scan.txt             the secret-absence sweep, BUILD-1
+    07-gate-runtime-codex.txt      the actual Codex runtime gate, BUILD-2
+    08-gate-runtime-claude-code.txt  the actual Claude Code runtime gate, BUILD-2
+    09-build1-codex-transcript.txt   BUILD-1's Codex feasibility transcript, kept when the 53 MB of runtime homes around it was moved out of the package
+    09-build1-claude-transcript.json BUILD-1's Claude Code feasibility transcript, kept for the same reason
+    10-secret-scan-negative-probe.txt  the secret scan refusing a directory that holds a credential FILE whose contents match no value pattern
+    11-gate-results.tsv            BUILD-2's raw per-gate results, one line per gate
+    12-session-record.md           BUILD-2's role, model contract, task and session IDs, and its four commits
+    13-not-delivered.md            what BUILD-2 left open: the unclosed package, and the gates it did not run at its final SHA
+    14-secret-scan.txt             the secret-absence sweep, BUILD-2
+    15-refs-tags-and-base.txt      refs, tags, ancestry and clean-worktree at the phase's final SHA
+    16-branch-reflog.txt           the full branch reflog — the append-only record
+    17-session-record-build3.md    BUILD-3's role, model contract, task and session IDs, and its one commit
+    18-forbidden-actions-log.md    BUILD-3's log of forbidden production and history-rewriting actions
+    19-p4-record.md                what P4 built, deliverable by deliverable and requirement by requirement, at the exact SHA — and what it does not claim
+    20-gate-summary.md             every mandatory P4 gate at the final SHA, its command and its exit code
+    21-gate-results.tsv            BUILD-3's raw per-gate results, one line per gate
+    22-clean-clone.txt             the clean-clone transcript at the final SHA: clone, npm ci, npm test, nothing between
+    23-negative-probes.txt         the validator negative probes at the final SHA
+    24-output-sha-agreement.txt    the output-SHA agreement across the phase package
+    25-secret-scan-final.txt       the closing secret sweep, run after the last word was written
+    26-evidence-check-final.txt    the closing evidence-record check — the last file P4 writes
+    runs.jsonl                     one record per run, in the schema of section 1
+    logs/                          full captured output of each command, one file per record
 ```
+
+**P4 was built by THREE sessions, and the third one committed first on purpose.**
+`BUILD-1` answered the runtime feasibility question and delivered nothing else;
+`BUILD-2` built all nine deliverables and both runtime gates and ran out of wall
+before closing; `BUILD-3` closed the package. They are three roles because they are
+three provider sessions with three task ids, which is what section 7.3's isolation is
+checked by — the phase automaton has still run ONE build step and no review, and the
+two-review two-fix budget of contract section 8 is untouched.
+
+The listing above and the P4 gate rows are BUILD-3's ONLY commit, and it is the first
+thing that session did. The order is not stylistic. A commit moves `HEAD`, and every
+`OUTPUT_SHA` marker in this package names `HEAD`; P3's closing session learned this by
+writing a package and then invalidating it, and P4 `BUILD-1` inherited the debt for the
+same reason. Committing the documentation debt BEFORE the closing battery is how the
+debt gets paid without costing a third session.
+
+**Files `00`–`14` are BUILD-1's and BUILD-2's and are not rewritten, except for their
+`OUTPUT_SHA` marker**, which names the phase's exact final SHA — one marker per
+artifact is what `v1/tools/p0-output-sha-check.ts` requires, so it is added rather than
+doubled. Their text is left exactly as those sessions wrote it, including
+`13-not-delivered.md`, which says the package is not closed. That statement was true
+when it was written and `19-p4-record.md` says what changed, rather than the earlier
+file being edited to agree with a later state.
+
+**`runs.jsonl` holds records BUILD-3 did not itself run, and they say so.** Neither
+BUILD-1 nor BUILD-2 wrote a run ledger, and their artifacts — `01`, `05`, `06`, `07`,
+`08`, `10`, `11`, `14` — are executions with exit codes and no record of who ran them,
+which is the exact state `P0-R1-003` exists to catch. BUILD-3 transcribed one record
+per surviving artifact, under the ORIGINATING session's role and identifiers, with a
+`notes` field naming BUILD-3 as the transcriber and the artifact as the only source.
+That is weaker than a record written by the session that ran the command, and it is
+labelled as weaker; the alternative — a phase ledger silently missing its first two
+sessions — hides the weakness instead of stating it.
 
 **Three closing passes, not one.** Files `65`–`68`, `69`–`72` and `73`–`76` are the
 same four closing artifacts written three times, because P3's FIX-2c had to commit
