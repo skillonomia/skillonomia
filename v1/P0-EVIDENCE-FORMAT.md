@@ -468,10 +468,26 @@ evidence/
     35-negative-probes-fix1.txt    the validator negative probes at the FIX-1 SHA, including the three new ones
     36-output-sha-agreement-fix1.txt  the output-SHA agreement across the extended package
     37-secret-scan-final-fix1.txt  the closing secret sweep of the extended package
-    38-evidence-check-final-fix1.txt  the closing evidence-record check — the last file P3 writes
+    38-evidence-check-final-fix1.txt  the closing evidence-record check of the FIX-1 package
+    39-session-record-fix2.md      FIX-2's role, model contract, task and session IDs, its commits, and why it ran no battery
+    40-session-record-fix2b.md     FIX-2b's role, model contract, task and session IDs, and its commits
+    41-p3-record-fix2b.md          the last open finding, closed: what changed, what it does not claim
+    42-gate-summary-fix2b.md       every mandatory P3 gate at the final SHA, its command and its exit code
+    43-browser-e2e-trace-fix2b.txt the P2 console browser run's trace, at the final SHA
+    44-p3-screen-e2e-trace-fix2b.txt  the P3 screen run's trace, at the final SHA
+    45-unknown-surface-reproducer.txt  REVIEW-2's own reproducer for `P3-R2-002`, run before and after the fix
+    46-refs-tags-and-base-fix2b.txt  refs, tags, ancestry and clean-worktree at the final SHA
+    47-branch-reflog-fix2b.txt     the branch reflog after FIX-2's and FIX-2b's commits
+    48-forbidden-actions-log-fix2b.md  FIX-2b's log of forbidden production and history-rewriting actions
+    49-clean-clone-fix2b.txt       the clean-clone transcript at the final SHA: clone, npm ci, npm test, nothing between
+    50-negative-probes-fix2b.txt   the validator negative probes at the final SHA
+    51-output-sha-agreement-fix2b.txt  the output-SHA agreement across the whole package
+    52-secret-scan-final-fix2b.txt the closing secret sweep of the whole package
+    53-evidence-check-final-fix2b.txt  the closing evidence-record check — the last file P3 writes
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
     probes-fix1/                   one transcript per negative probe of the FIX-1 run, with its own README.md
+    probes-fix2b/                  one transcript per negative probe of the FIX-2b run, with its own README.md
 ```
 
 P3 was built by TWO sessions, and fixed by a third: `BUILD-1`, which built the backend and recorded
