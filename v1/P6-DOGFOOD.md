@@ -1,8 +1,8 @@
 # P6 — the real internal dogfood
 
 Phase P6 of the contract *Skillonomia V1 → FINAL DONE*. This file records what
-the two build sessions of P6 actually produced, how each number was measured,
-and — in section 7 — what is still open.
+the build sessions of P6 actually produced, how each number was measured, and —
+in section 7 — what each of them left open, and who closed it.
 
 P6 is the phase that cannot be manufactured. Every earlier phase was satisfied by
 building something and proving it with tests; this one is satisfied by real use,
@@ -145,33 +145,46 @@ was re-invoked in a later session and that run did report the marker.
   what makes it correct is judgement about the change, not a sequence. A skill
   here would be a style note, which the classifier would route to `rule`.
 
-## 7. What BUILD-1 did NOT deliver, and what BUILD-2 closed
+## 7. What each build session left open, and who closed it
 
 Stated plainly, because an honest gap is worth more than a manufactured metric.
+Every item below names the session that opened it and, where there is one, the
+session that closed it. The status is the status at the SHA this file is part of.
 
-Items 1 and 2 were closed by BUILD-2 and are told in sections 8 and 9. Items 3
-to 6 are open, and a later session continues from this SHA.
-
-1. **The improvement cycle (`P6-FR-06`).** CLOSED by BUILD-2, section 8. No descendant revision was created
-   from a failure, so no comparison exists and the gate reports zero. The raw
-   material is present in the dogfood database — real `nothing_reported`
-   outcomes from sessions where a runtime reported no marker — but a
-   `nothing_reported` is not the `failed` that `origin: failure` requires, so
-   the cycle has to be driven deliberately rather than harvested.
-2. **The rollback cycle (`P6-FR-07`).** CLOSED by BUILD-2, section 9. No rollback was selected by BUILD-1 and no later
-   session confirmed one at its SHA.
-3. **The clean-room owner journey (`P6-FR-10` … `P6-FR-17`).**
-   `v1/tools/gates/clean-room-journey.sh` is still the P0 stub and still exits 3.
-4. **The upgrade and rollback from a copy of the `v0.1.6` base
-   (`P6-FR-18`, `P6-FR-19`)** were not run in this session.
+1. **The improvement cycle (`P6-FR-06`).** Opened by BUILD-1: it created no
+   descendant revision from a failure, so no comparison existed and the gate
+   reported zero. The raw material was already in the dogfood database — real
+   `nothing_reported` outcomes from sessions where a runtime reported no marker
+   — but a `nothing_reported` is not the `failed` that `origin: failure`
+   requires, so the cycle had to be driven deliberately rather than harvested.
+   CLOSED by BUILD-2; section 8 tells it.
+2. **The rollback cycle (`P6-FR-07`).** Opened by BUILD-1: it selected no
+   rollback, and no later session confirmed one at its SHA. CLOSED by BUILD-2;
+   section 9 tells it.
+3. **The clean-room owner journey (`P6-FR-10` … `P6-FR-17`).** Opened by
+   BUILD-1, which left `v1/tools/gates/clean-room-journey.sh` at the P0 stub
+   exiting 3. CLOSED by BUILD-3: the gate drives a real browser through the
+   owner path and exits 0, and its journal-based check refuses a run whose owner
+   took any of the technical steps by hand.
+4. **The upgrade and the reversible migration from a copy of the `v0.1.6` base
+   (`P6-FR-18`, `P6-FR-19`).** Opened by BUILD-1, which ran neither. CLOSED by
+   BUILD-3: `v1/tools/gates/upgrade-from-v016.sh` and
+   `v1/tools/gates/reversible-migration.sh` both exit 0.
 5. **The runbooks** (start, diagnose, migrate, revision rollback, application
-   rollback) were not written.
-6. **The final mandatory gate battery on one exact SHA (`P6-FR-20`)** was not
-   run by BUILD-1.
+   rollback). Opened by BUILD-1, which wrote none. CLOSED by BUILD-3, which
+   wrote `v1/P6-RUNBOOKS.md` and followed the two that write on a disposable
+   copy rather than describing them. BUILD-4 carried the application rollback to
+   its last step, on a disposable copy; the run record for that step is the
+   evidence package's.
+6. **The final mandatory gate battery on one exact SHA (`P6-FR-20`).** Opened by
+   BUILD-1 and left open by BUILD-2 and BUILD-3. It is BUILD-4's, and its result
+   belongs to the evidence package rather than to this file, because a battery
+   result is a fact about the exact SHA it ran at and this file is one of the
+   inputs to that SHA.
 
-A later session continues from this SHA. The dogfood registry, its database, the
-fleet state and the ten approved skills all persist, so the work above adds to
-this ledger rather than restarting it.
+The dogfood registry, its database, the fleet state and the ten approved skills
+all persist between sessions, so each session adds to this ledger rather than
+restarting it.
 
 ## 8. The improvement cycle, as it actually happened
 
@@ -287,4 +300,30 @@ reported by the time the session closed, the other says what the owner later saw
 and names where it saw it. The statement now compares against the outcomes that
 existed BEFORE the closure wrote its row. It still refuses the thing it was
 written to refuse — a closure claiming nothing was reported for an entry that
-already held an outcome — and the statement count is unchanged.
+already held an outcome. The correction narrowed one statement and added none.
+
+## 11. Why this file ends in the plain present
+
+The [B-4] provenance rule in `test/docs-guard.ts` reads the sentence AROUND the
+words it matches, and it skips a sentence written in the past or in the
+negative: such a sentence tells what something used to do rather than where a
+number comes from today. Both halves of that are right, and together they have a
+consequence for the LAST sentence of any document. A match may begin in the
+closing words of a file and end in text appended after it, so the closing
+sentence's exemption reaches over the file's end. A document that ends on a
+hedged sentence hides from the guard whatever is written next.
+
+Section 10 ended that way. Its closing sentence bundled the narration — "it was
+written to refuse", "nothing was reported", "already held an outcome" — with a
+present claim about the checker's statements, and it ended on the word `count`.
+The planting proof in `test/p14-r2-invariants.test.ts` demonstrated the
+consequence: a provenance claim planted at the end of this file was swallowed by
+that sentence and went unread, which is the one outcome that proof forbids. The
+sentence is now two sentences, the narration in one and the present claim in the
+other.
+
+So this file keeps a rule about its own last line, and the rule is short: the
+last sentence of this document states a fact about today, in the plain present,
+and it carries none of the nouns the provenance rule keys on. A session that
+appends to this file writes its new material as its own sentences and leaves the
+closing one in that form.
