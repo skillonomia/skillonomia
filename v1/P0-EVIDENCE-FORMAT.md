@@ -547,10 +547,35 @@ evidence/
     23-negative-probes.txt         the validator negative probes at the final SHA
     24-output-sha-agreement.txt    the output-SHA agreement across the phase package
     25-secret-scan-final.txt       the closing secret sweep, run after the last word was written
-    26-evidence-check-final.txt    the closing evidence-record check — the last file P4 writes
+    26-evidence-check-final.txt    the closing evidence-record check of BUILD-3's package
+    27-session-record-fix1.md      FIX-1's role, model contract, task and session IDs, and its two commits
+    28-finding-p4-r1-001.md        the one blocking finding P4 REVIEW-1 returned, how it was closed, and what else was checked for the same shape
+    29-repro-before.txt            the finding reproduced at the input SHA: the session root planted as an outward link, both runtimes, the artifact written outside the base
+    30-repro-after.txt             the same reproducer at the fix SHA: refused, and nothing outside the base
+    31-component-probes.txt        every component of the session path planted as an outward link in turn, before and after
+    32-negative-demo.txt           the new regression seen RED: the fix reverted in the working tree, the test failing, the fix restored
+    33-gate-summary-fix1.md        every mandatory P4 gate at FIX-1's final SHA, its command and its exit code
+    34-gate-results-fix1.tsv       FIX-1's raw per-gate results, one line per gate
+    35-clean-clone-fix1.txt        the clean-clone transcript at the final SHA: clone, npm ci, npm test, nothing between
+    36-refs-tags-and-base-fix1.txt refs, tags, ancestry and clean-worktree at FIX-1's final SHA
+    37-forbidden-actions-log-fix1.md  FIX-1's log of forbidden production and history-rewriting actions
+    38-negative-probes.txt         the validator negative probes at FIX-1's final SHA
+    39-output-sha-agreement.txt    the output-SHA agreement across the phase package, at FIX-1's final SHA
+    40-secret-scan-final.txt       the closing secret sweep, run after the last word was written
+    41-evidence-check-final.txt    the closing evidence-record check — the last file P4 writes
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
+    logs-fix1-aborted/             the first four logs of a FIX-1 battery stopped on purpose before this listing was committed, with its own README.md
 ```
+
+**P4 REVIEW-1 returned one blocking finding, and `FIX-1` closed it.** The finding,
+`P4-R1-001`, is recorded in `evidence/P4/28-finding-p4-r1-001.md` with the reproduction
+before and after and the transcript of the new regression seen RED with the fix reverted.
+`FIX-1` made TWO commits: the fix, and then THIS listing — in that order, because the
+listing describes files the fix session had not written yet, and because a session that
+writes its markers and then commits has invalidated every one of them. The certifying
+battery, the clean clone and the four closing checks all ran after the second commit and
+name the SHA it produced.
 
 **P4 was built by THREE sessions, and the third one committed first on purpose.**
 `BUILD-1` answered the runtime feasibility question and delivered nothing else;
