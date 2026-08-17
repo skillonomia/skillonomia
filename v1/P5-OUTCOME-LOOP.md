@@ -71,7 +71,7 @@ outright that a mocked adapter test never substitutes for one.
 | `P5-FR-10` | P3's `selectAssignmentRevision` | the reassignment answers `effective_from: next_session`, the running session's loadout is byte-identical afterwards, and the next session carries the new revision |
 | `P5-FR-11` | `compareInTx` | the comparison names the exact old and new revision ids and numbers, the baseline's reason code, both outcomes and the goal |
 | `P5-FR-12` | `decideComparison` | `improved` needs the same lineage, the same agent and the same runtime kind AND a transition to `worked`; a different agent or a different runtime is `not_comparable`, a candidate that did not work is `not_improved`, and a baseline that never failed is `not_improved`. A candidate with no lineage row — no goal stated in advance — is refused outright |
-| `P5-FR-13` | `recordRollbackConfirmationInTx` | the confirming session must carry the rollback target at its exact digest, the event must be a `revision_selected` of that assignment, and a session that opened BEFORE the decision is refused with `SESSION_PREDATES_ROLLBACK` |
+| `P5-FR-13` | `recordRollbackConfirmationInTx` | the confirming session must carry the rollback target at its exact digest, the event must be a `revision_selected` of that assignment whose selection went BACK — a forward update is refused with `NOT_A_ROLLBACK_ACTION` and nothing is appended — and a session that opened BEFORE the decision is refused with `SESSION_PREDATES_ROLLBACK`, including when it shares the decision's millisecond, while a session opened after it in that same millisecond still confirms |
 | `P5-FR-14` | the routes | every answer carries `contract` — `outcome.v1` on the machine surface, `console.v1` on the owner's — and the conflict refusal carries the structured conflict in `current_state` rather than a sentence |
 | `P5-FR-15` | `v1/tools/gates/runtime-codex.sh`, `v1/tools/gates/runtime-claude-code.sh` | a real `codex exec` and a real `claude -p` session, each reaching `outcome worked` filed from the runtime's own output, with the replay, the conflict and the `nothing_reported` closure exercised on the same real session |
 
@@ -195,12 +195,13 @@ judged the narrowing incomplete for one reason: a CHECK is row-local. It can
 require a `worked` to name an invocation receipt; it has no way to say that the
 receipt named belongs to the same session and the same entry, that the
 `invocation_ref` matches, that a `rolled_back` names a lifecycle event that
-really selected the revision it claims, that the confirming session opened after
-that decision, or that a comparison marked comparable rests on two sessions of
-one agent and one runtime kind. Those are joins.
+really selected the revision it claims, that the selection went BACK rather than
+forward, that the confirming session opened after that decision, or that a
+comparison marked comparable rests on two sessions of one agent and one runtime
+kind. Those are joins.
 
 `v1/tools/p5-outcome-consistency-check.ts` is the join half and stops there: it
-takes a database path, opens it read-only, runs fourteen statements as queries
+takes a database path, opens it read-only, runs fifteen statements as queries
 that have to return no rows, prints the offending rows when one does, and exits 0
 or 1. It has no configuration, no schedule and no output format — the
 observability platform and the experiment system on P5's OUT list are what it is
