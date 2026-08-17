@@ -212,8 +212,19 @@ export function resolveRoot(root: string): string {
  * catches the case that matters: a root whose `.claude/skills` is a link to a
  * shared library elsewhere on the disk. Writing there would be writing outside
  * the root while every lexical check still passed.
+ *
+ * IT RETURNS THE RESOLVED DIRECTORY, and callers keep THAT rather than the path
+ * they asked for. A caller that keeps the lexical path and resolves it again
+ * later re-derives its root from a link it has already been told about, which is
+ * precisely how `sessionHome` in `src/runtime-adapter.ts` came to materialize a
+ * whole native artifact outside its base: the session id was joined onto the
+ * resolved base and created with a RECURSIVE mkdir, and a recursive create walks
+ * through a directory link sitting at that name without a word. Every component
+ * of a path this system creates goes through here, the pre-existing components as
+ * well as the created ones — `mode` is the mode a component gets when this call
+ * is the one that creates it.
  */
-function mkdirWithinRoot(realRoot: string, relDir: string): string {
+export function mkdirWithinRoot(realRoot: string, relDir: string, mode?: number): string {
   let current = realRoot;
   for (const part of relDir.split("/")) {
     if (part.length === 0 || part === "." || part === "..") {
@@ -221,7 +232,7 @@ function mkdirWithinRoot(realRoot: string, relDir: string): string {
     }
     const next = join(current, part);
     try {
-      mkdirSync(next);
+      mkdirSync(next, mode === undefined ? undefined : { mode });
     } catch (e) {
       // EEXIST is the ordinary case on a second activation; anything else is a
       // filesystem refusal and must not be reported as success

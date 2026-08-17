@@ -11,7 +11,18 @@
 // which drive the real binaries.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  symlinkSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  existsSync,
+  rmSync,
+} from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleRest, type RestResponse } from "../src/http.ts";
@@ -719,6 +730,191 @@ test("P4-FR-14: a symbolic link planted in the native path cannot make a write l
   } finally {
     rmSync(base, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+/**
+ * EVERY PATH UNDER A TREE, AND THE BYTES OF EVERY FILE IN IT.
+ *
+ * The test below asserts that a refused materialization changed NOTHING outside
+ * the base, and "nothing" has to mean the tree and not one predicted filename:
+ * a check for the single path this version happens to write would keep passing
+ * if a later version wrote a different one. Links are recorded as links and are
+ * not followed, so the fingerprint describes the tree that is there.
+ */
+function fingerprint(dir: string): string[] {
+  const out: string[] = [];
+  const walk = (d: string, prefix: string): void => {
+    for (const e of readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const p = join(d, e.name);
+      if (e.isSymbolicLink()) out.push(`link ${prefix}${e.name} -> ${readlinkSync(p)}`);
+      else if (e.isDirectory()) {
+        out.push(`dir  ${prefix}${e.name}`);
+        walk(p, `${prefix}${e.name}/`);
+      } else out.push(`file ${prefix}${e.name} ${createHash("sha256").update(readFileSync(p)).digest("hex")}`);
+    }
+  };
+  walk(dir, "");
+  return out;
+}
+
+/**
+ * P4-R1-001 — THE SESSION ROOT ITSELF IS A COMPONENT OF THE PATH.
+ *
+ * The test above plants its link BELOW the session root, so it never covered the
+ * one component the session root is. `sessionHome` resolved the base and then
+ * JOINED the session id onto it, and a recursive create follows a directory link
+ * sitting at that name: the whole native artifact — runtime home, skills
+ * directory, per-skill directory and entry file — was then written and read back
+ * under wherever that link pointed, and `SessionHome.home` handed the runtime an
+ * environment variable pointing there too.
+ *
+ * So the containment the doc comment above `sessionHome` promises is asserted for
+ * EVERY component, the pre-existing ones as well as the created ones, for BOTH
+ * runtime kinds, and it is asserted as a REFUSAL BEFORE ANY WRITE: the outside
+ * tree is fingerprinted before the call and compared after it.
+ */
+test("P4-FR-14 / P4-R1-001: the session root planted as an outward link is refused before anything is written, for both runtimes", () => {
+  for (const kind of ["codex", "claude_code"] as const) {
+    const base = mkdtempSync(join(tmpdir(), "skln-p4-rootlink-base-"));
+    const outside = mkdtempSync(join(tmpdir(), "skln-p4-rootlink-outside-"));
+    try {
+      const stolen = join(outside, "stolen");
+      mkdirSync(stolen);
+      writeFileSync(join(stolen, "witness.txt"), "untouched\n");
+      const before = fingerprint(outside);
+
+      symlinkSync(stolen, join(base, TEST_SESSION_ID)); // THE SESSION ROOT IS THE LINK
+      assert.throws(
+        () => sessionHome(base, TEST_SESSION_ID, kind),
+        (e: unknown) => e instanceof ActivationError && e.reason === "outside_root_refused",
+        `${kind}: a session root that resolves outside the base must be refused`,
+      );
+
+      // BEFORE ANY WRITE. Not "the entry file is absent" — the tree is what it was.
+      assert.deepEqual(fingerprint(outside), before, `${kind}: nothing outside the base was created or touched`);
+      assert.equal(existsSync(join(stolen, RUNTIMES[kind].home_subdir)), false, `${kind}: no runtime home was created outside`);
+
+      // and cleanup takes the planted link away without reaching through it
+      assert.equal(cleanupSession(base, TEST_SESSION_ID), "removed");
+      assert.equal(existsSync(join(base, TEST_SESSION_ID)), false, `${kind}: the planted link is gone`);
+      assert.deepEqual(fingerprint(outside), before, `${kind}: cleanup did not delete through the link`);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  }
+});
+
+/**
+ * THE REST OF THE PATH, for the same shape.
+ *
+ * `sessionHome` creates two components and `materializeEntry` creates three more.
+ * Each one is planted as an outward link in turn and each refusal is asserted to
+ * have happened before a byte was written outside. The runtime home subdirectory
+ * is the one `sessionHome` itself creates, so its refusal belongs to
+ * `sessionHome`; the skills and per-skill directories belong to the write.
+ */
+test("P4-FR-14 / P4-R1-001: every other component of the session path refuses an outward link the same way", () => {
+  const cases: ReadonlyArray<{
+    what: string;
+    kind: "codex" | "claude_code";
+    plant: (base: string, stolen: string) => void;
+    refusedBy: "sessionHome" | "materializeEntry";
+  }> = [
+    {
+      what: "the codex runtime home subdirectory",
+      kind: "codex",
+      plant: (base, stolen) => {
+        mkdirSync(join(base, TEST_SESSION_ID));
+        symlinkSync(stolen, join(base, TEST_SESSION_ID, RUNTIMES.codex.home_subdir));
+      },
+      refusedBy: "sessionHome",
+    },
+    {
+      what: "the claude code runtime home subdirectory",
+      kind: "claude_code",
+      plant: (base, stolen) => {
+        mkdirSync(join(base, TEST_SESSION_ID));
+        symlinkSync(stolen, join(base, TEST_SESSION_ID, RUNTIMES.claude_code.home_subdir));
+      },
+      refusedBy: "sessionHome",
+    },
+    {
+      what: "the skills directory",
+      kind: "codex",
+      plant: (base, stolen) => {
+        mkdirSync(join(base, TEST_SESSION_ID, RUNTIMES.codex.home_subdir), { recursive: true });
+        symlinkSync(stolen, join(base, TEST_SESSION_ID, RUNTIMES.codex.home_subdir, "skills"));
+      },
+      refusedBy: "materializeEntry",
+    },
+    {
+      what: "the per-skill directory",
+      kind: "claude_code",
+      plant: (base, stolen) => {
+        mkdirSync(join(base, TEST_SESSION_ID, RUNTIMES.claude_code.home_subdir, "skills"), { recursive: true });
+        symlinkSync(stolen, join(base, TEST_SESSION_ID, RUNTIMES.claude_code.home_subdir, "skills", "planted-skill"));
+      },
+      refusedBy: "materializeEntry",
+    },
+  ];
+
+  for (const c of cases) {
+    const base = mkdtempSync(join(tmpdir(), "skln-p4-component-base-"));
+    const outside = mkdtempSync(join(tmpdir(), "skln-p4-component-outside-"));
+    try {
+      const stolen = join(outside, "stolen");
+      mkdirSync(stolen);
+      writeFileSync(join(stolen, "witness.txt"), "untouched\n");
+      c.plant(base, stolen);
+      const before = fingerprint(outside);
+
+      let refusedBy: string | null = null;
+      try {
+        const home = sessionHome(base, TEST_SESSION_ID, c.kind);
+        materializeEntry(home, entryNamed("planted-skill"), CONTENT);
+      } catch (e) {
+        assert.ok(e instanceof ActivationError, `${c.what}: the refusal is an ActivationError, got ${String(e)}`);
+        assert.equal((e as ActivationError).reason, "outside_root_refused", `${c.what}: reason`);
+        refusedBy = (e as Error).stack?.includes("sessionHome") ? "sessionHome" : "materializeEntry";
+      }
+      assert.notEqual(refusedBy, null, `${c.what}: an outward link must be refused, not written through`);
+      assert.equal(refusedBy, c.refusedBy, `${c.what}: refused at the earliest point that can see it`);
+      assert.deepEqual(fingerprint(outside), before, `${c.what}: nothing outside the base was written`);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  }
+});
+
+/**
+ * AND THE LEGITIMATE ARRANGEMENTS STILL WORK, because a containment check that
+ * refuses everything proves nothing. A base reached THROUGH a link is ordinary —
+ * `/tmp` is one on some systems — and a link that stays inside the base is the
+ * shared-library arrangement `src/activation.ts` exists to permit.
+ */
+test("P4-FR-14 / P4-R1-001: a base reached through a link, and a link that stays inside it, still materialize", () => {
+  const real = mkdtempSync(join(tmpdir(), "skln-p4-realbase-"));
+  const linkdir = mkdtempSync(join(tmpdir(), "skln-p4-linkdir-"));
+  try {
+    const viaLink = join(linkdir, "base");
+    symlinkSync(real, viaLink);
+    const home = sessionHome(viaLink, TEST_SESSION_ID, "codex");
+    const m = materializeEntry(home, entryNamed("through-a-linked-base"), CONTENT);
+    assert.ok(existsSync(join(home.root, m.relpath)), "a base reached through a link materializes normally");
+
+    // a session root that is a link to somewhere else INSIDE the base is contained
+    const sid2 = ulid(1_700_000_009_000);
+    mkdirSync(join(real, "elsewhere-inside"));
+    symlinkSync(join(real, "elsewhere-inside"), join(real, sid2));
+    const home2 = sessionHome(viaLink, sid2, "codex");
+    const m2 = materializeEntry(home2, entryNamed("inside-the-base"), CONTENT);
+    assert.ok(existsSync(join(real, "elsewhere-inside", m2.relpath)), "a link that stays inside the base is followed");
+  } finally {
+    rmSync(real, { recursive: true, force: true });
+    rmSync(linkdir, { recursive: true, force: true });
   }
 });
 

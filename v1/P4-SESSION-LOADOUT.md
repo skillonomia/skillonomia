@@ -83,7 +83,7 @@ outright that a mocked adapter test never substitutes for one.
 | `P4-FR-11` | `entryStages` | a proposed entry nobody confirmed is `unknown` — not `proposed`-as-success — carrying `reason_code`, `reason`, `source` and the time of the look |
 | `P4-FR-12` | `entryStages` | every link of the chain carries `at_ms` and a source; the reporter's own clock is what a receipt stage carries, not the registry's |
 | `P4-FR-13` | section 1 | the owner key, the admin key and a console session are refused at both intakes, and nothing is written by any of it |
-| `P4-FR-14` | `nativeSkillName`, `src/activation.ts` | eight unsafe names refused; a link planted at the skills directory refuses the write; a link planted at the entry file's own name is unlinked rather than written through, and the target is unchanged |
+| `P4-FR-14` | `nativeSkillName`, `sessionHome`, `src/activation.ts` | eight unsafe names refused; EVERY component of the session path — the session root itself, the runtime home subdirectory, the skills directory, the per-skill directory — is planted as an outward link in turn, for both runtimes, and each is refused before a byte exists outside the base, with the outside tree fingerprinted before and after; a link planted at the entry file's own name is unlinked rather than written through, and the target is unchanged; a base reached THROUGH a link and a link that stays inside the base both still materialize (see section 4.1) |
 | `P4-FR-15` | `credentialShapeIn` | a rendered artifact carrying a credential shape is refused and NOT written; the runtime transcript is scanned on the same patterns before it is saved |
 | `P4-FR-16` | `0016` + P3's `effective_from` | pause and revoke leave a running session's loadout byte-for-byte and empty the next one |
 | `P4-FR-17` | `v1/tools/gates/runtime-codex.sh` | a real `codex exec` session against a session-scoped `CODEX_HOME` |
@@ -131,6 +131,46 @@ What this does NOT claim: that a runtime could not be made to print a digest it
 was told by some other means. It claims that the digest came out of the runtime's
 own session and matched the frozen snapshot, which is strictly more than a name
 and is what the requirement asks for.
+
+### 4.1. The containment boundary is the WHOLE session path (`P4-FR-14`, `T-04`)
+
+P4 REVIEW-1 found `P4-R1-001`, and it was real: the boundary was measured from
+the wrong root.
+
+`sessionHome` resolved the base, JOINED the session id onto it and created the
+result with a RECURSIVE mkdir. A recursive create walks straight through a
+directory link already sitting at that name and says nothing, and everything
+downstream then re-derived its root from that lexical path — so with
+`<base>/<session_id>` planted as a link, the runtime home, the skills directory,
+the per-skill directory and the entry file were all created, written and READ
+BACK on the other side of the disk, and the `home` the function returns handed
+the runtime an environment variable pointing there as well. Every per-component
+containment check in `src/activation.ts` passed, because each one was asked about
+a root that was already outside the base.
+
+The fix is not a new mechanism. `mkdirWithinRoot` — the walk that creates one
+component, resolves it through any link and refuses it if it is not physically
+inside the root — already existed and is what makes the rest of the path safe; it
+is now what creates the session root and the runtime home subdirectory too, and
+it returns the RESOLVED directory so nothing downstream can re-derive another
+one. There is no new abstraction, no path framework and no second implementation
+of containment (contract section 8, point 10).
+
+What the regression asserts, in `test/v1p4-session-loadout.test.ts`:
+
+* each of the four components — session root, runtime home subdirectory, skills
+  directory, per-skill directory — planted as an outward link in turn;
+* the session root case for BOTH runtime kinds;
+* the refusal is an `ActivationError` with reason `outside_root_refused`, raised
+  at the earliest point that can see it (`sessionHome` for the two components it
+  creates, the write for the two below them);
+* the refusal happens BEFORE ANY WRITE — the outside tree is fingerprinted, paths
+  and file digests, before the call and compared after it, so the claim is about
+  the tree and not about one predicted filename;
+* `cleanupSession` takes the planted link away and does not delete through it;
+* and the legitimate arrangements still work: a base reached THROUGH a link, and a
+  link that stays inside the base, both materialize as before. A containment check
+  that refuses everything would prove nothing.
 
 ## 5. What the owner does, and does not, do (`INV-09`)
 

@@ -25,6 +25,7 @@ import { mkdirSync, rmSync, existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   materialize,
+  mkdirWithinRoot,
   readBack,
   nativeRelativePath,
   resolveRoot,
@@ -210,6 +211,23 @@ export interface SessionHome {
  * Create the session-scoped runtime home. NOTHING outside `<base>/<session_id>`
  * is created or touched, and the base must already exist — this code does not
  * decide where a deployment materializes, exactly as `resolveRoot` does not.
+ *
+ * THE SESSION ROOT IS A COMPONENT OF THE PATH LIKE ANY OTHER, and it is the one
+ * this function used to skip. It resolved the base, JOINED the session id onto
+ * it and created the result with a RECURSIVE mkdir — and a recursive create
+ * walks straight through a directory link already sitting at that name. Every
+ * later check then re-derived its root from the lexical path, so the runtime
+ * home, the skills directory, the per-skill directory and the entry file were
+ * all created, written and read back wherever the link pointed, and the
+ * `home` this returns handed the runtime an environment variable pointing there
+ * too. The containment above was real and was measured from the wrong root.
+ *
+ * So both components go through `mkdirWithinRoot`, which creates one component,
+ * RESOLVES it through any link and refuses it if it is not physically inside the
+ * root — before a single byte of an artifact exists. What is returned is the
+ * RESOLVED root, so nothing downstream can re-derive a different one. A link that
+ * stays inside the base is still followed: that is the shared-library arrangement
+ * `src/activation.ts` exists to permit, and refusing it would be a different bug.
  */
 export function sessionHome(base: string, sessionId: string, kind: RuntimeKind): SessionHome {
   if (!isAbsolute(base)) throw new ActivationError("root_not_absolute", "a materialization base must be an absolute path");
@@ -217,10 +235,8 @@ export function sessionHome(base: string, sessionId: string, kind: RuntimeKind):
     throw new ActivationError("bad_session_id", "a session id is a 26-character ULID");
   }
   const adapter = RUNTIMES[kind];
-  const root = join(resolveRoot(base), sessionId);
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  const home = join(root, adapter.home_subdir);
-  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const root = mkdirWithinRoot(resolveRoot(base), sessionId, 0o700);
+  const home = mkdirWithinRoot(root, adapter.home_subdir, 0o700);
   return { root, home, site: { root, target: adapter.target }, adapter };
 }
 
