@@ -582,10 +582,38 @@ evidence/
     12-negative-probes.txt         the validator negative probes at the final SHA
     13-output-sha-agreement.txt    the output-SHA agreement across the phase package
     14-secret-scan-final.txt       the closing secret sweep, run after the last word was written
-    15-evidence-check-final.txt    the closing evidence-record check — the last file P5 writes
+    15-evidence-check-final.txt    the closing evidence-record check of BUILD-1's package
+    16-session-record-build2.md    BUILD-2's role, model contract, task and session IDs, and its commits
+    17-build2-record.md            what BUILD-2 delivered against the three items BUILD-1 left, and what it does NOT claim
+    18-gate-summary-build2.md      every mandatory P5 gate at BUILD-2's final SHA, its command and its exit code
+    19-gate-results-build2.tsv     that battery's raw per-gate results, one line per gate
+    20-browser-e2e-p5.txt          the browser gate at the final SHA: the P2 run, the error-contract probes, the P3 screen, the P5 outcome screen, and the three negative demonstrations
+    21-p5-consistency-check.txt    the stage/outcome consistency validator over a real run's database, and the demonstration that it fails on a planted cross-table inconsistency
+    22-runtime-codex-build2.txt    the actual Codex runtime gate at the final SHA
+    23-runtime-claude-code-build2.txt  the actual Claude Code runtime gate at the final SHA
+    24-refs-tags-and-base-build2.txt   refs, tags, ancestry and clean-worktree at the final SHA
+    25-branch-reflog-build2.txt    the full branch reflog after BUILD-2's commits
+    26-clean-clone-build2.txt      the clean-clone transcript at the final SHA: clone, npm ci, npm test, nothing between
+    27-negative-probes-build2.txt  the validator negative probes at the final SHA
+    28-output-sha-agreement-build2.txt  the output-SHA agreement across the phase package
+    29-secret-scan-build2.txt      the closing secret sweep, run after the last word was written
+    30-evidence-check-build2.txt   the closing evidence-record check — the last file P5 writes
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
 ```
+
+**P5 was built by TWO sessions, and the second one is the rest of the build.**
+`BUILD-1` delivered the outcome model, the routes, the adapter's part and both
+runtime gates, and closed its package having stated in
+evidence/P5/03-not-delivered.md that the owner's SCREEN and its browser run were
+absent. `BUILD-2` is that screen, its browser run and the consistency validator,
+recorded under its own role because the identity rule of section 1 binds one role
+to one provider session — which is what makes the isolation of contract section
+7.3 visible rather than assumed. No review had run on P5 when BUILD-2 started, so
+the two-review two-fix budget of contract section 8 is untouched by it. Every
+marker in the package names BUILD-2's final SHA, and the files BUILD-1 wrote were
+re-pointed rather than duplicated: a package whose artifacts name two different
+SHAs is a package that certifies neither.
 
 **P4 REVIEW-1 returned one blocking finding, and `FIX-1` closed it.** The finding,
 `P4-R1-001`, is recorded in evidence/P4/28-finding-p4-r1-001.md with the reproduction

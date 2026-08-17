@@ -32,6 +32,9 @@ what a runtime did with bytes, the other about whether the work succeeded.
 | `migrations/0017_outcomes_and_the_revision_loop.sql` | five INSERT-only tables, six indexes, ten triggers |
 | `migrations/down/0017_…down.sql` | the reversal the round-trip gate runs |
 | `src/adapter-cli.ts` | `skillonomia adapter invoke` now files the outcome; `adapter close` reports the session ended |
+| `console/app.ts` | the owner's outcome region: an outcome with its provenance, the revision form, the comparison, the rollback |
+| `v1/tools/e2e/console-p5-e2e.mjs` | the browser run of the owner's path through that region |
+| `v1/tools/p5-outcome-consistency-check.ts` | the stage/outcome statements a row-local CHECK has no way to make |
 
 ## 2. The surfaces
 
@@ -127,17 +130,84 @@ general observability platform and a statistical experiment system — all five 
 P5's own OUT list. A comparison here is two rows and a computed verdict, not an
 experiment framework.
 
-**Not delivered by BUILD-1, and stated plainly rather than implied.** The owner
-CONSOLE SCREEN for outcomes — the browser page that renders the outcome view,
-the create-revision-from-feedback form and the rollback confirmation — was not
-built, and the P5 browser end-to-end run that would drive it does not exist. The
-backend contracts those screens would consume are built, documented and tested
-through the router, and the session view already returns the outcome of every
-entry beside its stage; what is missing is the page and its browser run. The
-browser E2E gate therefore still drives P2's and P3's screens only, which is
-recorded in the gate summary rather than presented as coverage of this phase.
+BUILD-1 finished without the owner's SCREEN and said so. BUILD-2 built it, and
+section 7 below is what it built; the paragraph BUILD-1 wrote here is kept as
+history in evidence/P5/03-not-delivered.md, which records the state of the
+package at `57f5764f71d4a57f07cb5f1c452c05f51dc8d592` rather than at the SHA this
+document closes on.
 
-## 7. Reversal
+## 7. The owner's screen, and the browser run of it
+
+Built by BUILD-2. `console/app.ts` gains a third region under the capability
+detail, and `src/console-page.ts` the empty box it fills:
+
+| what the owner does there | what it reads or sends |
+|---|---|
+| reads an outcome with its provenance | the word the registry filed, its reason code, its reason, its source, its evidence class, the invocation receipt beneath it, the outcome digest and the time — and a contradicting redelivery beside it as its own row |
+| makes a new revision out of a failure or a remark | `POST /v1/console/outcomes/{id}/revision`, carrying the observation and the goal |
+| sees where a revision came from | the lineage row: parent revision, source outcome, source receipt, the goal stated in advance |
+| compares an old run with a new one | `POST /v1/console/comparisons`, and then the registry's verdict, its reason code and whether the two runs were comparable |
+| rolls back | a target read back before it is confirmed, then P3's `select_revision` on the assignment — and the `rolled_back` row a later session filed, naming the target and the lifecycle event |
+
+Four properties of that region are the ones a reviewer should hold it to, and
+each has a check behind it rather than a sentence:
+
+1. **The verdicts are the server's.** The region prints `outcome`, `verdict`,
+   `verdict_reason_code` and `comparable` as fields.
+   `test/v1p5-outcome-loop.test.ts` reads `console/app.ts` and refuses a
+   comparison of an outcome or a verdict against a literal, so the shape a
+   client-side rule would take fails the suite (`P5-FR-12`, `P3-FR-16`).
+2. **A control is a rendering of a server boolean.** The rollback confirmation
+   is gated by `actions.select_revision.allowed`, which is the same verdict P3's
+   control reads, and the same test asserts the form of every `disabled` line in
+   the client.
+3. **An outcome the backend did not call a success is not shown as one.** The
+   word on the screen is the field; a `nothing_reported` reads as itself with its
+   reason code, its source and its time (`INV-03`, `P5-FR-04`).
+4. **The region writes no observed state.** It calls the owner's three
+   mutations. Filing a receipt, an outcome, a closure or a rollback confirmation
+   stays on the machine surface behind an evidence principal, and the test
+   asserts the client names no route under the machine session prefix (`INV-02`,
+   `P4-FR-13`).
+
+`v1/tools/e2e/console-p5-e2e.mjs` drives that path in Chromium against a real
+deployment: it captures a workflow, approves it, assigns it, opens a real session
+as a registered evidence principal, files `loaded`, `invoked` and a `failed`
+outcome with a contradicting redelivery behind it, and then the browser does the
+owner's part — read the outcome, make the revision, review and approve it,
+reassign it, compare the runs, prepare and confirm the rollback, and read the
+confirmation a later session filed. Five outcomes come out of that loop:
+`failed`, `worked`, `worked`, `rolled_back`, `nothing_reported`.
+
+The run then happens again with `--broken-client`, against a bundle rebuilt from
+a copy of `console/app.ts` with three changes undone — the refetch-and-report
+after an owner command, the rendering of the registry's verdict, and the honest
+rendering of the outcome word. Its probes are required to go red there while its
+controls stay green, which is the pattern P2 and P3 both used: a check nobody has
+seen fail is a check nobody has tested. `v1/tools/gates/browser-e2e.sh` runs both,
+so the gate now covers P2, P3 and P5 in seven runs.
+
+## 8. The stage/outcome consistency validator
+
+Deliverable 8. BUILD-1 closed it by narrowing the claim to the CHECK constraints
+of `0017` and the service code above them, and recorded the narrowing. BUILD-2
+judged the narrowing incomplete for one reason: a CHECK is row-local. It can
+require a `worked` to name an invocation receipt; it has no way to say that the
+receipt named belongs to the same session and the same entry, that the
+`invocation_ref` matches, that a `rolled_back` names a lifecycle event that
+really selected the revision it claims, that the confirming session opened after
+that decision, or that a comparison marked comparable rests on two sessions of
+one agent and one runtime kind. Those are joins.
+
+`v1/tools/p5-outcome-consistency-check.ts` is the join half and stops there: it
+takes a database path, opens it read-only, runs fourteen statements as queries
+that have to return no rows, prints the offending rows when one does, and exits 0
+or 1. It has no configuration, no schedule and no output format — the
+observability platform and the experiment system on P5's OUT list are what it is
+written to not become. Point it at the database a runtime gate or the browser
+gate leaves behind and it reads rows a real run produced.
+
+## 9. Reversal
 
 ```
 sqlite3 <copy-of-the-db> < migrations/down/0017_outcomes_and_the_revision_loop.down.sql

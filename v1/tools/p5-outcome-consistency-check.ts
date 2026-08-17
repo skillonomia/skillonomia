@@ -1,0 +1,251 @@
+#!/usr/bin/env node
+// P5 DELIVERABLE 8 — THE STAGE/OUTCOME CONSISTENCY VALIDATOR.
+//
+//   node --experimental-strip-types --no-warnings v1/tools/p5-outcome-consistency-check.ts <database>
+//
+// WHY THIS EXISTS AND WHAT IT IS NOT. P5 BUILD-1 closed this deliverable by
+// narrowing it: the rules live in `migrations/0017`'s CHECK constraints and in
+// `src/outcome-loop.ts`, so a validator that re-read the same rows would restate
+// them. That is true of the rules a CHECK can express — and a CHECK is ROW-LOCAL.
+// It can say that a `worked` names an invocation receipt; it cannot say that the
+// receipt it names belongs to the same session and the same entry, that its
+// `invocation_ref` is the one the outcome claims, that a `rolled_back` names a
+// lifecycle event that really selected the revision it says was rolled back, or
+// that a session confirming a rollback opened AFTER the decision. Those are
+// JOINS, and the narrowing did not cover them. This harness is the join half,
+// and nothing else: eleven statements over the rows a real run leaves behind.
+//
+// It is deliberately not an observability platform, a metrics system or a
+// framework — P5's OUT list forbids all three. It has no configuration, no
+// plugins, no output format and no schedule. It reads a database and exits 0 or 1.
+//
+// WHAT IT NEVER DOES. It opens the database READ-ONLY and writes nothing, so it
+// cannot repair what it finds and cannot be mistaken for a migration. Point it at
+// a disposable database or a copy; the runtime gates and the browser gate each
+// leave one behind, which is what makes this a check over REAL rows rather than
+// over fixtures it made itself.
+//
+// EXIT CODES, the same as every other harness in this tree:
+//   0  every statement held
+//   1  a statement did not hold — the rows contradict the phase's claims
+//   2  REFUSED — no database to read, or it has no P5 tables
+import { existsSync } from "node:fs";
+import { openReadOnly } from "../../src/db.ts";
+
+const path = process.argv[2];
+if (!path) {
+  console.error("REFUSED: name the database to check.");
+  console.error("usage: p5-outcome-consistency-check.ts <database>");
+  process.exit(2);
+}
+if (!existsSync(path)) {
+  console.error(`REFUSED: ${path} does not exist.`);
+  process.exit(2);
+}
+
+const db = openReadOnly(path);
+const tables = new Set(
+  (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((r) => r.name),
+);
+for (const required of ["session_outcomes", "session_closures", "outcome_conflicts", "revision_sources", "revision_comparisons"]) {
+  if (!tables.has(required)) {
+    console.error(`REFUSED: ${path} has no \`${required}\`; this is not a database migrated past 0017.`);
+    process.exit(2);
+  }
+}
+
+let failures = 0;
+const rows = (sql: string): Array<Record<string, unknown>> => db.prepare(sql).all() as Array<Record<string, unknown>>;
+
+/** One statement about the rows. `offenders` is the query that must return
+ *  NOTHING; whatever it returns is printed, because a count is not evidence. */
+function must(statement: string, offenders: string): void {
+  const bad = rows(offenders);
+  if (bad.length === 0) {
+    console.log(`PASS  ${statement}`);
+    return;
+  }
+  failures += 1;
+  console.log(`FAIL  ${statement}  — ${bad.length} row(s)`);
+  for (const row of bad.slice(0, 5)) console.log(`      ${JSON.stringify(row)}`);
+  if (bad.length > 5) console.log(`      …and ${bad.length - 5} more`);
+}
+
+const counted = rows(
+  `SELECT (SELECT count(*) FROM session_outcomes) outcomes,
+          (SELECT count(*) FROM session_closures) closures,
+          (SELECT count(*) FROM outcome_conflicts) conflicts,
+          (SELECT count(*) FROM revision_sources) lineage,
+          (SELECT count(*) FROM revision_comparisons) comparisons`,
+)[0]!;
+console.log(`database: ${path}`);
+console.log(
+  `rows:     ${counted.outcomes} outcomes · ${counted.closures} closures · ${counted.conflicts} conflicts · ` +
+    `${counted.lineage} lineage · ${counted.comparisons} comparisons`,
+);
+console.log();
+
+// 1. AN OUTCOME IS AN OUTCOME OF ITS OWN SESSION'S ENTRY (`INV-06`). The entry it
+//    names must belong to the loadout of the session it names, and its revision
+//    and digest must be the entry's — an outcome about other bytes than the ones
+//    a runtime was given is an outcome about nothing.
+must(
+  "every outcome names an entry of its own session's loadout, at that entry's exact revision and digest",
+  `SELECT o.id, o.session_id, o.loadout_entry_id
+     FROM session_outcomes o
+     LEFT JOIN session_loadout_entries e ON e.id = o.loadout_entry_id
+     LEFT JOIN session_loadouts l ON l.id = e.loadout_id
+    WHERE e.id IS NULL
+       OR l.session_id <> o.session_id
+       OR o.loadout_id <> e.loadout_id
+       OR o.assignment_id <> e.assignment_id
+       OR o.draft_revision_id <> e.draft_revision_id
+       OR o.content_digest <> e.content_digest`,
+);
+
+// 2/3. `P5-FR-02` ACROSS TABLES. A runtime-reported outcome rests on an `invoked`
+//    RECEIPT, and that receipt must be the same session's, the same entry's and
+//    carry the same invocation and runtime session refs the outcome claims.
+must(
+  "every runtime-reported outcome rests on an `invoked` receipt of the same session and entry",
+  `SELECT o.id, o.invocation_receipt_id, r.stage
+     FROM session_outcomes o
+     LEFT JOIN runtime_receipts r ON r.id = o.invocation_receipt_id
+    WHERE o.evidence_class = 'runtime_receipt'
+      AND (r.id IS NULL OR r.stage <> 'invoked' OR r.session_id <> o.session_id OR r.loadout_entry_id <> o.loadout_entry_id)`,
+);
+must(
+  "and the receipt it rests on carries the same invocation_ref and runtime_session_ref the outcome claims",
+  `SELECT o.id, o.invocation_ref, r.invocation_ref AS receipt_invocation_ref
+     FROM session_outcomes o
+     JOIN runtime_receipts r ON r.id = o.invocation_receipt_id
+    WHERE o.evidence_class = 'runtime_receipt'
+      AND (o.invocation_ref IS NOT r.invocation_ref OR o.runtime_session_ref IS NOT r.runtime_session_ref)`,
+);
+must(
+  "no `worked` exists without either an invocation receipt or an owner confirmation naming where the owner saw it",
+  `SELECT o.id, o.evidence_class, o.confirmation_source
+     FROM session_outcomes o
+    WHERE o.outcome = 'worked'
+      AND NOT (o.evidence_class = 'runtime_receipt' AND o.invocation_receipt_id IS NOT NULL)
+      AND NOT (o.evidence_class = 'owner_confirmation' AND o.source = 'owner' AND o.confirmation_source IS NOT NULL)`,
+);
+
+// 4. `P5-FR-04`: A `nothing_reported` IS WRITTEN BY A CLOSURE, and only for an
+//    entry that had nothing else. Its time is the closure's.
+must(
+  "every `nothing_reported` belongs to a session that really closed, and carries that closure's time",
+  `SELECT o.id, o.session_id, o.observed_at_ms, c.closed_at_ms
+     FROM session_outcomes o
+     LEFT JOIN session_closures c ON c.session_id = o.session_id
+    WHERE o.outcome = 'nothing_reported' AND (c.id IS NULL OR o.observed_at_ms <> c.closed_at_ms)`,
+);
+must(
+  "no entry holds a `nothing_reported` beside another outcome — the closure writes one only where nothing was reported",
+  `SELECT o.id, o.loadout_entry_id
+     FROM session_outcomes o
+    WHERE o.outcome = 'nothing_reported'
+      AND EXISTS (SELECT 1 FROM session_outcomes x WHERE x.loadout_entry_id = o.loadout_entry_id AND x.id <> o.id)`,
+);
+
+// 5. `P5-FR-05`, `P5-FR-13`: A ROLLBACK CONFIRMATION IS ABOUT A ROLLBACK THAT
+//    HAPPENED, and it is confirmed by a session that opened AFTER the decision
+//    while carrying the target at its exact digest.
+must(
+  "every `rolled_back` names a lifecycle event that really selected the revision it says was rolled back, for its own assignment",
+  `SELECT o.id, o.rollback_action_event_id, o.rollback_to_revision_id
+     FROM session_outcomes o
+     LEFT JOIN skill_assignment_events ev ON ev.id = o.rollback_action_event_id
+    WHERE o.outcome = 'rolled_back'
+      AND (ev.id IS NULL
+        OR ev.event <> 'revision_selected'
+        OR ev.assignment_id <> o.assignment_id
+        OR ev.desired_revision_id <> o.rollback_to_revision_id
+        OR o.draft_revision_id <> o.rollback_to_revision_id)`,
+);
+must(
+  "and the session that confirmed it opened AFTER that decision",
+  `SELECT o.id, s.server_at_ms AS session_opened_ms, ev.server_at_ms AS decided_ms
+     FROM session_outcomes o
+     JOIN skill_assignment_events ev ON ev.id = o.rollback_action_event_id
+     JOIN agent_sessions s ON s.id = o.session_id
+    WHERE o.outcome = 'rolled_back' AND s.server_at_ms < ev.server_at_ms`,
+);
+
+// 6. `P5-FR-07`: A RECORDED CONFLICT IS ABOUT A ROW THAT STANDS, under the same
+//    `outcome_ref`, and it really contradicts it.
+must(
+  "every recorded conflict names the outcome that stands, under the same outcome_ref and the same entry, and claims something else",
+  `SELECT c.id, c.existing_outcome_id, c.claimed_outcome, o.outcome
+     FROM outcome_conflicts c
+     LEFT JOIN session_outcomes o ON o.id = c.existing_outcome_id
+    WHERE o.id IS NULL
+       OR o.loadout_entry_id <> c.loadout_entry_id
+       OR o.outcome_ref <> c.outcome_ref
+       OR o.outcome <> c.existing_outcome
+       OR c.claimed_outcome = c.existing_outcome`,
+);
+
+// 7. `P5-FR-08`: A LINEAGE ROW IS ABOUT A REVISION THAT DESCENDS FROM THE OUTCOME
+//    IT NAMES — same lineage, and the parent is the revision that outcome was
+//    filed against.
+must(
+  "every revision made from an outcome names that outcome's own revision as its parent, in the same lineage",
+  `SELECT rs.id, rs.parent_revision_id, o.draft_revision_id
+     FROM revision_sources rs
+     LEFT JOIN session_outcomes o ON o.id = rs.source_outcome_id
+    WHERE o.id IS NULL
+       OR rs.parent_revision_id <> o.draft_revision_id
+       OR rs.draft_id <> o.draft_id
+       OR rs.source_session_id <> o.session_id
+       OR (rs.origin = 'failure' AND o.outcome <> 'failed')`,
+);
+
+// 8. `P5-FR-11`, `P5-FR-12`: A CONFIRMED IMPROVEMENT IS A COMPARABLE SCENARIO AND
+//    A GOAL STATED IN ADVANCE. This is the one statement that cannot be a CHECK
+//    at all: `comparable` and `verdict` are about the two SESSIONS behind the two
+//    outcomes.
+must(
+  "every comparison judges a candidate that was created from its own baseline outcome",
+  `SELECT k.id, k.baseline_outcome_id, rs.source_outcome_id
+     FROM revision_comparisons k
+     LEFT JOIN revision_sources rs ON rs.id = k.revision_source_id
+    WHERE rs.id IS NULL
+       OR rs.source_outcome_id <> k.baseline_outcome_id
+       OR rs.draft_revision_id <> k.candidate_revision_id`,
+);
+must(
+  "no comparison is marked comparable unless the two runs share the lineage, the agent and the runtime kind",
+  `SELECT k.id, bs.agent_id AS baseline_agent, cs.agent_id AS candidate_agent,
+          bs.runtime_kind AS baseline_runtime, cs.runtime_kind AS candidate_runtime
+     FROM revision_comparisons k
+     JOIN session_outcomes bo ON bo.id = k.baseline_outcome_id
+     JOIN session_outcomes co ON co.id = k.candidate_outcome_id
+     JOIN agent_sessions bs ON bs.id = bo.session_id
+     JOIN agent_sessions cs ON cs.id = co.session_id
+    WHERE k.comparable = 1
+      AND (bs.agent_id <> cs.agent_id OR bs.runtime_kind <> cs.runtime_kind OR bo.draft_id <> co.draft_id)`,
+);
+must(
+  "and no comparison says `improved` unless it is comparable and the candidate really worked",
+  `SELECT k.id, k.verdict, k.comparable, k.candidate_outcome
+     FROM revision_comparisons k
+    WHERE k.verdict = 'improved' AND (k.comparable <> 1 OR k.candidate_outcome <> 'worked')`,
+);
+
+// 9. THE STAGE HALF OF "STAGE/OUTCOME CONSISTENCY": NOTHING HERE WROTE A STAGE.
+//    P5 files outcomes and closures; the observed STAGE of an entry stays what a
+//    `0016` receipt made it (`INV-02`, `P4-FR-13`). An observation whose source is
+//    an owner would be this phase having crossed that line.
+must(
+  "no assignment observation was written by an owner, so no outcome moved an observed stage",
+  `SELECT id, source, observed_status FROM assignment_observations WHERE source NOT IN ('backend','adapter','runtime')`,
+);
+
+console.log();
+if (failures > 0) {
+  console.log(`FAIL  ${failures} statement(s) did not hold over these rows.`);
+  process.exit(1);
+}
+console.log("PASS  every stage/outcome consistency statement holds over these rows.");
+process.exit(0);
