@@ -566,10 +566,11 @@ evidence/
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
     logs-fix1-aborted/             the first four logs of a FIX-1 battery stopped on purpose before this listing was committed, with its own README.md
+    logs-fix1-aborted-2/           the logs of a second FIX-1 battery, stopped because its `npm test` gate FAILED and the package had to be corrected, with its own README.md
 ```
 
 **P4 REVIEW-1 returned one blocking finding, and `FIX-1` closed it.** The finding,
-`P4-R1-001`, is recorded in `evidence/P4/28-finding-p4-r1-001.md` with the reproduction
+`P4-R1-001`, is recorded in evidence/P4/28-finding-p4-r1-001.md with the reproduction
 before and after and the transcript of the new regression seen RED with the fix reverted.
 `FIX-1` made TWO commits: the fix, and then THIS listing — in that order, because the
 listing describes files the fix session had not written yet, and because a session that
