@@ -111,6 +111,32 @@ lineage whose head is a newer revision reports that head as unapproved.
 and the approved lineage revises while its approved revision, its approval and
 its lineage stay exactly as they were.
 
+**That claim was checked rather than inherited, and one gap in it was closed.**
+`test/v1p3-approval-property.test.ts` puts the four things the narrowing could
+have broken to the registry: whether a lineage can report a state its head does
+not have, whether an approved revision can be mutated, whether history can be
+rewritten, and whether an unapproved head can reach an agent. What it found:
+
+* the head's approval is a field on every surface that could be read as "this is
+  approved" — the Inbox row (`head_approved`), the detail (`revision_approval`)
+  and the capability (`approved_revisions`, which the head is not in);
+* an approved revision survives a later edit byte for byte, with its approval and
+  the lineage's first decision, and a second approval of the same revision is
+  refused;
+* `revision_approvals`, `draft_decisions`, `draft_revisions` and
+  `skill_assignment_events` refuse an `UPDATE` and a `DELETE` in the database
+  itself, so "history is not rewritten" is a property of the storage;
+* an UNAPPROVED head cannot be assigned — `412 REVISION_NOT_APPROVED` — so the
+  disagreement between a lineage's state and its head's cannot reach an agent;
+* a rejected lineage still takes no further revision, and an approved lineage
+  still cannot be rejected afterwards.
+
+The gap was in the CONSOLE, not the data: the Inbox rendered the lineage's
+`state` and not the head's `head_approved`, so the one surface an owner reads was
+the one that still showed a lineage state its head might not have. The Inbox now
+carries both columns and the detail names the shown revision's own approval.
+Every one of those assertions fails if the property stops holding.
+
 ## 5. The eligibility and the concurrency model, stated exactly
 
 What is delivered: an assignment names an APPROVED revision and an ACTIVE agent
@@ -137,14 +163,29 @@ registry, federation, external agents, and termination of an already-running
 session. The observation intake is the SEAM an adapter will report through; it
 materialises nothing and knows no runtime.
 
-**And the Console's own P3 screen is not built.** `console/app.ts` is unchanged
-by this phase: the capability detail, the assign control, the lifecycle buttons
-and the conflict reconciliation exist as server contracts with the verdicts
-already in them, and no page renders them yet. `P3-FR-12`'s server half — both
-refusals carrying the contract marker and `current_state` — is proved at the
-router; its BROWSER half, and the `409`/`412` browser end-to-end the contract's
-P3 evidence list names, are NOT delivered. This is recorded here and in the
-phase's report rather than left to be discovered.
+## 6b. The Console's P3 screen
+
+The capability library, the capability detail, the assign control, the lifecycle
+controls, revision selection and rollback, and the desired/observed rendering are
+in `console/app.ts` and `src/console-page.ts`. What each part is written under:
+
+| requirement | how the page meets it |
+|---|---|
+| `P3-FR-07`, `INV-02` | desired and observed are two blocks rendered by two functions from two fields; each names its own source, and neither carries the other's data attribute |
+| `P3-FR-08`, `INV-03` | the observed block prints the status, the reason code, the reason, the source and the time whatever the status is — there is no branch that hides a field for an `unknown` and none that turns one into a success |
+| `P3-FR-14`, `INV-07` | the screen states that every command below it takes effect in the NEXT session and that the current session's loadout is unchanged, from the server's `effective_from` through a label table |
+| `P3-FR-16`, `INV-01` | every control is `!<server field>.allowed` / `.assignable`; `test/v1p3-assignment.test.ts` reads every `disabled` assignment in the client and fails on one that is anything else |
+| `P3-FR-12` | an owner command refetches canonical state whatever happened, then reports the server's code and `current_state`; a refused command is reported as refused |
+| `INV-05` | every response, succeeding or failing, goes through `api()`, which checks the contract version before a field is read — the P2 boundary, unchanged |
+
+`v1/tools/e2e/console-p3-e2e.mjs` drives it in Chromium, and
+`v1/tools/gates/browser-e2e.sh` runs it. The `412` is produced by moving the
+assignment out from under the rendered page and the `409` by re-issuing one
+command with a different note under one idempotency key; both are this server's
+own refusals, and the run records the statuses the browser received. The same
+file runs again with `--broken-client` against a bundle rebuilt from a copy of
+`console/app.ts` whose conflict handling is undone, where its conflict probes
+must fail.
 
 ## 7. Reversal
 
