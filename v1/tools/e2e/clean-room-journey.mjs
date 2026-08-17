@@ -57,9 +57,9 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
@@ -70,6 +70,15 @@ const PORT = Number(process.env.SKLN_CLEAN_ROOM_PORT ?? (MANUAL ? "7972" : "7973
 const BASE = `http://127.0.0.1:${PORT}`;
 const JOURNAL =
   process.env.SKLN_CLEAN_ROOM_JOURNAL ?? join(tmpdir(), `clean-room-journal${MANUAL ? "-manual" : ""}.jsonl`);
+/** WHERE THE PICTURES GO. Contract section 10's P6 evidence list names a
+ *  clean-room walkthrough WITH SCREENSHOTS and correlating backend/runtime
+ *  receipts; section 9 rules out screenshots no receipt corroborates. So every
+ *  image is written beside a manifest that names, for each one, the exact
+ *  registry-issued identifiers the state it shows was built from — and beside
+ *  the rendered text of that same state, so the correlation is a thing a reader
+ *  and a checker can recompute rather than a caption. */
+const SHOTS =
+  process.env.SKLN_CLEAN_ROOM_SHOTS ?? join(dirname(JOURNAL), MANUAL ? "screenshots-manual" : "screenshots");
 
 let seq = 0;
 function record(entry) {
@@ -313,7 +322,10 @@ async function main() {
 
   // ================================================== the browser the owner has
   const browser = await chromium.launch({ args: ["--no-sandbox"] });
-  const context = await browser.newContext({ baseURL: BASE });
+  // A FIXED VIEWPORT AND SCALE, so two runs of this journey photograph the same
+  // page at the same size and a difference between two images is a difference
+  // in the product rather than in the window somebody happened to have open.
+  const context = await browser.newContext({ baseURL: BASE, viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
   const page = await context.newPage();
   const exchanges = [];
   page.on("response", (res) => {
@@ -365,6 +377,108 @@ async function main() {
   function runtimeAct(act, description, extra = {}) {
     record({ actor: "runtime", act, transport: "machine_api", surface: "the runtime adapter's own credential", description, ...extra });
   }
+
+  // ------------------------------------------------------- the screenshots
+  //
+  // ONE IMAGE IS ONE STATE THE JOURNEY ALREADY ASSERTS, AND IT IS TIED TO THE
+  // IDENTIFIERS THAT STATE WAS MADE OF. A picture nobody can resolve against a
+  // receipt is worth no more than a sentence saying the screen looked right,
+  // which is what contract section 9 refuses. So each capture writes three
+  // things and the manifest binds them:
+  //
+  //   <n>-<name>.png    the pixels, full page, at a fixed viewport
+  //   <n>-<name>.txt    the rendered text of exactly that page, at that moment
+  //   screenshots.json  for every image: its sha256, the sha256 of its text,
+  //                     and every identifier the state carries — each one
+  //                     marked `visible_text` when it is literally on the
+  //                     screen and `dom` when the page carries it as an
+  //                     attribute the picture cannot show. An identifier that
+  //                     is neither is a FAILURE here, not a footnote.
+  //
+  // The identifiers are the REGISTRY'S answers, captured before the page was
+  // read — never values scraped off the page and then found on the page again,
+  // which would be a tautology with a photograph attached.
+  //
+  // AND NOTHING SENSITIVE MAY BE IN THE FRAME. The owner never holds a key and
+  // the console session cookie is HttpOnly, so this should be true by
+  // construction; it is measured anyway, over the rendered text AND over the
+  // raw bytes of the PNG, because "should be" is how a credential ships.
+  mkdirSync(SHOTS, { recursive: true });
+  const shots = [];
+  const SECRETS = () => [
+    ["owner API key", OWNER_KEY],
+    ["adapter API key", ADAPTER_KEY],
+    ["bootstrap token", token[1]],
+    ["console ticket", ticket.ticket],
+  ];
+  async function shot(name, requirement, act, description, identifiers) {
+    const n = String(shots.length + 1).padStart(2, "0");
+    const imageFile = `${n}-${name}.png`;
+    const textFile = `${n}-${name}.txt`;
+    const png = await page.screenshot({ fullPage: true });
+    const text = (await page.innerText("body")) ?? "";
+    const html = await page.content();
+    writeFileSync(join(SHOTS, imageFile), png);
+    writeFileSync(join(SHOTS, textFile), text);
+
+    const shown = [];
+    const missing = [];
+    for (const [kind, value] of identifiers) {
+      if (value === undefined || value === null || String(value).length === 0) {
+        missing.push(`${kind} (the registry returned no value for it)`);
+        continue;
+      }
+      const v = String(value);
+      const where = text.includes(v) ? "visible_text" : html.includes(v) ? "dom" : "absent";
+      if (where === "absent") missing.push(`${kind}=${v}`);
+      shown.push({ kind, value: v, where });
+    }
+    const leaked = SECRETS()
+      .filter(([, v]) => typeof v === "string" && v.length > 0)
+      .filter(([, v]) => text.includes(v) || html.includes(v) || png.toString("latin1").includes(v))
+      .map(([what]) => what);
+
+    const entry = {
+      image: imageFile,
+      image_sha256: createHash("sha256").update(png).digest("hex"),
+      image_bytes: png.length,
+      rendered_text: textFile,
+      rendered_text_sha256: digest(text),
+      requirement,
+      act,
+      description,
+      identifiers: shown,
+      identifiers_in_visible_text: shown.filter((s) => s.where === "visible_text").length,
+      credentials_checked: SECRETS().filter(([, v]) => typeof v === "string" && v.length > 0).length,
+      credential_hits: leaked,
+    };
+    shots.push(entry);
+    record({
+      actor: "harness",
+      act: "screenshot_captured",
+      transport: "none",
+      surface: "the Owner Console in Chromium, as the owner saw it",
+      description,
+      screenshot: entry,
+    });
+    check(
+      `${requirement} the screenshot ${imageFile} resolves against the registry's own identifiers`,
+      missing.length === 0 && leaked.length === 0 && entry.identifiers_in_visible_text > 0,
+      missing.length > 0
+        ? `not on the page: ${missing.join(", ")}`
+        : leaked.length > 0
+          ? `A CREDENTIAL IS IN THE FRAME: ${leaked.join(", ")}`
+          : `${shown.length} identifiers, ${entry.identifiers_in_visible_text} of them read off the screen itself`,
+    );
+    return entry;
+  }
+  /** The registry's own answer about a draft revision, read over the console
+   *  session the owner already has — so a digest the picture shows is compared
+   *  against the server's value rather than against itself. */
+  const consoleGet = async (path) => {
+    const cookie = (await context.cookies()).find((c) => c.name === "skln_console");
+    return (await (await api(path, { headers: { Cookie: `skln_console=${cookie.value}` } })).json());
+  };
 
   // ---- P6-FR-10: the natural instruction, in a session ---------------------
   ownerTyped(
@@ -424,6 +538,17 @@ async function main() {
     "P6-FR-11 with the semantic preview and the security preview on the screen",
     /Semantic findings \(\d+ blocking\)/.test(preview.text) && /Security findings \(\d+ blocking\)/.test(preview.text),
   );
+  await shot(
+    "draft-with-previews",
+    "P6-FR-11",
+    "read_draft_preview",
+    "the draft the capture created, with its semantic and security previews, as the owner reads it",
+    [
+      ["draft_id", draftId],
+      ["revision_id", revision1],
+      ["content_digest", captured.draft.content_digest],
+    ],
+  );
 
   // ---- P6-FR-12: an edit, and the approval of an exact revision ------------
   const edited = await ownerUI(
@@ -453,6 +578,18 @@ async function main() {
     },
   );
   check("P6-FR-12 the owner approved an exact revision from the page", true, String(revision2));
+  const approvedDetail = await consoleGet(`/v1/console/drafts/${draftId}?revision_id=${revision2}`);
+  await shot(
+    "approved-revision",
+    "P6-FR-12",
+    "approve_revision",
+    "the exact revision the owner approved, and the registry's approval of that revision and no other",
+    [
+      ["draft_id", draftId],
+      ["approved_revision_id", revision2],
+      ["approved_content_digest", approvedDetail.revision_approval?.content_digest],
+    ],
+  );
 
   // ---- P6-FR-13: assignment and activation --------------------------------
   const assigned = await ownerUI(
@@ -494,6 +631,18 @@ async function main() {
     "P6-FR-13 the registry holds the assignment active on the revision the owner approved",
     desired.assignment.desired.revision_id === revision2 && desired.assignment.desired.state === "active",
     `${desired.assignment.desired.revision_id} ${desired.assignment.desired.state}`,
+  );
+  await shot(
+    "assignment-and-activation",
+    "P6-FR-13",
+    "activate_assignment",
+    "the assignment the owner made and activated: the desired state the owner asked for, on the revision they approved, beside the observed state evidence has reported",
+    [
+      ["assignment_id", assignmentId],
+      ["agent_id", agentId],
+      ["desired_revision_id", desired.assignment.desired.revision_id],
+      ["desired_content_digest", desired.assignment.desired.content_digest],
+    ],
   );
 
   // ---- the run, on the machine surface ------------------------------------
@@ -557,7 +706,7 @@ async function main() {
   const session1 = await openSession("codex", "cr-s1");
   const entry1 = session1.entries[0];
   if (!entry1 || entry1.draft_revision_id !== revision2) refuse("the first session did not carry the approved revision");
-  await receipt(session1.session_id, "loaded", entry1, refs1, "cr-ld-1");
+  const loaded1 = await receipt(session1.session_id, "loaded", entry1, refs1, "cr-ld-1");
   const invoked1 = await receipt(session1.session_id, "invoked", entry1, refs1, "cr-iv-1");
   const failed = await fileOutcome(session1.session_id, entry1, refs1, {
     outcome: "failed",
@@ -622,6 +771,21 @@ async function main() {
       seen.outcome.text.includes("SUITE_RED"),
     JSON.stringify({ ...seen.outcome, text: undefined }),
   );
+  await shot(
+    "session-stages-and-outcome",
+    "P6-FR-14",
+    "read_session_stages",
+    "the session the owner opened: proposed, loaded and invoked with the receipt each stage was reported under, and the outcome the runtime filed, with its source, its evidence class and the invocation receipt beneath it",
+    [
+      ["session_id", session1.session_id],
+      ["revision_id", revision2],
+      ["loaded_receipt_id", loaded1.receipt_id],
+      ["invoked_receipt_id", invoked1.receipt_id],
+      ["outcome_id", failed.outcome_id],
+      ["runtime_session_ref", refs1.runtime],
+      ["invocation_ref", refs1.invocation],
+    ],
+  );
 
   // ---- P6-FR-15: a new revision, applied in a NEW session ------------------
   const made = await ownerUI(
@@ -677,9 +841,9 @@ async function main() {
   const session2 = await openSession("claude_code", "cr-s2");
   const entry2 = session2.entries[0];
   if (entry2.draft_revision_id !== revision3) refuse("the NEW session did not carry the newly selected revision");
-  await receipt(session2.session_id, "loaded", entry2, refs2, "cr-ld-2");
+  const loaded2 = await receipt(session2.session_id, "loaded", entry2, refs2, "cr-ld-2");
   const invoked2 = await receipt(session2.session_id, "invoked", entry2, refs2, "cr-iv-2");
-  await fileOutcome(session2.session_id, entry2, refs2, {
+  const worked = await fileOutcome(session2.session_id, entry2, refs2, {
     outcome: "worked",
     outcome_ref: "outcome-clean-room-2",
     reason_code: "SHIPPED",
@@ -703,6 +867,20 @@ async function main() {
     "P6-FR-15 the new revision was applied in a NEW session, and the owner sees it there",
     applied.rev === revision3 && applied.stage === "invoked" && applied.stages === "proposed,loaded,invoked",
     `${applied.rev} ${applied.stage} ${applied.stages}`,
+  );
+  await shot(
+    "new-revision-in-new-session",
+    "P6-FR-15",
+    "read_new_session_stages",
+    "the NEW session, carrying the revision the owner made from the failure and selected — the same three stages, on the new revision",
+    [
+      ["session_id", session2.session_id],
+      ["revision_id", revision3],
+      ["loaded_receipt_id", loaded2.receipt_id],
+      ["invoked_receipt_id", invoked2.receipt_id],
+      ["outcome_id", worked.outcome_id],
+      ["runtime_session_ref", refs2.runtime],
+    ],
   );
 
   // ---- P6-FR-16: the rollback, confirmed in another NEW session ------------
@@ -730,8 +908,8 @@ async function main() {
   const session3 = await openSession("codex", "cr-s3");
   const entry3 = session3.entries[0];
   if (entry3.draft_revision_id !== revision2) refuse("the session after the rollback did not carry the rollback target");
-  await receipt(session3.session_id, "loaded", entry3, refs3, "cr-ld-3");
-  await receipt(session3.session_id, "invoked", entry3, refs3, "cr-iv-3");
+  const loaded3 = await receipt(session3.session_id, "loaded", entry3, refs3, "cr-ld-3");
+  const invoked3 = await receipt(session3.session_id, "invoked", entry3, refs3, "cr-iv-3");
 
   const confirmedBack = await ownerUI(
     "read_rollback_session",
@@ -749,6 +927,19 @@ async function main() {
     "P6-FR-16 a NEW session carried the rolled-back-to revision, and the owner sees it",
     confirmedBack.rev === revision2 && confirmedBack.stages === "proposed,loaded,invoked",
     `${confirmedBack.rev} ${confirmedBack.stages}`,
+  );
+  await shot(
+    "rollback-confirmed-in-new-session",
+    "P6-FR-16",
+    "read_rollback_session",
+    "the session that opened AFTER the rollback the owner confirmed, carrying the earlier approved revision and having used it",
+    [
+      ["session_id", session3.session_id],
+      ["rolled_back_to_revision_id", revision2],
+      ["loaded_receipt_id", loaded3.receipt_id],
+      ["invoked_receipt_id", invoked3.receipt_id],
+      ["runtime_session_ref", refs3.runtime],
+    ],
   );
   check(
     "INV-06 the revision that was rolled away from is still approved and still there",
@@ -828,6 +1019,37 @@ async function main() {
     console.log("manual owner: three forbidden steps were recorded in the journal, for the checker to refuse");
   }
 
+  const manifest = {
+    contract: "skillonomia.v1.clean-room-screenshots.1",
+    manual_owner: MANUAL,
+    registry_version: health.version,
+    journal: JOURNAL,
+    directory: SHOTS,
+    backend: {
+      draft_id: draftId,
+      revision_1: revision1,
+      revision_2_approved: revision2,
+      revision_3_from_failure: revision3,
+      assignment_id: assignmentId,
+      agent_id: agentId,
+      sessions: [session1.session_id, session2.session_id, session3.session_id],
+      outcomes: [failed.outcome_id, worked.outcome_id],
+    },
+    screenshots: shots,
+  };
+  writeFileSync(join(SHOTS, "screenshots.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  record({
+    actor: "harness",
+    act: "screenshots_written",
+    transport: "none",
+    surface: "the evidence directory the gate hands this run",
+    description: "every image of this journey, its rendered text and the registry identifiers each one resolves against",
+    directory: SHOTS,
+    manifest: "screenshots.json",
+    manifest_sha256: digest(`${JSON.stringify(manifest, null, 2)}\n`),
+    images: shots.length,
+  });
+
   record({
     actor: "harness",
     act: "journey_ends",
@@ -845,11 +1067,13 @@ async function main() {
   console.log();
   console.log(`checks: ${results.length}   passed: ${results.length - failedChecks.length}   failed: ${failedChecks.length}`);
   console.log(`journal: ${JOURNAL}`);
+  console.log(`screenshots: ${shots.length} in ${SHOTS}`);
   if (failedChecks.length > 0) {
     console.error(`FAILED: ${failedChecks.map((f) => f.name).join("; ")}`);
     process.exit(1);
   }
-  if (results.length < 12) refuse(`only ${results.length} checks ran; this journey covers more than that`);
+  if (results.length < 18) refuse(`only ${results.length} checks ran; this journey covers more than that`);
+  if (shots.length !== 6) refuse(`${shots.length} screenshots were captured; this journey photographs six states`);
   console.log();
   console.log(
     MANUAL

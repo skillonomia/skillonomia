@@ -164,14 +164,25 @@ must(
 // it is narrowed to the outcomes that existed BEFORE the closure wrote its row.
 // What it still refuses is the thing it was written to refuse: a closure
 // claiming nothing was reported for an entry that already held an outcome.
+//
+// AND "BEFORE" IS THE PAIR, NOT THE MILLISECOND. P6 REVIEW-1's backlog: this
+// read `x.server_at_ms <= o.server_at_ms`, so a legitimate LATER owner outcome
+// written inside the closure's own millisecond was ordered as if it had come
+// first, and a true row would have been refused. The rollback assertion below
+// already orders by `(server_at_ms, id)` — the ids come from the same monotonic
+// `ulid()`, which separates what the clock cannot — and the two now say "before"
+// the same way. No dogfood row in this database is affected; a checker whose two
+// halves define an ordering differently is one row away from disagreeing with
+// itself, and that is worth closing while the file is open.
 must(
-  "no entry held another outcome BEFORE its closure wrote `nothing_reported` — the closure writes one only where nothing had been reported",
+  "no entry held another outcome BEFORE its closure wrote `nothing_reported`, by (server_at_ms, id) and not by the millisecond alone",
   `SELECT o.id, o.loadout_entry_id
      FROM session_outcomes o
     WHERE o.outcome = 'nothing_reported'
       AND EXISTS (SELECT 1 FROM session_outcomes x
                    WHERE x.loadout_entry_id = o.loadout_entry_id AND x.id <> o.id
-                     AND x.server_at_ms <= o.server_at_ms)`,
+                     AND (x.server_at_ms < o.server_at_ms
+                          OR (x.server_at_ms = o.server_at_ms AND x.id < o.id)))`,
 );
 
 // 5. `P5-FR-05`, `P5-FR-13`: A ROLLBACK CONFIRMATION IS ABOUT A ROLLBACK THAT

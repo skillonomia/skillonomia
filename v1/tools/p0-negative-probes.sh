@@ -363,6 +363,73 @@ else
   echo "  --  output-SHA agreement probes            SKIPPED (no OUTPUT_SHA marker in $EV)"
 fi
 
+# --- 10b the WHOLE ledger, P0 through P6 --------------------------------------
+#
+# P6 REVIEW-1 finding `P6-R1-002`: six completed reviews carried `(not recorded)`
+# where contract section 7.3 requires a provider session id, and survived five
+# phases of checking because every existing check reads ONE phase directory.
+# `v1/tools/p0-session-ledger-check.ts` reads the ledger as one document, and these
+# probes are what make its refusals a fact rather than a claim: a placeholder in an
+# identity cell, the same session id in two rows, and a run recorded under a session
+# no row carries — each planted in its own copy, each refused for its own reason.
+#
+# `fresh_copy` already lays a copy out the way that checker wants: `SESSIONS.md`
+# beside the phase directory. Only the copy is ever written to.
+SLCHECK=(node --experimental-strip-types --no-warnings "$REPO/v1/tools/p0-session-ledger-check.ts")
+
+# the ledger cell editor: <file> <task_id> <column> <new value>. The row is found
+# by its task id, which is unique, so a probe cannot silently patch the wrong row.
+ledger_cell() {
+  node -e '
+    const fs = require("fs");
+    const [file, taskId, column, value] = process.argv.slice(1);
+    const lines = fs.readFileSync(file, "utf8").split("\n");
+    let header = null, done = false;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (!lines[i].trim().startsWith("|")) { header = null; continue; }
+      const cells = lines[i].split("|").slice(1, -1).map((c) => c.replace(/`/g, "").trim());
+      if (cells.includes("task_id")) { header = cells; continue; }
+      if (header === null) continue;
+      if (cells[header.indexOf("task_id")] !== taskId) continue;
+      const raw = lines[i].split("|");
+      raw[header.indexOf(column) + 1] = ` ${value} `;
+      lines[i] = raw.join("|");
+      done = true;
+      break;
+    }
+    if (!done) { console.error(`no ledger row with task_id ${taskId}`); process.exit(3); }
+    fs.writeFileSync(file, lines.join("\n"));
+  ' "$1" "$2" "$3" "$4"
+}
+
+D="$(fresh_copy whole-ledger-positive)"
+probe positive-control-session-ledger 0 "PASS  every one of the" -- "${SLCHECK[@]}" "$(dirname "$D")"
+
+# the finding itself, planted back in: a placeholder where a session id belongs
+D="$(fresh_copy whole-ledger-placeholder)"
+ledger_cell "$(dirname "$D")/SESSIONS.md" 8b61480b session_id '(not recorded)'
+probe ledger-placeholder-session-id 1 "which is not a provider session id" -- "${SLCHECK[@]}" "$(dirname "$D")"
+
+# the same placeholder in the other identity cell
+D="$(fresh_copy whole-ledger-placeholder-task)"
+ledger_cell "$(dirname "$D")/SESSIONS.md" 62b6a28d task_id '(pending)'
+probe ledger-placeholder-task-id 1 "which is not a Ductor task id" -- "${SLCHECK[@]}" "$(dirname "$D")"
+
+# one session id in two rows: two sessions filed as one, or one filed twice
+D="$(fresh_copy whole-ledger-duplicate)"
+ledger_cell "$(dirname "$D")/SESSIONS.md" 62b6a28d session_id '`01a00bf7-ef5c-7c03-a19b-8eecfe31656a`'
+probe ledger-duplicate-session-id 1 "is claimed by 2 rows" -- "${SLCHECK[@]}" "$(dirname "$D")"
+
+# and a task id in two rows, which is the same defect one column over
+D="$(fresh_copy whole-ledger-duplicate-task)"
+ledger_cell "$(dirname "$D")/SESSIONS.md" 34bfcbfa task_id '62b6a28d'
+probe ledger-duplicate-task-id 1 "is claimed by 2 rows" -- "${SLCHECK[@]}" "$(dirname "$D")"
+
+# a run recorded under a session the ledger has never heard of
+D="$(fresh_copy whole-ledger-unknown-session)"
+patch "$D/runs.jsonl" 0 '{"session_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}'
+probe ledger-run-under-unknown-session 1 "The two must be the same fact" -- "${SLCHECK[@]}" "$(dirname "$D")"
+
 # --- 11 positive control, again ----------------------------------------------
 # The last word belongs to the unmodified inputs: nothing above left them changed.
 probe positive-control-evidence-again 0 "PASS  every run record is complete" -- "${EVCHECK[@]}" "$EV"

@@ -302,6 +302,34 @@ existed BEFORE the closure wrote its row. It still refuses the thing it was
 written to refuse — a closure claiming nothing was reported for an entry that
 already held an outcome. The correction narrowed one statement and added none.
 
+## 10b. The clean-room walkthrough is photographed, and each picture resolves
+
+P6 REVIEW-1 finding `P6-R1-001`: the walkthrough passed its gate and left a
+thorough journal, and contract section 10's P6 evidence list asks for something
+the journal is not — screenshots, with correlating backend and runtime receipts.
+Section 8.1 does not let a description of a screen stand in for the screen.
+
+`v1/tools/e2e/clean-room-journey.mjs` now photographs the six states it was
+already asserting: the draft with its two previews, the exact revision the owner
+approved, the assignment activated on that revision, the session with its stages
+and the outcome under them, the new revision carried by a new session, and the
+rollback confirmed by a third. Each capture writes the image, the rendered text of
+that same page, and a manifest entry naming the identifiers the registry itself
+returned for that state — draft, revision, assignment, session, receipt and
+outcome — with each identifier marked according to whether it is readable on the
+screen or carried behind it as an attribute. Most are on the screen, and the ones
+that sit behind it are marked as such rather than counted as if a reader of the
+picture could check them; the manifest is where that division is written down.
+
+`v1/tools/p6-clean-room-check.ts` reads that manifest and recomputes what it
+claims: the digest of every image, the digest of every rendered page, and the
+presence of every identifier in the text it just read. The gate then damages two
+copies — one with a required state removed, one with a single byte flipped inside
+an image whose digest is left alone — and requires a refusal for each. The image
+bytes and the rendered text are swept for credential shapes as well, because the
+owner holds no key and the console cookie is `HttpOnly`, and a property that good
+is worth measuring rather than assuming.
+
 ## 11. Why this file ends in the plain present
 
 The [B-4] provenance rule in `test/docs-guard.ts` reads the sentence AROUND the

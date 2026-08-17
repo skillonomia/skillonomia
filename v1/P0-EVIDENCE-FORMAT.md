@@ -253,6 +253,8 @@ A phase runs everything marked `✓` in its column.
 | high-risk exercise | `node ci/high-risk-exercise.mjs` | — | — | — | — | — | — | ✓ |
 | dogfood ledger metrics | `v1/tools/gates/dogfood-metrics.sh` | — | — | — | — | — | — | ✓ |
 | clean-room owner journey | `v1/tools/gates/clean-room-journey.sh` | — | — | — | — | — | — | ✓ |
+| outcome and rollback consistency of a real database | `node --experimental-strip-types --no-warnings v1/tools/p5-outcome-consistency-check.ts <database>` | — | — | — | — | — | ✓ | ✓ |
+| session identity across the whole ledger, P0–P6 | `node --experimental-strip-types --no-warnings v1/tools/p0-session-ledger-check.ts <evidence-dir>` | — | — | — | — | — | — | ✓ |
 
 Cell vocabulary, and nothing else is accepted: `✓` the gate runs in that phase ·
 `—` N/A, the surface does not exist in that phase · `cond` conditional, run when
@@ -360,6 +362,21 @@ and only with a concrete reason. One entry per gate that carries a `—` or a
   approval, assignment, session loadout, invocation, outcome, revision and rollback.
   Until P5 closes the loop there is no complete journey to walk, and a partial walk
   reported as this gate would be a green mark for a path that does not join up.
+* **outcome and rollback consistency of a real database** — P0, P1, P2, P3, P4: the
+  outcome model, the revision loop and the rollback confirmation are built by P5, so
+  before that phase the tables this reads do not exist and there is nothing for the
+  statements to be true or false about. It is `✓` from P5, the phase that introduced
+  it, onward, and at P6 its subject is the persistent dogfood database rather than a
+  disposable one.
+* **session identity across the whole ledger, P0–P6** — P0, P1, P2, P3, P4, P5: this
+  reads the session ledger as one document, over the phases that have run. It was
+  written in P6, as the close of P6 REVIEW-1 finding `P6-R1-002`, and it is the first
+  check to read past the phase directory it is pointed at — which is why six review
+  sessions kept a placeholder where contract section 7.3 requires a provider session
+  id while five phase packages were certified around them. The rows of the earlier
+  phases are read by this gate; what they do not get is a run of their own, because
+  contract section 8.3 does not reopen a closed phase and a check invented afterwards
+  is not a reason to.
 
 ## 4. Where evidence lives
 
@@ -635,7 +652,82 @@ evidence/
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
     logs-fix1-aborted/             the first five logs of a FIX-1 battery stopped on purpose before this listing was committed, with its own README.md
+  P6/
+    01-session-record.md           BUILD-1's role, model contract, task and session IDs, and its commits
+    02-p6-build1-record.md         what BUILD-1 built and what it declared NOT delivered
+    03-dogfood-metrics.json        the dogfood metrics BUILD-1 computed from structured receipts
+    04-dogfood-metrics-gate.txt    the dogfood metrics gate at BUILD-1's SHA
+    05-capture-and-approve.txt     the real captures and approvals of the dogfood deployment
+    06-runtime-sessions.txt        the real Codex and Claude Code dogfood sessions
+    07-typecheck.txt               the typecheck at BUILD-1's SHA
+    08-dogfood-ledger.md           the sanitised dogfood ledger: IDs, revisions, agents, runtimes, sessions, invocations, outcomes, provenance
+    09-refs-tags.txt               refs and tags at BUILD-1's SHA
+    10-build2-session-record.md    BUILD-2's role, model contract, task and session IDs, and its commits
+    11-dogfood-metrics-build2.json the metrics recomputed at BUILD-2's SHA
+    12-dogfood-metrics-gate-build2.txt  the dogfood metrics gate at BUILD-2's SHA
+    13-improvement-and-rollback.txt the full improvement cycle and the rollback cycle, with exact old and new revisions
+    14-consistency-check-build2.txt the outcome and rollback consistency check against the dogfood database
+    15-typecheck-build2.txt        the typecheck at BUILD-2's SHA
+    16-build2-not-delivered.md     what BUILD-2 did NOT deliver, in its own words
+    17-runbook-migrate-and-rollback.txt  the migration and migration-rollback runbooks, followed on a disposable database
+    18-clean-room-journey.txt      the clean-room owner journey gate, BUILD-4
+    19-clean-room-journal.jsonl    the journal of that journey: every act of every actor
+    20-browser-e2e.txt             the browser gate at BUILD-4's SHA
+    21-npm-test.txt                the Node suite at BUILD-4's SHA
+    22-build3-session-record.md    BUILD-3's role, model contract, task and session IDs, and its commits
+    23-build3-not-delivered.md     what BUILD-3 did NOT deliver, in its own words
+    24-npm-test-build4.txt         the Node suite summary at BUILD-4's closing SHA
+    25-dogfood-metrics-gate-build4.txt  the dogfood metrics gate at BUILD-4's closing SHA
+    26-consistency-check-build4.txt the consistency check at BUILD-4's closing SHA
+    27-runbook5-application-rollback.txt  the application-rollback runbook, followed on a disposable deployment
+    28-refs-tags-build4.txt        refs, tags, ancestry and clean-worktree at BUILD-4's closing SHA
+    29-no-production-actions.txt   the execution log showing no deploy, release, push, tag, publish or production database command
+    30-build4-session-record.md    BUILD-4's role, model contract, task and session IDs, and its commits
+    31-clean-clone-build4.txt      the clean-clone transcript: clone, npm ci, npm test, nothing between
+    32-build4-not-delivered.md     what BUILD-4 did NOT deliver, in its own words
+    33-negative-probes-build4.txt  the validator negative probes at BUILD-4's closing SHA
+    34-output-sha-agreement-build4.txt  the output-SHA agreement across the package at BUILD-4's closing SHA
+    35-secret-scan-build4.txt      the closing secret sweep of BUILD-4
+    36-evidence-check-build4.txt   the closing evidence-record check of BUILD-4
+    37-fix1-session-record.md      FIX-1's role, model contract, task and session IDs, and its commits
+    38-fix1-record.md              what FIX-1 changed to close REVIEW-1's two blocking findings, and how each was proved
+    39-clean-room-journey-fix1.txt the clean-room journey gate at FIX-1's SHA, with the six screenshots and the four demonstrations that its checker refuses
+    40-clean-room-screenshot-map.md  each image, its digest, and the session, revision, receipt and outcome identifiers it shows
+    41-npm-test-fix1.txt           the Node suite summary at FIX-1's SHA
+    42-gate-summary-fix1.md        every mandatory P6 gate at FIX-1's SHA, its command and its exit code
+    43-session-ledger-check.txt    the whole-ledger session identity check over P0 through P6
+    44-session-ledger-probes.txt   that check refusing a planted placeholder, a planted duplicate and an unrecorded session
+    45-refs-tags-fix1.txt          refs, tags, ancestry and clean-worktree at FIX-1's SHA
+    46-clean-clone-fix1.txt        the clean-clone transcript at FIX-1's SHA
+    47-no-production-actions-fix1.txt  the execution log of this session, showing no forbidden production action
+    48-fix1-not-delivered.md       what FIX-1 did NOT deliver, in its own words
+    49-negative-probes-fix1.txt    the validator negative probes at FIX-1's SHA
+    50-output-sha-agreement-fix1.txt  the output-SHA agreement across the package at FIX-1's SHA
+    51-secret-scan-fix1.txt        the closing secret sweep, run after the last word was written
+    52-evidence-check-fix1.txt     the closing evidence-record check — the last file P6 writes
+    runs.jsonl                     one record per run, in the schema of section 1
+    logs/                          full captured output of each command, one file per record
+    screenshots/                   the clean-room walkthrough's six images, the rendered text of each page and screenshots.json, the manifest that binds both to the registry identifiers
 ```
+
+**P6 REVIEW-1 returned two blocking findings, and `FIX-1` closed both.** `P6-R1-001`
+was that the clean-room walkthrough had no screenshots — behaviour green, mandatory
+evidence absent, which contract section 8.1 does not let prose stand in for. The
+journey now photographs the six states it already asserts, writes the rendered text of
+each page beside each image, and binds both to the registry identifiers that state was
+made of in `screenshots.json`; `v1/tools/p6-clean-room-check.ts` recomputes every digest
+and finds every identifier itself, and the gate proves that half can refuse a state
+nobody photographed and an image altered under its own digest. `P6-R1-002` was that six
+completed reviews carried a placeholder where contract section 7.3 requires a provider
+session id; the values were recovered from the provider's task ledger and written into
+evidence/SESSIONS.md, four refused reviewer launches were recorded with theirs, and
+`v1/tools/p0-session-ledger-check.ts` is the check that reads that ledger as one
+document so a hole in one phase stops being invisible while another is certified. Six
+probes in `v1/tools/p0-negative-probes.sh` plant a placeholder, a duplicate task id, a
+duplicate session id and an unrecorded session, and require a refusal for each stated
+reason. This listing was committed BEFORE the certifying battery, for the reason P4 and
+P5 record below: a commit moves `HEAD`, and every `OUTPUT_SHA` marker in the package
+names it.
 
 **P5 was built by TWO sessions, and the second one is the rest of the build.**
 `BUILD-1` delivered the outcome model, the routes, the adapter's part and both

@@ -44,12 +44,35 @@
 // forbidden things, and requires this file to refuse that one. A checker nobody
 // has seen refuse is a checker nobody has tested.
 //
+// AND THE PICTURES, WHICH ARE MANDATORY EVIDENCE AND NOT DECORATION. Contract
+// section 10's P6 list names a clean-room walkthrough WITH SCREENSHOTS and
+// correlating backend/runtime receipts; section 9 refuses screenshots no receipt
+// corroborates and section 8.1 refuses prose in place of an absent mandatory
+// artifact. So a third question is asked here, and a journal that answers the
+// first two and not this one does not pass:
+//
+//   3. IS EVERY REQUIRED STATE PHOTOGRAPHED, AND DOES EACH IMAGE RESOLVE? The
+//      six states are the ones the journey already asserts. For each, the
+//      manifest must name an image that EXISTS and whose bytes hash to what it
+//      claims, the rendered text of that same page, and the registry-issued
+//      identifiers the state was built from — every one of which must be found
+//      HERE, by this file, in that text or in nothing at all. The digests and
+//      the text search are recomputed rather than believed: a manifest that
+//      described a picture nobody took would otherwise pass.
+//
+//   AND NOTHING SENSITIVE IN THE FRAME. The image bytes and the rendered text
+//   are swept for the credential shapes this system mints. The owner holds no
+//   key and the console cookie is HttpOnly, so this is expected to be true —
+//   which is exactly why it is measured instead of assumed.
+//
 // EXIT: 0 the journey is whole and clean · 1 it is not · 2 REFUSED (no journal).
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 const path = process.argv[2];
 if (!path) {
-  console.error("REFUSED: usage: p6-clean-room-check.ts <journal.jsonl>");
+  console.error("REFUSED: usage: p6-clean-room-check.ts <journal.jsonl> [screenshots.json]");
   process.exit(2);
 }
 let lines: string[];
@@ -283,7 +306,176 @@ for (const act of ownerActs) {
 }
 if (writes === 0) pass("no owner act wrote a file");
 
-// ---------------------------------------------------------------- 6. the boundary
+// ---------------------------------------------------------------- 6. the screenshots
+//
+// The six states contract section 10's P6 evidence list requires to have been
+// SEEN, keyed by the owner act that produced each one.
+
+const REQUIRED_SHOTS: { act: string; requirement: string; must_show: string[] }[] = [
+  { act: "read_draft_preview", requirement: "P6-FR-11", must_show: ["draft_id", "revision_id"] },
+  { act: "approve_revision", requirement: "P6-FR-12", must_show: ["approved_revision_id"] },
+  { act: "activate_assignment", requirement: "P6-FR-13", must_show: ["assignment_id", "desired_revision_id"] },
+  {
+    act: "read_session_stages",
+    requirement: "P6-FR-14",
+    must_show: ["session_id", "revision_id", "loaded_receipt_id", "invoked_receipt_id", "outcome_id"],
+  },
+  {
+    act: "read_new_session_stages",
+    requirement: "P6-FR-15",
+    must_show: ["session_id", "revision_id", "invoked_receipt_id", "outcome_id"],
+  },
+  {
+    act: "read_rollback_session",
+    requirement: "P6-FR-16",
+    must_show: ["session_id", "rolled_back_to_revision_id", "invoked_receipt_id"],
+  },
+];
+
+/** The shapes `v1/tools/p0-secret-scan.sh` sweeps evidence for, applied here to
+ *  the pixels and to the text they render — a scan of the package skips a PNG
+ *  because it is binary, so the one place a credential in a frame can be caught
+ *  is the place that made the frame. */
+const CREDENTIAL_SHAPES: [string, RegExp][] = [
+  ["a registry API key", /sk_[A-Za-z0-9_-]{16,}/],
+  ["a bootstrap token", /bt_[A-Za-z0-9_-]{16,}/],
+  ["an Authorization: Bearer header", /Authorization:\s*Bearer\s+[A-Za-z0-9._-]{20,}/i],
+  ["a PEM private key block", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+];
+
+interface ShotEntry {
+  image?: string;
+  image_sha256?: string;
+  rendered_text?: string;
+  rendered_text_sha256?: string;
+  act?: string;
+  requirement?: string;
+  identifiers?: { kind: string; value: string; where: string }[];
+}
+
+const manifestArg = process.argv[3];
+const MANIFEST = manifestArg
+  ? resolve(manifestArg)
+  : join(dirname(resolve(path)), "screenshots", "screenshots.json");
+
+let shots: ShotEntry[] = [];
+let shotDir = dirname(MANIFEST);
+if (!existsSync(MANIFEST)) {
+  fail(
+    `P6 mandatory evidence: no screenshot manifest at ${MANIFEST}. Contract section 10's P6 list requires a ` +
+      "clean-room walkthrough WITH screenshots and correlating receipts, and section 8.1 forbids replacing an " +
+      "absent mandatory artifact with prose about it.",
+  );
+} else {
+  try {
+    const parsed = JSON.parse(readFileSync(MANIFEST, "utf8")) as { screenshots?: ShotEntry[]; directory?: string };
+    shots = Array.isArray(parsed.screenshots) ? parsed.screenshots : [];
+    if (parsed.directory && isAbsolute(parsed.directory) && existsSync(parsed.directory)) shotDir = parsed.directory;
+  } catch (e) {
+    fail(`P6 mandatory evidence: the screenshot manifest ${MANIFEST} is not readable JSON — ${(e as Error).message}`);
+  }
+}
+
+/** The journal must agree that these pictures were taken, or the manifest is a
+ *  file somebody put beside a journal rather than a record of that run. */
+const journalShots = new Map<string, Act>();
+for (const a of acts) {
+  if (a.act !== "screenshot_captured") continue;
+  const s = (a.screenshot ?? {}) as { image?: string; act?: string };
+  if (typeof s.image === "string") journalShots.set(s.image, a);
+}
+
+const sha256 = (b: Buffer | string): string => createHash("sha256").update(b).digest("hex");
+let verifiedShots = 0;
+if (shots.length > 0) {
+  for (const need of REQUIRED_SHOTS) {
+    const entry = shots.find((s) => s.act === need.act);
+    if (!entry) {
+      fail(`${need.requirement}: no screenshot of the state the owner act \`${need.act}\` left on the screen`);
+      continue;
+    }
+    const image = typeof entry.image === "string" ? entry.image : "";
+    const imagePath = join(shotDir, image);
+    if (!image || !existsSync(imagePath) || !statSync(imagePath).isFile()) {
+      fail(`${need.requirement}: the manifest names the image "${image}" for \`${need.act}\` and no such file is there`);
+      continue;
+    }
+    const bytes = readFileSync(imagePath);
+    if (sha256(bytes) !== entry.image_sha256) {
+      fail(`${need.requirement}: ${image} does not hash to the sha256 the manifest records for it`);
+      continue;
+    }
+    if (bytes.length < 1024 || bytes.subarray(0, 8).toString("latin1") !== "\x89PNG\r\n\x1a\n") {
+      fail(`${need.requirement}: ${image} is not a PNG of a rendered page (${bytes.length} bytes)`);
+      continue;
+    }
+    const textName = typeof entry.rendered_text === "string" ? entry.rendered_text : "";
+    const textPath = join(shotDir, textName);
+    if (!textName || !existsSync(textPath)) {
+      fail(`${need.requirement}: ${image} carries no rendered text beside it, so what it shows cannot be read back`);
+      continue;
+    }
+    const text = readFileSync(textPath, "utf8");
+    if (sha256(text) !== entry.rendered_text_sha256) {
+      fail(`${need.requirement}: ${textName} does not hash to the sha256 the manifest records for it`);
+      continue;
+    }
+    if (!journalShots.has(image)) {
+      fail(`${need.requirement}: ${image} is in the manifest and the journal does not record it being taken`);
+      continue;
+    }
+
+    // the correlation, recomputed: every identifier the manifest says is on the
+    // screen must be IN THE TEXT THIS FILE JUST READ, and the identifiers the
+    // requirement names must be among them.
+    const declared = new Map<string, { value: string; where: string }>();
+    for (const id of entry.identifiers ?? []) declared.set(id.kind, { value: id.value, where: id.where });
+    let broken = 0;
+    for (const [kind, { value, where }] of declared) {
+      if (where === "visible_text" && !text.includes(value)) {
+        fail(`${need.requirement}: ${image} claims ${kind}=${value} is on the screen and its rendered text does not contain it`);
+        broken += 1;
+      }
+      if (where === "absent") {
+        fail(`${need.requirement}: ${image} carries ${kind}=${value} nowhere on the page it photographs`);
+        broken += 1;
+      }
+    }
+    for (const kind of need.must_show) {
+      if (!declared.has(kind)) {
+        fail(`${need.requirement}: ${image} maps to no ${kind}; an image nobody can resolve against a receipt is a caption`);
+        broken += 1;
+      }
+    }
+    if ([...declared.values()].every((d) => d.where !== "visible_text")) {
+      fail(`${need.requirement}: ${image} shows none of its identifiers as text a reader of the picture could check`);
+      broken += 1;
+    }
+
+    // and nothing sensitive in the frame
+    const haystack = `${bytes.toString("latin1")}\n${text}`;
+    for (const [what, shape] of CREDENTIAL_SHAPES) {
+      if (shape.test(haystack)) {
+        fail(`${need.requirement}: ${image} or its rendered text carries ${what}`);
+        broken += 1;
+      }
+    }
+    if (broken === 0) verifiedShots += 1;
+  }
+  if (verifiedShots === REQUIRED_SHOTS.length) {
+    pass(
+      `all ${verifiedShots} required states are photographed, each image hashes as recorded, resolves against the ` +
+        "registry's own identifiers and carries no credential",
+    );
+  }
+  notes.push(`screenshots: ${shots.length} in ${shotDir}, manifest ${MANIFEST}`);
+  for (const s of shots) {
+    const shown = (s.identifiers ?? []).map((i) => `${i.kind}(${i.where})`).join(" ");
+    notes.push(`  ${s.image} — ${s.requirement} ${s.act}: ${shown}`);
+  }
+}
+
+// ---------------------------------------------------------------- 7. the boundary
 //
 // Not a refusal — a statement, so a reader of the evidence sees where the line
 // between the owner and the deployment was drawn rather than having to infer it.
