@@ -1379,7 +1379,7 @@ test("the reading surfaces publish both columns, the matrix, and no number witho
 test("a reported PAIR moves the observation column, and a lone record does not", () => {
   const fx = p4Fixture();
   const d = deploy(fx, "fleet-observed");
-  allow(fx, fx.owner.agent_id, "report_outcome");
+  allow(fx, fx.reporter.agent_id, "report_outcome");
 
   const before = rest(fx, "GET", "/v1/assignments", fx.keys.owner);
   const beforeRow = before.body.items.find((i: any) => i.assignment_id === d.assignmentId);
@@ -1387,7 +1387,7 @@ test("a reported PAIR moves the observation column, and a lone record does not",
   assert.match(beforeRow.observed_arrival_window, /no runtime record source is configured/);
 
   // a LONE call first: it is evidence of an attempt and not of an arrival
-  const lone = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+  const lone = rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
     agent_id: fx.reviewer.agent_id,
     runtime: "codex",
     window: "period",
@@ -1404,7 +1404,7 @@ test("a reported PAIR moves the observation column, and a lone record does not",
   assert.equal(afterLone.observed_records_read, 1, "the window must say what was searched");
 
   // now the PAIR
-  const paired = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+  const paired = rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
     agent_id: fx.reviewer.agent_id,
     runtime: "codex",
     window: "period",
@@ -1450,11 +1450,11 @@ test("a reported PAIR moves the observation column, and a lone record does not",
 test("[I-7] a record's TEXT does not reach the database, the answer or a log line", () => {
   const fx = p4Fixture();
   const d = deploy(fx, "fleet-secret");
-  allow(fx, fx.owner.agent_id, "report_outcome");
+  allow(fx, fx.reporter.agent_id, "report_outcome");
   const SECRET = "sk_live_do_not_store_me_9f2a";
   const PATH = "/home/someone/.claude/skills/private/SKILL.md";
 
-  const res = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+  const res = rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
     agent_id: fx.reviewer.agent_id,
     runtime: "codex",
     window: "period",
@@ -1579,30 +1579,30 @@ test("the §6 surfaces enforce the same ACL and the same permission as the rest 
     window_to_ms: 2,
     records: [],
   };
-  const refused = rest(fx, "POST", "/v1/observations", fx.keys.owner, body);
+  const refused = rest(fx, "POST", "/v1/observations", fx.keys.reporter, body);
   assert.equal(refused.status, 403, refused.raw);
   assert.match(refused.body.error.message, /report_outcome/);
-  allow(fx, fx.owner.agent_id, "report_outcome");
-  assert.equal(rest(fx, "POST", "/v1/observations", fx.keys.owner, body).status, 201);
+  allow(fx, fx.reporter.agent_id, "report_outcome");
+  assert.equal(rest(fx, "POST", "/v1/observations", fx.keys.reporter, body).status, 201);
 
   // [I-3] a report with no boundary is refused rather than defaulted, and the
   // boundary PHRASE is the registry's own: a reporter that sends one is refused
   // rather than ignored, because a boundary silently dropped would be believed
-  const noBounds = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+  const noBounds = rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
     ...body,
     window_from_ms: undefined,
     window_to_ms: undefined,
   });
   assert.equal(noBounds.status, 400, noBounds.raw);
   assert.match(noBounds.body.error.message, /window_from_ms/);
-  const dictated = rest(fx, "POST", "/v1/observations", fx.keys.owner, { ...body, window_detail: "whatever I say" });
+  const dictated = rest(fx, "POST", "/v1/observations", fx.keys.reporter, { ...body, window_detail: "whatever I say" });
   assert.equal(dictated.status, 400, dictated.raw);
   assert.match(dictated.body.error.message, /window_detail/);
-  const badRuntime = rest(fx, "POST", "/v1/observations", fx.keys.owner, { ...body, runtime: "emacs" });
+  const badRuntime = rest(fx, "POST", "/v1/observations", fx.keys.reporter, { ...body, runtime: "emacs" });
   assert.equal(badRuntime.status, 400);
   // a report about an agent of another workspace is ABSENT
   assert.equal(
-    rest(fx, "POST", "/v1/observations", fx.keys.owner, { ...body, agent_id: fx.outsider.agent_id }).status,
+    rest(fx, "POST", "/v1/observations", fx.keys.reporter, { ...body, agent_id: fx.outsider.agent_id }).status,
     404,
   );
   fx.db.close();
@@ -1611,7 +1611,7 @@ test("the §6 surfaces enforce the same ACL and the same permission as the rest 
 test("MCP and REST answer identically, and the write replays byte for byte", () => {
   const fx = p4Fixture();
   const d = deploy(fx, "fleet-mcp");
-  allow(fx, fx.owner.agent_id, "report_outcome");
+  allow(fx, fx.reporter.agent_id, "report_outcome");
 
   const viaRest = rest(fx, "GET", "/v1/fleet", fx.keys.owner);
   const viaMcp = mcp(fx, fx.keys.owner, "fleet.list", {});
@@ -1634,9 +1634,9 @@ test("MCP and REST answer identically, and the write replays byte for byte", () 
     ],
     idempotency_key: "obs-1",
   };
-  const first = mcp(fx, fx.keys.owner, "observation.report", args);
+  const first = mcp(fx, fx.keys.reporter, "observation.report", args);
   assert.equal(first.isError, false);
-  const replay = mcp(fx, fx.keys.owner, "observation.report", args);
+  const replay = mcp(fx, fx.keys.reporter, "observation.report", args);
   assert.deepEqual(replay.data, first.data, "an idempotency key replays the original response");
   const observations = fx.db.prepare("SELECT COUNT(*) AS c FROM runtime_observations").get() as { c: number };
   assert.equal(observations.c, 1, "a replay wrote a second report");
@@ -1651,8 +1651,8 @@ test("MCP and REST answer identically, and the write replays byte for byte", () 
 test("a report is INSERT-only: it cannot be edited or withdrawn", () => {
   const fx = p4Fixture();
   const d = deploy(fx, "fleet-insert-only");
-  allow(fx, fx.owner.agent_id, "report_outcome");
-  const res = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+  allow(fx, fx.reporter.agent_id, "report_outcome");
+  const res = rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
     agent_id: fx.reviewer.agent_id,
     runtime: "codex",
     window: "period",
@@ -1753,7 +1753,7 @@ test("the inventory root is CONFIGURATION: a deployment names it, and a bare sta
 test("every capability kind is answered for an agent with no configured root — unknown, never zero", () => {
   const fx = p4Fixture();
   const d = deploy(fx, "fleet-no-root");
-  allow(fx, fx.owner.agent_id, "report_outcome");
+  allow(fx, fx.reporter.agent_id, "report_outcome");
 
   // BEFORE anything is known about the runtime, the column set itself is
   // `unknown` — WITH a reason, because which columns exist is a property of the
@@ -1766,7 +1766,7 @@ test("every capability kind is answered for an agent with no configured root —
   assert.equal(blind.body.agent.runtime_source, "none");
 
   // a report establishes the RUNTIME without establishing anything about a disk
-  const reported = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+  const reported = rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
     agent_id: fx.reviewer.agent_id,
     runtime: "codex",
     window: "period",

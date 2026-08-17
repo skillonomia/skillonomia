@@ -521,6 +521,15 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
     // lifecycle writer can reach the observation table.
     m = /^\/v1\/assignments\/([^/]+)\/observations$/.exec(path);
     if (method === "POST" && m) {
+      // THE CREDENTIAL IS JUDGED BEFORE THE BODY IS READ, and the order is
+      // written here because it is the order that was claimed. P3 REVIEW-2
+      // observed, as non-blocking, that FIX-1's report said an owner key is
+      // refused "before the body is read" while this route parsed first — so
+      // malformed JSON with an owner key answered `400` rather than `403`. No
+      // observed state was written either way; the document simply asserted
+      // something the code did not do. The service performs the identical check
+      // again, because an authorization rule does not live in a transport.
+      registry.assertMayWriteObservedState(auth);
       const body = parseBody(req);
       return mutationResponse(registry.recordAssignmentObservation(auth, m[1], body, idemKey(body)), 201);
     }

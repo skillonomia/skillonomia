@@ -243,7 +243,7 @@ function fixture(contract: unknown = DECLARED_CONTRACT, slug = "r8-probe"): Fixt
   const version = reviewedVersion(fx, slug, { manifest: { outcome_contract: contract } });
   assert.equal(
     rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
-      agent_id: fx.owner.agent_id,
+      agent_id: fx.reporter.agent_id,
       action: "report_outcome",
       recipient_scope: "local_agent",
     }).status,
@@ -251,7 +251,7 @@ function fixture(contract: unknown = DECLARED_CONTRACT, slug = "r8-probe"): Fixt
     "the probe could not grant itself `report_outcome`",
   );
   const report = (records: unknown[]) =>
-    rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+    rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
       agent_id: fx.owner.agent_id,
       runtime: "codex",
       window: "all_time",

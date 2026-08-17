@@ -269,8 +269,8 @@ function screens(): Screens {
 
   // OBSERVATIONS, through the real surface, so the two runtimes answer
   // differently and both answers are the runtime's own.
-  grant(fx, fx.owner.agent_id, "report_outcome");
-  const live = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+  grant(fx, fx.reporter.agent_id, "report_outcome");
+  const live = rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
     agent_id: claudeAgent,
     runtime: "claude_code",
     model: "claude-opus-4",
@@ -285,7 +285,7 @@ function screens(): Screens {
     ],
   });
   assert.equal(live.status, 201, live.raw);
-  const lone = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+  const lone = rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
     agent_id: codexAgent,
     runtime: "codex",
     window: "period",

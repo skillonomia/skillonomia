@@ -4890,12 +4890,7 @@ export class Registry {
    *      REGISTRATION'S. The body may not name one.
    */
   private requireEvidencePrincipal(auth: AuthContext): EvidencePrincipal {
-    if (auth.role === "owner" || auth.role === "admin") {
-      throw new ApiError(
-        "FORBIDDEN",
-        "an owner or admin credential may not report observed state: observed state changes only on backend, adapter or runtime evidence (INV-02, P3-FR-06)",
-      );
-    }
+    this.refuseDesiredStateCommander(auth);
     const principal = this.evidencePrincipals.lookup(auth.agent_id);
     if (principal === null) {
       throw new ApiError(
@@ -4904,6 +4899,74 @@ export class Registry {
       );
     }
     return principal;
+  }
+
+  /**
+   * THE ONE REFUSAL EVERY OBSERVED-STATE WRITER SHARES — `INV-02`, `P3-FR-06`,
+   * the close of P3 REVIEW-2 finding `P3-R2-001`.
+   *
+   * WHAT REVIEW-2 FOUND. FIX-1 put the owner/admin refusal inside
+   * `requireEvidencePrincipal`, which guards the NEW intake
+   * (`POST /v1/assignments/:id/observations`) and nothing else. The registry
+   * has a SECOND canonical observed-state writer, older than P3 and shipped in
+   * `v0.1.6`: `observation.report`, reachable over REST as
+   * `POST /v1/observations` and over MCP as the `observation.report` tool. Its
+   * only permission check was the §6.2 `report_outcome` grant — and an owner
+   * may issue grants, so the owner granted ITSELF the grant, filed two
+   * observations, and `GET /v1/fleet` published the owner's own `runtime` and
+   * `session_active` as observed fact. The invariant was held on one surface
+   * and open on two.
+   *
+   * WHERE THE BOUNDARY IS DRAWN, AND WHY THERE. It is drawn by PRINCIPAL, not
+   * by removing a route and not by requiring the new evidence-principal
+   * registration everywhere:
+   *
+   *   * The credential that can COMMAND desired state is refused. In this
+   *     schema that is exactly `owner` and `admin`: every desired-state
+   *     command of P3 — assign, activate, pause, revoke, select-revision —
+   *     goes through `requireOwnerOrAdmin`, and issuing a transfer grant does
+   *     too. A `reviewer` or a `member` commands nothing, which is why they are
+   *     not refused here.
+   *   * Every other check each surface already had is UNCHANGED. A genuine
+   *     agent, adapter or runtime identity holding the §6.2 `report_outcome`
+   *     grant reports through `observation.report` exactly as it did in
+   *     `v0.1.6` — same route, same body, same response — which is what `INV-08`
+   *     asks and why the boundary is not "the new intake's registration, now
+   *     everywhere". The new intake keeps its stricter rule on top of this one.
+   *   * A console session reaches NEITHER writer: both routes are mounted on
+   *     the Bearer surface in `src/http.ts`, after the `/v1/console/` branch has
+   *     already returned, so a session credential gets `401` from
+   *     `authenticate` before any service method runs.
+   *
+   * The other half of `P3-R2-001` is closed in `src/grants.ts`: a principal may
+   * no longer issue a grant TO ITSELF, so the mechanism that made the owner a
+   * reporter is gone as well as the reporting.
+   */
+  private refuseDesiredStateCommander(auth: AuthContext): void {
+    if (auth.role === "owner" || auth.role === "admin") {
+      throw new ApiError(
+        "FORBIDDEN",
+        "an owner or admin credential may not write observed state on any surface: the principal that commands " +
+          "desired state is not the principal that reports observed state, and observed state changes only on " +
+          "structured backend, adapter or runtime evidence (INV-02, P3-FR-06)",
+      );
+    }
+  }
+
+  /**
+   * The refusal, as something a TRANSPORT can apply before it reads a body.
+   *
+   * P3 REVIEW-2 noted, as non-blocking, that FIX-1's report claimed the
+   * assignment intake refuses an owner credential "before the body is read"
+   * while `src/http.ts` parsed the JSON first — so malformed JSON with an owner
+   * key answered `400`, not `403`. Nothing was written either way, but the
+   * document asserted an order the code did not have. This method is that
+   * order: `src/http.ts` calls it BEFORE `parseBody`, and the service method
+   * still performs the identical check, because a transport is not where an
+   * authorization rule is allowed to live.
+   */
+  assertMayWriteObservedState(auth: AuthContext): void {
+    this.requireEvidencePrincipal(auth);
   }
 
   private requireOwnerOrAdmin(auth: AuthContext, what: string): void {
@@ -5511,12 +5574,23 @@ export class Registry {
     input: unknown,
     idempotencyKey?: string,
   ): IdempotentOutcome<ObservationReportResponse> {
+    // `INV-02`, `P3-R2-001`: THE SECOND OBSERVED-STATE WRITER, HELD BY THE SAME
+    // RULE AS THE FIRST — and held HERE, outside the idempotency wrapper, so a
+    // refused credential does not even reserve a key. See
+    // `refuseDesiredStateCommander` for which principals this refuses and why
+    // the §6.2 grant check below it is left exactly as `v0.1.6` shipped it.
+    this.refuseDesiredStateCommander(auth);
     return withIdempotency(this.db, auth.agent_id, "observation.report", idempotencyKey, this.now(), () =>
       this.reportObservationInner(auth, input),
     );
   }
 
   private reportObservationInner(auth: AuthContext, raw: unknown): ObservationReportResponse {
+    // Restated at the inner boundary rather than trusted to the caller: this
+    // method is the one that reaches `recordObservationInTx`, and an
+    // authorization rule that holds only at whichever wrapper happens to be in
+    // front of it is the shape `P3-R2-001` had.
+    this.refuseDesiredStateCommander(auth);
     if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
     const input = (raw ?? {}) as Record<string, unknown>;
     const agentId = input.agent_id;

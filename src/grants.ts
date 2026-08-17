@@ -211,6 +211,37 @@ export function createGrant(db: Db, auth: AuthContext, input: CreateGrantInput, 
     throw new ApiError("PRECONDITION_FAILED", "a principal with no workspace membership takes no grant", "no_membership");
   }
 
+  // `report_outcome` IS NOT A CAPABILITY A COMMANDER OF DESIRED STATE MAY HOLD
+  // — the second half of P3 REVIEW-2 finding `P3-R2-001`.
+  //
+  // `report_outcome` is the permission `observation.report` stands on, and
+  // `observation.report` writes canonical observed state. The owner is the one
+  // principal that may issue grants at all, so the owner issued this one to
+  // ITSELF, filed observations through REST and MCP, and `GET /v1/fleet`
+  // published owner-supplied runtime and session state as observed fact. The
+  // `INV-02` boundary was defeated THROUGH the authorization model rather than
+  // around it.
+  //
+  // THE RULE IS ABOUT THIS ACTION AND THIS KIND OF GRANTEE, AND IT IS NARROW ON
+  // PURPOSE. What must not exist is a credential that both commands desired
+  // state and reports observed state, so `report_outcome` is refused to an
+  // owner or an admin — whoever issues it, including itself. Every other step of
+  // the transfer loop is untouched, in both directions: an owner of a
+  // single-owner fleet still grants itself `receive`, `assign`, `activate` and
+  // `revoke` and still drives the loop exactly as `v0.1.6` shipped it, and
+  // `report_outcome` to a genuine agent, adapter or runtime identity is exactly
+  // as it was. A blanket "no principal grants itself anything" would have been
+  // the tidier sentence and would have broken working deployments for a
+  // property `INV-02` does not ask for (`INV-08`).
+  if (action === "report_outcome" && (grantee.role === "owner" || grantee.role === "admin")) {
+    throw new ApiError(
+      "FORBIDDEN",
+      `\`report_outcome\` may not be granted to a principal holding workspace role ${grantee.role}: reporting ` +
+        "observed state is refused to every credential that can command desired state, so the grant that would " +
+        "authorize it is refused too — self-issued or not (INV-02, P3-FR-06)",
+    );
+  }
+
   const existing = findGrant(db, agentId, action, scope);
   if (existing) return { ...grantView(existing), noop: true };
 

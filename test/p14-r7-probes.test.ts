@@ -541,7 +541,7 @@ function fixture(): Fixture {
   const version = reviewedVersion(fx, "r7-probe", { manifest: { outcome_contract: DECLARED_CONTRACT } });
   assert.equal(
     rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
-      agent_id: fx.owner.agent_id,
+      agent_id: fx.reporter.agent_id,
       action: "report_outcome",
       recipient_scope: "local_agent",
     }).status,
@@ -549,7 +549,7 @@ function fixture(): Fixture {
     "the probe could not grant itself `report_outcome`",
   );
   const report = (records: unknown[]) =>
-    rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+    rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
       agent_id: fx.owner.agent_id,
       runtime: "codex",
       window: "all_time",
@@ -794,14 +794,14 @@ test("[DELTA] the shipped surface refuses the OLD name and accepts the NEW one, 
   const marker = arrivalMarker(version.versionId);
   assert.equal(
     rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
-      agent_id: fx.owner.agent_id,
+      agent_id: fx.reporter.agent_id,
       action: "report_outcome",
       recipient_scope: "local_agent",
     }).status,
     201,
   );
   const report = (evidence: unknown, id: string) =>
-    rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+    rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
       agent_id: fx.owner.agent_id,
       runtime: "codex",
       window: "all_time",

@@ -190,7 +190,7 @@ function wired(): Wired {
   const fx = p4Fixture();
   const built = reviewedVersion(fx, "r2-arrival");
   grant(fx, fx.member.agent_id, TRANSFER_ACTION);
-  grant(fx, fx.owner.agent_id, "report_outcome");
+  grant(fx, fx.reporter.agent_id, "report_outcome");
   const agent = fx.reviewer.agent_id;
   const pushed = rest(fx, "POST", `/v1/versions/${built.versionId}/transfers`, fx.keys.member, {
     recipient: { kind: "local_agent", ref: agent },
@@ -201,7 +201,7 @@ function wired(): Wired {
 
 /** File one observation, through the shipped surface, replacing the last. */
 function report(w: Wired, records: Array<Record<string, unknown>>): void {
-  const res = rest(w.fx, "POST", "/v1/observations", w.fx.keys.owner, {
+  const res = rest(w.fx, "POST", "/v1/observations", w.fx.keys.reporter, {
     agent_id: w.agent,
     runtime: "codex",
     window: "period",
@@ -1213,7 +1213,7 @@ function toolDrive(): ToolWorld {
   assert.equal(inFlight.status, 201, inFlight.raw);
 
   // the grants the transfer loop needs, and one deployment per assignment tool
-  for (const action of [TRANSFER_ACTION, "activate", "revoke", "report_outcome"]) {
+  for (const action of [TRANSFER_ACTION, "activate", "revoke"]) {
     const res = rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
       agent_id: fx.owner.agent_id,
       action,
@@ -1221,6 +1221,19 @@ function toolDrive(): ToolWorld {
     });
     assert.equal(res.status, 201, res.raw);
   }
+  // `report_outcome` goes to the REPORTER and not to the owner, and the drive
+  // for `observation.report` below is filed with the reporter's key. An owner
+  // credential may not write observed state on any surface (`INV-02`,
+  // `P3-R2-001`), so a sweep that drove this one tool as the owner would be
+  // measuring a call that can no longer happen.
+  assert.equal(
+    rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
+      agent_id: fx.reporter.agent_id,
+      action: "report_outcome",
+      recipient_scope: "local_agent",
+    }).status,
+    201,
+  );
   // FOUR deployments, because three of the states the deployment tools reach
   // are only reachable from a deployment that is ALREADY ACTIVE, and a sweep
   // that drove them from `queued` would watch them do nothing to a disk and
@@ -1337,7 +1350,7 @@ function toolDrive(): ToolWorld {
     ["capability.get", one(O, { agent_id: fx.reviewer.agent_id, name: "mcp-act" })],
     [
       "observation.report",
-      one(O, {
+      one(fx.keys.reporter!, {
         agent_id: fx.reviewer.agent_id,
         runtime: "codex",
         window: "period",

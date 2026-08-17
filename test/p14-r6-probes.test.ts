@@ -107,7 +107,7 @@ function i7Fixture(): I7Fixture {
   const version = reviewedVersion(fx, "i7-probe", { manifest: { outcome_contract: DECLARED_CONTRACT } });
   assert.equal(
     rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
-      agent_id: fx.owner.agent_id,
+      agent_id: fx.reporter.agent_id,
       action: "report_outcome",
       recipient_scope: "local_agent",
     }).status,
@@ -115,7 +115,7 @@ function i7Fixture(): I7Fixture {
     "the probe could not grant itself `report_outcome`",
   );
   const report = (records: unknown[]) =>
-    rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+    rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
       agent_id: fx.owner.agent_id,
       runtime: "codex",
       window: "all_time",
@@ -823,10 +823,16 @@ test("[D-18] the §4 `outcome` column, end to end, publishes the provenance of i
   const fx = p4Fixture();
   const version = reviewedVersion(fx, "d18-probe", { manifest: { outcome_contract: REMOTE_CONTRACT } });
   const marker = arrivalMarker(version.versionId);
-  for (const action of ["report_outcome", "assign"]) {
+  // `assign` stays with the owner, which drives the transfer below;
+  // `report_outcome` goes to the REPORTER, because a credential that commands
+  // desired state may neither hold it nor use it (`INV-02`, `P3-R2-001`).
+  for (const [agent, action] of [
+    [fx.reporter.agent_id, "report_outcome"],
+    [fx.owner.agent_id, "assign"],
+  ] as const) {
     assert.equal(
       rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
-        agent_id: fx.owner.agent_id,
+        agent_id: agent,
         action,
         recipient_scope: "local_agent",
       }).status,
@@ -843,7 +849,7 @@ test("[D-18] the §4 `outcome` column, end to end, publishes the provenance of i
 
   // FILED BY THE OWNER, ABOUT THE ADDRESSEE. The principal whose type the
   // verdict must carry is the one that REPORTED, not the one that ran.
-  const filed = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+  const filed = rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
     agent_id: addressee,
     runtime: "codex",
     window: "all_time",
@@ -863,7 +869,11 @@ test("[D-18] the §4 `outcome` column, end to end, publishes the provenance of i
   console.log(`      assessment: ${JSON.stringify(outcome.assessment)}`);
   assert.ok(outcome.assessment, "the shipped `outcome` column carries no provenance for its verdict [I-3]");
   assert.equal(outcome.assessment.basis, "self_report", "a claim about a process on another machine was published as an observation");
-  assert.equal(outcome.assessment.principal_type, "human", "the verdict does not carry the reporting principal's type [I-5]");
+  // `agent`, not `human`: the report is filed by the reporter principal, because
+  // an owner or admin credential may not write observed state at all
+  // (`INV-02`, `P3-R2-001`). What [I-5] asks of this column is that the TYPE of
+  // whoever claimed the result travels with the claim, and it still does.
+  assert.equal(outcome.assessment.principal_type, "agent", "the verdict does not carry the reporting principal's type [I-5]");
   assert.notEqual(outcome.value, "yes", "the registry published a `yes` for a process it never ran");
   fx.db.close();
 });

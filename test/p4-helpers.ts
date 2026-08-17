@@ -34,6 +34,10 @@ export interface P4Fixture {
   service: AuthContext;
   /** botAdmin — agents.type='agent' holding role admin: also not human */
   botAdmin: AuthContext;
+  /** reporter-a — `agents.type='agent'`, role `member`: a genuine runtime/adapter
+   *  identity. It commands no desired state, so it is the one principal in this
+   *  cast that may hold `report_outcome` and file observations (`INV-02`). */
+  reporter: AuthContext;
   /** adopterA — plain member of wsA */
   member: AuthContext;
   /** adopterB — member of wsB, the cross-workspace actor */
@@ -103,6 +107,17 @@ export function p4Fixture(
   const admin = agentCtx(seed.db, seed, "admin-a", "human", "admin");
   const service = agentCtx(seed.db, seed, "svc-a", "service", "admin");
   const botAdmin = agentCtx(seed.db, seed, "bot-admin-a", "agent", "admin");
+  // `INV-02`, `P3-R2-001`: THE PRINCIPAL A RUNTIME REPORT ACTUALLY COMES FROM.
+  //
+  // Every observation suite in this tree used to grant `report_outcome` to
+  // `fx.owner` and file its reports with the owner's own key, because the owner
+  // is the credential nearest to hand. That is the exact shape REVIEW-2
+  // reproduced against the shipped surfaces, and it is now refused twice over:
+  // a principal may not grant ITSELF, and an owner or admin credential may not
+  // write observed state on any surface. So the suites report as what a
+  // reporter is — `agents.type='agent'`, holding no role that commands desired
+  // state — and the fixture names it rather than leaving each file to invent one.
+  const reporter = agentCtx(seed.db, seed, "reporter-a", "agent", "member");
   const fx: P4Fixture = {
     seed,
     db: seed.db,
@@ -114,6 +129,7 @@ export function p4Fixture(
     admin,
     service,
     botAdmin,
+    reporter,
     member: ctxFor(seed, seed.adopterA, seed.wsA, "member"),
     outsider: ctxFor(seed, seed.adopterB, seed.wsB, "member"),
     keys: {},

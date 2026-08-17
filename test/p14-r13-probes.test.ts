@@ -208,7 +208,7 @@ test("[13.1] a call and an output that DO NOT share an id are not a pair, and `o
   for (const shape of COLLIDING) {
     const fx = p4Fixture();
     const d = deploy(fx, `r13-arrival-${COLLIDING.indexOf(shape)}`);
-    allow(fx, fx.owner.agent_id, "report_outcome");
+    allow(fx, fx.reporter.agent_id, "report_outcome");
 
     // the two ids ARE different strings, and the shipped arithmetic DOES give
     // them one digest — stated here so that the attack below is not merely
@@ -220,7 +220,7 @@ test("[13.1] a call and an output that DO NOT share an id are not a pair, and `o
       `${shape.what}: sha256 of the UTF-8 bytes separates these two, so this runtime does not have the defect`,
     );
 
-    const planted = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+    const planted = rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
       agent_id: fx.reviewer.agent_id,
       runtime: "codex",
       window: "period",
@@ -362,9 +362,9 @@ test("[13.2] the SURFACE-level idempotency key too: a second, different report i
   for (const shape of COLLIDING) {
     const fx = p4Fixture();
     const d = deploy(fx, `r13-surface-${COLLIDING.indexOf(shape)}`);
-    allow(fx, fx.owner.agent_id, "report_outcome");
+    allow(fx, fx.reporter.agent_id, "report_outcome");
     const report = (key: string, callId: string) =>
-      rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+      rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
         agent_id: fx.reviewer.agent_id,
         runtime: "codex",
         window: "all_time",
@@ -840,8 +840,8 @@ const PROOFS: Record<string, Proof> = {
     run: () => {
       const fx = p4Fixture();
       const d = deploy(fx, "r13-service-proof");
-      allow(fx, fx.owner.agent_id, "report_outcome");
-      const refused = rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+      allow(fx, fx.reporter.agent_id, "report_outcome");
+      const refused = rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
         agent_id: fx.reviewer.agent_id,
         runtime: "codex",
         window: "all_time",

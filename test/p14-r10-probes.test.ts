@@ -122,7 +122,7 @@ function fixture(slug = "r10-probe"): Fixture {
   const version = reviewedVersion(fx, slug);
   assert.equal(
     rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
-      agent_id: fx.owner.agent_id,
+      agent_id: fx.reporter.agent_id,
       action: "report_outcome",
       recipient_scope: "local_agent",
     }).status,
@@ -130,7 +130,7 @@ function fixture(slug = "r10-probe"): Fixture {
     "the probe could not grant itself `report_outcome`",
   );
   const report = (body: Record<string, unknown>) =>
-    rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+    rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
       agent_id: fx.owner.agent_id,
       runtime: "codex",
       window: "all_time",
@@ -381,7 +381,7 @@ test("[10.4b] [I-3] survives: the boundary is still stated, and a `period` with 
   assert.match(detail, /all_time/, "the boundary names the selection it was taken over");
 
   const g = fixture("r10-window-refused");
-  const bad = rest(g.fx, "POST", "/v1/observations", g.fx.keys.owner, {
+  const bad = rest(g.fx, "POST", "/v1/observations", g.fx.keys.reporter, {
     agent_id: g.fx.owner.agent_id,
     runtime: "codex",
     window: "period",
@@ -390,7 +390,7 @@ test("[10.4b] [I-3] survives: the boundary is still stated, and a `period` with 
   assert.equal(bad.status, 400, `a \`period\` with no bounds is refused rather than defaulted [I-3]: ${bad.raw}`);
 
   const h = fixture("r10-window-period");
-  const good = rest(h.fx, "POST", "/v1/observations", h.fx.keys.owner, {
+  const good = rest(h.fx, "POST", "/v1/observations", h.fx.keys.reporter, {
     agent_id: h.fx.owner.agent_id,
     runtime: "codex",
     window: "period",

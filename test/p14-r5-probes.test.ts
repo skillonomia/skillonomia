@@ -505,14 +505,19 @@ test("[D-2] `observation.report` takes a `result` only with the evidence that es
   const fx: P4Fixture = p4Fixture();
   const version = reviewedVersion(fx, "d2-probe");
   const marker = arrivalMarker(version.versionId);
-  for (const action of ["report_outcome"]) {
-    assert.equal(
-      rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, { agent_id: fx.owner.agent_id, action, recipient_scope: "local_agent" }).status,
-      201,
-    );
-  }
+  // the grant goes to the REPORTER: `report_outcome` is refused to an owner or
+  // admin grantee, and the report below is filed with the reporter's key
+  // (`INV-02`, `P3-R2-001`).
+  assert.equal(
+    rest(fx, "POST", "/v1/transfer-grants", fx.keys.owner, {
+      agent_id: fx.reporter.agent_id,
+      action: "report_outcome",
+      recipient_scope: "local_agent",
+    }).status,
+    201,
+  );
   const report = (records: unknown[]): { status: number; raw: string } =>
-    rest(fx, "POST", "/v1/observations", fx.keys.owner, {
+    rest(fx, "POST", "/v1/observations", fx.keys.reporter, {
       agent_id: fx.owner.agent_id,
       runtime: "codex",
       window: "all_time",
