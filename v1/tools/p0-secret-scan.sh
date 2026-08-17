@@ -102,10 +102,54 @@ for p in "${PATTERNS[@]}"; do
 done
 [ "$excused" -gt 0 ] && echo "excused: $excused match(es) whose sha256 is a pinned test fixture of this repository"
 
+# ---------------------------------------------------------------------------
+# THE SECOND SUBJECT: A CREDENTIAL FILE, WHICH IS NOT A CREDENTIAL-SHAPED VALUE.
+#
+# P4 BUILD-1 found this and it is a real gap in a tool every phase depends on:
+# the sweep above matches credential-shaped VALUES IN TEXT, so a directory
+# holding a runtime's real `auth.json` or `.credentials.json` passed clean. An
+# OAuth refresh token is a long opaque string with no vendor prefix, a JWT is
+# three base64url segments, and neither has a shape this list can match without
+# matching half of every log file. What identifies them is the FILE.
+#
+# So the file check is by NAME and it is a REFUSAL, not a heuristic: an evidence
+# package has no business carrying a runtime's login whatever is inside it, and
+# a file named `auth.json` that happens to be harmless is still a file nobody
+# should have copied into evidence. NOTHING ABOVE IS WEAKENED — this adds a
+# reason to fail and removes none.
+CREDENTIAL_FILENAMES=(
+  'auth.json' '.credentials.json' 'credentials.json' '.netrc' '_netrc'
+  '.npmrc' '.pypirc' '.git-credentials' 'id_rsa' 'id_ed25519' 'id_ecdsa' 'id_dsa'
+  '.env' 'service-account.json' 'gcloud-credentials.json'
+)
+files_found=""
+for name in "${CREDENTIAL_FILENAMES[@]}"; do
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    files_found="${files_found}${f}"$'\n'
+  done < <(find "$DIR" -type f -name "$name" 2>/dev/null)
+done
+# key material by EXTENSION as well: a private key does not have to be called
+# `id_rsa`, and the PEM pattern above only catches one of its encodings.
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  files_found="${files_found}${f}"$'\n'
+done < <(find "$DIR" -type f \( -name '*.pem' -o -name '*.p12' -o -name '*.pfx' -o -name '*.jks' -o -name '*.keystore' \) 2>/dev/null)
+
+if [ -n "${files_found//[$'\n']/}" ]; then
+  echo "HIT  credential FILE by name"
+  # the PATH is printed and the CONTENT is not — the same rule the value sweep
+  # follows, for the same reason.
+  printf '%s' "$files_found" | sed 's/^/  /'
+  hits=$((hits + 1))
+else
+  echo "clean  no credential file by name or key-material extension"
+fi
+
 echo
 if [ "$hits" -eq 0 ]; then
-  echo "PASS  no credential-shaped value found in any artifact under $DIR"
+  echo "PASS  no credential-shaped value and no credential FILE found under $DIR"
   exit 0
 fi
-echo "FAIL  $hits pattern(s) matched - an artifact carries a credential"
+echo "FAIL  $hits check(s) matched - an artifact carries a credential, or a credential file was copied in"
 exit 1
