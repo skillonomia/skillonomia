@@ -259,6 +259,54 @@ else
   echo "  --  session-record probes                  SKIPPED (no *session-record*.md naming $ROLE in $EV)"
 fi
 
+# --- 09c two rows for one role, and the row nothing was reading ---------------
+#
+# P3 REVIEW-2 finding `P3-R2-003`: `ledgerOf` was a `.find()`, so a phase with
+# TWO rows for one role was checked against whichever came first. The reviewer
+# appended a second well-formed row for this phase`s BUILD-1 carrying different
+# identifiers and a stale output SHA; every cross-check read the original and
+# the checker exited 0 with PASS. The probe below is that package: the phase`s
+# first role, duplicated, with a different task id, a different session id and
+# an output SHA naming another commit.
+D="$(fresh_copy ledger-duplicate-role)"
+node -e '
+  const fs = require("fs");
+  const [file, role, phase] = process.argv.slice(1);
+  const lines = fs.readFileSync(file, "utf8").split("\n");
+  const i = lines.findIndex((l) => l.startsWith("|") && l.split("|")[1]?.trim() === phase && l.split("|")[2]?.trim() === role);
+  if (i < 0) { console.error("no ledger row for " + phase + " " + role); process.exit(3); }
+  const c = lines[i].split("|");
+  // A SECOND ROW THAT IS WELL-FORMED IN EVERY OTHER RESPECT — the point of the
+  // finding is that nothing about it is malformed. Different task id, different
+  // provider session id, and an output SHA naming a commit that is not the one
+  // the runs recorded.
+  c[3] = " deadbeef ";
+  c[4] = " `11111111-1111-4111-8111-111111111111` ";
+  c[10] = " `3b5acd417a15cd9f5b1a9b03faa6e7a90b0498ec` ";
+  lines.splice(i + 1, 0, c.join("|"));
+  fs.writeFileSync(file, lines.join("\n"));
+' "$D/../SESSIONS.md" "$ROLE" "$PHASE_DIR_NAME"
+probe ledger-duplicate-role 1 "rows for role" -- "${EVCHECK[@]}" "$D"
+
+# And the other direction of the same rule: a ledger row for a BUILD or FIX
+# session with no runs and no record behind it. Without this the bijection is
+# satisfiable by deleting evidence rather than by having it.
+D="$(fresh_copy ledger-row-without-evidence)"
+node -e '
+  const fs = require("fs");
+  const [file, role, phase] = process.argv.slice(1);
+  const lines = fs.readFileSync(file, "utf8").split("\n");
+  const i = lines.findIndex((l) => l.startsWith("|") && l.split("|")[1]?.trim() === phase && l.split("|")[2]?.trim() === role);
+  if (i < 0) { console.error("no ledger row for " + phase + " " + role); process.exit(3); }
+  const c = lines[i].split("|");
+  c[2] = " FIX-9 ";
+  c[3] = " deadbeef ";
+  c[4] = " `11111111-1111-4111-8111-111111111111` ";
+  lines.splice(i + 1, 0, c.join("|"));
+  fs.writeFileSync(file, lines.join("\n"));
+' "$D/../SESSIONS.md" "$ROLE" "$PHASE_DIR_NAME"
+probe ledger-row-without-evidence 1 "has no session record" -- "${EVCHECK[@]}" "$D"
+
 # --- 10 the gate table: present, not merely well-formed -----------------------
 probe positive-control-gate-table 0 "PASS  every mandatory gate is present" -- "${GTCHECK[@]}" "$TABLE"
 

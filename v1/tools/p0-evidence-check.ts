@@ -455,7 +455,56 @@ for (const row of ledgerRows) {
   }
 }
 
-const ledgerOf = (role: string): LedgerRow | undefined => ledgerRows.find((r) => r.role === role);
+// ONE ROW PER (PHASE, ROLE), AND THE THREE LISTS ARE THE SAME LIST —
+// the close of P3 REVIEW-2 finding `P3-R2-003`.
+//
+// WHAT REVIEW-2 DID. `ledgerOf` was `ledgerRows.find(…)`, so when a phase
+// carried TWO rows for one role the checker compared the FIRST and never looked
+// at the second. The reviewer copied this package, appended a second
+// well-formed `P3 | BUILD-1` row with different identifiers and a stale output
+// SHA, and the checker printed PASS and exited 0. Every cross-check below —
+// runs against ledger, session record against ledger — was reading a row that
+// happened to come first in a file the check itself did not require to be
+// unambiguous.
+//
+// WHAT REPLACES IT. Two properties, and they are separate:
+//
+//   1. UNIQUENESS. `(phase, role)` identifies at most one ledger row and at most
+//      one session record. A duplicate is a problem in its own right, not a
+//      thing to be resolved by ordering, so `ledgerOf` answers `undefined` for
+//      an ambiguous role rather than picking one — a checker that silently chose
+//      would be the defect again with a Map in front of it.
+//   2. BIJECTION over the roles that PRODUCE evidence. A BUILD or FIX session
+//      writes runs, a session record and a ledger row; the three sets of roles
+//      must be equal, element for element. A row with no runs is a session
+//      nothing was recorded for, and runs with no row are the case the checker
+//      already caught, stated now as one property in both directions.
+//
+// REVIEW ROLES ARE EXCLUDED FROM THE BIJECTION ON PURPOSE, and it is a
+// narrowing rather than an omission. Contract section 7.3 makes a reviewer
+// read-only in an isolated checkout leaving no tracked changes: it appends no
+// run to the builder's `runs.jsonl` and writes no session record into the
+// builder's package. Requiring one would require the reviewer to write into the
+// artefact it is reviewing. A REVIEW row's identity and model contract are
+// checked above like any other row; what it is not required to have is records
+// it is forbidden to produce.
+const rolesOf = (rows: readonly { role: string }[]): Map<string, number> => {
+  const seen = new Map<string, number>();
+  for (const r of rows) seen.set(r.role, (seen.get(r.role) ?? 0) + 1);
+  return seen;
+};
+const ledgerRoleCounts = rolesOf(ledgerRows);
+const duplicateLedgerRoles = [...ledgerRoleCounts].filter(([, n]) => n > 1).map(([role]) => role);
+for (const role of duplicateLedgerRoles) {
+  const where = ledgerRows.filter((r) => r.role === role).map((r) => r.where).join(", ");
+  problems.push(
+    `session ledger: ${PHASE} carries ${ledgerRoleCounts.get(role)} rows for role "${role}" (${where}). ` +
+      "A (phase, role) names ONE session of this contract; two rows for it make every cross-check below ambiguous, " +
+      "and a checker that compared whichever came first would certify a package that contradicts itself (P3-R2-003).",
+  );
+}
+const ledgerOf = (role: string): LedgerRow | undefined =>
+  (ledgerRoleCounts.get(role) ?? 0) === 1 ? ledgerRows.find((r) => r.role === role) : undefined;
 
 // the runs and the ledger
 for (const [role, tuple] of runTuples) {
@@ -485,6 +534,8 @@ for (const [role, tuple] of runTuples) {
 
 // the session records
 const recordFiles = readdirSync(DIR).filter((f) => /session-record.*\.md$/i.test(f)).sort();
+/** role → the record files that declare it, for the uniqueness and the bijection */
+const recordsByRole = new Map<string, string[]>();
 for (const file of recordFiles) {
   const text = readFileSync(join(DIR, file), "utf8");
   const fields = new Map<string, string>();
@@ -501,9 +552,14 @@ for (const file of recordFiles) {
     continue;
   }
   const role = roleMatch[0];
+  recordsByRole.set(role, [...(recordsByRole.get(role) ?? []), file]);
   const row = ledgerOf(role);
   if (!row) {
-    problems.push(`${file}: role "${role}" has no row for ${PHASE} in ${basename(LEDGER)}.`);
+    problems.push(
+      (ledgerRoleCounts.get(role) ?? 0) > 1
+        ? `${file}: role "${role}" has ${ledgerRoleCounts.get(role)} rows for ${PHASE} in ${basename(LEDGER)}; this record cannot be checked against an ambiguous row.`
+        : `${file}: role "${role}" has no row for ${PHASE} in ${basename(LEDGER)}.`,
+    );
     continue;
   }
   const run = runTuples.get(role);
@@ -549,6 +605,39 @@ for (const file of recordFiles) {
   }
 }
 
+// ---- the bijection: ledger rows ↔ session records ↔ run tuples, over the
+//      roles that produce evidence (see `ledgerOf` above for why REVIEW is out)
+const producing = (role: string): boolean => kind(role) === "BUILD" || kind(role) === "FIX";
+for (const [role, files] of recordsByRole) {
+  if (files.length > 1) {
+    problems.push(
+      `session records: role "${role}" is declared by ${files.length} records (${files.join(", ")}). ` +
+        "A (phase, role) names one session, so it has one record; two records for it are two accounts of one session.",
+    );
+  }
+}
+const ledgerProducing = [...ledgerRoleCounts.keys()].filter(producing).sort();
+const recordProducing = [...recordsByRole.keys()].filter(producing).sort();
+const runProducing = [...runTuples.keys()].filter(producing).sort();
+for (const [what, roles] of [["a session record", recordProducing], ["a run in runs.jsonl", runProducing]] as const) {
+  for (const role of ledgerProducing) {
+    if (!roles.includes(role)) {
+      problems.push(
+        `session ledger: ${PHASE} row "${role}" has no ${what}. Contract section 9 requires every BUILD and FIX run of a ` +
+          "phase to be recorded; a ledger row with no evidence behind it is a session claimed and not shown (P3-R2-003).",
+      );
+    }
+  }
+}
+for (const role of recordProducing) {
+  if (!ledgerProducing.includes(role)) {
+    problems.push(`session records: role "${role}" has a record in this package and no row for ${PHASE} in ${basename(LEDGER)}.`);
+  }
+  if (!runProducing.includes(role)) {
+    problems.push(`session records: role "${role}" has a record and no run in runs.jsonl. A session that recorded no gate produced no evidence.`);
+  }
+}
+
 console.log(`phase directory: ${DIR}`);
 console.log(`run records:     ${records}`);
 console.log(`archived ledgers: ${archived.length}${archived.length ? ` (${archived.map((p) => relative(DIR, p)).join(", ")}), ${archivedRecords} record(s)` : ""}`);
@@ -557,6 +646,9 @@ console.log(`records naming a logs/ artifact: ${[...claimedLogs.values()].reduce
 console.log(`roles with a distinct (task_id, session_id): ${identities.size}`);
 console.log(`session ledger:  ${LEDGER}`);
 console.log(`ledger rows for ${PHASE}: ${ledgerRows.length}; session records cross-checked: ${recordFiles.length} (${recordFiles.join(", ") || "none"})`);
+console.log(
+  `bijection over BUILD/FIX roles: ledger [${ledgerProducing.join(", ") || "none"}] | records [${recordProducing.join(", ") || "none"}] | runs [${runProducing.join(", ") || "none"}]`,
+);
 
 if (problems.length) {
   console.error(`\nFAIL  ${problems.length} problem(s):`);
