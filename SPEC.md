@@ -143,6 +143,12 @@ not themselves normative.
   - `verify <package> [<registry-db>] [--db PATH] [--json]` — the §4.4
     algorithm over a package directory, `.tar` or `.tar.gz`.
   - `verify-log [<registry-db>] [--db PATH] [--json]` — the §4.4 chain walk.
+  - `adapter open|invoke|cleanup` — the P4 native runtime adapter: open a
+    session, freeze and materialize its loadout into a session-scoped runtime
+    home, run the runtime against that home and file the receipts its own output
+    proves, and remove the derived artifacts afterwards. It is a PRODUCT command
+    and not a harness because `INV-09` is a claim about the product: the owner
+    writes no manifest, no package, no signature and no runtime config.
   - `demo [--base-url URL] [--data DIR] [--json]` — the §9.1 quickstart end to
     end, orchestrated in the runtime rather than in a shell: the bootstrap
     exchange, the seed package, an adoption, the delivered package's own
@@ -1958,10 +1964,10 @@ installs none is conforming.
 
 ## Appendix D. NORMATIVE SQLite DDL
 
-The normative schema is given in **fifteen** migrations, applied in ascending file
+The normative schema is given in **sixteen** migrations, applied in ascending file
 order, and the live schema of a conforming registry is their sum. Each is
 embedded below verbatim and is byte-identical to the file this repository ships;
-a test asserts that for all fifteen. Schema version is tracked in
+a test asserts that for all sixteen. Schema version is tracked in
 `PRAGMA user_version` and nowhere else — there is no bookkeeping table, because
 the live schema is compared object for object against D.1 plus the deltas below,
 and a table this specification does not name would fail that comparison. A
@@ -2082,15 +2088,19 @@ path, and MUST NOT attempt it.
   tables, nine triggers and five indexes, on the same terms and with its own
   reversal
   (`migrations/down/0015_assignment_and_lifecycle_control.down.sql`), which drops
-  exactly those objects and restores `PRAGMA user_version` to `14`.
-  Those three are the migrations of this
+  exactly those objects and restores `PRAGMA user_version` to `14`. D.1p moves
+  them by exactly its own four tables, eight triggers and five indexes, on the
+  same terms and with its own reversal
+  (`migrations/down/0016_session_loadout_and_runtime_receipts.down.sql`), which
+  restores `PRAGMA user_version` to `15`.
+  Those four are the migrations of this
   schema that ship a reversal; D.1 through D.1l ship none, which
   `v1/P0-BASELINE.md` records as a fact about the released base. After all
-  fifteen migrations
+  sixteen migrations
   `PRAGMA user_version`
-  MUST report `15`. A test in this repository asserts the live schema equals D.1
+  MUST report `16`. A test in this repository asserts the live schema equals D.1
   plus exactly those twelve edits and the new objects of D.1f, D.1g, D.1h, D.1m,
-  D.1n and D.1o —
+  D.1n, D.1o and D.1p —
   the five of D.1b, the one of D.1c, the one of D.1d, the two of D.1e, the one
   rebuilt table of D.1f, the one further edit of D.1i to that same rebuilt table
   and the one column D.1j adds to `observed_records`, together with the one column
@@ -4375,6 +4385,204 @@ CREATE TRIGGER tg_assignment_observations_no_del BEFORE DELETE ON assignment_obs
 CREATE TRIGGER tg_idempotency_request_digests_no_upd BEFORE UPDATE ON idempotency_request_digests BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 ```
 
+### D.1p NORMATIVE DELTA — sixteenth migration (verbatim)
+
+IMMUTABLE SESSION LOADOUT AND RUNTIME RECEIPTS. Four tables, five indexes and
+eight triggers, with nothing edited: `agent_sessions` is one runtime session of
+one agent; `session_loadouts` and `session_loadout_entries` are the snapshot that
+session was given; `runtime_receipts` is the structured confirmation a runtime
+produced.
+
+THE SNAPSHOT IS IMMUTABLE AND EXACT. A conforming registry MUST record, for each
+loadout, the loadout id, the session id, the agent id, the runtime kind and
+version, the adapter version and the created timestamp, and for each entry the
+assignment id, the skill and revision ids, the revision number and the content
+digest; all of them are COLUMNS. `UNIQUE(session_id)` makes one session carry
+exactly one loadout. The INSERT-only triggers make the snapshot unchangeable
+after creation rather than merely unchanged.
+
+ONLY AN ACTIVE, APPROVED DESIRED ASSIGNMENT ENTERS ONE. A conforming registry
+MUST NOT place an unapproved, paused or revoked revision in a new loadout, and
+MUST NOT alter the loadout of a session that has already started; an owner
+command applies to the NEXT session, which is D.1o's `effective_from`.
+
+A STAGE PAST `proposed` REQUIRES A RECEIPT. `proposed` is written when the
+loadout is built; `loaded` and `invoked` are written ONLY from a row of
+`runtime_receipts`, whose `stage` has exactly those two members and whose
+`invocation_ref` is NOT NULL for an `invoked` receipt — the CHECK is where that
+is enforced. `runtime_receipts.source` is one of `backend`, `adapter` or
+`runtime` and has no `owner` member, so there is no value an owner command could
+write here; `agent_sessions.opened_by_source` is under the same rule, because
+opening a session produces observed state. A receipt whose `content_digest` is
+not the digest the loadout entry froze MUST be refused: evidence that proves a
+skill NAME does not prove a revision. The absence of a receipt is `unknown` with
+a reason and a source, computed by the reader and stored nowhere.
+
+THIS MIGRATION IS ADDITIVE AND REVERSIBLE. It edits no statement of D.1 or of any
+earlier delta and alters no table that existed before it. It ships its own
+reversal as `migrations/down/0016_session_loadout_and_runtime_receipts.down.sql`,
+which drops the eight triggers, the five indexes and the four tables and sets
+`PRAGMA user_version` back to `15`. Reversal discards the rows of those four
+tables — the sessions, their loadouts and the receipts — and touches no table
+that existed before them: no skill, revision, approval, assignment or lifecycle
+event is lost, which is the same property the derived native FILES have.
+`PRAGMA user_version` = `16`.
+
+```sql
+-- 0016 — THE IMMUTABLE SESSION LOADOUT, AND THE RECEIPTS THAT ARE THE ONLY WAY
+--        A STAGE PAST `proposed` IS EVER WRITTEN.
+--
+-- ---------------------------------------------------------------------------
+-- `agent_sessions` — one runtime session of one agent.
+--
+-- A session is opened by the ADAPTER, never by an owner command, and the column
+-- that records who opened it has no `owner` member for the same reason
+-- `assignment_observations.source` has none (`INV-02`): a session is a fact
+-- about a runtime, and the loadout it carries produces observed state
+-- (`proposed`) the moment it is built (`P4-FR-09`). If an owner surface could
+-- open a session, an owner command would produce observed state, which is the
+-- one thing the whole desired/observed split exists to forbid.
+--
+-- `runtime_kind` has exactly the two members V1 supports. A third runtime is a
+-- row here and a row in the adapter table in `src/runtime-adapter.ts`, which is
+-- the shape contract section 8.10 asks for — two thin adapters, not a plugin
+-- system.
+--
+-- ---------------------------------------------------------------------------
+-- `session_loadouts` / `session_loadout_entries` — THE SNAPSHOT.
+--
+-- `P4-FR-02` names ten things the snapshot must carry, and every one of them is
+-- a COLUMN rather than a member of a JSON blob: loadout id (`id`), session id,
+-- agent id, runtime kind and version, adapter version, and per entry the
+-- assignment id, the exact skill (`draft_id`) and revision (`draft_revision_id`,
+-- `revision`) ids and the content digest. `created_at_ms` is the created
+-- timestamp. `loadout_digest` is over the whole snapshot, so a reader can check
+-- that what it holds is what was built without walking the rows.
+--
+-- `P4-FR-03` — after creation the snapshot does not change — is the pair of
+-- INSERT-only triggers at the foot of this file, so immutability is a property
+-- of the storage and not of the discipline of every future writer. There is no
+-- UPDATE path to these tables in this process or any other.
+--
+-- `UNIQUE(session_id)` on the loadout: one session has exactly one loadout, and
+-- a second `POST` that tried to rebuild one would fail in the database before it
+-- failed in the service.
+--
+-- `UNIQUE(loadout_id, assignment_id)` and `UNIQUE(loadout_id, skill_name)`: an
+-- assignment appears once, and two lineages cannot claim one native directory —
+-- the second is a materialization-safety rule (`P4-FR-14`) enforced where the
+-- name is decided rather than where the file is opened.
+--
+-- ---------------------------------------------------------------------------
+-- `runtime_receipts` — the structured confirmation, `INV-05`.
+--
+-- `P4-FR-10`: `invoked` appears only on a receipt correlating SESSION, REVISION
+-- and INVOCATION. All three are columns and none of them is nullable for an
+-- `invoked` receipt — the CHECK below refuses a receipt that claims an
+-- invocation without naming one, because a correlation you cannot name is a
+-- correlation nobody checked.
+--
+-- `content_digest` is here as well as on the entry it points at, and the service
+-- refuses a receipt whose digest is not the entry's. `P4-FR-19` is the reason:
+-- a receipt that proves a skill NAME proves that some file with that name was
+-- read, and a name is exactly what an attacker or an accident controls. The
+-- digest is what makes the claim about an EXACT REVISION.
+--
+-- `source` again has no `owner` member (`P4-FR-13`): there is no value an owner
+-- command could write into this table, on top of the fact that no owner-reachable
+-- route reaches it.
+--
+-- WHY THE RECEIPT IS ITS OWN TABLE AND NOT A PROVENANCE BLOB ON THE
+-- OBSERVATION. `assignment_observations` is the answer to "what is the state of
+-- this assignment"; a receipt is the EVIDENCE that produced one of those
+-- answers, it has its own identity and its own digest, and P5 has to be able to
+-- read the receipts of a session without re-parsing observations. An observation
+-- names its receipt in `provenance_json.receipt_id`; the receipt names nothing
+-- about the observation, so the direction of the dependency matches the
+-- direction of the proof.
+PRAGMA defer_foreign_keys=ON;
+
+CREATE TABLE agent_sessions(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  runtime_kind TEXT NOT NULL CHECK(runtime_kind IN ('codex','claude_code')),
+  runtime_version TEXT NOT NULL CHECK(length(runtime_version) BETWEEN 1 AND 64),
+  adapter_version TEXT NOT NULL CHECK(length(adapter_version) BETWEEN 1 AND 64),
+  opened_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  opened_by_source TEXT NOT NULL CHECK(opened_by_source IN ('backend','adapter','runtime')),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0)
+);
+CREATE INDEX idx_agent_sessions_agent ON agent_sessions(agent_id,server_at_ms);
+
+CREATE TABLE session_loadouts(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  session_id TEXT NOT NULL UNIQUE REFERENCES agent_sessions(id) ON DELETE RESTRICT,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  runtime_kind TEXT NOT NULL CHECK(runtime_kind IN ('codex','claude_code')),
+  runtime_version TEXT NOT NULL CHECK(length(runtime_version) BETWEEN 1 AND 64),
+  adapter_version TEXT NOT NULL CHECK(length(adapter_version) BETWEEN 1 AND 64),
+  entry_count INTEGER NOT NULL CHECK(entry_count>=0),
+  loadout_digest TEXT NOT NULL CHECK(length(loadout_digest)=71),
+  provenance_json TEXT NOT NULL CHECK(length(provenance_json) BETWEEN 2 AND 20000),
+  created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0)
+);
+CREATE INDEX idx_session_loadouts_agent ON session_loadouts(agent_id,created_at_ms);
+
+CREATE TABLE session_loadout_entries(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  loadout_id TEXT NOT NULL REFERENCES session_loadouts(id) ON DELETE RESTRICT,
+  position INTEGER NOT NULL CHECK(position>=1),
+  assignment_id TEXT NOT NULL REFERENCES skill_assignments(id) ON DELETE RESTRICT,
+  draft_id TEXT NOT NULL CHECK(length(draft_id)=26),
+  draft_revision_id TEXT NOT NULL REFERENCES draft_revisions(id) ON DELETE RESTRICT,
+  revision INTEGER NOT NULL CHECK(revision>=1),
+  skill_name TEXT NOT NULL CHECK(length(skill_name) BETWEEN 1 AND 64),
+  content_digest TEXT NOT NULL CHECK(length(content_digest)=71),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0),
+  UNIQUE(loadout_id,assignment_id),
+  UNIQUE(loadout_id,position),
+  UNIQUE(loadout_id,skill_name)
+);
+CREATE INDEX idx_session_loadout_entries_loadout ON session_loadout_entries(loadout_id,position);
+
+CREATE TABLE runtime_receipts(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE RESTRICT,
+  loadout_id TEXT NOT NULL REFERENCES session_loadouts(id) ON DELETE RESTRICT,
+  loadout_entry_id TEXT NOT NULL REFERENCES session_loadout_entries(id) ON DELETE RESTRICT,
+  assignment_id TEXT NOT NULL REFERENCES skill_assignments(id) ON DELETE RESTRICT,
+  draft_revision_id TEXT NOT NULL REFERENCES draft_revisions(id) ON DELETE RESTRICT,
+  content_digest TEXT NOT NULL CHECK(length(content_digest)=71),
+  stage TEXT NOT NULL CHECK(stage IN ('loaded','invoked')),
+  runtime_session_ref TEXT NOT NULL CHECK(length(runtime_session_ref) BETWEEN 1 AND 200),
+  invocation_ref TEXT CHECK(invocation_ref IS NULL OR length(invocation_ref) BETWEEN 1 AND 200),
+  reported_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  source TEXT NOT NULL CHECK(source IN ('backend','adapter','runtime')),
+  receipt_digest TEXT NOT NULL CHECK(length(receipt_digest)=71),
+  payload_json TEXT NOT NULL CHECK(length(payload_json) BETWEEN 2 AND 20000),
+  observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms>0),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0),
+  CHECK(stage<>'invoked' OR invocation_ref IS NOT NULL)
+);
+CREATE INDEX idx_runtime_receipts_session ON runtime_receipts(session_id,observed_at_ms);
+CREATE INDEX idx_runtime_receipts_entry ON runtime_receipts(loadout_entry_id,stage);
+
+-- `P4-FR-03`: a snapshot that cannot be updated is a snapshot nobody has to be
+-- trusted not to update. The receipts are under the same rule for the reason
+-- every journal in this tree is.
+CREATE TRIGGER tg_agent_sessions_no_upd BEFORE UPDATE ON agent_sessions BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_agent_sessions_no_del BEFORE DELETE ON agent_sessions BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_session_loadouts_no_upd BEFORE UPDATE ON session_loadouts BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_session_loadouts_no_del BEFORE DELETE ON session_loadouts BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_session_loadout_entries_no_upd BEFORE UPDATE ON session_loadout_entries BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_session_loadout_entries_no_del BEFORE DELETE ON session_loadout_entries BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_runtime_receipts_no_upd BEFORE UPDATE ON runtime_receipts BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_runtime_receipts_no_del BEFORE DELETE ON runtime_receipts BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+```
+
 ### D.2 SQL negative probes
 
 Every probe below is executed as a test in this repository; each names the
@@ -5002,6 +5210,10 @@ Internal worker surface (NOT public, service-authenticated, single-binary in-pro
 | — | `POST /v1/console/assignments/{assignment_id}/revision` | a live console session (owner/admin) | `{"revision_id","if_version"?,"reason"?,"idempotency_key"?}` | `200` — the same shape. The target MUST be an approved revision of this lineage; nothing is deleted and no earlier selection is rewritten. Selecting an earlier approved revision is a rollback and is recorded as one |
 | — | `GET /v1/console/assignments/{assignment_id}/audit` | a live console session (owner/admin) | — | `200 {"contract","assignment_id","items":[{"entry_id","assignment_id","event_seq","event","desired_state","desired_revision_id","effective_from","actor_agent_id","actor_role","source","reason_code","reason","content_digest","provenance","server_at_ms"}]}` — structured columns, oldest first |
 | — | `POST /v1/assignments/{assignment_id}/observations` | Bearer, a registered evidence principal | `{"observed_status","reason_code","reason","observed_at_ms"?,"revision_id"?,"session_ref"?,"provenance","idempotency_key"?}` | `201 {"assignment_id","observed"}`. The OBSERVED-state intake, and the only writer of it. Authorized ONLY for a credential the deployment registered as an evidence principal (`evidence-principals.json` in the data directory); an owner or admin credential is `403` and a console session cannot reach this route at all. `source` is one of `backend`, `adapter`, `runtime` and is DERIVED from that registration — a body that supplies `source` is `400` |
+| — | `GET /v1/console/sessions/{session_id}` | a live console session (owner/admin) | — | `200 {"contract","session","loadout","entries","receipts"}` — the owner's READ of one session: what the loadout froze, the stage each entry reached and the receipts behind them. There is deliberately no `POST` under this prefix: opening a session and filing a receipt write OBSERVED state and live on the machine surface below |
+| — | `POST /v1/sessions` | Bearer, a registered evidence principal | `{"agent_id","runtime_kind":"codex\|claude_code","runtime_version","idempotency_key"?}` | `201 {"contract","loadout_id","session_id","agent_id","runtime_kind","runtime_version","adapter_version","entry_count","loadout_digest","created_at_ms","entries","excluded"}`. Opens a session and FREEZES its loadout from the ACTIVE desired assignments of that agent; an unapproved, paused or revoked revision does not enter it and is reported in `excluded` with a reason code. Each included entry gets a `proposed` observation. An owner or admin credential is `403` before the body is read |
+| — | `GET /v1/sessions/{session_id}/loadout` | Bearer, a registered evidence principal | — | `200 {"contract","session","loadout","contents"}` — the frozen entries and, for each, the canonical content the adapter renders. The adapter authors nothing |
+| — | `POST /v1/sessions/{session_id}/receipts` | Bearer, a registered evidence principal | `{"stage":"loaded\|invoked","runtime_session_ref","revision_id","content_digest","invocation_ref"?,"observed_at_ms"?,"transcript_excerpt"?,"idempotency_key"?}` | `201 {"contract","receipt_id","session_id","loadout_id","assignment_id","stage","receipt_digest","observed"}`. The ONLY writer of `loaded` and `invoked`. The receipt is refused unless the revision is in this session's loadout and the `content_digest` is the one that loadout froze, and an `invoked` receipt is refused unless a `loaded` one precedes it and it names an `invocation_ref`. `source` is DERIVED from the registration — a body that supplies one is `400`. An owner or admin credential is `403` before the body is read |
 
 Every mutating console route above is refused unless the request carries an `Origin` matching this origin AND the `X-Skillonomia-Console-CSRF` header holding the session's own token; either missing or wrong is `FORBIDDEN`. The console routes take the same `idempotency_key` the rest of this appendix does, so a resent form replays the stored response rather than deciding twice.
 

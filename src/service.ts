@@ -212,12 +212,28 @@ import {
   requestDigest,
   selectRevisionInTx,
   validateObservation,
+  EFFECTIVE_FROM,
   type AssignmentResponse,
   type AssignmentRow as SkillAssignmentRow,
   type FleetAgent,
   type LifecycleAction,
   type ObservedView,
 } from "./assignment-lifecycle.ts";
+import {
+  confirmFromReceiptInTx,
+  entryStages,
+  isRuntimeKind,
+  loadSession,
+  loadoutViewOf,
+  openSessionInTx,
+  receiptsOfSession,
+  validateReceipt,
+  RUNTIME_KINDS,
+  SESSION_CONTRACT_VERSION,
+  type LoadoutView,
+  type ReceiptResult,
+  type SessionRow,
+} from "./session-loadout.ts";
 import {
   CONSOLE_CONTRACT_VERSION,
   consoleAssignmentView,
@@ -4968,6 +4984,190 @@ export class Registry {
    */
   assertMayWriteObservedState(auth: AuthContext): void {
     this.requireEvidencePrincipal(auth);
+  }
+
+  // =====================================================================
+  // P4 — THE SESSION, ITS IMMUTABLE LOADOUT, AND THE RECEIPTS.
+  //
+  // Every mutating surface below requires a REGISTERED EVIDENCE PRINCIPAL,
+  // which is the same boundary P3 put in front of an observation and for the
+  // same reason. Opening a session writes `proposed` (`P4-FR-09`) and filing a
+  // receipt writes `loaded` or `invoked` (`P4-FR-10`) — all three are OBSERVED
+  // state, so all three are refused to the credential that commands DESIRED
+  // state, whatever else that credential holds (`INV-02`, `P4-FR-13`).
+  //
+  // The owner's access to all of it is the READ two methods further down.
+  // =====================================================================
+
+  /**
+   * `P4-FR-01`, `P4-FR-02`, `P4-FR-04`: a new session takes a snapshot of only
+   * the ACTIVE desired assignments of the chosen agent, carrying every
+   * identifier the requirement names, and an unapproved, paused or revoked
+   * revision does not enter it.
+   */
+  openAgentSession(auth: AuthContext, input: unknown, idempotencyKey?: string): IdempotentOutcome<LoadoutView & { contract: string }> {
+    const principal = this.requireEvidencePrincipal(auth);
+    const body = (input ?? {}) as Record<string, unknown>;
+    const agentId = body.agent_id;
+    if (typeof agentId !== "string" || agentId.length !== 26) {
+      throw new ApiError("INVALID_SCHEMA", "agent_id must be a 26-character id");
+    }
+    const runtimeKind = body.runtime_kind;
+    if (!isRuntimeKind(runtimeKind)) {
+      throw new ApiError("INVALID_SCHEMA", `runtime_kind must be one of ${RUNTIME_KINDS.join(", ")}`);
+    }
+    const runtimeVersion = body.runtime_version;
+    if (typeof runtimeVersion !== "string" || runtimeVersion.trim().length < 1 || runtimeVersion.length > 64) {
+      throw new ApiError("INVALID_SCHEMA", "runtime_version is 1..64 characters");
+    }
+    // An adapter opens sessions for the fleet of its own workspace and no other.
+    const agent = this.db
+      .prepare("SELECT a.id AS id FROM agents a JOIN workspace_memberships m ON m.agent_id=a.id WHERE a.id=? AND m.workspace_id=?")
+      .get(agentId, auth.workspace_id) as { id: string } | undefined;
+    if (!agent) throw new ApiError("NOT_FOUND", `no agent ${String(agentId)} in this workspace`);
+    return withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "session.open",
+      idempotencyKey,
+      this.now(),
+      () => ({
+        contract: SESSION_CONTRACT_VERSION,
+        ...openSessionInTx(
+          this.db,
+          {
+            agent_id: agentId,
+            runtime_kind: runtimeKind,
+            runtime_version: runtimeVersion.trim(),
+            opened_by_agent_id: auth.agent_id,
+            opened_by_source: principal.source,
+            workspace_id: auth.workspace_id,
+          },
+          this.now(),
+        ),
+      }),
+      requestDigest({ agent_id: agentId, runtime_kind: runtimeKind, runtime_version: runtimeVersion }),
+    );
+  }
+
+  /**
+   * WHAT THE ADAPTER NEEDS IN ORDER TO MATERIALIZE: the frozen entries and, for
+   * each, the canonical content that entry names. The content is the REGISTRY'S
+   * — the adapter renders it and never authors it (`INV-09`, `P4-FR-07`).
+   */
+  sessionLoadoutForAdapter(auth: AuthContext, sessionId: unknown): {
+    contract: string;
+    session: { session_id: string; agent_id: string; runtime_kind: string; runtime_version: string; adapter_version: string };
+    loadout: LoadoutView;
+    contents: Array<{ entry_id: string; draft_revision_id: string; content_digest: string; content: unknown }>;
+  } {
+    this.requireEvidencePrincipal(auth);
+    const session = this.requireSessionOfWorkspace(auth, sessionId);
+    const loadout = loadoutViewOf(this.db, session);
+    const contents = loadout.entries.map((e) => {
+      const row = this.db
+        .prepare("SELECT content_json, content_digest FROM draft_revisions WHERE id=?")
+        .get(e.draft_revision_id) as { content_json: string; content_digest: string };
+      return {
+        entry_id: e.entry_id,
+        draft_revision_id: e.draft_revision_id,
+        content_digest: row.content_digest,
+        content: JSON.parse(row.content_json),
+      };
+    });
+    return {
+      contract: SESSION_CONTRACT_VERSION,
+      session: {
+        session_id: session.id,
+        agent_id: session.agent_id,
+        runtime_kind: session.runtime_kind,
+        runtime_version: session.runtime_version,
+        adapter_version: loadout.adapter_version,
+      },
+      loadout,
+      contents,
+    };
+  }
+
+  /** `P4-FR-10`, `P4-FR-13`: the structured receipt intake. An owner credential
+   *  is refused before the body is read, so no owner command can substitute for
+   *  one. */
+  recordRuntimeReceipt(auth: AuthContext, sessionId: unknown, input: unknown, idempotencyKey?: string): IdempotentOutcome<ReceiptResult & { contract: string }> {
+    const principal = this.requireEvidencePrincipal(auth);
+    const session = this.requireSessionOfWorkspace(auth, sessionId);
+    const body = (input ?? {}) as Record<string, unknown>;
+    const receipt = validateReceipt(body, this.now());
+    return withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "session.receipt",
+      idempotencyKey,
+      this.now(),
+      () => ({
+        contract: SESSION_CONTRACT_VERSION,
+        ...confirmFromReceiptInTx(this.db, session, auth.agent_id, principal.source, receipt, this.now()),
+      }),
+      requestDigest({ ...body, session_id: session.id }),
+    );
+  }
+
+  /**
+   * THE OWNER'S VIEW OF A SESSION — a READ, and the only session surface an
+   * owner-or-admin credential or a console session reaches.
+   *
+   * Seeing what a session was given is not the same act as claiming it was
+   * given, so this exists while `openAgentSession` and `recordRuntimeReceipt`
+   * are closed to the same caller. Every entry reports the stage a receipt
+   * established or `unknown` with all four `INV-03` fields (`P4-FR-11`).
+   */
+  consoleSessionView(auth: AuthContext, sessionId: unknown): {
+    contract: string;
+    session: Record<string, unknown>;
+    loadout: LoadoutView;
+    entries: unknown[];
+    receipts: unknown[];
+  } {
+    this.requireOwnerOrAdmin(auth, "reading a session loadout");
+    const session = this.requireSessionOfWorkspace(auth, sessionId);
+    const now = this.now();
+    return {
+      contract: CONSOLE_CONTRACT_VERSION,
+      session: {
+        session_id: session.id,
+        agent_id: session.agent_id,
+        runtime_kind: session.runtime_kind,
+        runtime_version: session.runtime_version,
+        adapter_version: session.adapter_version,
+        opened_by_agent_id: session.opened_by_agent_id,
+        opened_by_source: session.opened_by_source,
+        opened_at_ms: session.server_at_ms,
+        effective_from: EFFECTIVE_FROM,
+      },
+      loadout: loadoutViewOf(this.db, session),
+      entries: entryStages(this.db, session, now),
+      receipts: receiptsOfSession(this.db, session.id).map((r) => ({
+        receipt_id: r.id,
+        stage: r.stage,
+        assignment_id: r.assignment_id,
+        draft_revision_id: r.draft_revision_id,
+        content_digest: r.content_digest,
+        runtime_session_ref: r.runtime_session_ref,
+        invocation_ref: r.invocation_ref,
+        source: r.source,
+        reported_by_agent_id: r.reported_by_agent_id,
+        receipt_digest: r.receipt_digest,
+        observed_at_ms: r.observed_at_ms,
+      })),
+    };
+  }
+
+  /** A session of ANOTHER workspace is `NOT_FOUND` — the rule `getDraft` sets. */
+  private requireSessionOfWorkspace(auth: AuthContext, sessionId: unknown): SessionRow {
+    const row = loadSession(this.db, sessionId);
+    if (row.workspace_id !== auth.workspace_id) {
+      throw new ApiError("NOT_FOUND", `no session ${row.id}`);
+    }
+    return row;
   }
 
   private requireOwnerOrAdmin(auth: AuthContext, what: string): void {

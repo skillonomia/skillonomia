@@ -675,7 +675,7 @@ npm run verify-log -- <db>       # walk and recompute the transparency-log chain
 ```
 
 `verify` and `verify-log` are subcommands of the one executable
-(`src/cli.ts`), so the same six commands exist on every packaging path — from a
+(`src/cli.ts`), so the same seven commands exist on every packaging path — from a
 checkout as `node --experimental-strip-types --no-warnings src/cli.ts …` (the
 `npm run …` lines above are aliases for three of the six, and `package.json`
 defines no script for `version`, `help` or `demo`), inside the container as

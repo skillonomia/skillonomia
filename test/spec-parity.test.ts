@@ -106,6 +106,7 @@ const MIGRATION_BLOCKS: ReadonlyArray<{ heading: string; file: string }> = [
   { heading: "### D.1m NORMATIVE DELTA", file: "migrations/0013_capture_and_draft_revisions.sql" },
   { heading: "### D.1n NORMATIVE DELTA", file: "migrations/0014_owner_console_sessions_and_decisions.sql" },
   { heading: "### D.1o NORMATIVE DELTA", file: "migrations/0015_assignment_and_lifecycle_control.sql" },
+  { heading: "### D.1p NORMATIVE DELTA", file: "migrations/0016_session_loadout_and_runtime_receipts.sql" },
 ];
 
 test("every migration file is embedded in Appendix D byte-identically", () => {
@@ -764,7 +765,7 @@ test("§2, the help text, README and OPERATIONS list the same subcommands", () =
   const subcommands = [...body[0].matchAll(/case "([a-z-]+)":/g)]
     .map((m) => m[1])
     .filter((c) => !c.startsWith("-"));
-  assert.deepEqual(subcommands.sort(), ["demo", "help", "serve", "verify", "verify-log", "version"]);
+  assert.deepEqual(subcommands.sort(), ["adapter", "demo", "help", "serve", "verify", "verify-log", "version"]);
 
   const help = /export const HELP: string = \[([\s\S]*?)\]\.join/.exec(dispatch);
   assert.ok(help, "HELP not found");

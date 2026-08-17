@@ -451,6 +451,122 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
   },
   "assignment_observations.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
 
+  // --------------------------------------------------------- agent_sessions
+  // One runtime session of one agent, opened by an ADAPTER. Two columns carry
+  // the adapter's own words — the runtime's version string, and nothing else —
+  // and both are bounded: a version this build enumerated would be a build that
+  // cannot record the runtime released after it.
+  "agent_sessions.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "agent_sessions.workspace_id": { intake: "registry_generated", note: "taken from AuthContext, never from the payload" },
+  "agent_sessions.agent_id": {
+    intake: "registry_generated",
+    note: "resolved against the caller's own fleet before the row is written; an agent outside the workspace is NOT_FOUND",
+  },
+  "agent_sessions.runtime_kind": { intake: "bounded_form", note: "codex|claude_code — the two runtimes V1 supports" },
+  "agent_sessions.runtime_version": {
+    intake: "declared_limit",
+    note: "THE ADAPTER'S OWN REPORT of the runtime version it launched, bounded at 64 characters. It is not enumerated on purpose: a registry that only accepts versions it shipped a list for cannot record the version released after it",
+  },
+  "agent_sessions.adapter_version": {
+    intake: "registry_generated",
+    note: "`ADAPTER_VERSION` of this build, written by the registry and never taken from the request",
+  },
+  "agent_sessions.opened_by_agent_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "agent_sessions.opened_by_source": {
+    intake: "bounded_form",
+    note: "backend|adapter|runtime, DERIVED from the evidence-principal registration — no `owner` member, because opening a session produces observed state",
+  },
+  "agent_sessions.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
+  // -------------------------------------------------------- session_loadouts
+  // The immutable snapshot. Every column is the registry's own: an adapter asks
+  // for a loadout and does not describe one.
+  "session_loadouts.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "session_loadouts.session_id": { intake: "registry_generated", note: "a row of this registry" },
+  "session_loadouts.workspace_id": { intake: "registry_generated", note: "copied from the session row" },
+  "session_loadouts.agent_id": { intake: "registry_generated", note: "copied from the session row" },
+  "session_loadouts.runtime_kind": { intake: "bounded_form", note: "codex|claude_code, copied from the session row" },
+  "session_loadouts.runtime_version": { intake: "declared_limit", note: "copied from the session row; the limit is declared there" },
+  "session_loadouts.adapter_version": { intake: "registry_generated", note: "`ADAPTER_VERSION` of this build" },
+  "session_loadouts.entry_count": { intake: "registry_generated", note: "counted from the entries this registry selected" },
+  "session_loadouts.loadout_digest": {
+    intake: "digest",
+    note: "`sha256:` of the JCS form of the snapshot's own fields, computed here. It is what a reader checks a held copy against",
+  },
+  "session_loadouts.provenance_json": {
+    intake: "registry_generated",
+    note: "composed by `src/session-loadout.ts` out of this registry's own vocabulary — the candidate assignments, their desired states and the reason each was included or excluded. No string a caller sent is copied into it",
+  },
+  "session_loadouts.created_at_ms": { intake: "registry_generated", note: "the registry clock — the created timestamp `P4-FR-02` requires" },
+  "session_loadouts.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
+  // -------------------------------------------------- session_loadout_entries
+  "session_loadout_entries.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "session_loadout_entries.loadout_id": { intake: "registry_generated", note: "a row of this registry" },
+  "session_loadout_entries.position": { intake: "registry_generated", note: "the order this registry selected them in, dense from 1" },
+  "session_loadout_entries.assignment_id": { intake: "registry_generated", note: "a row of this registry" },
+  "session_loadout_entries.draft_id": { intake: "registry_generated", note: "a row of this registry" },
+  "session_loadout_entries.draft_revision_id": {
+    intake: "registry_generated",
+    note: "the desired revision of an ACTIVE assignment, re-checked against the approval table before the write",
+  },
+  "session_loadout_entries.revision": { intake: "registry_generated", note: "the revision number of that row" },
+  "session_loadout_entries.skill_name": {
+    intake: "bounded_form",
+    note: "DERIVED from the lineage's own title by `nativeSkillName` and matching [a-z0-9][a-z0-9-]{0,63}: this value becomes a path component in a runtime home, so it is never taken from a caller",
+  },
+  "session_loadout_entries.content_digest": {
+    intake: "digest",
+    note: "the revision's own digest, copied from `draft_revisions` rather than recomputed. It is what a receipt is checked against",
+  },
+  "session_loadout_entries.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
+  // --------------------------------------------------------- runtime_receipts
+  // The structured confirmation a runtime produced. This is the table with the
+  // most reporter-supplied text in the schema, and every one of those columns is
+  // a DECLARED LIMIT rather than an accident: a receipt this registry could only
+  // accept in a vocabulary it shipped is a receipt no real runtime can file.
+  "runtime_receipts.id": { intake: "registry_generated", note: "a ULID this registry mints" },
+  "runtime_receipts.session_id": { intake: "registry_generated", note: "a row of this registry" },
+  "runtime_receipts.loadout_id": { intake: "registry_generated", note: "resolved from the session, never from the body" },
+  "runtime_receipts.loadout_entry_id": {
+    intake: "registry_generated",
+    note: "resolved by looking the reported revision up IN THIS SESSION'S OWN LOADOUT; a revision that is not in it is refused",
+  },
+  "runtime_receipts.assignment_id": { intake: "registry_generated", note: "copied from the entry row" },
+  "runtime_receipts.draft_revision_id": { intake: "registry_generated", note: "copied from the entry row after the reported id matched it" },
+  "runtime_receipts.content_digest": {
+    intake: "digest",
+    note: "copied from the entry row, and written ONLY after the reported digest was compared against it and matched. A receipt with the right revision and the wrong digest is refused — `P4-FR-19` is this comparison",
+  },
+  "runtime_receipts.stage": { intake: "bounded_form", note: "loaded|invoked — and `proposed` is not a member, because no runtime confirms it" },
+  "runtime_receipts.runtime_session_ref": {
+    intake: "declared_limit",
+    note: "THE RUNTIME'S OWN SESSION IDENTIFIER, lifted from the runtime's own output and bounded at 200 characters. It is the correlation `P4-FR-10` asks for and it cannot be this registry's",
+  },
+  "runtime_receipts.invocation_ref": {
+    intake: "declared_limit",
+    note: "THE ADAPTER'S OWN REFERENCE to one invocation, bounded at 200 characters, NOT NULL for an `invoked` receipt and NULL for a `loaded` one — the CHECK in `0016` is where that is enforced",
+  },
+  "runtime_receipts.reported_by_agent_id": { intake: "registry_generated", note: "taken from AuthContext" },
+  "runtime_receipts.source": {
+    intake: "bounded_form",
+    note: "backend|adapter|runtime, DERIVED from the registration — a body that names a source at all is refused",
+  },
+  "runtime_receipts.receipt_digest": {
+    intake: "digest",
+    note: "`sha256:` of the JCS form of the receipt payload, computed here. It is what an observation's provenance names",
+  },
+  "runtime_receipts.payload_json": {
+    intake: "registry_generated",
+    note: "composed here from the columns above plus the reporter's bounded excerpt; it is the receipt's own canonical form and is what `receipt_digest` is taken over",
+  },
+  "runtime_receipts.observed_at_ms": {
+    intake: "declared_limit",
+    note: "THE REPORTER'S OWN CLOCK — when the runtime did the thing; `server_at_ms` beside it is when the receipt arrived",
+  },
+  "runtime_receipts.server_at_ms": { intake: "registry_generated", note: "the registry clock" },
+
   // ------------------------------------------------ idempotency_request_digests
   "idempotency_request_digests.idempotency_key_id": {
     intake: "registry_generated",

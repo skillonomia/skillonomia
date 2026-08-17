@@ -19,6 +19,7 @@
 import { existsSync } from "node:fs";
 import { VERSION } from "./version.ts";
 import { serve, defaultDbPath, type ServeOptions } from "./server.ts";
+import { runAdapter } from "./adapter-cli.ts";
 import { verifyPackageAt } from "./verify-cli.ts";
 import { verifyLogAt } from "./verify-log.ts";
 import { runDemo } from "./demo.ts";
@@ -63,6 +64,20 @@ export const HELP: string = [
   "        adoption, the package's own step, terminal `adopted` receipt and a",
   "        read-back. With no --base-url it starts a clean deployment of its own",
   "        in a temporary directory. Needs no bash, curl or tar.",
+  "  adapter open --agent ID --runtime KIND --runtime-version V --base DIR",
+  "               [--base-url URL] [--key KEY]",
+  "        open a session, freeze its loadout, materialize it into a",
+  "        session-scoped runtime home and file a `loaded` receipt per entry.",
+  "  adapter invoke --session ID --skill NAME --runtime KIND --home DIR",
+  "               --workdir DIR --transcripts DIR [--base-url URL] [--key KEY]",
+  "        run the runtime against that home and file the `invoked` receipt the",
+  "        runtime's own output proves.",
+  "  adapter cleanup --session ID --base DIR",
+  "        remove the session's derived artifacts. Destroys no registry data.",
+  "        The key is an EVIDENCE PRINCIPAL's, never the owner's: the registry",
+  "        refuses an owner or admin credential on every one of these surfaces.",
+  "        SKILLONOMIA_BASE_URL and SKILLONOMIA_ADAPTER_KEY are read when the",
+  "        options are absent.",
   "  version",
   "        print the release version.",
   "  help",
@@ -287,6 +302,43 @@ async function cmdDemo(argv: readonly string[], io: CliIo): Promise<number> {
   return EXIT_OK;
 }
 
+// ---------------------------------------------------------------- adapter
+
+/**
+ * The P4 native adapter, as a subcommand (`src/adapter-cli.ts`).
+ *
+ * It is here rather than in a script under `v1/tools/` because `INV-09` is a
+ * claim about the PRODUCT: the happy path may not require the owner to write a
+ * manifest, pack an archive, make a signature or edit a runtime config, and a
+ * gate harness that did the materialization itself would prove that of the
+ * harness rather than of the product. This is the shipped command a launcher
+ * runs, and the gates call exactly it.
+ */
+const ADAPTER_VALUE_OPTS = [
+  "--agent",
+  "--runtime",
+  "--runtime-version",
+  "--base",
+  "--base-url",
+  "--key",
+  "--session",
+  "--skill",
+  "--home",
+  "--workdir",
+  "--transcripts",
+  "--binary",
+];
+
+async function cmdAdapter(argv: readonly string[], io: CliIo): Promise<number> {
+  const sub = argv[0];
+  if (sub === undefined) throw new UsageError("adapter needs a subcommand: open, invoke or cleanup");
+  const parsed = parseArgs(argv.slice(1), ADAPTER_VALUE_OPTS, []);
+  if (parsed.positional.length > 0) {
+    throw new UsageError(`adapter ${sub} takes no positional arguments (got ${parsed.positional[0]})`);
+  }
+  return await runAdapter([sub], parsed.values, io);
+}
+
 // ---------------------------------------------------------------- dispatch
 
 /**
@@ -320,6 +372,8 @@ export async function runCli(argv: readonly string[], io: CliIo = CONSOLE_IO): P
         return cmdVerifyLog(rest, io);
       case "demo":
         return await cmdDemo(rest, io);
+      case "adapter":
+        return await cmdAdapter(rest, io);
       default:
         throw new UsageError(`unknown command ${cmd}`);
     }

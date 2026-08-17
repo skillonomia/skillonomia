@@ -332,7 +332,8 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       path === "/v1/console/fleet" ||
       path.startsWith("/v1/console/drafts") ||
       path.startsWith("/v1/console/capabilities") ||
-      path.startsWith("/v1/console/assignments")
+      path.startsWith("/v1/console/assignments") ||
+      path.startsWith("/v1/console/sessions")
     ) {
       if (!session) throw new ApiError("UNAUTHORIZED", "the owner console requires a session");
       // Every MUTATION under the console carries both defences: the request must
@@ -493,6 +494,20 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
         return json(200, JSON.stringify(registry.consoleAssignment(cauth, m[1])), { "Cache-Control": "no-store" });
       }
 
+      // P4 — THE OWNER'S SESSION VIEW, AND IT IS A `GET` AND NOTHING ELSE.
+      //
+      // An owner may SEE what a session was given and what a runtime confirmed.
+      // An owner may not open a session and may not file a receipt: both write
+      // OBSERVED state (`P4-FR-09`, `P4-FR-10`), and both live on the
+      // machine-to-machine surface below behind a registered evidence
+      // principal. There is deliberately no `POST` under this prefix — the
+      // absence is the enforcement of `P4-FR-13`, together with the fact that
+      // the intake below refuses an owner credential outright.
+      m = /^\/v1\/console\/sessions\/([^/]+)$/.exec(path);
+      if (method === "GET" && m) {
+        return json(200, JSON.stringify(registry.consoleSessionView(cauth, m[1])), { "Cache-Control": "no-store" });
+      }
+
       throw new ApiError("NOT_FOUND", `no route ${method} ${path}`);
     }
 
@@ -532,6 +547,34 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       registry.assertMayWriteObservedState(auth);
       const body = parseBody(req);
       return mutationResponse(registry.recordAssignmentObservation(auth, m[1], body, idemKey(body)), 201);
+    }
+
+    // P4 — THE SESSION SURFACE, MOUNTED HERE FOR THE REASON THE OBSERVATION
+    // INTAKE IS MOUNTED HERE.
+    //
+    // Opening a session BUILDS A LOADOUT and therefore writes `proposed`
+    // (`P4-FR-09`); filing a receipt writes `loaded` or `invoked`
+    // (`P4-FR-10`). All of that is observed state, so all of it is behind a
+    // Bearer key that the deployment registered as an evidence principal, and
+    // none of it is reachable with a console session — a session cookie never
+    // gets past the console prefix above, and the owner's own key is `403`
+    // before a body is read. `P4-FR-13` is these two facts and not a comment.
+    if (method === "POST" && path === "/v1/sessions") {
+      registry.assertMayWriteObservedState(auth);
+      const body = parseBody(req);
+      return mutationResponse(registry.openAgentSession(auth, body, idemKey(body)), 201);
+    }
+
+    m = /^\/v1\/sessions\/([^/]+)\/loadout$/.exec(path);
+    if (method === "GET" && m) {
+      return json(200, JSON.stringify(registry.sessionLoadoutForAdapter(auth, m[1])), { "Cache-Control": "no-store" });
+    }
+
+    m = /^\/v1\/sessions\/([^/]+)\/receipts$/.exec(path);
+    if (method === "POST" && m) {
+      registry.assertMayWriteObservedState(auth);
+      const body = parseBody(req);
+      return mutationResponse(registry.recordRuntimeReceipt(auth, m[1], body, idemKey(body)), 201);
     }
 
     if (method === "POST" && path === "/mcp") {

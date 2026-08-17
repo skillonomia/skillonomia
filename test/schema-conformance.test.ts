@@ -288,6 +288,28 @@ const NEW_OBJECTS: ReadonlyArray<{ file: string; names: readonly string[] }> = [
       "tg_idempotency_request_digests_no_upd",
     ],
   },
+  {
+    file: "0016_session_loadout_and_runtime_receipts.sql",
+    names: [
+      "agent_sessions",
+      "idx_agent_sessions_agent",
+      "session_loadouts",
+      "idx_session_loadouts_agent",
+      "session_loadout_entries",
+      "idx_session_loadout_entries_loadout",
+      "runtime_receipts",
+      "idx_runtime_receipts_session",
+      "idx_runtime_receipts_entry",
+      "tg_agent_sessions_no_upd",
+      "tg_agent_sessions_no_del",
+      "tg_session_loadouts_no_upd",
+      "tg_session_loadouts_no_del",
+      "tg_session_loadout_entries_no_upd",
+      "tg_session_loadout_entries_no_del",
+      "tg_runtime_receipts_no_upd",
+      "tg_runtime_receipts_no_del",
+    ],
+  },
 ];
 
 const ADDED_OBJECT_COUNT = NEW_OBJECTS.reduce((n, m) => n + m.names.length, 0);
@@ -383,7 +405,7 @@ test("live schema is Appendix D.1 plus exactly the Appendix D.1b delta", () => {
   assert.equal(liveSet.size, fileStatements.length + ADDED_OBJECT_COUNT, "live schema has no extra objects");
 });
 
-test("object counts: 39 tables, 45 triggers, 23 indexes; no bookkeeping table", () => {
+test("object counts: 43 tables, 53 triggers, 28 indexes; no bookkeeping table", () => {
   const db = openMigrated();
   const count = (type: string) =>
     (db
@@ -409,18 +431,21 @@ test("object counts: 39 tables, 45 triggers, 23 indexes; no bookkeeping table", 
   // D.1n adds five tables, ten triggers and two indexes — the Owner Console's
   // sessions, its one-time tickets and the owner's decision on a draft — and
   // edits nothing either.
+  // D.1p adds four tables, eight triggers and five indexes — the runtime
+  // session, its immutable loadout, that loadout's entries and the receipts a
+  // runtime produced — and edits nothing.
   // D.1o adds five tables, nine triggers and five indexes — the per-revision
   // approval, the assignment, its DESIRED-state journal, the OBSERVED reports
   // filed against it and the payload fingerprint beside an idempotency key —
   // and edits nothing at all.
-  assert.equal(count("table"), 39);
-  assert.equal(count("trigger"), 45);
-  assert.equal(count("index"), 23);
+  assert.equal(count("table"), 43);
+  assert.equal(count("trigger"), 53);
+  assert.equal(count("index"), 28);
   const uv = db.prepare("PRAGMA user_version").get() as { user_version: number };
   assert.equal(
     uv.user_version,
-    15,
-    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote, 0013 = D.1m the capture and draft domain of V1 — three INSERT-only tables added and nothing edited, 0014 = D.1n the Owner Console of V1 — five INSERT-only tables added and nothing edited, 0015 = D.1o assignment and lifecycle control — five INSERT-only tables added and nothing edited; tracked in user_version",
+    16,
+    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote, 0013 = D.1m the capture and draft domain of V1 — three INSERT-only tables added and nothing edited, 0014 = D.1n the Owner Console of V1 — five INSERT-only tables added and nothing edited, 0015 = D.1o assignment and lifecycle control — five INSERT-only tables added and nothing edited, 0016 = D.1p the immutable session loadout and the runtime receipts — four INSERT-only tables added and nothing edited; tracked in user_version",
   );
 });
 

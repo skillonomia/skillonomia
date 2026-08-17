@@ -347,6 +347,7 @@ needs no Bun, no `bash`, no `curl` and no `tar`:
 npm install -g @skillonomia/cli
 skillonomia serve --port 7431
 skillonomia demo                       # the §9.1 quickstart, end to end
+skillonomia adapter cleanup --help     # the P4 native runtime adapter
 ```
 
 **On macOS this is the path.** A global install of the published package, from
@@ -381,7 +382,7 @@ different markers, because only one of them exercised the registry.
 
 ## The command line
 
-One executable, six subcommands — the same set on all four packaging paths
+One executable, seven subcommands — the same set on all four packaging paths
 (the container image, a checkout run with Node ≥22.6, the `@skillonomia/cli`
 tarball, the compiled binary). Three of the four have a published artifact — the
 compiled binary as a release asset, the tarball as `@skillonomia/cli` on npm and
