@@ -358,8 +358,14 @@ const MANIFEST = manifestArg
   ? resolve(manifestArg)
   : join(dirname(resolve(path)), "screenshots", "screenshots.json");
 
+// THE IMAGES ARE RESOLVED AGAINST THE MANIFEST'S OWN DIRECTORY, ALWAYS. The
+// manifest records the absolute directory the run wrote to, and that value is
+// kept because it says where the pictures were made — but it is NOT what is
+// read. A package that has been preserved into an evidence directory would
+// otherwise send this checker back to the run's temporary work area to verify
+// itself, and the copy nobody read would be the copy the reviewer has.
 let shots: ShotEntry[] = [];
-let shotDir = dirname(MANIFEST);
+const shotDir = dirname(MANIFEST);
 if (!existsSync(MANIFEST)) {
   fail(
     `P6 mandatory evidence: no screenshot manifest at ${MANIFEST}. Contract section 10's P6 list requires a ` +
@@ -370,7 +376,9 @@ if (!existsSync(MANIFEST)) {
   try {
     const parsed = JSON.parse(readFileSync(MANIFEST, "utf8")) as { screenshots?: ShotEntry[]; directory?: string };
     shots = Array.isArray(parsed.screenshots) ? parsed.screenshots : [];
-    if (parsed.directory && isAbsolute(parsed.directory) && existsSync(parsed.directory)) shotDir = parsed.directory;
+    if (parsed.directory && isAbsolute(parsed.directory) && parsed.directory !== shotDir) {
+      notes.push(`the manifest was written by a run in ${parsed.directory}; it is being read where it now sits, ${shotDir}`);
+    }
   } catch (e) {
     fail(`P6 mandatory evidence: the screenshot manifest ${MANIFEST} is not readable JSON — ${(e as Error).message}`);
   }
