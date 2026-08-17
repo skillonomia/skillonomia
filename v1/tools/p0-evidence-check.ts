@@ -578,7 +578,10 @@ for (const file of recordFiles) {
     fields.set(c[0]!.toLowerCase(), c[1]!);
   }
   const declared = fields.get("phase / role") ?? "";
-  const roleMatch = /(BUILD|FIX|REVIEW)-\d+/.exec(declared) ?? /(BUILD|FIX|REVIEW)-\d+/.exec(text.split("\n")[0] ?? "");
+  // the continuation letter is part of the role, and reading it off would file
+  // `FIX-2b`'s record under `FIX-2` — two accounts of one session, which is the
+  // very shape rule 5b refuses
+  const roleMatch = /(BUILD|FIX|REVIEW)-\d+[a-z]?/.exec(declared) ?? /(BUILD|FIX|REVIEW)-\d+[a-z]?/.exec(text.split("\n")[0] ?? "");
   if (!roleMatch) {
     problems.push(`${file}: this session record names no role. A record of a session that does not say which session it is cannot be checked against anything.`);
     continue;

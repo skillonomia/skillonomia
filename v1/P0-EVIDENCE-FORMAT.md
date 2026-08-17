@@ -487,6 +487,7 @@ evidence/
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
     probes-fix1/                   one transcript per negative probe of the FIX-1 run, with its own README.md
+    probes-fix2/                   FIX-2's reproducer transcripts for `P3-R2-001`, before and after
     probes-fix2b/                  one transcript per negative probe of the FIX-2b run, with its own README.md
 ```
 
