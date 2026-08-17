@@ -198,7 +198,13 @@ export interface OutcomeReceiptInput {
   content_digest: string;
   reason_code: string;
   reason: string;
+  /** the effective observation time: the caller's when the caller stated one,
+   *  the server's clock when the caller did not */
   observed_at_ms: number;
+  /** whether the CALLER stated that time. `P5-R2-001`: the public contract makes
+   *  `observed_at_ms` optional, so a value the server minted must never enter
+   *  what identifies the delivery */
+  observed_at_declared: boolean;
   transcript_excerpt: string | null;
 }
 
@@ -233,7 +239,8 @@ export function validateOutcomeReceipt(body: Record<string, unknown>, nowMs: num
   if (!REASON_CODE.test(reasonCode)) {
     throw new ApiError("INVALID_SCHEMA", "reason_code is an UPPER_SNAKE machine-readable code");
   }
-  const observedAt = body.observed_at_ms === undefined ? nowMs : body.observed_at_ms;
+  const observedAtDeclared = body.observed_at_ms !== undefined;
+  const observedAt = observedAtDeclared ? body.observed_at_ms : nowMs;
   if (typeof observedAt !== "number" || !Number.isFinite(observedAt) || observedAt <= 0) {
     throw new ApiError("INVALID_SCHEMA", "observed_at_ms must be a positive number of milliseconds");
   }
@@ -251,6 +258,7 @@ export function validateOutcomeReceipt(body: Record<string, unknown>, nowMs: num
     reason_code: reasonCode,
     reason: bounded(body.reason, "reason", 2000),
     observed_at_ms: observedAt,
+    observed_at_declared: observedAtDeclared,
     transcript_excerpt: excerpt,
   };
 }
@@ -263,7 +271,11 @@ export interface OwnerConfirmationInput {
   confirmation_source: string;
   reason_code: string;
   reason: string;
+  /** the effective observation time, and whether the OWNER stated it. The owner
+   *  route makes `observed_at_ms` optional for the same reason the machine route
+   *  does, and `P5-R2-001` was the same defect on both */
   observed_at_ms: number;
+  observed_at_declared: boolean;
 }
 
 export function validateOwnerConfirmation(body: Record<string, unknown>, nowMs: number): OwnerConfirmationInput {
@@ -282,7 +294,8 @@ export function validateOwnerConfirmation(body: Record<string, unknown>, nowMs: 
   if (!REASON_CODE.test(reasonCode)) {
     throw new ApiError("INVALID_SCHEMA", "reason_code is an UPPER_SNAKE machine-readable code");
   }
-  const observedAt = body.observed_at_ms === undefined ? nowMs : body.observed_at_ms;
+  const observedAtDeclared = body.observed_at_ms !== undefined;
+  const observedAt = observedAtDeclared ? body.observed_at_ms : nowMs;
   if (typeof observedAt !== "number" || !Number.isFinite(observedAt) || observedAt <= 0) {
     throw new ApiError("INVALID_SCHEMA", "observed_at_ms must be a positive number of milliseconds");
   }
@@ -297,6 +310,7 @@ export function validateOwnerConfirmation(body: Record<string, unknown>, nowMs: 
     reason_code: reasonCode,
     reason: bounded(body.reason, "reason", 2000),
     observed_at_ms: observedAt,
+    observed_at_declared: observedAtDeclared,
   };
 }
 
@@ -316,6 +330,33 @@ export interface OutcomeResult {
 
 function digestOf(payload: unknown): string {
   return `sha256:${createHash("sha256").update(jcsCanonicalize(payload as JcsValue), "utf8").digest("hex")}`;
+}
+
+/**
+ * WHAT THE PAYLOAD IS, AND THEREFORE WHAT IDENTIFIES A REDELIVERY (`P5-R2-001`).
+ *
+ * The payload a digest is taken over is THE CALLER'S CLAIM. Every value in it is
+ * either something the caller sent or something the registry established from
+ * rows it already holds and would establish identically on any delivery. A value
+ * the SERVER MINTED FOR THIS DELIVERY is neither, and folding one in makes two
+ * byte-identical requests two different receipts.
+ *
+ * `observed_at_ms` is the only such value. The public contract makes it optional
+ * on both intakes, and when it is omitted the server supplies its own clock — so
+ * an ordinary retry of one receipt used to arrive as a contradiction of itself,
+ * which is precisely what `P5-FR-06` forbids. The claim therefore states the
+ * caller's time when the caller stated one and states its ABSENCE when the caller
+ * did not; `claimedObservedAt` below is that one rule, written once.
+ *
+ * The minted time is not lost and is not hidden: `session_outcomes.observed_at_ms`
+ * carries the effective time either way, which is what ordering and the Console
+ * read, and `server_at_ms` carries the moment of the write. It is provenance on
+ * the row, not identity in the digest. Two deliveries that differ in what the
+ * CALLER said about the time — one silent, one stating it — remain two different
+ * claims and still conflict, because the claim itself differs.
+ */
+function claimedObservedAt(input: { observed_at_ms: number; observed_at_declared: boolean }): number | null {
+  return input.observed_at_declared ? input.observed_at_ms : null;
 }
 
 function entryOfRevision(db: Db, loadoutId: string, revisionId: string): LoadoutEntryRow {
@@ -561,7 +602,7 @@ export function recordOutcomeReceiptInTx(
     reason: input.reason,
     source,
     reported_by_agent_id: reportedByAgentId,
-    observed_at_ms: input.observed_at_ms,
+    observed_at_ms: claimedObservedAt(input),
     transcript_excerpt: input.transcript_excerpt,
   } as Record<string, unknown>;
 
@@ -656,7 +697,7 @@ export function recordOwnerConfirmationInTx(
     reason: input.reason,
     source: "owner",
     reported_by_agent_id: ownerAgentId,
-    observed_at_ms: input.observed_at_ms,
+    observed_at_ms: claimedObservedAt(input),
   } as Record<string, unknown>;
 
   const prior = replayOrConflict(
@@ -874,6 +915,14 @@ function openedAfter(session: SessionRow, event: { id: string; server_at_ms: num
  *   * the earlier outcome is not touched — this is a new row, and the view
  *     below shows both.
  *
+ * AND IT REDELIVERS LIKE THE OTHER TWO INTAKES (`P5-FR-06`, `P5-FR-07`). Closing
+ * `P5-R2-001` on the two routes that share `replayOrConflict` showed that this
+ * third one did not share it at all: it inserted straight into `session_outcomes`
+ * and a plain retry of one confirmation reached `UNIQUE(loadout_entry_id,
+ * outcome_ref)` as a raw database error. A confirmation is a receipt, its
+ * `outcome_ref` is `rollback:<event id>`, and a redelivery of it is the same
+ * redelivery the other two intakes already answer with the stored row.
+ *
  * WHY THE JOURNAL AND NOT THE LABEL. P5 REVIEW-1 finding `P5-R1-001`: this
  * function checked that the event was a `revision_selected` and never that the
  * selection went backward, so `direction: "update"` — the provenance P3 writes
@@ -892,9 +941,15 @@ export function recordRollbackConfirmationInTx(
   session: SessionRow,
   reportedByAgentId: string,
   source: EvidenceSource,
-  input: { entry_id: string; rollback_action_event_id: string; reason: string; observed_at_ms: number },
+  input: {
+    entry_id: string;
+    rollback_action_event_id: string;
+    reason: string;
+    observed_at_ms: number;
+    observed_at_declared: boolean;
+  },
   nowMs: number,
-): OutcomeResult {
+): { result: OutcomeResult } | { conflict: OutcomeConflictView } {
   refuseIfClosed(db, session.id);
   const loadout = loadoutOfSession(db, session.id);
   const entry = loadoutEntries(db, loadout.id).find((e) => e.id === input.entry_id);
@@ -966,33 +1021,64 @@ export function recordRollbackConfirmationInTx(
     reason: input.reason,
     source,
     reported_by_agent_id: reportedByAgentId,
-    observed_at_ms: input.observed_at_ms,
+    observed_at_ms: claimedObservedAt(input),
   } as Record<string, unknown>;
 
-  return insertOutcome(
+  const outcomeRef = `rollback:${event.id}`;
+  const prior = replayOrConflict(
     db,
-    {
-      session_id: session.id,
-      loadout_id: loadout.id,
-      entry,
-      outcome: "rolled_back",
-      evidence_class: "rollback_confirmation",
-      outcome_ref: `rollback:${event.id}`,
-      reason_code: "ROLLBACK_CONFIRMED_BY_NEW_SESSION",
-      reason: input.reason,
-      source,
-      confirmation_source: null,
-      runtime_session_ref: null,
-      invocation_ref: null,
-      invocation_receipt_id: null,
-      rollback_to_revision_id: event.desired_revision_id,
-      rollback_action_event_id: event.id,
-      reported_by_agent_id: reportedByAgentId,
-      payload,
-      observed_at_ms: input.observed_at_ms,
-    },
+    entry,
+    session,
+    outcomeRef,
+    { outcome: "rolled_back", payload, digest: digestOf(payload) },
+    reportedByAgentId,
+    source,
+    input.observed_at_ms,
     nowMs,
   );
+  if (prior && "replay" in prior) {
+    return {
+      result: {
+        outcome_id: prior.replay.id,
+        session_id: prior.replay.session_id,
+        loadout_entry_id: prior.replay.loadout_entry_id,
+        assignment_id: prior.replay.assignment_id,
+        draft_revision_id: prior.replay.draft_revision_id,
+        outcome: prior.replay.outcome,
+        evidence_class: prior.replay.evidence_class,
+        outcome_digest: prior.replay.outcome_digest,
+        replayed: true,
+      },
+    };
+  }
+  if (prior) return { conflict: conflictView(prior.conflict) };
+
+  return {
+    result: insertOutcome(
+      db,
+      {
+        session_id: session.id,
+        loadout_id: loadout.id,
+        entry,
+        outcome: "rolled_back",
+        evidence_class: "rollback_confirmation",
+        outcome_ref: outcomeRef,
+        reason_code: "ROLLBACK_CONFIRMED_BY_NEW_SESSION",
+        reason: input.reason,
+        source,
+        confirmation_source: null,
+        runtime_session_ref: null,
+        invocation_ref: null,
+        invocation_receipt_id: null,
+        rollback_to_revision_id: event.desired_revision_id,
+        rollback_action_event_id: event.id,
+        reported_by_agent_id: reportedByAgentId,
+        payload,
+        observed_at_ms: input.observed_at_ms,
+      },
+      nowMs,
+    ),
+  };
 }
 
 // -------------------------------------------------------------- the reading

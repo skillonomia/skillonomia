@@ -599,6 +599,163 @@ test("P5-FR-07: a conflicting redelivery does not overwrite — the first stands
   assert.equal(view.outcomes[0].conflicts[0].claimed_outcome, "worked");
 });
 
+// ---------------------------------------------------------------------------
+// P5-R2-001 — THE RETRY THAT OMITS THE OPTIONAL OBSERVATION TIME.
+//
+// The two tests above always state `observed_at_ms`, so they never exercised the
+// shape the public contract actually documents as optional. Under a clock that
+// MOVES — and it must move, or the defect is invisible — the server minted a
+// fresh time for each delivery and folded it into the digest a redelivery is
+// compared against, so a byte-identical retry arrived as a contradiction of
+// itself. The clock counter below is read in the assertions: these tests fail
+// for the right reason only if the server really did mint two different times
+// between the two deliveries.
+// ---------------------------------------------------------------------------
+
+/** A clock that moves on every read and COUNTS its reads, so a test can assert
+ *  that time really passed between two deliveries. */
+function countingClock(): { clock: () => number; reads: () => number } {
+  let reads = 0;
+  return { clock: () => NOW + ++reads * 1000, reads: () => reads };
+}
+
+test("P5-FR-06 (P5-R2-001): a retry that omits observed_at_ms replays on the machine route — one outcome, no conflict", () => {
+  const { clock, reads } = countingClock();
+  const { fx, adapter } = ready("ship the thing", clock);
+  const lo = openSession(fx, adapter.key, fx.reporter.agent_id);
+  const entry = lo.entries[0];
+  loadAndInvoke(fx, adapter.key, lo.session_id, entry, "r2");
+
+  // the exact receipt a runtime retries: no idempotency key, and no
+  // `observed_at_ms`, which `SPEC.md` documents as optional
+  const body = {
+    outcome: "worked",
+    outcome_ref: "retried-receipt",
+    reason_code: "SHIPPED",
+    reason: "the invocation completed",
+  };
+  const first = fileOutcome(fx, adapter.key, lo.session_id, entry, body);
+  assert.equal(first.status, 201, first.body);
+  assert.equal(first.json.replayed, false);
+  const readsAfterFirst = reads();
+
+  const second = fileOutcome(fx, adapter.key, lo.session_id, entry, body);
+  assert.ok(reads() > readsAfterFirst, "the clock moved between the two deliveries, so the server minted a NEW time");
+  assert.equal(second.status, 201, second.body);
+  assert.equal(second.json.replayed, true);
+  assert.equal(second.json.outcome_id, first.json.outcome_id);
+  assert.equal(second.json.outcome_digest, first.json.outcome_digest);
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM session_outcomes").get() as { c: number }).c, 1);
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM outcome_conflicts").get() as { c: number }).c, 0);
+
+  // the minted time is not lost: the ROW carries what the server observed, and
+  // only the CLAIM the digest is taken over says the caller stated nothing
+  const row = fx.db.prepare("SELECT * FROM session_outcomes WHERE id=?").get(first.json.outcome_id) as any;
+  assert.ok(row.observed_at_ms > NOW, "the row keeps the effective observation time the server supplied");
+  assert.equal(JSON.parse(row.payload_json).observed_at_ms, null, "and the claim records that the caller stated none");
+});
+
+test("P5-FR-07 (P5-R2-001 control): with the time still omitted, a DIFFERENT claim under the same ref is still a conflict", () => {
+  const { clock } = countingClock();
+  const { fx, adapter } = ready("ship the thing", clock);
+  const lo = openSession(fx, adapter.key, fx.reporter.agent_id);
+  const entry = lo.entries[0];
+  loadAndInvoke(fx, adapter.key, lo.session_id, entry, "r2c");
+
+  const base = { outcome: "worked", outcome_ref: "retried-receipt", reason_code: "SHIPPED" };
+  const first = fileOutcome(fx, adapter.key, lo.session_id, entry, { ...base, reason: "the first account" });
+  assert.equal(first.status, 201, first.body);
+
+  // same enum, same ref, time still omitted — and a different reason. This is a
+  // real disagreement and it must stay one, or the closure of `P5-R2-001` would
+  // be "accept everything".
+  const contradicting = fileOutcome(fx, adapter.key, lo.session_id, entry, { ...base, reason: "a contradicting account" });
+  assert.equal(contradicting.status, 409, contradicting.body);
+  const conflict = JSON.parse(contradicting.json.error.current_state);
+  assert.equal(conflict.existing_outcome_id, first.json.outcome_id);
+  assert.equal(conflict.existing_outcome, "worked");
+  assert.equal(conflict.claimed_outcome, "worked");
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM session_outcomes").get() as { c: number }).c, 1);
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM outcome_conflicts").get() as { c: number }).c, 1);
+});
+
+test("P5-FR-06 (P5-R2-001): stating the time and staying silent about it are two different claims", () => {
+  const { clock } = countingClock();
+  const { fx, adapter } = ready("ship the thing", clock);
+  const lo = openSession(fx, adapter.key, fx.reporter.agent_id);
+  const entry = lo.entries[0];
+  loadAndInvoke(fx, adapter.key, lo.session_id, entry, "r2d");
+
+  const base = { outcome: "worked", outcome_ref: "silent-then-stated", reason_code: "SHIPPED", reason: "the invocation completed" };
+  const silent = fileOutcome(fx, adapter.key, lo.session_id, entry, base);
+  assert.equal(silent.status, 201, silent.body);
+  const minted = (fx.db.prepare("SELECT observed_at_ms m FROM session_outcomes WHERE id=?").get(silent.json.outcome_id) as { m: number }).m;
+
+  // the SAME effective time, now asserted by the caller rather than supplied by
+  // the server. The identity is what the CALLER said, so this is a second claim
+  // and not a replay of the first.
+  const stated = fileOutcome(fx, adapter.key, lo.session_id, entry, { ...base, observed_at_ms: minted });
+  assert.equal(stated.status, 409, stated.body);
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM session_outcomes").get() as { c: number }).c, 1);
+});
+
+test("P5-FR-06 (P5-R2-001): a retry that omits observed_at_ms replays on the OWNER route too", () => {
+  const { clock, reads } = countingClock();
+  const { fx, s, adapter } = ready("ship the thing", clock);
+  const lo = openSession(fx, adapter.key, fx.reporter.agent_id);
+  const entry = lo.entries[0];
+
+  const body = {
+    session_id: lo.session_id,
+    entry_id: entry.entry_id,
+    outcome: "worked",
+    outcome_ref: "owner-retried-receipt",
+    confirmation_source: "the owner watched the run in the terminal",
+    reason_code: "OWNER_SAW_IT",
+    reason: "the change shipped and the owner saw it",
+  };
+  const post = () => call(fx, { method: "POST", path: "/v1/console/outcomes", cookie: s.cookie, csrf: s.csrf, body });
+  const first = post();
+  assert.equal(first.status, 201, first.body);
+  assert.equal(first.json.replayed, false);
+  const readsAfterFirst = reads();
+
+  const second = post();
+  assert.ok(reads() > readsAfterFirst, "the clock moved between the two confirmations");
+  assert.equal(second.status, 201, second.body);
+  assert.equal(second.json.replayed, true);
+  assert.equal(second.json.outcome_id, first.json.outcome_id);
+  assert.equal(second.json.outcome_digest, first.json.outcome_digest);
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM session_outcomes").get() as { c: number }).c, 1);
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM outcome_conflicts").get() as { c: number }).c, 0);
+  const row = fx.db.prepare("SELECT * FROM session_outcomes WHERE id=?").get(first.json.outcome_id) as any;
+  assert.ok(row.observed_at_ms > NOW);
+  assert.equal(JSON.parse(row.payload_json).observed_at_ms, null);
+});
+
+test("P5-FR-07 (P5-R2-001 control): the owner route still records a conflict when the confirmation says something else", () => {
+  const { clock } = countingClock();
+  const { fx, s, adapter } = ready("ship the thing", clock);
+  const lo = openSession(fx, adapter.key, fx.reporter.agent_id);
+  const entry = lo.entries[0];
+
+  const base = {
+    session_id: lo.session_id,
+    entry_id: entry.entry_id,
+    outcome: "worked",
+    outcome_ref: "owner-retried-receipt",
+    confirmation_source: "the owner watched the run in the terminal",
+    reason_code: "OWNER_SAW_IT",
+  };
+  const post = (reason: string) =>
+    call(fx, { method: "POST", path: "/v1/console/outcomes", cookie: s.cookie, csrf: s.csrf, body: { ...base, reason } });
+  assert.equal(post("the first account").status, 201);
+  const contradicting = post("a contradicting account");
+  assert.equal(contradicting.status, 409, contradicting.body);
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM session_outcomes").get() as { c: number }).c, 1);
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM outcome_conflicts").get() as { c: number }).c, 1);
+});
+
 // ===========================================================================
 // P5-FR-08 / P5-FR-09 — a failure becomes a new revision, reviewed like any other
 // ===========================================================================
@@ -1157,6 +1314,54 @@ test("P5-FR-13 (P5-R1-002 control): a session opened AFTER the rollback in the S
   });
   assert.equal(confirmed.status, 201, confirmed.body);
   assert.equal(confirmed.json.outcome, "rolled_back");
+});
+
+// The third intake, found while closing `P5-R2-001` on the other two: this one
+// did not go through `replayOrConflict` at all, so a plain retry of one
+// confirmation reached `UNIQUE(loadout_entry_id, outcome_ref)` as a raw database
+// error rather than replaying. `P5-FR-06` is about a receipt, and a rollback
+// confirmation is one.
+test("P5-FR-06 (P5-R2-001): redelivering one rollback confirmation replays — one outcome, no conflict, no database error", () => {
+  const { fx, adapter, rollbackEventId } = rollbackInOneMillisecond();
+  const fresh = openSession(fx, adapter.key, fx.reporter.agent_id, "codex", "s-retry");
+  const body = { entry_id: fresh.entries[0].entry_id, rollback_action_event_id: rollbackEventId };
+  const post = () => call(fx, { method: "POST", path: `/v1/sessions/${fresh.session_id}/rollback-confirmations`, key: adapter.key, body });
+
+  const first = post();
+  assert.equal(first.status, 201, first.body);
+  assert.equal(first.json.replayed, false);
+  const second = post();
+  assert.equal(second.status, 201, second.body);
+  assert.equal(second.json.replayed, true);
+  assert.equal(second.json.outcome_id, first.json.outcome_id);
+  assert.equal(second.json.outcome_digest, first.json.outcome_digest);
+  assert.equal(
+    (fx.db.prepare("SELECT count(*) c FROM session_outcomes WHERE outcome='rolled_back'").get() as { c: number }).c,
+    1,
+  );
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM outcome_conflicts").get() as { c: number }).c, 0);
+});
+
+test("P5-FR-07 (P5-R2-001 control): a rollback confirmation that says something else is still a conflict", () => {
+  const { fx, adapter, rollbackEventId } = rollbackInOneMillisecond();
+  const fresh = openSession(fx, adapter.key, fx.reporter.agent_id, "codex", "s-retry-c");
+  const base = { entry_id: fresh.entries[0].entry_id, rollback_action_event_id: rollbackEventId };
+  const post = (extra: Record<string, unknown>) =>
+    call(fx, {
+      method: "POST",
+      path: `/v1/sessions/${fresh.session_id}/rollback-confirmations`,
+      key: adapter.key,
+      body: { ...base, ...extra },
+    });
+
+  assert.equal(post({}).status, 201);
+  const contradicting = post({ reason: "the owner rolled this back for a different reason entirely" });
+  assert.equal(contradicting.status, 409, contradicting.body);
+  assert.equal(
+    (fx.db.prepare("SELECT count(*) c FROM session_outcomes WHERE outcome='rolled_back'").get() as { c: number }).c,
+    1,
+  );
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM outcome_conflicts").get() as { c: number }).c, 1);
 });
 
 // ===========================================================================

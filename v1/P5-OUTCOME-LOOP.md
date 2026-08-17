@@ -201,9 +201,15 @@ comparison marked comparable rests on two sessions of one agent and one runtime
 kind. Those are joins.
 
 `v1/tools/p5-outcome-consistency-check.ts` is the join half and stops there: it
-takes a database path, opens it read-only, runs fifteen statements as queries
-that have to return no rows, prints the offending rows when one does, and exits 0
-or 1. It has no configuration, no schedule and no output format — the
+takes a database path, opens it read-only, runs fifteen statements that have to
+find no offending rows, prints the offenders when one does, and exits 0 or 1.
+Fourteen of the fifteen are queries. The fifteenth, the one about recorded
+conflicts, adds a step a query cannot take: it re-digests the claim the conflict
+carries with the registry's own canonicaliser, because what makes a conflict real
+is that the payloads differ and not that the normalised values do. FIX-2 changed
+that statement for exactly that reason — it had rested on the two enums differing,
+and so refused a database the product itself produces when one `worked` is
+contradicted by another `worked` for a different stated reason. It has no configuration, no schedule and no output format — the
 observability platform and the experiment system on P5's OUT list are what it is
 written to not become. Point it at the database a runtime gate or the browser
 gate leaves behind and it reads rows a real run produced.

@@ -5298,29 +5298,40 @@ export class Registry {
       typeof body.reason === "string" && body.reason.trim().length > 0 && body.reason.length <= 2000
         ? body.reason.trim()
         : "a new session was given the revision this rollback selected";
-    const observedAt = body.observed_at_ms === undefined ? this.now() : body.observed_at_ms;
+    // `P5-R2-001`: whether the CALLER stated the time, kept apart from the time
+    // itself, because a value this route minted must not identify the delivery.
+    const observedAtDeclared = body.observed_at_ms !== undefined;
+    const observedAt = observedAtDeclared ? body.observed_at_ms : this.now();
     if (typeof observedAt !== "number" || !Number.isFinite(observedAt) || observedAt <= 0) {
       throw new ApiError("INVALID_SCHEMA", "observed_at_ms must be a positive number of milliseconds");
     }
-    return withIdempotencyInTx(
+    return this.refuseOnConflict(withIdempotencyInTx(
       this.db,
       auth.agent_id,
       "session.rollback",
       idempotencyKey,
       this.now(),
-      () => ({
-        contract: OUTCOME_CONTRACT_VERSION,
-        ...recordRollbackConfirmationInTx(
+      () => {
+        const out = recordRollbackConfirmationInTx(
           this.db,
           session,
           auth.agent_id,
           principal.source,
-          { entry_id: entryId, rollback_action_event_id: eventId, reason, observed_at_ms: observedAt },
+          {
+            entry_id: entryId,
+            rollback_action_event_id: eventId,
+            reason,
+            observed_at_ms: observedAt,
+            observed_at_declared: observedAtDeclared,
+          },
           this.now(),
-        ),
-      }),
+        );
+        return "conflict" in out
+          ? { contract: OUTCOME_CONTRACT_VERSION, conflict: out.conflict }
+          : { contract: OUTCOME_CONTRACT_VERSION, ...out.result };
+      },
       requestDigest({ session_id: session.id, entry_id: entryId, rollback_action_event_id: eventId }),
-    );
+    ));
   }
 
   /**

@@ -30,7 +30,9 @@
 //   1  a statement did not hold — the rows contradict the phase's claims
 //   2  REFUSED — no database to read, or it has no P5 tables
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { openReadOnly } from "../../src/db.ts";
+import { jcsCanonicalize, type JcsValue } from "../../src/jcs.ts";
 
 const path = process.argv[2];
 if (!path) {
@@ -57,10 +59,9 @@ for (const required of ["session_outcomes", "session_closures", "outcome_conflic
 let failures = 0;
 const rows = (sql: string): Array<Record<string, unknown>> => db.prepare(sql).all() as Array<Record<string, unknown>>;
 
-/** One statement about the rows. `offenders` is the query that must return
- *  NOTHING; whatever it returns is printed, because a count is not evidence. */
-function must(statement: string, offenders: string): void {
-  const bad = rows(offenders);
+/** One statement about the rows. `bad` is what must be EMPTY; whatever is in it
+ *  is printed, because a count is not evidence. */
+function hold(statement: string, bad: Array<Record<string, unknown>>): void {
   if (bad.length === 0) {
     console.log(`PASS  ${statement}`);
     return;
@@ -69,6 +70,19 @@ function must(statement: string, offenders: string): void {
   console.log(`FAIL  ${statement}  — ${bad.length} row(s)`);
   for (const row of bad.slice(0, 5)) console.log(`      ${JSON.stringify(row)}`);
   if (bad.length > 5) console.log(`      …and ${bad.length - 5} more`);
+}
+
+/** The usual form: `offenders` is the query that must return NOTHING. */
+function must(statement: string, offenders: string): void {
+  hold(statement, rows(offenders));
+}
+
+/** The digest the registry takes over a payload, from the registry's own
+ *  canonicaliser rather than a second implementation of it. Statement 6 below
+ *  re-derives two of these, which is the only thing in this harness SQL cannot
+ *  express at all. */
+function digestOf(payload: unknown): string {
+  return `sha256:${createHash("sha256").update(jcsCanonicalize(payload as JcsValue), "utf8").digest("hex")}`;
 }
 
 const counted = rows(
@@ -201,17 +215,55 @@ must(
 );
 
 // 6. `P5-FR-07`: A RECORDED CONFLICT IS ABOUT A ROW THAT STANDS, under the same
-//    `outcome_ref`, and it really contradicts it.
-must(
-  "every recorded conflict names the outcome that stands, under the same outcome_ref and the same entry, and claims something else",
-  `SELECT c.id, c.existing_outcome_id, c.claimed_outcome, o.outcome
-     FROM outcome_conflicts c
-     LEFT JOIN session_outcomes o ON o.id = c.existing_outcome_id
-    WHERE o.id IS NULL
-       OR o.loadout_entry_id <> c.loadout_entry_id
-       OR o.outcome_ref <> c.outcome_ref
-       OR o.outcome <> c.existing_outcome
-       OR c.claimed_outcome = c.existing_outcome`,
+//    `outcome_ref` and the same entry, and the claim it carries really is a
+//    different claim.
+//
+//    `P5-R2-002`: this statement used to read `claimed_outcome = existing_outcome`
+//    as its definition of "does not really contradict it", and that is not what a
+//    conflict is here. `src/outcome-loop.ts` compares the WHOLE payload digest, so
+//    two claims may agree on the normalised value and disagree on the structured
+//    reason or provenance — the same `worked` for two different stated reasons is
+//    a genuine disagreement, and the validator refused a database its own product
+//    had just written. What makes a conflict real is that the payloads differ, so
+//    that is what is checked: the claimed payload is re-digested with the
+//    registry's own canonicaliser and must not be the digest of the outcome that
+//    stands. The row's own `conflict_digest` is re-derived too, so a planted row
+//    cannot carry an arbitrary claim beside a digest that commits to another one.
+hold(
+  "every recorded conflict names the outcome that stands, under the same outcome_ref and the same entry, and its claimed payload really differs",
+  (
+    rows(
+      `SELECT c.id, c.loadout_entry_id, c.outcome_ref, c.existing_outcome, c.claimed_outcome,
+              c.existing_outcome_id, c.claimed_payload_json, c.conflict_digest,
+              o.id AS stands_id, o.loadout_entry_id AS stands_entry, o.outcome_ref AS stands_ref,
+              o.outcome AS stands_outcome, o.outcome_digest AS stands_digest
+         FROM outcome_conflicts c
+         LEFT JOIN session_outcomes o ON o.id = c.existing_outcome_id`,
+    ) as Array<Record<string, string | null>>
+  ).flatMap((c) => {
+    const offender = (why: string) => [{ id: c.id, existing_outcome_id: c.existing_outcome_id, why }];
+    if (c.stands_id === null) return offender("the outcome it says stands does not exist");
+    if (c.stands_entry !== c.loadout_entry_id) return offender("it is filed against another entry than the outcome that stands");
+    if (c.stands_ref !== c.outcome_ref) return offender("it is filed under another outcome_ref than the outcome that stands");
+    if (c.stands_outcome !== c.existing_outcome) return offender("it misreports what the outcome that stands says");
+    let claimedDigest: string;
+    try {
+      claimedDigest = digestOf(JSON.parse(c.claimed_payload_json!));
+    } catch {
+      return offender("its claimed payload is not readable JSON");
+    }
+    if (claimedDigest === c.stands_digest) {
+      return offender("its claimed payload is the SAME claim as the outcome that stands, so nothing was contradicted");
+    }
+    const expected = digestOf({
+      existing_outcome_id: c.existing_outcome_id,
+      existing_digest: c.stands_digest,
+      claimed_digest: claimedDigest,
+      outcome_ref: c.outcome_ref,
+    });
+    if (expected !== c.conflict_digest) return offender("its conflict_digest does not commit to the claim it carries");
+    return [];
+  }),
 );
 
 // 7. `P5-FR-08`: A LINEAGE ROW IS ABOUT A REVISION THAT DESCENDS FROM THE OUTCOME
