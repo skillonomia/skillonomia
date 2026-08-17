@@ -131,6 +131,22 @@ const invocations = rows<{
   runtime_kind: string;
 }>(INVOCATIONS);
 
+// THE ORIGINS THE PRODUCT PATH WRITES, and this list is the `0013` CHECK
+// constraint's own vocabulary rather than a guess at it. A revision is
+// `capture` when a capture produced it, `edit` when the owner revised one
+// through the console, and `recompile` when the same source went through the
+// current compiler again. All three descend from the SAME `captures` row, which
+// is what `P6-FR-08` is about; none of them is a fixture, a seed or a
+// hand-written row, and a row outside this set fails the check.
+//
+// P6 BUILD-2 corrected this set. It had read `capture` or `revision`, and
+// `revision` is not a member of the vocabulary at all — so the first revision
+// this dogfood ever EDITED, the descendant of the improvement cycle, was
+// reported as broken provenance and its whole lineage dropped out of the count.
+// The substance of the check is unchanged and is the half that matters: the
+// revision names a `captures` row and that row exists.
+const CAPTURE_PATH_ORIGINS = new Set(["capture", "edit", "recompile"]);
+
 // Provenance: a counted revision has to descend from a capture. Anything else is
 // the masquerade `P6-FR-08` names.
 const provenance = new Map(
@@ -179,7 +195,7 @@ for (const i of invocations) {
   if (p === undefined || p.origin === null || p.capture_id === null) {
     s.provenance_ok = false;
     s.provenance_note = `revision ${i.draft_revision_id} descends from no capture`;
-  } else if (p.origin !== "capture" && p.origin !== "revision") {
+  } else if (!CAPTURE_PATH_ORIGINS.has(p.origin)) {
     s.provenance_ok = false;
     s.provenance_note = `revision ${i.draft_revision_id} has origin \`${p.origin}\``;
   }

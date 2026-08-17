@@ -154,12 +154,24 @@ must(
      LEFT JOIN session_closures c ON c.session_id = o.session_id
     WHERE o.outcome = 'nothing_reported' AND (c.id IS NULL OR o.observed_at_ms <> c.closed_at_ms)`,
 );
+// The claim is about what was true WHEN THE SESSION CLOSED, and P6's dogfood is
+// what made the difference visible: an owner who reads a transcript AFTER a
+// session has ended and records what the run failed to do writes a `failed` on
+// an entry the closure had already called `nothing_reported`. Both rows are
+// right — one says nothing had been reported by the time the session ended, the
+// other says what the owner later saw, and it carries the source it saw it in.
+// Read as plain coexistence this statement called that pair a contradiction, so
+// it is narrowed to the outcomes that existed BEFORE the closure wrote its row.
+// What it still refuses is the thing it was written to refuse: a closure
+// claiming nothing was reported for an entry that already held an outcome.
 must(
-  "no entry holds a `nothing_reported` beside another outcome — the closure writes one only where nothing was reported",
+  "no entry held another outcome BEFORE its closure wrote `nothing_reported` — the closure writes one only where nothing had been reported",
   `SELECT o.id, o.loadout_entry_id
      FROM session_outcomes o
     WHERE o.outcome = 'nothing_reported'
-      AND EXISTS (SELECT 1 FROM session_outcomes x WHERE x.loadout_entry_id = o.loadout_entry_id AND x.id <> o.id)`,
+      AND EXISTS (SELECT 1 FROM session_outcomes x
+                   WHERE x.loadout_entry_id = o.loadout_entry_id AND x.id <> o.id
+                     AND x.server_at_ms <= o.server_at_ms)`,
 );
 
 // 5. `P5-FR-05`, `P5-FR-13`: A ROLLBACK CONFIRMATION IS ABOUT A ROLLBACK THAT

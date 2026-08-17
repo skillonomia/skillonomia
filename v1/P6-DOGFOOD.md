@@ -1,8 +1,8 @@
 # P6 — the real internal dogfood
 
 Phase P6 of the contract *Skillonomia V1 → FINAL DONE*. This file records what
-BUILD-1 of P6 actually produced, how each number was measured, and — at its foot
-— what BUILD-1 did not deliver.
+the two build sessions of P6 actually produced, how each number was measured,
+and — in section 7 — what is still open.
 
 P6 is the phase that cannot be manufactured. Every earlier phase was satisfied by
 building something and proving it with tests; this one is satisfied by real use,
@@ -81,24 +81,37 @@ worth naming:
   and the gate separately asserts that no `(session, invocation_ref)` pair
   carries two receipts.
 
-## 4. What the gate reports today
+## 4. What the gate reports
+
+BUILD-1 left it at seven of nine, with the improvement cycle and the rollback
+cycle reporting zero and the gate exiting 1. That result is kept in section 7,
+because it is what BUILD-1 measured. BUILD-2 drove the two cycles — sections 8
+and 9 — and re-ran the same gate against the same database:
 
 ```
 PASS  P6-FR-01  ten distinct real skills, each active and invoked — 10 counted
 PASS  P6-FR-02  five reused across different real sessions — 7 reused
 PASS  P6-FR-03  two skills used by more than one agent identity — 2 multi-agent
-PASS  P6-FR-04  a real end-to-end Codex session — 3 session(s)
-PASS  P6-FR-05  a real end-to-end Claude Code session — 2 session(s)
-FAIL  P6-FR-06  one complete improvement cycle, confirmed — 0 confirmed
-FAIL  P6-FR-07  one proved revision rollback — 0 proved
-PASS  P6-FR-08  no counted record traces to a fixture, a seed or a hand-written row
+PASS  P6-FR-04  a real end-to-end Codex session — 4 session(s)
+PASS  P6-FR-05  a real end-to-end Claude Code session — 3 session(s)
+PASS  P6-FR-06  one complete improvement cycle, confirmed — 1 confirmed
+PASS  P6-FR-07  one proved revision rollback — 1 proved
+PASS  P6-FR-08  no counted record traces to a fixture, a seed or a hand-written row — 0 with broken provenance
 PASS  P5-FR-06  no redelivery was counted twice — 0 duplicate refs
 ```
 
-The gate exits 1 on that, which is the honest result and is what a later session
-inherits. It was not softened to report the seven as a pass.
+19 invocation receipts across 7 sessions and 2 agent identities, on both runtimes.
 
-17 invocation receipts across 5 sessions and 2 agent identities, on both runtimes.
+One line of the checker changed to reach that, and it is worth naming rather than
+burying. The provenance rule read `origin` against `capture` or `revision`, and
+`revision` is not a member of the vocabulary the `0013` CHECK constraint admits —
+that vocabulary is `capture`, `edit`, `recompile`. So the moment this dogfood
+produced its first EDITED revision, which is what an improvement cycle produces,
+the checker called its provenance broken and dropped the whole lineage out of
+`P6-FR-01`. The set is now the schema's own, the substance is untouched — a
+counted revision names a `captures` row and that row exists — and the
+counter-case a reviewer should test is that a revision with any other origin, or
+with no capture, still fails.
 
 ## 5. What a real invocation proved, and what it did not
 
@@ -132,18 +145,21 @@ was re-invoked in a later session and that run did report the marker.
   what makes it correct is judgement about the change, not a sequence. A skill
   here would be a style note, which the classifier would route to `rule`.
 
-## 7. What BUILD-1 did NOT deliver
+## 7. What BUILD-1 did NOT deliver, and what BUILD-2 closed
 
 Stated plainly, because an honest gap is worth more than a manufactured metric.
 
-1. **The improvement cycle (`P6-FR-06`).** No descendant revision was created
+Items 1 and 2 were closed by BUILD-2 and are told in sections 8 and 9. Items 3
+to 6 are open, and a later session continues from this SHA.
+
+1. **The improvement cycle (`P6-FR-06`).** CLOSED by BUILD-2, section 8. No descendant revision was created
    from a failure, so no comparison exists and the gate reports zero. The raw
    material is present in the dogfood database — real `nothing_reported`
    outcomes from sessions where a runtime reported no marker — but a
    `nothing_reported` is not the `failed` that `origin: failure` requires, so
    the cycle has to be driven deliberately rather than harvested.
-2. **The rollback cycle (`P6-FR-07`).** No rollback was selected and no later
-   session confirmed one.
+2. **The rollback cycle (`P6-FR-07`).** CLOSED by BUILD-2, section 9. No rollback was selected by BUILD-1 and no later
+   session confirmed one at its SHA.
 3. **The clean-room owner journey (`P6-FR-10` … `P6-FR-17`).**
    `v1/tools/gates/clean-room-journey.sh` is still the P0 stub and still exits 3.
 4. **The upgrade and rollback from a copy of the `v0.1.6` base
@@ -156,3 +172,119 @@ Stated plainly, because an honest gap is worth more than a manufactured metric.
 A later session continues from this SHA. The dogfood registry, its database, the
 fleet state and the ten approved skills all persist, so the work above adds to
 this ledger rather than restarting it.
+
+## 8. The improvement cycle, as it actually happened
+
+BUILD-2 drove items 1 and 2 of that list. Neither was harvested from the rows
+already present; both were driven, and the failure at the head of the first one
+was reproduced before it was acted on.
+
+**The skill.** *derive a session identity from the live transcript* — number 7 in
+the table above, the procedure this contract performs at the top of every session.
+
+**What it genuinely failed at.** Its procedure reads a `task_id` out of the
+provider's task ledger at step 3 and then, at step 7, writes both identifiers
+into the run records. A runtime home has no provider task ledger of its own, so
+step 3 cannot be completed there — and the procedure gives a run that holds half
+an answer no way to deliver it. BUILD-1 saw one claude_code session end that way:
+it derived the session id, checked it against the transcript's own prompt, and
+then stopped and asked the owner where the row should go, delivering nothing the
+registry could file. BUILD-2 opened a new claude_code session of the same agent
+on the same revision and it happened again — the run said in its own words that
+it stopped rather than fill the missing half. No receipt reached the registry in
+either run, so the entry stayed `unknown` and the closure recorded
+`nothing_reported`, which is `P4-FR-11` and `P5-FR-04` behaving correctly and is
+not the same thing as a failure being on the record.
+
+So the owner put it on the record: `POST /v1/console/outcomes`, a `failed` with
+`source: owner`, `evidence_class: owner_confirmation`, and a
+`confirmation_source` naming the runtime transcript it was read in. That is the
+contract's "failure or specific owner observation" — and it is both, because
+what the owner recorded is a run that was applied and did not do what it was
+written to do.
+
+**What the revision changed.** `POST /v1/console/outcomes/{id}/revision` with
+`origin: failure`, which the registry refuses on an outcome that is not `failed`.
+Three sections were edited through the same path an ordinary owner edit takes, so
+the semantic and security previews both ran on it and it was NOT approved by
+being created:
+
+* step 3 gained the missing branch — a ledger with no row for the role is
+  recorded as unavailable, with the reason, and the run goes on;
+* step 7 asks for the values that WERE established, each read or marked
+  unavailable, and says not to stop at the missing part;
+* the outputs gained the run's own final report, and the failure modes gained the
+  one that had just been observed.
+
+Nothing in the edit mentions the receipt line, the adapter or the marker. The
+goal was stated in the same call, before the new revision had run anywhere: a
+claude_code session of this agent against a home with no ledger row completes the
+procedure and delivers its result instead of ending in a question.
+
+**What the new session did differently.** The owner approved revision 2 and moved
+the assignment to it, which answered `effective_from: next_session`; the next
+session's loadout carried revision 2 at the digest the registry froze. That
+session reported the canonical receipt line, the receipt was filed against the
+exact revision and digest, and the adapter filed `worked` from the same output.
+It also did the thing the edit was for, which is the part worth reading rather
+than counting: it wrote a run record naming `task_id: null` with
+`task_id_status: unavailable` and a paragraph of reason beginning "The provider
+task ledger of this runtime home holds no row for this role", and it delivered
+the session id it had derived. The run that failed had the same session id in
+hand and delivered none of it.
+
+`POST /v1/console/comparisons` then named the two outcomes and nothing else. The
+registry read the lineage, found the goal it had recorded in advance, checked
+that both runs were the same skill, the same agent and the same runtime kind, and
+returned `improved` with `FAILURE_TO_WORKED`. The caller could not have named
+that verdict (`P5-FR-12`).
+
+**What this does not claim.** The defect is intermittent, not deterministic:
+revision 1 also produced a `worked` in a claude_code session and in a codex one.
+Two of the three claude_code runs of revision 1 ended with no result; the one run
+of revision 2 delivered one. That is one comparison, on one agent, on one runtime
+kind — which is exactly what the registry says it is, and the reason
+`decideComparison` refuses to call two runs on different agents or runtimes a
+before and an after at all.
+
+## 9. The rollback cycle
+
+Revision 2 has been seen on one runtime kind. Before the fleet carries a revision
+proved in one place, the owner selected the earlier approved revision again —
+P3's `select_revision` on the same assignment, answering `effective_from:
+next_session`, leaving revision 2 approved and leaving the history alone
+(`INV-06`).
+
+A NEW session then confirmed it, and the confirmation is the part the registry
+refuses to take on trust. A real codex session of the same agent opened after
+that decision, its loadout carried revision 1 at the frozen digest, the runtime
+invoked it and reported the receipt line, and
+`POST /v1/sessions/{id}/rollback-confirmations` named the lifecycle event behind
+the rollback. The registry checked that the event really was a `revision_selected`
+of this entry's assignment, that the selection went BACK, that this session
+carries the revision it selected and that it opened after the decision — the four
+refusals `P5-FR-13` is made of — and filed `rolled_back` with
+`evidence_class: rollback_confirmation`. This is that mechanism on real dogfood
+rows rather than on a test's fixtures.
+
+The assignment is left on revision 1, which is what a rollback means. Revision 2
+remains approved and selectable.
+
+`v1/tools/dogfood/loop-driver.mjs` is the driver. It decides nothing: each step
+is one console call, the verdict is the registry's, and the observation, the goal
+and the edited sections — the parts a script must not invent — are files the
+owner wrote.
+
+## 10. A statement the dogfood corrected
+
+`v1/tools/p5-outcome-consistency-check.ts` refused the database this cycle
+produced, and it was right to be pointed at it: that is what it is for. Its
+`nothing_reported` statement read plain coexistence — an entry holding a
+`nothing_reported` beside any other outcome was a contradiction. An owner who
+reads a transcript AFTER a session has ended and records what the run failed to
+do produces exactly that pair, and both rows are true: one says nothing had been
+reported by the time the session closed, the other says what the owner later saw
+and names where it saw it. The statement now compares against the outcomes that
+existed BEFORE the closure wrote its row. It still refuses the thing it was
+written to refuse — a closure claiming nothing was reported for an entry that
+already held an outcome — and the statement count is unchanged.
