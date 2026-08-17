@@ -21,7 +21,8 @@
 //   3  desired and observed are two blocks, each naming its source  P3-FR-07, INV-02
 //   4  an owner command leaves observed exactly where it was        P3-FR-06, INV-02
 //   5  an observed `unknown` is shown with its reason code, its
-//      reason and its source — never blank, never as a success      P3-FR-08, INV-03
+//      reason, its source and a CONCRETE TIME — never blank, never
+//      `never`, never as a success                                  P3-FR-08, INV-03
 //   6  a rollback selects an earlier approved revision and deletes
 //      nothing                                                     P3-FR-05, INV-06
 //   7  A REAL PRECONDITION FAILURE (412): the assignment moves under
@@ -387,6 +388,7 @@ async function main() {
   const observedReason = await page.getAttribute(".assignment .observed", "data-observed-reason-code");
   const observedSource = await page.getAttribute(".assignment .observed", "data-observed-source");
   const observedText = (await page.textContent(".assignment .observed")) ?? "";
+  const observedAtMs = await page.getAttribute(".assignment .observed p[data-observed-at-ms]", "data-observed-at-ms");
   control("P3-FR-07 the desired block is the owner's intent", desiredState === "assigned", String(desiredState));
   control(
     "P3-FR-07 desired and observed are two blocks, and neither carries the other's field",
@@ -409,6 +411,19 @@ async function main() {
     "INV-03 the reason and the source are on the screen, and the block is not blank",
     observedText.includes("NO_OBSERVATION") && observedText.includes("assignment_observations") && observedText.trim().length > 40,
     JSON.stringify(observedText.slice(0, 160)),
+  );
+  // P3 REVIEW-1 finding `P3-R1-002`: the synthesized unknown carried no time and
+  // this screen printed `observed at: never`. Both halves are asserted — the
+  // attribute is a real positive integer, and the word cannot come back.
+  control(
+    "INV-03 the unknown carries a concrete observed_at on the screen",
+    typeof observedAtMs === "string" && Number.isInteger(Number(observedAtMs)) && Number(observedAtMs) > 0,
+    String(observedAtMs),
+  );
+  control(
+    "INV-03 the observed time is rendered, and never as `never`",
+    /observed at: \d{4}-\d{2}-\d{2}T/.test(observedText) && !/observed at: never/.test(observedText),
+    JSON.stringify(observedText.slice(0, 200)),
   );
   control(
     "INV-03 an unknown is not shown as a success",

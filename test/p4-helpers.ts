@@ -6,6 +6,7 @@ import { seedGraph, insertAgent, type Seed } from "./helpers.ts";
 import { makeManifest, buildPackage, ctxFor, NOW } from "./p2-helpers.ts";
 import { Registry } from "../src/service.ts";
 import { mintApiKey, type AuthContext, type Role } from "../src/auth.ts";
+import { MemoryEvidencePrincipals, type EvidenceSource } from "../src/evidence-principal.ts";
 import type { SecretStore } from "../src/webhooks.ts";
 import type { ActivationRoots } from "../src/activation.ts";
 import type { RuntimeRecordSource } from "../src/assignments.ts";
@@ -38,6 +39,10 @@ export interface P4Fixture {
   /** adopterB — member of wsB, the cross-workspace actor */
   outsider: AuthContext;
   keys: Record<string, string>;
+  /** `INV-02`: the deployment's registered reporters of observed state. Empty
+   *  until a test asks for one through `evidenceReporter` below, because the
+   *  shipped default registers nobody. */
+  evidencePrincipals: MemoryEvidencePrincipals;
 }
 
 function agentCtx(db: Db, seed: Seed, name: string, type: "human" | "agent" | "service", role: Role): AuthContext {
@@ -71,6 +76,10 @@ export function p4Fixture(
      *  larger bucket to reach the behaviour it is measuring rather than the
      *  limiter, and says so at its call site. */
     rateLimit?: { capacity: number; refillPerSec: number };
+    /** `INV-02`: the registered reporters of observed state. Absent = an empty
+     *  registry, which is the shipped default and what every suite but the
+     *  observation one wants. */
+    evidencePrincipals?: MemoryEvidencePrincipals;
     /** The database to seed. Absent = a freshly migrated one, which is what
      *  every suite but the upgrade probe wants; that probe needs a fixture
      *  built on a database an OLDER build left behind. */
@@ -78,8 +87,10 @@ export function p4Fixture(
   } = {},
 ): P4Fixture {
   const seed = seedGraph(opts.db);
+  const evidencePrincipals = opts.evidencePrincipals ?? new MemoryEvidencePrincipals();
   const registry = new Registry(seed.db, {
     now: () => NOW,
+    evidencePrincipals,
     secrets: opts.secrets,
     activation: opts.activation,
     runtimeRecords: opts.runtimeRecords,
@@ -106,9 +117,11 @@ export function p4Fixture(
     member: ctxFor(seed, seed.adopterA, seed.wsA, "member"),
     outsider: ctxFor(seed, seed.adopterB, seed.wsB, "member"),
     keys: {},
+    evidencePrincipals,
   };
   for (const [name, ctx] of Object.entries(fx)) {
     if (name === "seed" || name === "db" || name === "registry" || name === "keys") continue;
+    if (name === "evidencePrincipals") continue;
     fx.keys[name] = mintApiKey(seed.db, (ctx as AuthContext).agent_id, NOW).api_key;
   }
   return fx;
@@ -250,4 +263,31 @@ export function publishedVersion(fx: P4Fixture, slug: string): BuiltVersion {
   const pub = fx.registry.publishVersion(fx.owner, v.versionId).response;
   if (pub.state !== "published") throw new Error(`fixture did not publish: ${JSON.stringify(pub)}`);
   return v;
+}
+
+/**
+ * A REGISTERED EVIDENCE PRINCIPAL — the close of P3 REVIEW-1 finding
+ * `P3-R1-001`, as a fixture.
+ *
+ * It is created on demand rather than in `p4Fixture`, because an agent added to
+ * the seeded workspace is an agent every fleet count in every other suite would
+ * have to grow to accommodate. The registration is the deployment's, so the
+ * fixture makes it the way a deployment does: outside every surface the owner
+ * can call.
+ */
+export function evidenceReporter(
+  fx: P4Fixture,
+  source: EvidenceSource,
+  opts: { name?: string; role?: Role | null } = {},
+): { ctx: AuthContext; key: string } {
+  const name = opts.name ?? `evidence-${source}-${Math.random().toString(36).slice(2, 8)}`;
+  const id = insertAgent(fx.db, fx.seed.wsA, name, "service", fx.seed.now);
+  const role = opts.role === undefined ? "member" : opts.role;
+  if (role !== null) {
+    fx.db.prepare(
+      "INSERT INTO workspace_memberships(agent_id, workspace_id, role, created_at_ms) VALUES (?,?,?,?)",
+    ).run(id, fx.seed.wsA, role, fx.seed.now);
+  }
+  fx.evidencePrincipals.register(id, source);
+  return { ctx: ctxFor(fx.seed, id, fx.seed.wsA, role), key: mintApiKey(fx.db, id, NOW).api_key };
 }

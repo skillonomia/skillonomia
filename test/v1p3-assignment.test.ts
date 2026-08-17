@@ -10,7 +10,7 @@ import { CONSOLE_COOKIE } from "../src/console-session.ts";
 import { CONSOLE_CONTRACT_VERSION } from "../src/console-view.ts";
 import { LIFECYCLE_TRANSITIONS, DESIRED_STATES, isLegalLifecycleTransition } from "../src/assignment-lifecycle.ts";
 import { readFileSync } from "node:fs";
-import { p4Fixture, type P4Fixture } from "./p4-helpers.ts";
+import { p4Fixture, evidenceReporter, type P4Fixture } from "./p4-helpers.ts";
 
 const ORIGIN = "console.local";
 
@@ -315,31 +315,42 @@ test("P3-FR-08 / INV-03: every observation carries a reason code, a reason, a so
   assert.ok(obs.reason_code.length > 0);
   assert.ok(obs.reason.length > 0);
   assert.ok(obs.source.length > 0);
+  // `INV-03` names FOUR mandatory fields and the fourth is the time. P3
+  // REVIEW-1 finding `P3-R1-002`: this test said it checked all four and
+  // checked three, while the synthesized unknown carried `observed_at_ms: null`.
+  assert.equal(typeof obs.observed_at_ms, "number", "a synthesized unknown with no observed_at (INV-03)");
+  assert.ok(obs.observed_at_ms > 0, `observed_at_ms must be a real time, got ${obs.observed_at_ms}`);
+  assert.notEqual(obs.observed_at_ms, null);
   assert.equal(obs.agent_id, fx.owner.agent_id);
 
+  // The reporter is a REGISTERED evidence principal, not the owner. It was the
+  // owner in this test until P3 REVIEW-1 finding `P3-R1-001`, which is how a
+  // positive test came to codify the bypass it should have refused.
+  const adapter = evidenceReporter(fx, "adapter");
+
   // a report missing any required field is refused rather than stored
-  for (const missing of ["reason_code", "reason", "source"]) {
+  for (const missing of ["reason_code", "reason"]) {
     const body: Record<string, unknown> = {
       observed_status: "unknown",
       reason_code: "ADAPTER_SILENT",
       reason: "the adapter answered nothing within the window",
-      source: "adapter",
       provenance: { window: "one session" },
     };
     delete body[missing];
     const res = call(fx, {
       method: "POST",
       path: `/v1/assignments/${id}/observations`,
-      key: fx.keys.owner!,
+      key: adapter.key,
       body,
     });
     assert.equal(res.status, 400, `an observation with no ${missing} was accepted: ${res.body}`);
   }
-  // `owner` is not a source an observation may claim
+  // `owner` is not a source an observation may claim — and neither is any other
+  // source, because the body does not choose one at all any more
   const asOwner = call(fx, {
     method: "POST",
     path: `/v1/assignments/${id}/observations`,
-    key: fx.keys.owner!,
+    key: adapter.key,
     body: {
       observed_status: "loaded",
       reason_code: "OWNER_SAYS_SO",
@@ -354,12 +365,11 @@ test("P3-FR-08 / INV-03: every observation carries a reason code, a reason, a so
   const reported = call(fx, {
     method: "POST",
     path: `/v1/assignments/${id}/observations`,
-    key: fx.keys.owner!,
+    key: adapter.key,
     body: {
       observed_status: "loaded",
       reason_code: "ADAPTER_CONFIRMED",
       reason: "the adapter reported the revision present in the session loadout",
-      source: "adapter",
       session_ref: "session-7",
       revision_id: d.revision_id,
       observed_at_ms: 1754100000000,
@@ -368,6 +378,7 @@ test("P3-FR-08 / INV-03: every observation carries a reason code, a reason, a so
     },
   });
   assert.equal(reported.status, 201, reported.body);
+  assert.equal(reported.json.observed.source, "adapter", "the recorded source is the registration's");
   const after = call(fx, { path: `/v1/console/assignments/${id}`, cookie: s.cookie });
   assert.equal(after.json.assignment.observed.status, "loaded");
   assert.equal(after.json.assignment.observed.session_ref, "session-7");
@@ -741,3 +752,209 @@ test("P3: the capability detail carries the server's verdicts as fields", () => 
 function readFileSyncSafe(rel: string): string {
   return readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
 }
+
+// ===========================================================================
+// P3 REVIEW-1 `P3-R1-001` and `P3-R1-002` — WHO MAY WRITE OBSERVED STATE, AND
+// WHEN IT WAS SEEN.
+//
+// The reviewer reproduced the first live: the owner created an assignment, then
+// used its own Bearer key to POST an observation with `source: "adapter"`, got
+// 201, and the Console reported `loaded`. The route was outside the console
+// surface — which was necessary and not sufficient, because the credential it
+// took was the one the owner holds and the source was whatever the body said.
+// ===========================================================================
+
+/** Every credential that may not report, and the row count after each attempt. */
+test("P3-R1-001 / INV-02: an owner key, an admin key and a console session cannot write observed state", () => {
+  const fx = p4Fixture();
+  const s = signIn(fx);
+  const d = approvedDraft(fx, s);
+  const id = assign(fx, s, fx.owner.agent_id, d.revision_id).json.assignment.assignment_id;
+  const rows = (): number =>
+    (fx.db.prepare("SELECT count(*) c FROM assignment_observations").get() as { c: number }).c;
+  assert.equal(rows(), 0);
+
+  const forged = {
+    observed_status: "loaded",
+    reason_code: "OWNER_TYPED_ADAPTER",
+    reason: "the owner credential submitted this directly",
+    source: "adapter",
+    revision_id: d.revision_id,
+    session_ref: "owner-made-session",
+    provenance: { submitted_by: "owner bearer credential" },
+  };
+
+  // 1. the owner's own Registry key — the reviewer's reproduction, verbatim
+  const asOwner = call(fx, {
+    method: "POST",
+    path: `/v1/assignments/${id}/observations`,
+    key: fx.keys.owner!,
+    body: { ...forged, idempotency_key: "forge-owner" },
+  });
+  assert.equal(asOwner.status, 403, `an owner key wrote observed state: ${asOwner.body}`);
+  assert.equal(rows(), 0, "a refused owner report still wrote a row");
+
+  // 2. an admin key: the other credential that commands desired state
+  const asAdmin = call(fx, {
+    method: "POST",
+    path: `/v1/assignments/${id}/observations`,
+    key: fx.keys.admin!,
+    body: { ...forged, idempotency_key: "forge-admin" },
+  });
+  assert.equal(asAdmin.status, 403, `an admin key wrote observed state: ${asAdmin.body}`);
+  assert.equal(rows(), 0, "a refused admin report still wrote a row");
+
+  // 3. the owner's browser session, on the same route
+  const asSession = call(fx, {
+    method: "POST",
+    path: `/v1/assignments/${id}/observations`,
+    cookie: s.cookie,
+    csrf: s.csrf,
+    body: { ...forged, idempotency_key: "forge-session" },
+  });
+  assert.equal(asSession.status, 401, `a console session wrote observed state: ${asSession.body}`);
+  assert.equal(rows(), 0, "a refused session report still wrote a row");
+
+  // 4. a plain member that the deployment never registered as a reporter:
+  //    membership is not evidence authority
+  const asMember = call(fx, {
+    method: "POST",
+    path: `/v1/assignments/${id}/observations`,
+    key: fx.keys.member!,
+    body: { ...forged, idempotency_key: "forge-member" },
+  });
+  assert.equal(asMember.status, 403, `an unregistered credential wrote observed state: ${asMember.body}`);
+  assert.equal(rows(), 0, "a refused unregistered report still wrote a row");
+
+  // and the Console still says nothing was observed
+  const view = call(fx, { path: `/v1/console/assignments/${id}`, cookie: s.cookie });
+  assert.equal(view.json.assignment.observed.status, "unknown");
+  assert.equal(view.json.assignment.observed.reason_code, "NO_OBSERVATION");
+  fx.db.close();
+});
+
+test("P3-R1-001: a registered evidence principal CAN report, and the source is the server's", () => {
+  const fx = p4Fixture();
+  const s = signIn(fx);
+  const d = approvedDraft(fx, s);
+  const id = assign(fx, s, fx.owner.agent_id, d.revision_id).json.assignment.assignment_id;
+  const adapter = evidenceReporter(fx, "adapter");
+  const runtime = evidenceReporter(fx, "runtime");
+
+  const reported = call(fx, {
+    method: "POST",
+    path: `/v1/assignments/${id}/observations`,
+    key: adapter.key,
+    body: {
+      observed_status: "loaded",
+      reason_code: "ADAPTER_CONFIRMED",
+      reason: "the adapter reported the revision present in the session loadout",
+      revision_id: d.revision_id,
+      session_ref: "session-11",
+      observed_at_ms: 1754100000000,
+      provenance: { adapter: "registered-test-adapter" },
+      idempotency_key: "obs-registered",
+    },
+  });
+  assert.equal(reported.status, 201, reported.body);
+  assert.equal(reported.json.observed.status, "loaded");
+  assert.equal(reported.json.observed.source, "adapter", "the source is the registration's, not the body's");
+  assert.equal(reported.json.observed.reported_by ?? undefined, undefined); // no such field is invented
+  const stored = fx.db
+    .prepare("SELECT source, reported_by_agent_id AS by FROM assignment_observations WHERE assignment_id=?")
+    .get(id) as { source: string; by: string };
+  assert.equal(stored.source, "adapter");
+  assert.equal(stored.by, adapter.ctx.agent_id, "the reporter is the authenticated principal");
+
+  // the SAME payload from a principal registered as a `runtime` is recorded as
+  // `runtime`: the value follows the credential, not the request
+  const asRuntime = call(fx, {
+    method: "POST",
+    path: `/v1/assignments/${id}/observations`,
+    key: runtime.key,
+    body: {
+      observed_status: "invoked",
+      reason_code: "RUNTIME_INVOKED",
+      reason: "the runtime reported an invocation of this revision",
+      revision_id: d.revision_id,
+      session_ref: "session-11",
+      observed_at_ms: 1754100001000,
+      provenance: { runtime: "registered-test-runtime" },
+      idempotency_key: "obs-runtime",
+    },
+  });
+  assert.equal(asRuntime.status, 201, asRuntime.body);
+  assert.equal(asRuntime.json.observed.source, "runtime");
+  fx.db.close();
+});
+
+test("P3-R1-001: a body-supplied source cannot override the derived one", () => {
+  const fx = p4Fixture();
+  const s = signIn(fx);
+  const d = approvedDraft(fx, s);
+  const id = assign(fx, s, fx.owner.agent_id, d.revision_id).json.assignment.assignment_id;
+  const adapter = evidenceReporter(fx, "adapter");
+
+  for (const claimed of ["runtime", "backend", "owner", "adapter"]) {
+    const res = call(fx, {
+      method: "POST",
+      path: `/v1/assignments/${id}/observations`,
+      key: adapter.key,
+      body: {
+        observed_status: "loaded",
+        reason_code: "SELF_LABELLED",
+        reason: "this report names its own source",
+        source: claimed,
+        provenance: {},
+        idempotency_key: `claim-${claimed}`,
+      },
+    });
+    assert.equal(res.status, 400, `a body naming source="${claimed}" was accepted: ${res.body}`);
+    assert.match(res.json.error?.message ?? "", /derived from the authenticated evidence principal/);
+  }
+  const rows = fx.db.prepare("SELECT count(*) c FROM assignment_observations").get() as { c: number };
+  assert.equal(rows.c, 0, "a refused self-labelled report wrote a row");
+  fx.db.close();
+});
+
+test("P3-R1-002 / INV-03: every exposed unknown carries a concrete observed_at", () => {
+  const fx = p4Fixture();
+  const s = signIn(fx);
+  const d = approvedDraft(fx, s);
+  const id = assign(fx, s, fx.owner.agent_id, d.revision_id).json.assignment.assignment_id;
+
+  // the SYNTHESIZED unknown — no observation row exists at all
+  for (const path of [`/v1/console/assignments/${id}`, `/v1/console/capabilities/${d.draft_id}`]) {
+    const res = call(fx, { path, cookie: s.cookie });
+    assert.equal(res.status, 200, res.body);
+    const observed = path.includes("capabilities")
+      ? res.json.assignments[0].observed
+      : res.json.assignment.observed;
+    assert.equal(observed.status, "unknown");
+    assert.equal(typeof observed.observed_at_ms, "number", `${path} exposed an unknown with no time`);
+    assert.ok(observed.observed_at_ms > 0, `${path}: observed_at_ms is ${observed.observed_at_ms}`);
+    assert.ok(!JSON.stringify(observed).includes('"observed_at_ms":null'), `${path}: a null time`);
+  }
+
+  // and a REPORTED unknown keeps the reporter's own time
+  const adapter = evidenceReporter(fx, "adapter");
+  const silent = call(fx, {
+    method: "POST",
+    path: `/v1/assignments/${id}/observations`,
+    key: adapter.key,
+    body: {
+      observed_status: "unknown",
+      reason_code: "ADAPTER_SILENT",
+      reason: "the adapter answered nothing within the window it watched",
+      observed_at_ms: 1754100002000,
+      provenance: { window: "one session" },
+      idempotency_key: "obs-unknown",
+    },
+  });
+  assert.equal(silent.status, 201, silent.body);
+  assert.equal(silent.json.observed.observed_at_ms, 1754100002000);
+  const after = call(fx, { path: `/v1/console/assignments/${id}`, cookie: s.cookie });
+  assert.equal(after.json.assignment.observed.status, "unknown");
+  assert.equal(after.json.assignment.observed.observed_at_ms, 1754100002000);
+  fx.db.close();
+});

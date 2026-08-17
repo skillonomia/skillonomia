@@ -735,7 +735,10 @@ interface ObservedView {
   reason_code: string;
   reason: string;
   source: string;
-  observed_at_ms: number | null;
+  /** `INV-03`: every observed state carries a time, the synthesized `unknown`
+   *  included — so this is not nullable and the page has no "never" branch
+   *  (P3 REVIEW-1 finding `P3-R1-002`). */
+  observed_at_ms: number;
   revision_id: string | null;
   session_ref: string | null;
   agent_id: string | null;
@@ -907,9 +910,9 @@ function renderObserved(parent: HTMLElement, assignment: AssignmentDetail, sourc
   box.appendChild(el("p", `status: ${o.status}`));
   box.appendChild(el("p", `reason (${o.reason_code}): ${o.reason}`));
   box.appendChild(el("p", `source: ${o.source}`, "muted"));
-  box.appendChild(
-    el("p", `observed at: ${o.observed_at_ms === null ? "never" : new Date(o.observed_at_ms).toISOString()}`, "muted"),
-  );
+  const observedAt = el("p", `observed at: ${new Date(o.observed_at_ms).toISOString()}`, "muted");
+  observedAt.dataset.observedAtMs = String(o.observed_at_ms);
+  box.appendChild(observedAt);
   box.appendChild(el("p", `session: ${o.session_ref ?? "—"} · revision: ${o.revision_id ?? "—"}`, "muted"));
   box.appendChild(el("p", `this deployment reads observations from: ${source}`, "muted"));
   parent.appendChild(box);

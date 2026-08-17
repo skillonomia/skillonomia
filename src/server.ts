@@ -14,6 +14,7 @@ import type { Server } from "node:http";
 import { openMigrated, type Db } from "./db.ts";
 import { Registry, FsBlobStore } from "./service.ts";
 import { FsBootstrapStore } from "./auth.ts";
+import { FsEvidencePrincipals } from "./evidence-principal.ts";
 import { startServer } from "./http.ts";
 import { FsSecretStore, runWorkerOnce, type WebhookTransport } from "./webhooks.ts";
 import { defaultTransport } from "./transport.ts";
@@ -80,6 +81,13 @@ export const DB_FILENAME = "skillonomia.db";
 
 /** §9.1: the outstanding bootstrap token's HASH — never the token itself. */
 export const BOOTSTRAP_FILENAME = "bootstrap.json";
+
+/** `INV-02`: the deployment's registered reporters of OBSERVED state —
+ *  `{"<agent_id>": "backend|adapter|runtime"}`. Absent means nobody may report,
+ *  and no surface of this registry writes it: an owner cannot register a
+ *  reporter, which is what makes the source of evidence the server's fact
+ *  rather than a caller's claim (P3 REVIEW-1 finding `P3-R1-001`). */
+export const EVIDENCE_PRINCIPALS_FILENAME = "evidence-principals.json";
 
 /** The data directory a bare invocation operates on: `SKILLONOMIA_DATA`, or the
  *  platform's own state location. One definition, in src/platform.ts, shared by
@@ -209,6 +217,11 @@ export async function serve(opts: ServeOptions = {}): Promise<Instance> {
       // — the two principals were committed, so the token was never re-issued,
       // and nothing could mint the owner's key again.
       bootstrap: new FsBootstrapStore(join(dataDir, BOOTSTRAP_FILENAME)),
+      // `INV-02`: the deployment's registered reporters of OBSERVED state, in
+      // the data directory beside the bootstrap hash and the webhook secrets.
+      // Absent file = nobody may report, which is the direction a missing
+      // authorization list must fail in.
+      evidencePrincipals: new FsEvidencePrincipals(join(dataDir, EVIDENCE_PRINCIPALS_FILENAME)),
       // `INV-04`: the absolute lifetime of an Owner Console session. A
       // deployment may shorten it — the browser gate sets it to a few seconds to
       // watch an expiry happen — and cannot lengthen it past the hour, because

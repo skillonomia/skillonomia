@@ -15,6 +15,11 @@ import { join } from "node:path";
 import type { Db } from "./sqlite.ts";
 import { ApiError } from "./errors.ts";
 import {
+  NoEvidencePrincipals,
+  type EvidencePrincipal,
+  type EvidencePrincipalStore,
+} from "./evidence-principal.ts";
+import {
   authenticate as authenticateKey,
   bootstrapInstance,
   exchangeBootstrapToken,
@@ -416,6 +421,18 @@ export interface RegistryOptions {
    * walks nothing and every inventory number is `unknown`, never zero.
    */
   inventory?: InventoryRoots;
+  /**
+   * `INV-02`: WHICH CREDENTIALS MAY WRITE OBSERVED STATE, AND AS WHAT.
+   *
+   * The shipped default registers nobody, so no credential can report an
+   * observation at all — the fail-closed direction. A deployment names its
+   * backend, adapter or runtime reporters (src/server.ts reads the data
+   * directory), and the `source` recorded against an observation is the kind
+   * that registration gives, never a string a request body asked for. P3
+   * REVIEW-1 finding `P3-R1-001` was that this seam did not exist: the intake
+   * accepted the owner's own Bearer key and believed the body.
+   */
+  evidencePrincipals?: EvidencePrincipalStore;
   /**
    * `INV-04`: the absolute lifetime of an Owner Console browser session.
    *
@@ -1009,9 +1026,12 @@ export class Registry {
   private readonly inventory: InventoryRoots;
   /** `INV-04`: the absolute lifetime of a console session, at most 60 minutes. */
   private readonly consoleSessionMs: number;
+  /** `INV-02`: the registered reporters of observed state. Empty by default. */
+  private readonly evidencePrincipals: EvidencePrincipalStore;
 
   constructor(db: Db, opts: RegistryOptions = {}) {
     this.db = db;
+    this.evidencePrincipals = opts.evidencePrincipals ?? new NoEvidencePrincipals();
     this.consoleSessionMs = opts.consoleSessionMs ?? DEFAULT_SESSION_MS;
     if (!Number.isInteger(this.consoleSessionMs) || this.consoleSessionMs < 1 || this.consoleSessionMs > MAX_SESSION_MS) {
       // a deployment that asked for a session `INV-04` forbids is told so at
@@ -4672,21 +4692,21 @@ export class Registry {
    *  approved revision, with the assignments made of it. */
   consoleCapabilities(auth: AuthContext): ConsoleCapabilityLibrary {
     this.requireOwnerOrAdmin(auth, "reading the capability library");
-    return consoleCapabilities(this.db, auth);
+    return consoleCapabilities(this.db, auth, this.now());
   }
 
   /** `GET /v1/console/capabilities/{draft_id}` — the capability detail
    *  (`P3` deliverable 4). */
   consoleCapability(auth: AuthContext, draftId: unknown): ConsoleCapability {
     this.requireOwnerOrAdmin(auth, "reading a capability");
-    return consoleCapability(this.db, auth, draftId);
+    return consoleCapability(this.db, auth, draftId, this.now());
   }
 
   /** One assignment, desired and observed side by side (`P3-FR-07`). */
   consoleAssignment(auth: AuthContext, assignmentId: unknown): ConsoleAssignmentView {
     this.requireOwnerOrAdmin(auth, "reading an assignment");
     const row = this.requireAssignmentOfWorkspace(auth, assignmentId);
-    return consoleAssignmentView(this.db, assignmentDetail(this.db, row));
+    return consoleAssignmentView(this.db, assignmentDetail(this.db, row, this.now()));
   }
 
   /** The lifecycle journal of one assignment: every desired-state event, in
@@ -4827,10 +4847,15 @@ export class Registry {
     input: unknown,
     idempotencyKey?: string,
   ): IdempotentOutcome<{ assignment_id: string; observed: ObservedView }> {
-    if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
+    // THE AUTHORIZATION IS FIRST, AND IT IS NOT A ROLE CHECK IN THE USUAL
+    // DIRECTION: this is the one route where holding MORE authority is
+    // disqualifying. Nothing below runs for a credential that is refused here,
+    // so a refused report reads no body, writes no row and leaves no trace but
+    // its refusal (`P3-R1-001`).
+    const principal = this.requireEvidencePrincipal(auth);
     const row = this.requireAssignmentOfWorkspace(auth, assignmentId);
     const body = (input ?? {}) as Record<string, unknown>;
-    const evidence = validateObservation(body, this.now());
+    const evidence = validateObservation(body, this.now(), principal.source);
     return withIdempotencyInTx(
       this.db,
       auth.agent_id,
@@ -4843,6 +4868,42 @@ export class Registry {
       }),
       requestDigest({ ...body, assignment_id: row.id }),
     );
+  }
+
+  /**
+   * `INV-02` AS AN AUTHORIZATION RULE — the close of P3 REVIEW-1 finding
+   * `P3-R1-001`.
+   *
+   * Three refusals, in this order, because the order is part of the claim:
+   *
+   *   1. AN OWNER OR ADMIN CREDENTIAL IS REFUSED OUTRIGHT. It does not matter
+   *      what the body says or what the deployment registered — the principal
+   *      that COMMANDS desired state may not be the principal that REPORTS
+   *      observed state, on any surface. A console session never reaches this
+   *      method at all (`src/http.ts` mounts the route outside the console
+   *      surface, so a session gets 401 before the service is called), and this
+   *      is the other half: the owner's own Bearer key gets 403.
+   *   2. A CREDENTIAL THE DEPLOYMENT DID NOT REGISTER IS REFUSED. Membership is
+   *      not evidence authority; being a reporter is a registration made outside
+   *      every surface an owner can reach.
+   *   3. WHAT IS LEFT IS A REGISTERED PRINCIPAL, AND ITS `source` IS THE
+   *      REGISTRATION'S. The body may not name one.
+   */
+  private requireEvidencePrincipal(auth: AuthContext): EvidencePrincipal {
+    if (auth.role === "owner" || auth.role === "admin") {
+      throw new ApiError(
+        "FORBIDDEN",
+        "an owner or admin credential may not report observed state: observed state changes only on backend, adapter or runtime evidence (INV-02, P3-FR-06)",
+      );
+    }
+    const principal = this.evidencePrincipals.lookup(auth.agent_id);
+    if (principal === null) {
+      throw new ApiError(
+        "FORBIDDEN",
+        "this credential is not a registered evidence principal of this deployment: reporting observed state is a registration made outside every owner-reachable surface (INV-02)",
+      );
+    }
+    return principal;
   }
 
   private requireOwnerOrAdmin(auth: AuthContext, what: string): void {

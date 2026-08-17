@@ -269,7 +269,7 @@ function titleOfDraft(db: Db, auth: AuthContext, draftId: string): string {
   return found ? found.title : draftId;
 }
 
-export function consoleCapabilities(db: Db, auth: AuthContext): ConsoleCapabilityLibrary {
+export function consoleCapabilities(db: Db, auth: AuthContext, nowMs: number): ConsoleCapabilityLibrary {
   const assignments = assignmentsOfWorkspace(db, auth.workspace_id);
   const items: ConsoleCapabilityItem[] = [];
   for (const item of listDrafts(db, auth).items) {
@@ -284,13 +284,13 @@ export function consoleCapabilities(db: Db, auth: AuthContext): ConsoleCapabilit
       approved_revisions: approvals,
       head_approval: approvals[approvals.length - 1] ?? null,
       assignment_count: mine.length,
-      active_assignment_count: mine.filter((a) => assignmentDetail(db, a).desired.state === "active").length,
+      active_assignment_count: mine.filter((a) => assignmentDetail(db, a, nowMs).desired.state === "active").length,
     });
   }
   return { contract: CONSOLE_CONTRACT_VERSION, items };
 }
 
-export function consoleCapability(db: Db, auth: AuthContext, draftId: unknown): ConsoleCapability {
+export function consoleCapability(db: Db, auth: AuthContext, draftId: unknown, nowMs: number): ConsoleCapability {
   // `getDraft` is the read that resolves the lineage and refuses one of another
   // workspace — the same access rule every other draft surface goes through.
   const detail = getDraft(db, auth, draftId);
@@ -299,7 +299,7 @@ export function consoleCapability(db: Db, auth: AuthContext, draftId: unknown): 
   const fleet = fleetAgents(db, auth);
   const assignments = assignmentsOfWorkspace(db, auth.workspace_id)
     .filter((a) => a.draft_id === detail.draft_id)
-    .map((a) => assignmentDetail(db, a));
+    .map((a) => assignmentDetail(db, a, nowMs));
   return {
     contract: CONSOLE_CONTRACT_VERSION,
     draft_id: detail.draft_id,

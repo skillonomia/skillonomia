@@ -28,6 +28,7 @@ import { ApiError } from "./errors.ts";
 import { ulid } from "./ulid.ts";
 import { correlationDigest } from "./journal.ts";
 import { approvedRevisionsOf, type RevisionApproval } from "./draft-decision.ts";
+import type { EvidenceSource } from "./evidence-principal.ts";
 
 // ---------------------------------------------------------- the state machine
 
@@ -184,7 +185,20 @@ export interface ObservedView {
   reason_code: string;
   reason: string;
   source: string;
-  observed_at_ms: number | null;
+  /**
+   * `INV-03` REQUIRES AN `observed_at` OF EVERY `unknown`, AND THAT INCLUDES
+   * THE ONE THIS REGISTRY SYNTHESIZES.
+   *
+   * P3 REVIEW-1 finding `P3-R1-002`: this field was nullable and
+   * `noObservation()` returned null, so the canonical unknown carried no time
+   * and the Console rendered `observed at: never` — the invariant's mandatory
+   * provenance field permitted to disappear on exactly the path that produces
+   * most unknowns. It is not nullable now. For a REPORTED observation it is the
+   * reporter's own clock; for the synthesized one it is the moment this registry
+   * looked and found nothing, which is a real observation with a real time and
+   * is what the reason says it is.
+   */
+  observed_at_ms: number;
   /** the identifiers relating to the observation, when they are known */
   revision_id: string | null;
   session_ref: string | null;
@@ -201,15 +215,16 @@ export interface ObservedView {
  * because a stored "nothing has been seen" would have to be written by
  * somebody, and the only honest writer of it is the reader.
  */
-export function noObservation(agentId: string): ObservedView {
+export function noObservation(agentId: string, nowMs: number): ObservedView {
   return {
     status: "unknown",
     reason_code: "NO_OBSERVATION",
     reason:
       "no adapter or runtime has reported an observation for this assignment: " +
-      "the registry has looked at every row of assignment_observations for it and found none",
+      "the registry has looked at every row of assignment_observations for it and found none. " +
+      "`observed_at_ms` is the moment of that look, which is when this unknown was established",
     source: OBSERVED_STATE_SOURCE,
-    observed_at_ms: null,
+    observed_at_ms: nowMs,
     revision_id: null,
     session_ref: null,
     agent_id: agentId,
@@ -248,13 +263,13 @@ function observedFrom(row: ObservationRow): ObservedView {
 }
 
 /** The latest observation of an assignment, or the honest absence of one. */
-export function observedOf(db: Db, assignment: AssignmentRow): ObservedView {
+export function observedOf(db: Db, assignment: AssignmentRow, nowMs: number): ObservedView {
   const row = db
     .prepare(
       "SELECT * FROM assignment_observations WHERE assignment_id=? ORDER BY observed_at_ms DESC, id DESC LIMIT 1",
     )
     .get(assignment.id) as ObservationRow | undefined;
-  return row ? observedFrom(row) : noObservation(assignment.agent_id);
+  return row ? observedFrom(row) : noObservation(assignment.agent_id, nowMs);
 }
 
 export function observationsOf(db: Db, assignmentId: string): ObservedView[] {
@@ -297,7 +312,11 @@ function boundedText(value: unknown, field: string, max: number): string {
  * fills in halfway; requiring all four of every observation is how "unknown is
  * a full state" stops being a sentence in a document.
  */
-export function validateObservation(input: unknown, nowMs: number): ObservationEvidence {
+export function validateObservation(
+  input: unknown,
+  nowMs: number,
+  derivedSource: EvidenceSource,
+): ObservationEvidence {
   if (input === null || typeof input !== "object") {
     throw new ApiError("INVALID_SCHEMA", "an observation must be an object");
   }
@@ -306,13 +325,20 @@ export function validateObservation(input: unknown, nowMs: number): ObservationE
   if (typeof status !== "string" || !(OBSERVED_STATUSES as readonly string[]).includes(status)) {
     throw new ApiError("INVALID_SCHEMA", `observed_status must be one of ${OBSERVED_STATUSES.join("|")}`);
   }
-  const source = o.source;
-  if (typeof source !== "string" || !(OBSERVATION_SOURCES as readonly string[]).includes(source)) {
+  // `P3-R1-001`: THE SOURCE IS THE SERVER'S, NOT THE BODY'S. It is derived from
+  // the authenticated evidence principal in `src/service.ts` and passed in here.
+  // A body that names one at all is REFUSED rather than ignored, because a field
+  // the server silently overrides is a field the next reader will believe. The
+  // vocabulary still has no `owner` member — in this type, in the CHECK on the
+  // column, and now in the only thing that can put a value there.
+  if (o.source !== undefined) {
     throw new ApiError(
       "INVALID_SCHEMA",
-      `source must be one of ${OBSERVATION_SOURCES.join("|")}: an owner command is not evidence (INV-02)`,
+      "source is derived from the authenticated evidence principal and may not be supplied: " +
+        `this registry records ${OBSERVATION_SOURCES.join("|")} as it registered the reporter, and an owner command is not evidence (INV-02)`,
     );
   }
+  const source = derivedSource;
   const observedAt = o.observed_at_ms ?? nowMs;
   if (!Number.isInteger(observedAt) || (observedAt as number) <= 0) {
     throw new ApiError("INVALID_SCHEMA", "observed_at_ms must be a positive integer");
@@ -520,7 +546,7 @@ export interface AssignmentDetail {
   created_at_ms: number;
 }
 
-export function assignmentDetail(db: Db, assignment: AssignmentRow): AssignmentDetail {
+export function assignmentDetail(db: Db, assignment: AssignmentRow, nowMs: number): AssignmentDetail {
   const desired = desiredFrom(lifecycleEvents(db, assignment.id));
   const approved = approvedRevisionsOf(db, assignment.draft_id);
   return {
@@ -529,7 +555,7 @@ export function assignmentDetail(db: Db, assignment: AssignmentRow): AssignmentD
     draft_id: assignment.draft_id,
     workspace_id: assignment.workspace_id,
     desired,
-    observed: observedOf(db, assignment),
+    observed: observedOf(db, assignment, nowMs),
     actions: assignmentActions(desired, approved.length),
     approved_revisions: approved,
     entity_version: desired.entity_version,
@@ -646,7 +672,7 @@ export function createAssignmentInTx(
     nowMs,
   );
   const row = db.prepare("SELECT * FROM skill_assignments WHERE id=?").get(id) as AssignmentRow;
-  return { assignment: assignmentDetail(db, row), effective_from: EFFECTIVE_FROM, event_id: event.id };
+  return { assignment: assignmentDetail(db, row, nowMs), effective_from: EFFECTIVE_FROM, event_id: event.id };
 }
 
 /**
@@ -675,7 +701,7 @@ export function applyLifecycleActionInTx(
   const target = ACTION_TARGET[action];
   if (desired.state === target) {
     return {
-      assignment: assignmentDetail(db, assignment),
+      assignment: assignmentDetail(db, assignment, nowMs),
       effective_from: EFFECTIVE_FROM,
       event_id: events[events.length - 1]!.id,
     };
@@ -705,7 +731,7 @@ export function applyLifecycleActionInTx(
     nowMs,
   );
   const row = db.prepare("SELECT * FROM skill_assignments WHERE id=?").get(assignment.id) as AssignmentRow;
-  return { assignment: assignmentDetail(db, row), effective_from: EFFECTIVE_FROM, event_id: event.id };
+  return { assignment: assignmentDetail(db, row, nowMs), effective_from: EFFECTIVE_FROM, event_id: event.id };
 }
 
 /**
@@ -751,7 +777,7 @@ export function selectRevisionInTx(
     );
   }
   if (target.draft_revision_id === desired.revision_id) {
-    return { assignment: assignmentDetail(db, assignment), effective_from: EFFECTIVE_FROM, event_id: "" };
+    return { assignment: assignmentDetail(db, assignment, nowMs), effective_from: EFFECTIVE_FROM, event_id: "" };
   }
   const direction = target.revision < revisionNumberOf(approved, desired.revision_id) ? "rollback" : "update";
   const event = insertEvent(
@@ -775,7 +801,7 @@ export function selectRevisionInTx(
     nowMs,
   );
   const row = db.prepare("SELECT * FROM skill_assignments WHERE id=?").get(assignment.id) as AssignmentRow;
-  return { assignment: assignmentDetail(db, row), effective_from: EFFECTIVE_FROM, event_id: event.id };
+  return { assignment: assignmentDetail(db, row, nowMs), effective_from: EFFECTIVE_FROM, event_id: event.id };
 }
 
 function revisionNumberOf(approved: readonly RevisionApproval[], revisionId: string): number {
