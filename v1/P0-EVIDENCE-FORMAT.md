@@ -456,11 +456,25 @@ evidence/
     23-output-sha-agreement-cont.txt  the output-SHA agreement across the extended package
     24-secret-scan-final-cont.txt  the closing secret sweep of the extended package
     25-evidence-check-final-cont.txt  the closing evidence-record check — the last file P3 writes
+    26-session-record-fix1.md      FIX-1's role, model contract, task and session IDs, and its commits
+    27-browser-e2e-trace-fix1.txt  the P2 console browser run's trace, at the FIX-1 SHA
+    28-p3-screen-e2e-trace-fix1.txt  the P3 screen run's trace, at the FIX-1 SHA
+    29-clean-clone-fix1.txt        the clean-clone transcript at the FIX-1 SHA: clone, npm ci, npm test, nothing between
+    30-p3-record-fix1.md           what FIX-1 changed, finding by finding, and what it does not claim
+    31-gate-summary-fix1.md        every mandatory P3 gate at the FIX-1 SHA, its command and its exit code
+    32-refs-tags-and-base-fix1.txt refs, tags, ancestry and clean-worktree at the FIX-1 SHA
+    33-branch-reflog-fix1.txt      the branch reflog after FIX-1's commits
+    34-forbidden-actions-log-fix1.md  FIX-1's log of forbidden production and history-rewriting actions
+    35-negative-probes-fix1.txt    the validator negative probes at the FIX-1 SHA, including the three new ones
+    36-output-sha-agreement-fix1.txt  the output-SHA agreement across the extended package
+    37-secret-scan-final-fix1.txt  the closing secret sweep of the extended package
+    38-evidence-check-final-fix1.txt  the closing evidence-record check — the last file P3 writes
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
+    probes-fix1/                   one transcript per negative probe of the FIX-1 run, with its own README.md
 ```
 
-P3 was built by TWO sessions: `BUILD-1`, which built the backend and recorded
+P3 was built by TWO sessions, and fixed by a third: `BUILD-1`, which built the backend and recorded
 that the console screen and its browser end-to-end were not delivered, and
 `BUILD-2`, the continuation that built them. They are two roles in this ledger
 because they are two provider sessions with two task ids, which is what section
@@ -468,7 +482,20 @@ because they are two provider sessions with two task ids, which is what section
 and no review. Files `01`–`12` are BUILD-1's and are not rewritten, except for
 their `OUTPUT_SHA` marker, which names the phase's exact final SHA — one marker
 per artifact is what `v1/tools/p0-output-sha-check.ts` requires, so it is
-re-pointed rather than doubled.
+re-pointed rather than doubled. `FIX-1` (files `26`–`38`) closed P3 REVIEW-1's
+three findings and re-pointed every earlier marker to ITS final SHA for the same
+reason.
+
+**Two files of that package were CORRECTED rather than re-pointed, and say so in
+their own text.** `03-session-record.md` named an intermediate commit as
+BUILD-1's output SHA and `15-session-record-cont.md` deferred its output SHA to
+the package marker; P3 REVIEW-1 finding `P3-R1-003` was that the three records of
+those two sessions disagreed and no checker compared them. Both now name the SHA
+the run ledger and the session ledger name, each carries a paragraph saying what
+was changed and why, and `v1/tools/p0-evidence-check.ts` compares the session
+ledger, every `*session-record*.md` and the unique role tuple of `runs.jsonl`
+against each other — a pending value, a role no ledger row carries and an output
+SHA the runs contradict are each a refusal, with a negative probe apiece.
 
 A phase directory follows the same rules: the numbered files are per event, the
 `logs/` correspondence is one file to one record, and the closing pair runs last.
