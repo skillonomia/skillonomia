@@ -826,20 +826,66 @@ export function closeSessionInTx(
   return { closure_id: closureId, session_id: session.id, closed_at_ms: nowMs, nothing_reported: written, already_closed: false };
 }
 
+/** THE REVISION NUMBER OF A REVISION, WHICH IS THE ONLY THING THAT ORDERS TWO OF
+ *  THEM. `draft_revisions.revision` is assigned once, at creation, and the row is
+ *  immutable (`INV-06`), so it is the same answer whenever it is asked. */
+function revisionNumberOf(db: Db, revisionId: string): number | null {
+  const row = db.prepare("SELECT revision FROM draft_revisions WHERE id=?").get(revisionId) as
+    | { revision: number }
+    | undefined;
+  return row ? row.revision : null;
+}
+
+/**
+ * DID THIS SESSION OPEN AFTER THAT EVENT — STRICTLY, AND INSIDE ONE MILLISECOND.
+ *
+ * P5 REVIEW-1 finding `P5-R1-002`: the comparison was `session.server_at_ms <
+ * event.server_at_ms`, so two operations that landed in the SAME millisecond
+ * compared as simultaneous and the earlier one was accepted as the later. A
+ * millisecond holds many operations, and the fix is not a wider or narrower
+ * comparison on the same value — it is a second component that the tree already
+ * mints: `ulid()` is a MONOTONIC generator (`src/ulid.ts`), so two ids minted
+ * from one clock reading are issued in ascending order. `agent_sessions.id` and
+ * `skill_assignment_events.id` are both minted that way from the operation's own
+ * `nowMs`, which makes `(server_at_ms, id)` a strict order over operations and
+ * not merely over milliseconds. Nothing here invents a clock or writes one down.
+ */
+function openedAfter(session: SessionRow, event: { id: string; server_at_ms: number }): boolean {
+  if (session.server_at_ms !== event.server_at_ms) return session.server_at_ms > event.server_at_ms;
+  return session.id > event.id;
+}
+
 /**
  * `rolled_back` (`P5-FR-05`, `P5-FR-13`).
  *
  * It is filed against a NEW session that actually carries the rolled-back
  * revision, and it names the rollback ACTION — the `revision_selected` event P3
- * wrote — and the revision that action selected. Three things are checked and
+ * wrote — and the revision that action selected. Four things are checked and
  * each is a requirement rather than a nicety:
  *
+ *   * the event is a selection that went BACKWARD, established from the journal
+ *     itself, so an owner who moved FORWARD cannot have that recorded as a
+ *     rollback they never performed;
  *   * the entry of THIS session carries the rollback target, so a rollback
  *     nobody loaded cannot be recorded as confirmed;
- *   * the session opened AFTER the rollback action, so a session that predates
+ *   * the session opened AFTER the rollback action, by a comparison that can
+ *     tell two operations of one millisecond apart, so a session that predates
  *     the decision cannot be presented as its confirmation;
  *   * the earlier outcome is not touched — this is a new row, and the view
  *     below shows both.
+ *
+ * WHY THE JOURNAL AND NOT THE LABEL. P5 REVIEW-1 finding `P5-R1-001`: this
+ * function checked that the event was a `revision_selected` and never that the
+ * selection went backward, so `direction: "update"` — the provenance P3 writes
+ * for a FORWARD move — was accepted as proof of a rollback and a durable
+ * `rolled_back` was filed for an owner who had advanced. Both halves of that are
+ * closed here, and deliberately without reading `provenance_json.direction`: a
+ * label is a claim about the operation, while `skill_assignment_events` ordered
+ * by `event_seq` IS the desired-state history, INSERT-only by trigger. The
+ * revision in force before the event is the one its immediate predecessor
+ * selected, and backward means the target's `revision` number is lower. That is
+ * the same fact `selectRevisionInTx` computed when it labelled the event, read
+ * back from the rows rather than taken on trust.
  */
 export function recordRollbackConfirmationInTx(
   db: Db,
@@ -854,18 +900,38 @@ export function recordRollbackConfirmationInTx(
   const entry = loadoutEntries(db, loadout.id).find((e) => e.id === input.entry_id);
   if (!entry) throw new ApiError("NOT_FOUND", "no such entry in this session's loadout");
 
-  const event = db
-    .prepare("SELECT * FROM skill_assignment_events WHERE id=? AND assignment_id=?")
-    .get(input.rollback_action_event_id, entry.assignment_id) as
-    | { id: string; event: string; desired_revision_id: string; server_at_ms: number }
-    | undefined;
-  if (!event) {
+  const journal = db
+    .prepare(
+      `SELECT id, event, desired_revision_id, event_seq, server_at_ms
+         FROM skill_assignment_events WHERE assignment_id=? ORDER BY event_seq ASC`,
+    )
+    .all(entry.assignment_id) as Array<{
+    id: string;
+    event: string;
+    desired_revision_id: string;
+    event_seq: number;
+    server_at_ms: number;
+  }>;
+  const at = journal.findIndex((e) => e.id === input.rollback_action_event_id);
+  if (at < 0) {
     throw new ApiError("NOT_FOUND", "no such lifecycle event on this entry's assignment");
   }
+  const event = journal[at]!;
   if (event.event !== "revision_selected") {
     throw new ApiError(
       "PRECONDITION_FAILED",
       "the action a rollback records is a revision selection; this event is not one",
+      "NOT_A_ROLLBACK_ACTION",
+    );
+  }
+  const before = journal[at - 1];
+  const wasInForce = before ? revisionNumberOf(db, before.desired_revision_id) : null;
+  const selected = revisionNumberOf(db, event.desired_revision_id);
+  if (wasInForce === null || selected === null || selected >= wasInForce) {
+    throw new ApiError(
+      "PRECONDITION_FAILED",
+      "this selection did not go back: the revision it selected is not an earlier one than the revision that " +
+        "was in force before it, so it is not a rollback and cannot be confirmed as one",
       "NOT_A_ROLLBACK_ACTION",
     );
   }
@@ -876,7 +942,7 @@ export function recordRollbackConfirmationInTx(
       "ROLLBACK_TARGET_NOT_LOADED",
     );
   }
-  if (session.server_at_ms < event.server_at_ms) {
+  if (!openedAfter(session, event)) {
     throw new ApiError(
       "PRECONDITION_FAILED",
       "this session opened before the rollback was decided, so it is not the new session that confirms it",

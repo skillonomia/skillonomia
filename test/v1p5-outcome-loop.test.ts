@@ -966,6 +966,199 @@ test("P5-FR-05/13: a rollback selects a previously approved revision and is conf
   assert.equal(backwards.json.error.current_state, "SESSION_PREDATES_ROLLBACK");
 });
 
+/** Everything a rollback confirmation needs in place EXCEPT the direction: v1 and
+ *  v2 both approved and both loadable, and the forward selection v1 → v2 whose
+ *  own provenance says `direction: "update"`. The clock ticks, so the session
+ *  that carries v2 opens unambiguously after that selection and the ONLY thing
+ *  left for the route to object to is that the owner moved forward. */
+function forwardSelection() {
+  const { fx, s, draft, assignmentId, adapter, outcomeId, entry } = failedOutcome("ship the thing", ticking());
+  const v1 = entry.draft_revision_id as string;
+  const v2 = revisionFromFailure(fx, s, outcomeId).json.revision.revision_id as string;
+  assert.equal(
+    call(fx, {
+      method: "POST",
+      path: `/v1/console/drafts/${draft.draft_id}/approve`,
+      cookie: s.cookie,
+      csrf: s.csrf,
+      body: { revision_id: v2, idempotency_key: "app-fwd" },
+    }).status,
+    201,
+  );
+  const forward = call(fx, {
+    method: "POST",
+    path: `/v1/console/assignments/${assignmentId}/revision`,
+    cookie: s.cookie,
+    csrf: s.csrf,
+    body: { revision_id: v2, idempotency_key: "sel-fwd" },
+  });
+  assert.equal(forward.status, 200, forward.body);
+  const event = fx.db
+    .prepare("SELECT id, provenance_json FROM skill_assignment_events WHERE id=?")
+    .get(forward.json.event_id) as { id: string; provenance_json: string };
+  assert.equal(JSON.parse(event.provenance_json).direction, "update", "P3 recorded a forward move");
+  return { fx, s, draft, assignmentId, adapter, v1, v2, forwardEventId: event.id };
+}
+
+// P5-R1-001. Every precondition but the direction is satisfied, so a route that
+// answers 201 here is answering it for the reason the finding named.
+test("P5-FR-05/13 (P5-R1-001): a FORWARD revision selection cannot confirm a rollback, and nothing is appended", () => {
+  const { fx, adapter, v2, forwardEventId } = forwardSelection();
+  const lo = openSession(fx, adapter.key, fx.reporter.agent_id, "codex", "s-fwd");
+  const entry = lo.entries[0];
+  assert.equal(entry.draft_revision_id, v2, "the session carries exactly what the forward selection chose");
+  const before = (fx.db.prepare("SELECT count(*) c FROM session_outcomes").get() as { c: number }).c;
+
+  const refused = call(fx, {
+    method: "POST",
+    path: `/v1/sessions/${lo.session_id}/rollback-confirmations`,
+    key: adapter.key,
+    body: { entry_id: entry.entry_id, rollback_action_event_id: forwardEventId, idempotency_key: "rb-fwd" },
+  });
+  assert.equal(refused.status, 412, refused.body);
+  assert.equal(refused.json.error.code, "PRECONDITION_FAILED");
+  assert.equal(refused.json.error.current_state, "NOT_A_ROLLBACK_ACTION");
+  assert.equal(
+    (fx.db.prepare("SELECT count(*) c FROM session_outcomes").get() as { c: number }).c,
+    before,
+    "a refusal appends NOTHING — no `rolled_back` row exists for the forward move",
+  );
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM session_outcomes WHERE outcome='rolled_back'").get() as { c: number }).c, 0);
+});
+
+// The positive control for the same check: the refusal above is about DIRECTION
+// and not about rollback confirmations in general.
+test("P5-FR-05/13 (P5-R1-001 control): the BACKWARD selection of the same pair still confirms", () => {
+  const { fx, s, assignmentId, adapter, v1 } = forwardSelection();
+  const rolled = call(fx, {
+    method: "POST",
+    path: `/v1/console/assignments/${assignmentId}/revision`,
+    cookie: s.cookie,
+    csrf: s.csrf,
+    body: { revision_id: v1, reason: "v2 is worse", idempotency_key: "sel-back" },
+  });
+  assert.equal(rolled.status, 200, rolled.body);
+  const lo = openSession(fx, adapter.key, fx.reporter.agent_id, "codex", "s-back");
+  const entry = lo.entries[0];
+  assert.equal(entry.draft_revision_id, v1);
+  const confirmed = call(fx, {
+    method: "POST",
+    path: `/v1/sessions/${lo.session_id}/rollback-confirmations`,
+    key: adapter.key,
+    body: { entry_id: entry.entry_id, rollback_action_event_id: rolled.json.event_id, idempotency_key: "rb-back" },
+  });
+  assert.equal(confirmed.status, 201, confirmed.body);
+  assert.equal(confirmed.json.outcome, "rolled_back");
+});
+
+/** The rollback of `P5-R1-002`, decided under the FROZEN clock every other suite
+ *  uses: one session opened before the decision and one after it, and all three
+ *  operations stamped with the same millisecond. */
+function rollbackInOneMillisecond() {
+  const { fx, s, draft, assignmentId, adapter } = ready("ship the thing");
+  const v1 = fx.db
+    .prepare("SELECT desired_revision_id FROM skill_assignment_events WHERE assignment_id=? ORDER BY event_seq LIMIT 1")
+    .get(assignmentId) as { desired_revision_id: string };
+  const revised = call(fx, {
+    method: "POST",
+    path: `/v1/console/drafts/${draft.draft_id}/revisions`,
+    cookie: s.cookie,
+    csrf: s.csrf,
+    body: { sections: { procedure: ["Read the diff.", "Run the suite twice.", "Merge it."] }, idempotency_key: "rev-eq" },
+  });
+  const v2 = revised.json.revision_id as string;
+  assert.equal(
+    call(fx, {
+      method: "POST",
+      path: `/v1/console/drafts/${draft.draft_id}/approve`,
+      cookie: s.cookie,
+      csrf: s.csrf,
+      body: { revision_id: v2, idempotency_key: "app-eq" },
+    }).status,
+    201,
+  );
+  // the session that PREDATES the rollback: opened while v1 is in force, so it
+  // carries the rollback target without having been opened for it
+  const old = openSession(fx, adapter.key, fx.reporter.agent_id, "codex", "s-old");
+  assert.equal(old.entries[0].draft_revision_id, v1.desired_revision_id);
+  assert.equal(
+    call(fx, {
+      method: "POST",
+      path: `/v1/console/assignments/${assignmentId}/revision`,
+      cookie: s.cookie,
+      csrf: s.csrf,
+      body: { revision_id: v2, idempotency_key: "sel-fwd-eq" },
+    }).status,
+    200,
+  );
+  const rolled = call(fx, {
+    method: "POST",
+    path: `/v1/console/assignments/${assignmentId}/revision`,
+    cookie: s.cookie,
+    csrf: s.csrf,
+    body: { revision_id: v1.desired_revision_id, reason: "v2 is worse", idempotency_key: "sel-back-eq" },
+  });
+  assert.equal(rolled.status, 200, rolled.body);
+  const stamps = fx.db
+    .prepare(
+      `SELECT s.server_at_ms AS session_ms, e.server_at_ms AS event_ms
+         FROM agent_sessions s, skill_assignment_events e WHERE s.id=? AND e.id=?`,
+    )
+    .get(old.session_id, rolled.json.event_id) as { session_ms: number; event_ms: number };
+  assert.equal(stamps.session_ms, stamps.event_ms, "the frozen clock puts both operations in ONE millisecond");
+  assert.equal(stamps.session_ms, NOW);
+  return { fx, adapter, old, rollbackEventId: rolled.json.event_id as string };
+}
+
+// P5-R1-002. The old session carries the rollback target and shares the
+// rollback's millisecond; only the operation order tells them apart.
+test("P5-FR-13 (P5-R1-002): a session opened BEFORE the rollback in the SAME millisecond cannot confirm it, and nothing is appended", () => {
+  const { fx, adapter, old, rollbackEventId } = rollbackInOneMillisecond();
+  const before = (fx.db.prepare("SELECT count(*) c FROM session_outcomes").get() as { c: number }).c;
+  const refused = call(fx, {
+    method: "POST",
+    path: `/v1/sessions/${old.session_id}/rollback-confirmations`,
+    key: adapter.key,
+    body: { entry_id: old.entries[0].entry_id, rollback_action_event_id: rollbackEventId, idempotency_key: "rb-old-eq" },
+  });
+  assert.equal(refused.status, 412, refused.body);
+  assert.equal(refused.json.error.code, "PRECONDITION_FAILED");
+  assert.equal(refused.json.error.current_state, "SESSION_PREDATES_ROLLBACK");
+  assert.equal(
+    (fx.db.prepare("SELECT count(*) c FROM session_outcomes").get() as { c: number }).c,
+    before,
+    "a refusal appends NOTHING",
+  );
+  assert.equal((fx.db.prepare("SELECT count(*) c FROM session_outcomes WHERE outcome='rolled_back'").get() as { c: number }).c, 0);
+});
+
+// The positive control for the same check, and the reason it is not a stricter
+// timestamp comparison: a session opened AFTER the rollback inside the SAME
+// millisecond still confirms it. The pair (`server_at_ms`, monotonic `id`) is
+// what separates the two, so equality of the millisecond refuses nothing on
+// its own.
+test("P5-FR-13 (P5-R1-002 control): a session opened AFTER the rollback in the SAME millisecond does confirm it", () => {
+  const { fx, adapter, rollbackEventId } = rollbackInOneMillisecond();
+  const fresh = openSession(fx, adapter.key, fx.reporter.agent_id, "codex", "s-new-eq");
+  const entry = fresh.entries[0];
+  const stamps = fx.db
+    .prepare(
+      `SELECT s.server_at_ms AS session_ms, s.id AS session_id, e.server_at_ms AS event_ms, e.id AS event_id
+         FROM agent_sessions s, skill_assignment_events e WHERE s.id=? AND e.id=?`,
+    )
+    .get(fresh.session_id, rollbackEventId) as { session_ms: number; session_id: string; event_ms: number; event_id: string };
+  assert.equal(stamps.session_ms, stamps.event_ms, "still one millisecond");
+  assert.ok(stamps.session_id > stamps.event_id, "and the later operation carries the later monotonic id");
+  const confirmed = call(fx, {
+    method: "POST",
+    path: `/v1/sessions/${fresh.session_id}/rollback-confirmations`,
+    key: adapter.key,
+    body: { entry_id: entry.entry_id, rollback_action_event_id: rollbackEventId, idempotency_key: "rb-new-eq" },
+  });
+  assert.equal(confirmed.status, 201, confirmed.body);
+  assert.equal(confirmed.json.outcome, "rolled_back");
+});
+
 // ===========================================================================
 // P5-FR-14 — the owner surface is structured contracts
 // ===========================================================================

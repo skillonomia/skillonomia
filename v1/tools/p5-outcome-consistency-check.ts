@@ -13,7 +13,7 @@
 // lifecycle event that really selected the revision it says was rolled back, or
 // that a session confirming a rollback opened AFTER the decision. Those are
 // JOINS, and the narrowing did not cover them. This harness is the join half,
-// and nothing else: eleven statements over the rows a real run leaves behind.
+// and nothing else: fifteen statements over the rows a real run leaves behind.
 //
 // It is deliberately not an observability platform, a metrics system or a
 // framework — P5's OUT list forbids all three. It has no configuration, no
@@ -163,13 +163,41 @@ must(
         OR ev.desired_revision_id <> o.rollback_to_revision_id
         OR o.draft_revision_id <> o.rollback_to_revision_id)`,
 );
+// `P5-R1-001`: and that the selection went BACK. The event's immediate
+//    predecessor in the journal — `event_seq` orders it, and the table is
+//    INSERT-only by trigger — names the revision that was in force before it, so
+//    a rollback is a target whose `revision` number is LOWER than that one's. An
+//    `update` filed as a rollback is a false causal record and is refused here
+//    without reading the label the event carries.
 must(
-  "and the session that confirmed it opened AFTER that decision",
-  `SELECT o.id, s.server_at_ms AS session_opened_ms, ev.server_at_ms AS decided_ms
+  "and that selection really went BACK — a lower revision than the one in force before it, read from the journal",
+  `SELECT o.id, o.rollback_action_event_id, ev.event_seq,
+          target.revision AS selected_revision, before.revision AS revision_in_force_before
+     FROM session_outcomes o
+     JOIN skill_assignment_events ev ON ev.id = o.rollback_action_event_id
+     LEFT JOIN draft_revisions target ON target.id = ev.desired_revision_id
+     LEFT JOIN skill_assignment_events prev
+            ON prev.assignment_id = ev.assignment_id
+           AND prev.event_seq = (SELECT max(p.event_seq) FROM skill_assignment_events p
+                                  WHERE p.assignment_id = ev.assignment_id AND p.event_seq < ev.event_seq)
+     LEFT JOIN draft_revisions before ON before.id = prev.desired_revision_id
+    WHERE o.outcome = 'rolled_back'
+      AND (target.revision IS NULL OR before.revision IS NULL OR target.revision >= before.revision)`,
+);
+// `P5-R1-002`: and that the confirming session opened STRICTLY after the
+//    decision. `server_at_ms` alone cannot separate two operations of one
+//    millisecond; the monotonic `ulid()` both ids come from can, so the order is
+//    over the pair and the session must be the later member of it.
+must(
+  "and the session that confirmed it opened AFTER that decision, by (server_at_ms, id) and not by the millisecond alone",
+  `SELECT o.id, s.server_at_ms AS session_opened_ms, ev.server_at_ms AS decided_ms,
+          s.id AS session_id, ev.id AS event_id
      FROM session_outcomes o
      JOIN skill_assignment_events ev ON ev.id = o.rollback_action_event_id
      JOIN agent_sessions s ON s.id = o.session_id
-    WHERE o.outcome = 'rolled_back' AND s.server_at_ms < ev.server_at_ms`,
+    WHERE o.outcome = 'rolled_back'
+      AND NOT (s.server_at_ms > ev.server_at_ms
+               OR (s.server_at_ms = ev.server_at_ms AND s.id > ev.id))`,
 );
 
 // 6. `P5-FR-07`: A RECORDED CONFLICT IS ABOUT A ROW THAT STANDS, under the same
