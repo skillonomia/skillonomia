@@ -223,7 +223,7 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["SECURITY.md", "00017c15de658726", "intent", "no security maintenance commitment at any version; a maintenance policy"],
     ["SECURITY.md", "d002d8a5033c2268", "intent", "only the tip of the published branch is looked at; a maintenance policy"],
     ["SECURITY.md", "de117bedc0e8ec40", "intent", "the supported-versions row restating that policy"],
-    ["SECURITY.md", "aaf5c03f9bdb6429", "intent", "the supported-versions row for the version this tree declares, restating that policy"],
+    ["SECURITY.md", "6838cbac7cadc5df", "intent", "the supported-versions row for the version this tree declares, restating that policy"],
     ["SECURITY.md", "6702c7076146000d", "intent", "the owner's pilot instance is not a service this project offers and carries no uptime or response commitment; a support boundary, not a fact of the tree"],
     ["SECURITY.md", "a8ea82542519eb4c", "intent", "versions between the baseline and this one carry the same absence of commitment; a maintenance policy"],
     ["SECURITY.md", "e0c0cc07ec2fc4ca", "definition", "introduces the list of parts that make a security claim; defines the section's scope"],

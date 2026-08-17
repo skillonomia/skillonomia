@@ -1,6 +1,6 @@
 # Skillonomia — Verified Skill Package Specification
 
-Version `0.1.6`. Licensed under Apache-2.0, together with the implementation in
+Version `1.0.0`. Licensed under Apache-2.0, together with the implementation in
 this repository.
 
 This release version has ONE source: the `version` field of `package.json`.

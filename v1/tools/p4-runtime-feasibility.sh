@@ -17,7 +17,7 @@
 # A green run here does NOT mean the P4 gates are green. Do not read it as one.
 #
 # ISOLATION. Both runtimes are pointed at a runtime home created under the output
-# directory. Nothing is written into /home/node/.claude or into the live CODEX_HOME.
+# directory. Nothing is written into the live $HOME/.claude or into the live CODEX_HOME.
 # Auth material is COPIED into the isolated home and never printed.
 #
 # EXIT CODES, as for every harness in this tree:
@@ -93,7 +93,7 @@ grep -q "$MARKER" "$OUT/claude-transcript.json" \
   || { echo "CLAUDE did NOT return the marker (rc=$CC_RC) — see $OUT/claude-transcript.json" >&2; RC=1; }
 
 # The isolation assertion is part of the probe, not a claim beside it.
-for LIVE in "/home/node/.claude/skills" "${CODEX_HOME:-$HOME/.codex}/skills"; do
+for LIVE in "$HOME/.claude/skills" "${CODEX_HOME:-$HOME/.codex}/skills"; do
   if [ -e "$LIVE/p4-feasibility-probe" ]; then
     echo "FAILED: probe skill leaked into the live runtime home $LIVE" >&2; RC=1
   fi

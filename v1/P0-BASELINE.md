@@ -74,7 +74,7 @@ that guard before trusting a green install:
 node -e "require.resolve('@typescript/typescript-linux-x64/package.json')"
 ```
 
-On this machine `/home/node/.npm/_cacache` is not writable by the running user
+On this machine the shared npm cache is not writable by the running user
 (`EACCES` on `mkdir`), so every command in this record was run with a
 per-workspace cache:
 

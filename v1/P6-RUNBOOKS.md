@@ -189,7 +189,7 @@ node --experimental-strip-types --no-warnings -e '
 '
 ```
 
-with `DB="$DATA.rollback/registry.db"` and `DOWN` naming the reversal of the
+with `DB="$DATA.rollback/skillonomia.db"` and `DOWN` naming the reversal of the
 head migration under `migrations/down/`. Each migration ships its own reversal
 there; the head one of this tree is
 `migrations/down/0017_outcomes_and_the_revision_loop.down.sql`.

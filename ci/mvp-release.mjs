@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // THE RELEASE-ARTIFACT CHECKS — one script, one subcommand per published thing.
 //
-//   node ci/mvp-release.mjs binary --tag v0.1.6         # the release path: download, then smoke
+//   node ci/mvp-release.mjs binary --tag v1.0.0         # the release path: download, then smoke
 //   node ci/mvp-release.mjs binary --local              # the rehearsal: package, then smoke
 //   node ci/mvp-release.mjs ghcr --digest <ref@sha256:> # pull one published image and drive it
 //   node ci/mvp-release.mjs npm --package <tgz|spec>    # install as a consumer, with no Bun
 //   node ci/mvp-release.mjs platform --package <tgz> --sha256 <hex>   # the qualification contract
 //   node ci/mvp-release.mjs hardening --image <ref@sha256:> --npm <spec>  # the pre-deploy gate
-//   node ci/mvp-release.mjs preflight --tag v0.1.6      # BEFORE the tag: can this release happen at all
+//   node ci/mvp-release.mjs preflight --tag v1.0.0      # BEFORE the tag: can this release happen at all
 //
 // SIX SUBCOMMANDS AND NOT SIX SCRIPTS. §7 allows this project four new
 // acceptance scripts before the pilots and two are already spent
@@ -2674,7 +2674,7 @@ async function hardening(argv) {
 //
 // THE GATE THAT RUNS BEFORE THE TAG, BECAUSE EVERY OTHER GATE RUNS TOO LATE.
 //
-//   node ci/mvp-release.mjs preflight --tag v0.1.6 --repo skillonomia/skillonomia
+//   node ci/mvp-release.mjs preflight --tag v1.0.0 --repo skillonomia/skillonomia
 //
 // WHAT HAPPENED. `v0.1.3` published its binary, published its image, and then
 // `publish-npm` failed:
