@@ -1340,6 +1340,14 @@ test("P5-FR-06 (P5-R2-001): redelivering one rollback confirmation replays — o
     1,
   );
   assert.equal((fx.db.prepare("SELECT count(*) c FROM outcome_conflicts").get() as { c: number }).c, 0);
+
+  // this fixture's clock is frozen on purpose, so the routing is what the two
+  // assertions above isolate. The identity rule is pinned here instead: the
+  // caller stated no time, and the claim says so rather than carrying the one
+  // the route minted.
+  const row = fx.db.prepare("SELECT * FROM session_outcomes WHERE id=?").get(first.json.outcome_id) as any;
+  assert.equal(JSON.parse(row.payload_json).observed_at_ms, null);
+  assert.ok(row.observed_at_ms > 0, "and the row keeps the effective observation time");
 });
 
 test("P5-FR-07 (P5-R2-001 control): a rollback confirmation that says something else is still a conflict", () => {
