@@ -597,9 +597,27 @@ evidence/
     27-negative-probes-build2.txt  the validator negative probes at the final SHA
     28-output-sha-agreement-build2.txt  the output-SHA agreement across the phase package
     29-secret-scan-build2.txt      the closing secret sweep, run after the last word was written
-    30-evidence-check-build2.txt   the closing evidence-record check — the last file P5 writes
+    30-evidence-check-build2.txt   the closing evidence-record check of BUILD-2's package
+    31-session-record-fix1.md      FIX-1's role, model contract, task and session IDs, and its commits
+    32-fix1-record.md              the two REVIEW-1 findings, the one mechanism that closes both, and what FIX-1 does NOT claim
+    33-gate-summary-fix1.md        every mandatory P5 gate at FIX-1's final SHA, its command and its exit code
+    34-gate-results-fix1.tsv       that battery's raw per-gate results, one line per gate
+    35-repro-before-and-after.txt  the reviewer's own reproduction, run at the input SHA and at the final SHA
+    36-router-regressions-fix1.txt the four new router regressions, and the same four with the new guards disabled so the refusals are seen to fail
+    37-p5-consistency-check-fix1.txt  the consistency validator over a real run's database at the final SHA, and over a copy with the two refused rollback shapes planted
+    38-browser-e2e-p5-fix1.txt     the browser gate at the final SHA
+    39-runtime-codex-fix1.txt      the actual Codex runtime gate at the final SHA
+    40-runtime-claude-code-fix1.txt   the actual Claude Code runtime gate at the final SHA
+    41-refs-tags-and-base-fix1.txt    refs, tags, ancestry and clean-worktree at the final SHA
+    42-branch-reflog-fix1.txt      the full branch reflog after FIX-1's commits
+    43-clean-clone-fix1.txt        the clean-clone transcript at the final SHA: clone, npm ci, npm test, nothing between
+    44-negative-probes-fix1.txt    the validator negative probes at the final SHA
+    45-output-sha-agreement-fix1.txt  the output-SHA agreement across the phase package
+    46-secret-scan-fix1.txt        the closing secret sweep, run after the last word was written
+    47-evidence-check-fix1.txt     the closing evidence-record check — the last file P5 writes
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
+    logs-fix1-aborted/             the first five logs of a FIX-1 battery stopped on purpose before this listing was committed, with its own README.md
 ```
 
 **P5 was built by TWO sessions, and the second one is the rest of the build.**
@@ -614,6 +632,17 @@ the two-review two-fix budget of contract section 8 is untouched by it. Every
 marker in the package names BUILD-2's final SHA, and the files BUILD-1 wrote were
 re-pointed rather than duplicated: a package whose artifacts name two different
 SHAs is a package that certifies neither.
+
+**P5 REVIEW-1 returned two blocking findings, and `FIX-1` closed both.**
+`P5-R1-001` accepted a forward revision update as the confirmation of a rollback and
+`P5-R1-002` accepted a session that predated the rollback when the two shared a
+millisecond; both are recorded in evidence/P5/32-fix1-record.md with the reviewer's own
+reproduction before and after and with the transcript of the new regressions seen RED with
+the new guards disabled. `FIX-1` committed the fix, then the phase document, then THIS
+listing, and only then ran the certifying battery, the clean clone and the four closing
+checks — a commit after the markers are written invalidates every one of them, and the
+first battery of this session was stopped mid-run for exactly that reason. Its logs are
+kept under evidence/P5/logs-fix1-aborted/ rather than deleted.
 
 **P4 REVIEW-1 returned one blocking finding, and `FIX-1` closed it.** The finding,
 `P4-R1-001`, is recorded in evidence/P4/28-finding-p4-r1-001.md with the reproduction
