@@ -1,43 +1,43 @@
 #!/usr/bin/env bash
-# GATE INTERFACE: actual Claude Code runtime session
+# GATE: actual Claude Code runtime session.
 #
-#   v1/tools/gates/runtime-claude-code.sh
+#   SKLN_RUNTIME_WORK=/some/writable/dir v1/tools/gates/runtime-claude-code.sh
 #
-# NOT IMPLEMENTED FOR THIS PHASE. This is a real, invocable path with a written
-# contract and a fail-closed exit — not a description of one. Contract section 9
-# requires every mandatory gate category to be a command or a justified minimal
-# deterministic harness; finding `P0-R1-002` was that P0 named this category in
-# prose and left nothing to run. A stub that exits non-zero is an honest interface:
-# it can be wired into a phase's gate list today and it can never be mistaken for a
-# green result.
+# IMPLEMENTED BY P4. It is a SEPARATE gate from the Codex one because the two
+# native mechanisms differ and a single harness with a runtime flag invites one
+# implementation to be proved and the other assumed — and it runs the SAME
+# scenario body (`v1/tools/gates/runtime-session.mjs`) so the two cannot drift
+# into proving different things.
 #
-# OWED BY: P4, P5 and P6
+# It drives the shipped product end to end against the REAL `claude` binary:
+# `skillonomia adapter open` materialises the frozen loadout into a
+# session-scoped `CLAUDE_CONFIG_DIR`, and `skillonomia adapter invoke` runs a
+# real `claude -p ... --output-format json` session against that home. The
+# machine-readable JSON that run emits carries the runtime's own `session_id`,
+# which is the correlation the receipt is filed with.
 #
-# THE CONTRACT THE IMPLEMENTATION MUST MEET
-# Contract section 9 and `P4-FR-18`/`P4-FR-19`, the Claude Code half of the same
-# requirement. It is a separate harness rather than a parameter of the Codex one
-# because the two native mechanisms differ, and a single harness with a runtime flag
-# invites one implementation to be proved and the other to be assumed.
+# WHAT IT ASSERTS: the same eight obligations as
+# `v1/tools/gates/runtime-codex.sh`, against a real Claude Code session. The
+# additional claim that both runtimes loaded the SAME canonical revision — same
+# skill id, same revision id, same content digest (`P4-FR-06`, `INV-01`) — is
+# asserted in `test/v1p4-session-loadout.test.ts`, which builds one loadout per
+# runtime from ONE approved revision and compares the rendered bytes; and it is
+# visible here as the revision id and digest this gate prints, which are the
+# same values the Codex gate prints for the same assignment.
 #
-# The implementation must meet the same six obligations as
-# `v1/tools/gates/runtime-codex.sh`, against a real Claude Code session, and must
-# additionally assert that the SAME canonical revision — same skill ID, same revision
-# ID, same content digest — is what both runtimes loaded (`P4-FR-06`, `INV-01`: the
-# adapters are thin projections of one canonical model, not two models).
+# THIS RUNTIME'S ONE REQUIREMENT, STATED WHERE IT IS RELIED ON. Without
+# `--permission-mode bypassPermissions` the Skill call is DENIED non-interactively
+# and the run emits no JSON at all — so a session that would have loaded the
+# skill leaves no receipt to file. The adapter passes it (`src/adapter-cli.ts`).
 #
-# It must REFUSE (exit 2) rather than simulate when no real runtime is reachable.
+# IT REFUSES (exit 2) rather than simulating when the `claude` binary is absent,
+# when no writable work directory OUTSIDE the evidence package was named, or when
+# the port it would measure is already answering.
 #
 # EXIT CODES, FIXED FOR EVERY GATE HARNESS
 #   0  the gate passed
 #   1  the gate failed — a real defect on the surface it measures
 #   2  REFUSED — the harness could not reach its subject; never reported as a pass
 #   3  NOT IMPLEMENTED FOR THIS PHASE — what it measures does not exist yet
-#
-# Replacing this file is the implementing phase's job. Deleting it, or making it
-# exit 0, is not: the gate table names this path, and `v1/tools/p0-gate-table-check.ts`
-# fails if the path stops resolving.
 set -uo pipefail
-
-echo "GATE actual Claude Code runtime session: NOT IMPLEMENTED FOR THIS PHASE." >&2
-echo "Owed by: P4, P5 and P6. Contract is in the header of $0." >&2
-exit 3
+exec "$(dirname "$0")/runtime-harness.sh" claude_code

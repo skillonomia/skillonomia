@@ -250,7 +250,9 @@ export async function adapterInvoke(opts: {
     `Use the ${opts.skillName} skill. Follow its "Canonical revision receipt" section exactly: ` +
     `report the SKLN-RECEIPT line it gives you, verbatim, on a line of its own.`;
   const env: NodeJS.ProcessEnv = { ...process.env, [adapter.home_env]: opts.home };
-  const run = spawnSync(opts.binary ?? adapter.binary, launch.argv(prompt, opts.home), {
+  const argv = launch.argv(prompt, opts.home);
+  const binary = opts.binary ?? adapter.binary;
+  const run = spawnSync(binary, argv, {
     cwd: opts.workdir,
     env,
     encoding: "utf8",
@@ -262,7 +264,7 @@ export async function adapterInvoke(opts: {
   // `P4-FR-15` OVER THE RUNTIME LOG. The transcript is evidence and it is
   // written to disk, so it is scanned on the same patterns the artifact is
   // scanned on, and a hit refuses rather than writes.
-  const transcript = `--- argv ---\n${adapter.binary} ${launch.argv(prompt, opts.home).join(" ")}\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`;
+  const transcript = `--- argv ---\n${binary} ${argv.join(" ")}\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`;
   const shape = credentialShapeIn(transcript);
   if (shape !== null) {
     throw new AdapterError(`the runtime transcript carries a value shaped like a credential (${shape}); it was not written`);
