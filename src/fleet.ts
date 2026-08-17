@@ -136,14 +136,128 @@ export function missingAttribute(v: unknown): string | null {
   return null;
 }
 
+// =========================================================================
+// INV-03 — an `unknown` carries a CODE, a SENTENCE, a SOURCE and a TIME
+// =========================================================================
+//
+// P3 REVIEW-2 finding `P3-R2-002`: the fleet surfaces published `unknown` with
+// one `reason` field holding a machine code — `no_inventory_root_configured` —
+// and no `observed_at` at all. The invariant asks for four things and got two,
+// and the two it got were the same thing twice: a reader with only the payload
+// had a token to branch on and no sentence, and no idea WHEN the registry had
+// looked. The code and the sentence are separate fields below, and the table is
+// what refuses a code where a sentence belongs: a code with no registered
+// sentence is not published, it throws.
+
+/** The four fields `INV-03` requires of an observed `unknown`. Same vocabulary
+ *  `src/assignment-lifecycle.ts` already publishes an `ObservedView` in. */
+export interface UnknownAccount {
+  reason_code: string;
+  reason: string;
+  source: string;
+  observed_at_ms: number;
+}
+
+/** A machine code: lower snake, no spaces, optionally one `:`-qualified tail. */
+export function isReasonCode(v: unknown): boolean {
+  return typeof v === "string" && /^[a-z0-9]+(?:[_:][a-z0-9]+)+$/.test(v);
+}
+
+/**
+ * THE SENTENCE FOR EACH CODE AN `unknown` CAN CARRY ON THE FLEET SURFACES.
+ *
+ * Every code that can reach an `unknown` cell of `GET /v1/fleet` or
+ * `GET /v1/fleet/:agent/capabilities` has a row here. A code that does not is
+ * not turned into prose by a rule — it is refused, because a sentence composed
+ * mechanically out of a token is the same token with punctuation in it.
+ */
+export const UNKNOWN_REASON_PROSE: Readonly<Record<string, string>> = {
+  no_evidence: "nothing was reported and nothing was found that bears on this cell",
+  no_live_session: "no live session was observed for this agent, and only a live session can answer this",
+  live_session_did_not_enumerate_what_was_offered:
+    "a live session was observed but it did not list what it was offered, so absence here proves nothing",
+  no_transcript_record: "no stored transcript carries a record of this, and a stored transcript is not a reliable witness of absence",
+  no_runtime_observation: "no runtime observation has been reported for this agent, so nothing was searched",
+  runtime_emits_no_skill_inventory: "this runtime publishes no skill-availability signal in any window, so this cell can never say `no`",
+  not_separable_from_proposed: "this runtime reports nothing that separates being loaded from being proposed",
+  no_paired_record: "no paired call/output record carrying this version's marker was found — unobserved, and never known to be absent",
+  no_executable_step: "this version declares no executable step, so there is no call this registry could have looked for",
+  no_outcome_contract: "this version declares no outcome contract, so there is no definition of success to execute",
+  outcome_contract_names_no_deterministic_check: "the outcome contract names no check this registry can execute deterministically",
+  contract_check_parameter_is_not_one_this_registry_can_read: "the outcome contract's check takes a parameter this registry cannot read",
+  no_evidence_so_the_check_was_never_executed: "no evidence was presented, so the outcome contract's check was never executed",
+  evidence_is_not_of_the_shape_the_check_reads: "the evidence presented is not of the shape the outcome contract's check reads",
+  no_evaluated_run: "nothing ran and nothing was looked at: no run was reported and no artifact was observed",
+  absent_from_a_complete_live_inventory: "a live session listed everything it was offered and this was not among them",
+  not_found_under_the_inventory_root: "the configured inventory root was walked and did not hold this copy",
+  contract_not_satisfied: "the outcome contract's check was executed against the evidence and was not satisfied",
+  no_assignment_recorded: "this registry's assignment journal records no assignment of this version to this agent",
+  no_inventory_root_configured: "no inventory root is configured for this agent, so no directory was walked",
+  inventory_root_unreadable: "the configured inventory root could not be read, so no directory was walked",
+  not_discoverable_from_a_filesystem: "capabilities of this kind leave nothing on a disk for this adapter to find",
+  requires_a_live_connection: "capabilities of this kind can only be counted against a live connection this registry does not hold",
+  not_a_concept_of_this_runtime: "this runtime has no such concept, so there is nothing of this kind to count",
+  nothing_intended_active: "this registry intends nothing active for this agent, so there was nothing to compare an observation against",
+  runtime_reported_session_active_unknown: "the runtime reported on this agent but could not say whether a session was active",
+  self_reported_not_verified_by_the_registry: "the only account of this is the addressee's own report, which this registry has not verified",
+  check_kind_is_not_one_this_registry_can_observe: "the outcome contract's check is of a kind this registry cannot observe for itself",
+};
+
+/**
+ * The sentence for a code, or a refusal.
+ *
+ * `evidence_missing:<name>_so_the_check_was_never_executed` is generated by
+ * `assessOutcome` with the contract's own evidence key in the middle, so its
+ * sentence is built from the key rather than looked up whole. That is the ONE
+ * qualified form; everything else is a row of the table above or an error.
+ */
+export function unknownReasonProse(code: string): string {
+  const known = UNKNOWN_REASON_PROSE[code];
+  if (known !== undefined) return known;
+  const missing = /^evidence_missing:(.+)_so_the_check_was_never_executed$/.exec(code);
+  if (missing) {
+    return `the outcome contract's check reads evidence named \`${missing[1]}\`, none was presented, so the check was never executed`;
+  }
+  throw new Error(`an \`unknown\` is not published with a code where a sentence belongs: no sentence is registered for \`${code}\` [INV-03]`);
+}
+
+/** The name of the FIRST `INV-03` field this account is missing, or null.
+ *  Exported so a sweep can apply it to a shipped payload, which is where the
+ *  invariant is actually owed — a check that only ran at construction would be
+ *  satisfied by a surface that assembled its own object literal. */
+export function missingUnknownField(v: unknown): string | null {
+  const a = v as Partial<UnknownAccount> | null | undefined;
+  if (!a || typeof a !== "object") return "reason_code";
+  if (!isReasonCode(a.reason_code)) return "reason_code";
+  if (typeof a.reason !== "string" || a.reason.length === 0) return "reason";
+  if (isReasonCode(a.reason) || !a.reason.includes(" ")) return "reason";
+  if (typeof a.source !== "string" || a.source.length === 0) return "source";
+  if (!Number.isInteger(a.observed_at_ms) || (a.observed_at_ms as number) <= 0) return "observed_at_ms";
+  return null;
+}
+
+/** Build the four fields, REFUSING a code with no sentence and a time with no value. */
+export function unknownAccount(code: string, source: string, observedAtMs: number): UnknownAccount {
+  const account: UnknownAccount = { reason_code: code, reason: unknownReasonProse(code), source, observed_at_ms: observedAtMs };
+  const missing = missingUnknownField(account);
+  if (missing !== null) throw new Error(`an \`unknown\` is not published without \`${missing}\` [INV-03]`);
+  return account;
+}
+
 /** A number that carries its method. `value` is null EXACTLY when the
  *  measurement state is `unknown` — never a silent 0, because "nothing was
  *  looked at" and "nothing was found" are different facts. */
 export interface MeasuredNumber extends Attribution {
   value: number | null;
   measurement_state: "counted" | "unknown";
-  /** why it is unknown, or what qualifies the count; null when neither */
+  /** why it is unknown, or what qualifies the count; null when neither.
+   *  On an `unknown` of the fleet surfaces this is PROSE [INV-03]. */
   reason: string | null;
+  /** the machine code behind that sentence; null when there is no code */
+  reason_code: string | null;
+  /** when this registry looked. Required of an `unknown` a fleet surface
+   *  publishes; null on a counted number and on surfaces outside that boundary */
+  observed_at_ms: number | null;
 }
 
 /** Build a counted number, REFUSING one that lost an attribute [I-3]. */
@@ -153,11 +267,20 @@ export function countedNumber(value: number, a: Attribution, reason: string | nu
     throw new Error(`a number is not published without its method: \`${missing}\` is missing [I-3]`);
   }
   if (!Number.isInteger(value) || value < 0) throw new Error("a count is a non-negative integer");
-  return { value, measurement_state: "counted", reason, ...a };
+  return { value, measurement_state: "counted", reason, reason_code: null, observed_at_ms: null, ...a };
 }
 
-/** Build the honest non-number: nothing was measured, and the reason says so. */
-export function unknownNumber(a: Attribution, reason: string): MeasuredNumber {
+/**
+ * Build the honest non-number: nothing was measured, and the reason says so.
+ *
+ * A CODE and a SENTENCE are different fields now [INV-03]. A caller that passes
+ * a machine code gets the code in `reason_code` and the registered sentence in
+ * `reason`, and must say WHEN it looked — the fleet surfaces do. A caller that
+ * passes a sentence already keeps it, and carries no code: those are this
+ * registry's own dashboard counts, outside the boundary this finding names, and
+ * inventing a code for them would be inventing evidence.
+ */
+export function unknownNumber(a: Attribution, reason: string, observedAtMs: number | null = null): MeasuredNumber {
   const missing = missingAttribute(a);
   if (missing !== null) {
     throw new Error(`a number is not published without its method: \`${missing}\` is missing [I-3]`);
@@ -165,7 +288,21 @@ export function unknownNumber(a: Attribution, reason: string): MeasuredNumber {
   if (typeof reason !== "string" || reason.length === 0) {
     throw new Error("an unmeasured number states why it is unmeasured");
   }
-  return { value: null, measurement_state: "unknown", reason, ...a };
+  if (isReasonCode(reason)) {
+    if (observedAtMs === null) {
+      throw new Error(`an \`unknown\` published with the code \`${reason}\` states when it was established [INV-03]`);
+    }
+    const account = unknownAccount(reason, a.source, observedAtMs);
+    return {
+      value: null,
+      measurement_state: "unknown",
+      reason: account.reason,
+      reason_code: account.reason_code,
+      observed_at_ms: account.observed_at_ms,
+      ...a,
+    };
+  }
+  return { value: null, measurement_state: "unknown", reason, reason_code: null, observed_at_ms: observedAtMs, ...a };
 }
 
 // =========================================================================
@@ -621,8 +758,13 @@ export interface StateColumn extends Attribution {
   column: ColumnName;
   runtime: FleetRuntime;
   value: Trivalent;
-  /** a machine-readable code for WHY, never prose and never null on `unknown` */
+  /** WHY, in words. On an `unknown` it is a sentence and never a code [INV-03] */
   reason: string | null;
+  /** the machine code behind it, for a surface that branches rather than reads */
+  reason_code: string | null;
+  /** when this registry looked. Required of an `unknown` a fleet surface
+   *  publishes; null where the caller supplied no observation time */
+  observed_at_ms: number | null;
   /** [I-2]: which of the two columns this is. They are never merged. */
   is: "observation" | "intent";
   /** false when this state is REPORTED but not claimed under its own name */
@@ -686,6 +828,14 @@ export interface CapabilityEvidence {
   /** WHO reported, for the verdict's `principal_type` [I-5]. `null` where
    *  nothing was reported at all. */
   reported_by?: { type: PrincipalType } | null;
+  /**
+   * THE MOMENT THIS REGISTRY LOOKED, which `INV-03` requires of every `unknown`
+   * cell these columns produce. It is supplied by the surface that publishes
+   * them — a caller assembling columns for its own use may omit it, and its
+   * `unknown` cells then carry `observed_at_ms: null` and their code rather
+   * than a sentence, which is what "not published" looks like.
+   */
+  observed_at_ms?: number;
 }
 
 function windowOf(snapshot: RuntimeSnapshot | null): { window: SelectionWindow; window_detail: string } {
@@ -693,7 +843,7 @@ function windowOf(snapshot: RuntimeSnapshot | null): { window: SelectionWindow; 
   return { window: snapshot.window, window_detail: snapshot.window_detail };
 }
 
-function column(
+function buildColumn(
   c: ColumnName,
   state: CapabilityState,
   runtime: FleetRuntime,
@@ -701,7 +851,13 @@ function column(
   reason: string | null,
   source: EvidenceSource,
   win: { window: SelectionWindow; window_detail: string },
-  extra: { is?: "observation" | "intent"; reliability?: StateColumn["reliability"]; assessment?: OutcomeAssessment } = {},
+  extra: {
+    is?: "observation" | "intent";
+    reliability?: StateColumn["reliability"];
+    assessment?: OutcomeAssessment;
+    /** the moment the registry looked, carried down from the surface [INV-03] */
+    observed_at_ms?: number;
+  } = {},
 ): StateColumn {
   const m = matrixCell(state, runtime);
   // THE [A-0] RULE, ENFORCED RATHER THAN DOCUMENTED. A cell the matrix says can
@@ -719,11 +875,21 @@ function column(
     extra.assessment === undefined || safe === extra.assessment.value
       ? extra.assessment
       : { ...extra.assessment, value: safe, reason: `${extra.assessment.reason}:withheld_because_this_cell_can_never_say_no` };
+  // THE CODE AND THE SENTENCE ARE TWO FIELDS [INV-03]. On an `unknown` — the
+  // only value the invariant governs — the code moves to `reason_code` and
+  // `reason` becomes the registered sentence, which is refused if there is
+  // none. A `yes` or a `no` keeps what the caller passed: those carry the
+  // intent state's own name and other vocabulary this table does not own.
+  const code = safe === "yes" ? reason : (reason ?? "no_evidence");
+  const observedAtMs = extra.observed_at_ms ?? null;
+  const unknownAcct = safe === "unknown" && code !== null && observedAtMs !== null ? unknownAccount(code, source, observedAtMs) : null;
   const col: StateColumn = {
     column: c,
     runtime,
     value: safe,
-    reason: safe === "yes" ? reason : (reason ?? "no_evidence"),
+    reason: unknownAcct ? unknownAcct.reason : code,
+    reason_code: safe === "unknown" ? code : null,
+    observed_at_ms: observedAtMs,
     is: extra.is ?? "observation",
     explicit: m.explicit,
     reliability: extra.reliability ?? "reliable",
@@ -755,6 +921,22 @@ export function capabilityColumns(ev: CapabilityEvidence): StateColumn[] {
   const win = windowOf(snapshot);
   const all: SelectionWindow = "all_time";
   const out: StateColumn[] = [];
+  // THE TIME OF THE LOOK, CARRIED TO EVERY CELL FROM ONE PLACE [INV-03]. The
+  // surface that publishes these columns supplies it; a caller that does not is
+  // not a published surface and its cells say so by carrying null.
+  const column = (...args: Parameters<typeof buildColumn>): StateColumn => {
+    const extra = args[7] ?? {};
+    return buildColumn(
+      args[0],
+      args[1],
+      args[2],
+      args[3],
+      args[4],
+      args[5],
+      args[6],
+      ev.observed_at_ms === undefined ? extra : { ...extra, observed_at_ms: ev.observed_at_ms },
+    );
+  };
 
   // ---- registered: a FILESYSTEM fact, and the one state where `no` is honest
   out.push(
@@ -1279,9 +1461,14 @@ export interface AgentInventoryRow {
   /** the boundary every field above was read over */
   observation_window: string;
   observation_is: "observation";
+  /** `INV-03`: the four fields, present EXACTLY when `session_active` is
+   *  `unknown` and null otherwise. */
+  session_active_account: UnknownAccount | null;
   sync_status: SyncStatus;
   sync_status_is: "comparison";
   sync_status_reason: string;
+  /** `INV-03`: the four fields, present EXACTLY when `sync_status` is `unknown` */
+  sync_status_account: UnknownAccount | null;
   /** the two columns the comparison was made FROM, so it is never taken for one */
   intent_active: MeasuredNumber;
   observed_arrival_yes: MeasuredNumber;
@@ -1301,24 +1488,33 @@ export function syncStatusOf(input: {
   headStates: readonly string[];
   intentActive: number;
   arrivalYes: number;
-}): { status: SyncStatus; reason: string } {
+}): { status: SyncStatus; reason: string; reason_code: string } {
   if (input.headStates.includes("failed")) {
-    return { status: "failed", reason: "a deployment journal records `failed`" };
+    return { status: "failed", reason: "a deployment journal records `failed`", reason_code: "deployment_journal_records_failed" };
   }
   if (input.headStates.includes("drifted")) {
-    return { status: "drifted", reason: "a deployment journal records `drifted`" };
+    return { status: "drifted", reason: "a deployment journal records `drifted`", reason_code: "deployment_journal_records_drifted" };
   }
   if (!input.observed) {
     return {
       status: "unknown",
       reason: "no runtime observation has been reported for this agent: nothing was compared",
+      reason_code: "no_runtime_observation",
     };
   }
   if (input.intentActive === 0) {
-    return { status: "unknown", reason: "this registry intends nothing active for this agent: nothing to compare" };
+    return {
+      status: "unknown",
+      reason: "this registry intends nothing active for this agent: nothing to compare",
+      reason_code: "nothing_intended_active",
+    };
   }
   if (input.arrivalYes >= input.intentActive) {
-    return { status: "in_sync", reason: "every deployment intended active has an observed arrival" };
+    return {
+      status: "in_sync",
+      reason: "every deployment intended active has an observed arrival",
+      reason_code: "every_intended_deployment_has_an_observed_arrival",
+    };
   }
   // [I-3]: the reason NAMES the two numbers it compared and does not restate a
   // derived count in prose. A figure inside a sentence carries no measurement
@@ -1326,6 +1522,7 @@ export function syncStatusOf(input: {
   // carry all three, and they stand on this very row.
   return {
     status: "pending",
+    reason_code: "fewer_observed_arrivals_than_intended_active",
     reason:
       "fewer deployments have an observed arrival than this registry intends active — compare the `intent_assigned` " +
       "and `fact_invoked` cells of this row, each with its own source and window. The difference is UNOBSERVED, and " +

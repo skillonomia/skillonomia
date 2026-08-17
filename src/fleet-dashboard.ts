@@ -202,7 +202,9 @@ function methodOf(a: Attribution): string {
  * table of its own to disagree with §4's.
  */
 export function stateCell(c: StateColumn): Cell {
-  const why = plain(c.reason, c.value === "yes" ? "observed" : "no_reason_recorded");
+  // THE SCREEN'S GRAMMAR IS MACHINE-READABLE and stays so: the code, where the
+  // payload now carries the code and the sentence in separate fields [INV-03].
+  const why = plain(c.reason_code ?? c.reason, c.value === "yes" ? "observed" : "no_reason_recorded");
   // A SELF-REPORT DOES NOT READ LIKE AN OBSERVATION [D-18].
   //
   // Half of D-18 is that the verdict CARRIES its provenance; the other half is
@@ -245,7 +247,7 @@ export function stateCell(c: StateColumn): Cell {
 /** ONE NUMBER, with the three attributes [I-3] and never as a bare figure. */
 export function numberCell(n: MeasuredNumber): Cell {
   const answer = n.measurement_state === "counted" && n.value !== null ? String(n.value) : "unknown";
-  const why = plain(n.reason, n.measurement_state === "counted" ? "counted" : "no_reason_recorded");
+  const why = plain(n.reason_code ?? n.reason, n.measurement_state === "counted" ? "counted" : "no_reason_recorded");
   return mint([answer, `why: ${why}`, "kind: measured_number", methodOf(n)]);
 }
 
@@ -563,6 +565,8 @@ function stateColumnFromText(text: string): StateColumn | null {
     runtime: runtime as FleetRuntime,
     value: value as Trivalent,
     reason: cellAttr(text, "why") ?? null,
+    reason_code: cellAttr(text, "why_code") ?? null,
+    observed_at_ms: null,
     is: (cellAttr(text, "is") ?? "observation") as "observation" | "intent",
     explicit: claim === "explicit",
     reliability: (cellAttr(text, "reliability") ?? "reliable") as StateColumn["reliability"],

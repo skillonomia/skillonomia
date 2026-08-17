@@ -136,6 +136,7 @@ import {
   matrixCell,
   scanArrivals,
   syncStatusOf,
+  unknownAccount,
   unknownNumber,
   type AgentInventoryRow,
   type ArrivalScanRow,
@@ -5223,6 +5224,8 @@ export class Registry {
       : ctx.site
         ? "no runtime observation has been reported; the runtime below is this deployment's own configuration, not a report"
         : NO_SNAPSHOT_WINDOW;
+    const nowMs = this.now();
+    const sessionActive: Trivalent = ctx.snapshot?.session_active ?? "unknown";
     return {
       agent_id: ctx.agentId,
       type: principal?.type ?? "agent",
@@ -5231,13 +5234,26 @@ export class Registry {
       runtime: ctx.runtime,
       runtime_source: ctx.runtimeSource,
       model: ctx.snapshot?.model ?? null,
-      session_active: ctx.snapshot?.session_active ?? "unknown",
+      session_active: sessionActive,
       last_activity_ms: ctx.snapshot?.last_activity_ms ?? null,
       observation_window: observationWindow,
       observation_is: "observation",
+      // INV-03 ON THE TWO STATUSES THIS ROW PUBLISHES. Each `unknown` carries a
+      // code, a sentence, the source it was read from and the moment of the
+      // look — which for "nothing has been reported" is now, because now is
+      // when this registry looked and found nothing.
+      session_active_account:
+        sessionActive === "unknown"
+          ? unknownAccount(
+              ctx.snapshot ? "runtime_reported_session_active_unknown" : "no_runtime_observation",
+              ctx.snapshot ? "runtime" : "registry",
+              nowMs,
+            )
+          : null,
       sync_status: sync.status,
       sync_status_is: "comparison",
       sync_status_reason: sync.reason,
+      sync_status_account: sync.status === "unknown" ? unknownAccount(sync.reason_code, "registry", nowMs) : null,
       // the two columns the comparison was made FROM, published beside it so it
       // is never mistaken for a third fact [I-2]
       intent_active: countedNumber(intentActive, {
@@ -5441,6 +5457,9 @@ export class Registry {
           outcome_contract: contract,
           observed_evidence: observedEvidence,
           reported_by: ctx.snapshot?.reported_by ?? null,
+          // the moment of the look, so every `unknown` cell this surface
+          // publishes carries the time INV-03 requires of it
+          observed_at_ms: this.now(),
         })
       : [];
     return {
@@ -5465,15 +5484,18 @@ export class Registry {
         window: "all_time" as const,
         window_detail,
       };
+      // INV-03: the code goes to `reason_code`, the sentence to `reason`, and
+      // the moment of the look travels with both.
+      const nowMs = this.now();
       if (!ctx.inventory) {
-        out.push(unknownNumber(a, ctx.inventoryReason ?? "no_inventory_root_configured"));
+        out.push(unknownNumber(a, ctx.inventoryReason ?? "no_inventory_root_configured", nowMs));
         continue;
       }
       const why = ctx.inventory.undiscoverable[kind];
       if (why !== undefined) {
         // NOT zero. A kind this adapter cannot see from a disk is `unknown`,
         // and the reason says which of the ways it cannot see it.
-        out.push(unknownNumber(a, why));
+        out.push(unknownNumber(a, why, nowMs));
         continue;
       }
       out.push(countedNumber(ctx.registered.filter((r) => r.kind === kind).length, { ...a, state: "registered" }));

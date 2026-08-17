@@ -1357,7 +1357,7 @@ test("the reading surfaces publish both columns, the matrix, and no number witho
     }
   }
   // a kind nothing can see from a disk is `unknown`, never 0
-  const tools = caps.body.inventory.find((n: any) => n.reason === "requires_a_live_connection");
+  const tools = caps.body.inventory.find((n: any) => n.reason_code === "requires_a_live_connection");
   assert.ok(tools, "MCP tools must be reported unknown with their reason");
   assert.equal(tools.value, null);
   assert.equal(tools.measurement_state, "unknown");
@@ -1784,14 +1784,16 @@ test("every capability kind is answered for an agent with no configured root —
   for (const n of caps.body.inventory) {
     assert.equal(n.measurement_state, "unknown");
     assert.equal(n.value, null, "an unwalked root reported a count of zero");
-    assert.equal(n.reason, "no_inventory_root_configured");
+    assert.equal(n.reason_code, "no_inventory_root_configured");
+    assert.ok(n.reason.includes(" "), "a code was published where the sentence belongs [INV-03]");
+    assert.ok(Number.isInteger(n.observed_at_ms), "an `unknown` with no time of observation [INV-03]");
     assert.equal(missingAttribute(n), null);
   }
   // …and the capability that IS assigned reports `registered: unknown`, not `no`
   const cap = caps.body.capabilities.find((c: any) => c.name === d.slug);
   assert.ok(cap, "the assigned skill must be answered even with no disk to look at");
   assert.equal(cellOf(cap.columns, "registered").value, "unknown", "an unwalked disk was reported as an empty one");
-  assert.equal(cellOf(cap.columns, "registered").reason, "no_inventory_root_configured");
+  assert.equal(cellOf(cap.columns, "registered").reason_code, "no_inventory_root_configured");
   assert.equal(caps.body.dead_weight.registered.value, 0, "nothing was found because nothing was walked");
   assert.equal(caps.body.inventory_reason, "no_inventory_root_configured");
   fx.db.close();
