@@ -483,13 +483,54 @@ evidence/
     50-negative-probes-fix2b.txt   the validator negative probes at the final SHA
     51-output-sha-agreement-fix2b.txt  the output-SHA agreement across the whole package
     52-secret-scan-final-fix2b.txt the closing secret sweep of the whole package
-    53-evidence-check-final-fix2b.txt  the closing evidence-record check — the last file P3 writes
+    53-evidence-check-final-fix2b.txt  the closing evidence-record check of the FIX-2b package
+    54-session-record-fix2c.md     FIX-2c's role, model contract, task and session IDs, and its commits
+    55-p3-record-fix2c.md          what FIX-2c changed, finding by finding, and what it does not claim
+    56-gate-summary-fix2c.md       every mandatory P3 gate at the final SHA, its command and its exit code
+    57-browser-e2e-trace-fix2c.txt the P2 console browser run's trace, at the FIX-2c SHA
+    58-p3-screen-e2e-trace-fix2c.txt  the P3 screen run's trace, at the FIX-2c SHA
+    59-refs-tags-and-base-fix2c.txt  refs, tags, ancestry and clean-worktree at the FIX-2c SHA
+    60-branch-reflog-fix2c.txt     the branch reflog after FIX-2c's commits
+    61-forbidden-actions-log-fix2c.md  FIX-2c's log of forbidden production and history-rewriting actions
+    62-clean-clone-fix2c.txt       the clean-clone transcript at the FIX-2c SHA: clone, npm ci, npm test, nothing between
+    63-fix2b-gate-results.txt      the FIX-2b gate run's raw per-gate results, carried into the FIX-2c package
+    64-gate-results-fix2c.txt      the FIX-2c gate run's raw per-gate results
+    65-negative-probes-fix2c.txt   the validator negative probes, closing pass 1
+    66-output-sha-agreement-fix2c.txt  the output-SHA agreement across the package, closing pass 1
+    67-secret-scan-final-fix2c.txt the closing secret sweep, closing pass 1
+    68-evidence-check-final-fix2c.txt  the closing evidence-record check, closing pass 1
+    69-negative-probes-fix2c.txt   the validator negative probes, closing pass 2
+    70-output-sha-agreement-fix2c.txt  the output-SHA agreement across the package, closing pass 2
+    71-secret-scan-final-fix2c.txt the closing secret sweep, closing pass 2
+    72-evidence-check-final-fix2c.txt  the closing evidence-record check, closing pass 2
+    73-negative-probes-fix2c.txt   the validator negative probes, closing pass 3
+    74-output-sha-agreement-fix2c.txt  the output-SHA agreement across the package, closing pass 3
+    75-secret-scan-final-fix2c.txt the closing secret sweep, closing pass 3
+    76-evidence-check-final-fix2c.txt  the closing evidence-record check — the last file P3 writes
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
     probes-fix1/                   one transcript per negative probe of the FIX-1 run, with its own README.md
     probes-fix2/                   FIX-2's reproducer transcripts for `P3-R2-001`, before and after
-    probes-fix2b/                  one transcript per negative probe of the FIX-2b run, with its own README.md
+  P4/
+    00-runtime-feasibility.txt     whether real Codex and Claude Code sessions can be driven in this container at all, answered first
 ```
+
+**Three closing passes, not one.** Files `65`–`68`, `69`–`72` and `73`–`76` are the
+same four closing artifacts written three times, because P3's FIX-2c had to commit
+again after each pass and a commit moves the SHA the previous pass certified. The
+numbered files are per event, and re-running the closing battery is three events.
+Only the last pass certifies the final SHA; the earlier two are kept because
+deleting a superseded run is how a package stops being append-only.
+
+**This listing was brought up to date by P4 `BUILD-1`, and the reason it was stale
+is worth keeping.** P3's own closing session could not repair it: committing the
+correction would have moved `HEAD`, invalidating the seventy-six `OUTPUT_SHA`
+markers it had just re-pointed — the exact defect the session existed to close. The
+debt was therefore carried to the next phase that commits anyway. Two corrections
+beyond the missing range: file `53` was described as "the last file P3 writes",
+which file `76` now is; and the listing named a `probes-fix2b/` directory that the
+package does not contain — FIX-2b's probe transcripts are in the numbered files, not
+in a directory of their own.
 
 P3 was built by TWO sessions, and fixed by a third: `BUILD-1`, which built the backend and recorded
 that the console screen and its browser end-to-end were not delivered, and
