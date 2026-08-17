@@ -94,7 +94,17 @@ const SHA = /^[0-9a-f]{40}$/;
 const SHA_FIELDS = ["phase_base_sha", "input_sha", "output_sha", "input_base_sha"] as const;
 
 // --- the model contract, contract section 7 ----------------------------------
-const ROLE_FORM = /^(BUILD|FIX|REVIEW)-\d+$/;
+// A CONTINUATION IS A SESSION, AND A SESSION IS A ROLE. The trailing letter is
+// how a role says "the same step of contract section 8's automaton, continued in
+// a second provider session" — P3's `FIX-2b` finished the work of `FIX-2` after
+// the harness ended that session at its 3600-second limit. It is NOT a further
+// round: rule 5c below still counts the ROUNDS, so a phase cannot buy itself a
+// third fix or a third review by adding a letter. Without this form a
+// continuation could only be recorded by reusing the killed session's row, and
+// the one-role-one-session rule of contract section 7.3 — the very thing this
+// checker exists to make checkable — would have been made to look true instead
+// of being true.
+const ROLE_FORM = /^(BUILD|FIX|REVIEW)-\d+[a-z]?$/;
 const ROLE_CONTRACT: Record<string, { provider: string; model: string; reasoning_effort: string }> = {
   BUILD: { provider: "claude", model: "opus", reasoning_effort: "high" },
   FIX: { provider: "claude", model: "opus", reasoning_effort: "high" },
@@ -161,7 +171,7 @@ function checkIdentity(r: Record<string, unknown>, where: string): void {
 
   // the model contract
   if (role && !ROLE_FORM.test(role)) {
-    problems.push(`${where}: role "${role}" is not one of BUILD-<n>, FIX-<n>, REVIEW-<n>. Contract section 8 fixes the roles a phase has.`);
+    problems.push(`${where}: role "${role}" is not one of BUILD-<n>, FIX-<n>, REVIEW-<n>, optionally with a continuation letter. Contract section 8 fixes the roles a phase has.`);
   } else if (role) {
     const kind = role.split("-")[0];
     const want = ROLE_CONTRACT[kind];
@@ -452,6 +462,28 @@ for (const row of ledgerRows) {
     for (const [field, got] of [["phase base SHA", row.phase_base_sha], ["input SHA", row.input_sha], ["output SHA", row.output_sha]] as const) {
       if (!sha40(got)) problems.push(`${row.where}: ${row.role}'s ${field} is "${got}" — an exact 40-hex SHA is required of a BUILD or FIX row.`);
     }
+  }
+}
+
+// --- rule 5c: THE ROUNDS ARE COUNTED, NOT THE ROWS -----------------------------
+//
+// Contract section 8 point 6 caps a phase at two REVIEWs and two FIXes and
+// forbids `REVIEW-3` by name. The role form permits a continuation letter — a
+// second provider session finishing the SAME step, as `FIX-2b` did after the
+// harness ended `FIX-2` — so the cap is counted on the ROUND NUMBER and never on
+// the number of rows: `FIX-2b` is round 2, and a `FIX-3` or a `REVIEW-3` is a
+// third round whatever letter follows it. Without this the letter would be a way
+// to buy rounds the contract does not allow.
+const ROUND_CAP: Record<string, number> = { REVIEW: 2, FIX: 2 };
+for (const row of ledgerRows) {
+  const m = /^(BUILD|FIX|REVIEW)-(\d+)[a-z]?$/.exec(row.role);
+  if (!m) continue;
+  const cap = ROUND_CAP[m[1]!];
+  if (cap !== undefined && Number(m[2]) > cap) {
+    problems.push(
+      `${row.where}: role "${row.role}" is round ${m[2]} of ${m[1]}, and contract section 8 point 6 caps a phase at ${cap}. ` +
+        "A continuation of an existing round is written with a letter (`FIX-2b`); a new number is a new round and there is no third one.",
+    );
   }
 }
 
