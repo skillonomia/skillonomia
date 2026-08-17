@@ -333,7 +333,9 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       path.startsWith("/v1/console/drafts") ||
       path.startsWith("/v1/console/capabilities") ||
       path.startsWith("/v1/console/assignments") ||
-      path.startsWith("/v1/console/sessions")
+      path.startsWith("/v1/console/sessions") ||
+      path.startsWith("/v1/console/outcomes") ||
+      path.startsWith("/v1/console/comparisons")
     ) {
       if (!session) throw new ApiError("UNAUTHORIZED", "the owner console requires a session");
       // Every MUTATION under the console carries both defences: the request must
@@ -508,6 +510,36 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
         return json(200, JSON.stringify(registry.consoleSessionView(cauth, m[1])), { "Cache-Control": "no-store" });
       }
 
+      // P5 — WHAT THE OWNER DECIDES ABOUT AN OUTCOME, WHICH IS NOT THE SAME AS
+      // REPORTING ONE.
+      //
+      // `POST /v1/console/outcomes` is an owner CONFIRMATION and says so in
+      // every row it writes: `source: owner`, `evidence_class:
+      // owner_confirmation`, and a `confirmation_source` naming where the owner
+      // saw it (`P5-FR-02`). It writes no stage and no receipt, so `P4-FR-13`
+      // still holds: the runtime evidence surface remains unreachable from here,
+      // and there is still no `POST` under `/v1/console/sessions`.
+      m = /^\/v1\/console\/outcomes\/([^/]+)\/revision$/.exec(path);
+      if (method === "POST" && m) {
+        const body = parseBody(req);
+        return consoleMutationResponse(registry.createRevisionFromOutcome(cauth, m[1], body, idemKey(body)), 201);
+      }
+
+      if (method === "POST" && path === "/v1/console/outcomes") {
+        const body = parseBody(req);
+        return consoleMutationResponse(registry.confirmOutcomeAsOwner(cauth, body, idemKey(body)), 201);
+      }
+
+      if (method === "POST" && path === "/v1/console/comparisons") {
+        const body = parseBody(req);
+        return consoleMutationResponse(registry.compareRevisionOutcomes(cauth, body, idemKey(body)), 201);
+      }
+
+      m = /^\/v1\/console\/capabilities\/([^/]+)\/outcomes$/.exec(path);
+      if (method === "GET" && m) {
+        return json(200, JSON.stringify(registry.consoleOutcomeHistory(cauth, m[1])), { "Cache-Control": "no-store" });
+      }
+
       throw new ApiError("NOT_FOUND", `no route ${method} ${path}`);
     }
 
@@ -575,6 +607,31 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       registry.assertMayWriteObservedState(auth);
       const body = parseBody(req);
       return mutationResponse(registry.recordRuntimeReceipt(auth, m[1], body, idemKey(body)), 201);
+    }
+
+    // P5 — THE OUTCOME OF AN INVOCATION, THE END OF A SESSION, AND THE SESSION
+    // THAT CONFIRMS A ROLLBACK. All three record what HAPPENED, so all three sit
+    // on the same evidence-principal boundary the receipt intake does, and the
+    // owner's key is `403` before a body is read.
+    m = /^\/v1\/sessions\/([^/]+)\/outcomes$/.exec(path);
+    if (method === "POST" && m) {
+      registry.assertMayWriteObservedState(auth);
+      const body = parseBody(req);
+      return mutationResponse(registry.recordSessionOutcome(auth, m[1], body, idemKey(body)), 201);
+    }
+
+    m = /^\/v1\/sessions\/([^/]+)\/close$/.exec(path);
+    if (method === "POST" && m) {
+      registry.assertMayWriteObservedState(auth);
+      const body = parseBody(req);
+      return mutationResponse(registry.closeAgentSession(auth, m[1], body, idemKey(body)), 201);
+    }
+
+    m = /^\/v1\/sessions\/([^/]+)\/rollback-confirmations$/.exec(path);
+    if (method === "POST" && m) {
+      registry.assertMayWriteObservedState(auth);
+      const body = parseBody(req);
+      return mutationResponse(registry.recordRollbackConfirmation(auth, m[1], body, idemKey(body)), 201);
     }
 
     if (method === "POST" && path === "/mcp") {

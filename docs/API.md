@@ -603,3 +603,65 @@ runtime's own environment variable (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`); you
 write no manifest, no package, no signature and no runtime config. `skillonomia
 adapter cleanup` removes them and destroys no registry data: the next session
 rebuilds them from the same rows.
+
+## Outcomes and the revision loop (V1 P5)
+
+The chain of the previous section ends at `invoked`: a runtime read an exact
+revision and called it. Whether calling it helped is a different fact, with a
+different source, and it is what these routes carry.
+
+```
+POST /v1/sessions/{session_id}/outcomes                 an evidence principal — the runtime's outcome
+POST /v1/sessions/{session_id}/close                    an evidence principal — the session ended
+POST /v1/sessions/{session_id}/rollback-confirmations   an evidence principal — a new session carries the rolled-back revision
+POST /v1/console/outcomes                               a console session — the owner's explicit confirmation
+POST /v1/console/outcomes/{outcome_id}/revision         a console session — a new revision out of a failure or a remark
+POST /v1/console/comparisons                            a console session — old against new
+GET  /v1/console/capabilities/{draft_id}/outcomes       a console session — the history of one lineage
+```
+
+**There are four outcomes and no fifth.** `worked`, `failed`, `rolled_back` and
+`nothing_reported`. A runtime reports the first two; the third is written when a
+new session carries a rolled-back revision; the fourth is written by the closure
+of a session.
+
+**`worked` is never reached from a stage.** An outcome receipt is refused unless
+an `invoked` receipt of the same session names the same `invocation_ref` and
+`runtime_session_ref`, so a skill that was proposed, or loaded, or even invoked
+without a reported outcome, does not become a success. The one other way to
+`worked` is an explicit owner confirmation, and such a row carries
+`source: owner`, `evidence_class: owner_confirmation` and a
+`confirmation_source` naming where the owner saw it. It writes no observation
+and no stage: an owner's word is recorded as an owner's word.
+
+**A session that ends with nothing said says so.** Closing a session writes
+`nothing_reported` for every entry with no outcome — including one that reached
+`invoked`. Closing twice is one closure, and after it the outcome intake of that
+session is refused.
+
+**Redelivery is free; contradiction is recorded.** `outcome_ref` is the
+reporter's own identifier for the outcome and is the replay key: the same ref
+with the same payload answers with the stored row and `replayed: true`. The same
+ref carrying something else leaves the stored row untouched and writes a
+conflict row instead, which the outcome view then reports with both values and
+its own digest.
+
+**`rolled_back` records the action, and a new session confirms it.** It names
+the `revision_selected` event and the revision that event chose, and it is
+refused unless this session's entry actually carries that revision and this
+session opened after the decision. The outcome that preceded it is not rewritten
+— both are in the entry's history.
+
+**A new revision carries where it came from and what it promised.** Creating one
+from an outcome records the parent revision, the source outcome, the receipt
+behind it, the `observation` that prompted it and the `improvement_goal` with
+its `goal_kind` — stated before the new revision has run anywhere. The revision
+itself goes through the same compiler, the same semantic and security preview
+and the same owner approval as any other.
+
+**A comparison is computed, not asserted.** It shows the exact old and new
+revisions, the original observation and the new outcome. `improved` requires a
+comparable scenario — the same lineage, the same agent and the same runtime kind
+— and a proved transition to `worked` against the goal recorded in advance.
+Anything else is `not_improved` or `not_comparable`, with a reason code naming
+which condition was not met.

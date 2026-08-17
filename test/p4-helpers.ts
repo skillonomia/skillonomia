@@ -88,12 +88,17 @@ export function p4Fixture(
      *  every suite but the upgrade probe wants; that probe needs a fixture
      *  built on a database an OLDER build left behind. */
     db?: Db;
+    /** The clock. Absent = the frozen `NOW` every other suite wants; a suite
+     *  that has to distinguish BEFORE from AFTER — a session opened before a
+     *  rollback was decided, say — cannot do it with a stopped clock, and says
+     *  so at its call site. */
+    clock?: () => number;
   } = {},
 ): P4Fixture {
   const seed = seedGraph(opts.db);
   const evidencePrincipals = opts.evidencePrincipals ?? new MemoryEvidencePrincipals();
   const registry = new Registry(seed.db, {
-    now: () => NOW,
+    now: opts.clock ?? (() => NOW),
     evidencePrincipals,
     secrets: opts.secrets,
     activation: opts.activation,

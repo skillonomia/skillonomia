@@ -235,6 +235,29 @@ import {
   type SessionRow,
 } from "./session-loadout.ts";
 import {
+  closeSessionInTx,
+  closureOf,
+  conflictsOfEntry,
+  decideComparison,
+  entryOutcomes,
+  insertComparison,
+  insertRevisionSource,
+  loadOutcome,
+  outcomesOfSession,
+  recordOutcomeReceiptInTx,
+  recordOwnerConfirmationInTx,
+  recordRollbackConfirmationInTx,
+  revisionSourceOf,
+  validateOutcomeReceipt,
+  validateOwnerConfirmation,
+  OUTCOME_CONTRACT_VERSION,
+  type ComparisonView,
+  type EntryOutcomeView,
+  type OutcomeConflictView,
+  type OutcomeResult,
+  type RevisionSourceRow,
+} from "./outcome-loop.ts";
+import {
   CONSOLE_CONTRACT_VERSION,
   consoleAssignmentView,
   consoleAudit,
@@ -5125,6 +5148,8 @@ export class Registry {
     session: Record<string, unknown>;
     loadout: LoadoutView;
     entries: unknown[];
+    outcomes: EntryOutcomeView[];
+    closure: unknown;
     receipts: unknown[];
   } {
     this.requireOwnerOrAdmin(auth, "reading a session loadout");
@@ -5145,6 +5170,13 @@ export class Registry {
       },
       loadout: loadoutViewOf(this.db, session),
       entries: entryStages(this.db, session, now),
+      // P5: the OUTCOME of each entry beside the STAGE it reached, and the
+      // closure if the session has ended. They are separate members because they
+      // are separate facts: a stage says a runtime read and called an exact
+      // revision, an outcome says whether that helped, and one is never derived
+      // from the other (`P5-FR-02`).
+      outcomes: entryOutcomes(this.db, session, now),
+      closure: closureOf(this.db, session.id),
       receipts: receiptsOfSession(this.db, session.id).map((r) => ({
         receipt_id: r.id,
         stage: r.stage,
@@ -5157,6 +5189,472 @@ export class Registry {
         reported_by_agent_id: r.reported_by_agent_id,
         receipt_digest: r.receipt_digest,
         observed_at_ms: r.observed_at_ms,
+      })),
+    };
+  }
+
+  // =====================================================================
+  // P5 — THE NORMALISED OUTCOME, AND THE LOOP THAT COMES BACK FROM IT.
+  //
+  // The three intakes below are on the evidence-principal boundary for the
+  // reason `openAgentSession` and `recordRuntimeReceipt` are: they record what
+  // HAPPENED. The four owner-reachable methods after them record what the OWNER
+  // DECIDED — a confirmation labelled as the owner's word, a new revision, and a
+  // comparison — and not one of them writes a stage.
+  // =====================================================================
+
+  /** `P5-FR-02`, `P5-FR-03`, `P5-FR-06`, `P5-FR-07`: the runtime's outcome of
+   *  one invocation. A conflicting redelivery is a `409` whose body carries the
+   *  structured conflict, and the predecessor stands. */
+  recordSessionOutcome(
+    auth: AuthContext,
+    sessionId: unknown,
+    input: unknown,
+    idempotencyKey?: string,
+  ) {
+    const principal = this.requireEvidencePrincipal(auth);
+    const session = this.requireSessionOfWorkspace(auth, sessionId);
+    const body = (input ?? {}) as Record<string, unknown>;
+    const receipt = validateOutcomeReceipt(body, this.now());
+    return this.refuseOnConflict(withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "session.outcome",
+      idempotencyKey,
+      this.now(),
+      () => {
+        const out = recordOutcomeReceiptInTx(this.db, session, auth.agent_id, principal.source, receipt, this.now());
+        return "conflict" in out
+          ? { contract: OUTCOME_CONTRACT_VERSION, conflict: out.conflict }
+          : { contract: OUTCOME_CONTRACT_VERSION, ...out.result };
+      },
+      requestDigest({ ...body, session_id: session.id }),
+    ));
+  }
+
+  /**
+   * THE CONFLICT IS COMMITTED BEFORE IT IS REFUSED.
+   *
+   * `P5-FR-07` requires a conflicting receipt to BECOME a structured state
+   * carrying its own evidence. A refusal thrown from inside the transaction
+   * would roll the conflict row back with it, which is how "the conflict is
+   * recorded" turns into "the conflict was refused and forgotten" — so the row
+   * is written, the transaction commits, and the refusal is raised out here
+   * from the value that came back. `INV-05`: `current_state` carries the
+   * structured conflict, not a sentence about one.
+   */
+  private refuseOnConflict<T extends { conflict?: OutcomeConflictView }>(out: IdempotentOutcome<T>): IdempotentOutcome<T> {
+    const conflict = out.response.conflict;
+    if (conflict) {
+      throw new ApiError(
+        "CONFLICT",
+        "an outcome is already filed under this outcome_ref and says something else; the first stands and this claim is " +
+          "recorded as a conflict",
+        JSON.stringify(conflict),
+      );
+    }
+    return out;
+  }
+
+  /** `P5-FR-04`: the session ended. Every entry with no outcome becomes
+   *  `nothing_reported`, which is not a success and is not a stage. */
+  closeAgentSession(auth: AuthContext, sessionId: unknown, input: unknown, idempotencyKey?: string) {
+    const principal = this.requireEvidencePrincipal(auth);
+    const session = this.requireSessionOfWorkspace(auth, sessionId);
+    const body = (input ?? {}) as Record<string, unknown>;
+    const reason =
+      typeof body.reason === "string" && body.reason.trim().length > 0 && body.reason.length <= 2000
+        ? body.reason.trim()
+        : "the adapter reported that this runtime session ended";
+    return withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "session.close",
+      idempotencyKey,
+      this.now(),
+      () => ({
+        contract: OUTCOME_CONTRACT_VERSION,
+        ...closeSessionInTx(this.db, session, auth.agent_id, principal.source, reason, this.now()),
+      }),
+      requestDigest({ session_id: session.id, reason }),
+    );
+  }
+
+  /** `P5-FR-05`, `P5-FR-13`: a NEW session carrying the rolled-back revision
+   *  confirms the rollback, and the outcome that preceded it is untouched. */
+  recordRollbackConfirmation(auth: AuthContext, sessionId: unknown, input: unknown, idempotencyKey?: string) {
+    const principal = this.requireEvidencePrincipal(auth);
+    const session = this.requireSessionOfWorkspace(auth, sessionId);
+    const body = (input ?? {}) as Record<string, unknown>;
+    const entryId = body.entry_id;
+    const eventId = body.rollback_action_event_id;
+    if (typeof entryId !== "string" || entryId.length !== 26) {
+      throw new ApiError("INVALID_SCHEMA", "entry_id must be a 26-character id");
+    }
+    if (typeof eventId !== "string" || eventId.length !== 26) {
+      throw new ApiError("INVALID_SCHEMA", "rollback_action_event_id must be a 26-character id");
+    }
+    const reason =
+      typeof body.reason === "string" && body.reason.trim().length > 0 && body.reason.length <= 2000
+        ? body.reason.trim()
+        : "a new session was given the revision this rollback selected";
+    const observedAt = body.observed_at_ms === undefined ? this.now() : body.observed_at_ms;
+    if (typeof observedAt !== "number" || !Number.isFinite(observedAt) || observedAt <= 0) {
+      throw new ApiError("INVALID_SCHEMA", "observed_at_ms must be a positive number of milliseconds");
+    }
+    return withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "session.rollback",
+      idempotencyKey,
+      this.now(),
+      () => ({
+        contract: OUTCOME_CONTRACT_VERSION,
+        ...recordRollbackConfirmationInTx(
+          this.db,
+          session,
+          auth.agent_id,
+          principal.source,
+          { entry_id: entryId, rollback_action_event_id: eventId, reason, observed_at_ms: observedAt },
+          this.now(),
+        ),
+      }),
+      requestDigest({ session_id: session.id, entry_id: entryId, rollback_action_event_id: eventId }),
+    );
+  }
+
+  /**
+   * THE OWNER'S CONFIRMATION — the second half of `P5-FR-02`, and the ONLY
+   * outcome surface an owner reaches.
+   *
+   * It is deliberately NOT mounted under `/v1/console/sessions/`: P4 states that
+   * no `POST` exists under that prefix and that statement is part of how
+   * `P4-FR-13` is enforced. This is a different act with a different name, it
+   * writes `session_outcomes` and nothing else, and every row it writes says
+   * `source: owner`, `evidence_class: owner_confirmation` and where the owner
+   * saw it.
+   */
+  confirmOutcomeAsOwner(auth: AuthContext, input: unknown, idempotencyKey?: string) {
+    this.requireOwnerOrAdmin(auth, "confirming an outcome");
+    const body = (input ?? {}) as Record<string, unknown>;
+    const session = this.requireSessionOfWorkspace(auth, body.session_id);
+    const confirmation = validateOwnerConfirmation(body, this.now());
+    return this.refuseOnConflict(withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "outcome.confirm",
+      idempotencyKey,
+      this.now(),
+      () => {
+        const out = recordOwnerConfirmationInTx(this.db, session, auth.agent_id, confirmation, this.now());
+        return "conflict" in out
+          ? { contract: CONSOLE_CONTRACT_VERSION, conflict: out.conflict }
+          : { contract: CONSOLE_CONTRACT_VERSION, ...out.result };
+      },
+      requestDigest({ ...body }),
+    ));
+  }
+
+  /**
+   * `P5-FR-08`, `P5-FR-09`: A NEW DRAFT REVISION OUT OF A FAILURE OR A REMARK.
+   *
+   * It goes through `reviseDraftInTx` — the SAME function an ordinary edit calls
+   * — so the new revision gets the same semantic and security preview and faces
+   * the same owner approval as any other. There is no second compile path and no
+   * "revision from feedback" that skips a check.
+   *
+   * What this method ADDS is the lineage row: the parent revision, the outcome
+   * that prompted it, the receipt behind that outcome, and the binary goal the
+   * owner states BEFORE the new revision has run anywhere.
+   */
+  createRevisionFromOutcome(auth: AuthContext, outcomeId: unknown, input: unknown, idempotencyKey?: string) {
+    this.requireOwnerOrAdmin(auth, "creating a revision from an outcome");
+    const body = (input ?? {}) as Record<string, unknown>;
+    const origin = body.origin;
+    if (origin !== "failure" && origin !== "feedback") {
+      throw new ApiError("INVALID_SCHEMA", "origin must be failure or feedback");
+    }
+    const goalKind = body.goal_kind ?? "failure_to_worked";
+    if (goalKind !== "failure_to_worked" && goalKind !== "declared_binary") {
+      throw new ApiError("INVALID_SCHEMA", "goal_kind must be failure_to_worked or declared_binary");
+    }
+    const text = (v: unknown, field: string): string => {
+      if (typeof v !== "string" || v.trim().length < 1 || v.length > 2000) {
+        throw new ApiError("INVALID_SCHEMA", `${field} is 1..2000 characters`);
+      }
+      return v.trim();
+    };
+    const observation = text(body.observation, "observation");
+    const goal = text(body.improvement_goal, "improvement_goal");
+    return withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "revision.from_outcome",
+      idempotencyKey,
+      this.now(),
+      () => {
+        const outcome = loadOutcome(this.db, outcomeId);
+        const session = this.requireSessionOfWorkspace(auth, outcome.session_id);
+        // A revision is created from something that went WRONG or was remarked
+        // on. A `worked` needs no descendant and a lineage claiming one would be
+        // a lineage nobody could check.
+        if (origin === "failure" && outcome.outcome !== "failed") {
+          throw new ApiError(
+            "PRECONDITION_FAILED",
+            `a revision from a failure needs a failed outcome; this one is ${outcome.outcome}`,
+            outcome.outcome,
+          );
+        }
+        requireRevisable(this.db, outcome.draft_id);
+        const revision = reviseDraftInTx(
+          this.db,
+          auth,
+          outcome.draft_id,
+          (body.revision ?? {}) as Record<string, unknown>,
+          this.now(),
+        );
+        const now = this.now();
+        const id = insertRevisionSource(
+          this.db,
+          {
+            draft_id: outcome.draft_id,
+            draft_revision_id: revision.revision_id,
+            parent_revision_id: outcome.draft_revision_id,
+            origin,
+            source_outcome_id: outcome.id,
+            source_session_id: session.id,
+            source_receipt_id: outcome.invocation_receipt_id,
+            observation,
+            improvement_goal: goal,
+            goal_kind: goalKind,
+            created_by_agent_id: auth.agent_id,
+          },
+          now,
+        );
+        return {
+          contract: CONSOLE_CONTRACT_VERSION,
+          revision_source_id: id,
+          parent_revision_id: outcome.draft_revision_id,
+          source_outcome_id: outcome.id,
+          source_receipt_id: outcome.invocation_receipt_id,
+          origin,
+          improvement_goal: goal,
+          goal_kind: goalKind,
+          revision,
+        };
+      },
+      requestDigest({ ...body, outcome_id: outcomeId }),
+    );
+  }
+
+  /**
+   * `P5-FR-11`, `P5-FR-12`: THE COMPARISON, AND WHY THE CALLER CANNOT NAME ITS
+   * VERDICT.
+   *
+   * The caller names two outcomes. Everything else — the exact revisions, the
+   * original observation, the scenario, whether the two runs are comparable at
+   * all, and the verdict — is read from the rows and decided by
+   * `decideComparison`. A confirmed improvement therefore cannot be asserted
+   * into existence by whoever wanted one.
+   */
+  compareRevisionOutcomes(auth: AuthContext, input: unknown, idempotencyKey?: string) {
+    this.requireOwnerOrAdmin(auth, "comparing revisions");
+    const body = (input ?? {}) as Record<string, unknown>;
+    const baselineId = body.baseline_outcome_id;
+    const candidateId = body.candidate_outcome_id;
+    if (typeof baselineId !== "string" || typeof candidateId !== "string") {
+      throw new ApiError("INVALID_SCHEMA", "baseline_outcome_id and candidate_outcome_id are required");
+    }
+    return withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "revision.compare",
+      idempotencyKey,
+      this.now(),
+      () => this.compareInTx(auth, baselineId, candidateId),
+      requestDigest({ baseline_outcome_id: baselineId, candidate_outcome_id: candidateId }),
+    );
+  }
+
+  private compareInTx(auth: AuthContext, baselineId: string, candidateId: string): ComparisonView & { contract: string } {
+    const baseline = loadOutcome(this.db, baselineId);
+    const candidate = loadOutcome(this.db, candidateId);
+    const baseSession = this.requireSessionOfWorkspace(auth, baseline.session_id);
+    const candSession = this.requireSessionOfWorkspace(auth, candidate.session_id);
+    const lineage = revisionSourceOf(this.db, candidate.draft_revision_id);
+    if (!lineage) {
+      throw new ApiError(
+        "PRECONDITION_FAILED",
+        "the candidate revision was not created from an outcome, so there is no goal stated in advance to judge it against",
+        "NO_REVISION_SOURCE",
+      );
+    }
+    if (lineage.source_outcome_id !== baseline.id) {
+      throw new ApiError(
+        "PRECONDITION_FAILED",
+        "the candidate revision was created from a different outcome than the one offered as its baseline",
+        "BASELINE_NOT_THE_SOURCE",
+      );
+    }
+    const decided = decideComparison({
+      baseline: { outcome: baseline.outcome, agent_id: baseSession.agent_id, runtime_kind: baseSession.runtime_kind, draft_id: baseline.draft_id },
+      candidate: { outcome: candidate.outcome, agent_id: candSession.agent_id, runtime_kind: candSession.runtime_kind, draft_id: candidate.draft_id },
+      goal_kind: lineage.goal_kind,
+    });
+    const revisionNumber = (id: string): number =>
+      ((this.db.prepare("SELECT revision FROM draft_revisions WHERE id=?").get(id) as { revision: number } | undefined)?.revision ?? 0);
+    const scenario = {
+      agent_id_match: baseSession.agent_id === candSession.agent_id,
+      runtime_kind_match: baseSession.runtime_kind === candSession.runtime_kind,
+      lineage_match: baseline.draft_id === candidate.draft_id,
+      baseline_agent_id: baseSession.agent_id,
+      candidate_agent_id: candSession.agent_id,
+      baseline_runtime_kind: baseSession.runtime_kind,
+      candidate_runtime_kind: candSession.runtime_kind,
+    };
+    const now = this.now();
+    const id = insertComparison(
+      this.db,
+      {
+        workspace_id: auth.workspace_id,
+        draft_id: candidate.draft_id,
+        revision_source_id: lineage.id,
+        baseline_revision_id: baseline.draft_revision_id,
+        candidate_revision_id: candidate.draft_revision_id,
+        baseline_outcome_id: baseline.id,
+        candidate_outcome_id: candidate.id,
+        baseline_outcome: baseline.outcome,
+        candidate_outcome: candidate.outcome,
+        comparable: decided.comparable,
+        scenario,
+        improvement_goal: lineage.improvement_goal,
+        goal_kind: lineage.goal_kind,
+        verdict: decided.verdict,
+        verdict_reason_code: decided.reason_code,
+        verdict_reason: decided.reason,
+        created_by_agent_id: auth.agent_id,
+      },
+      now,
+    );
+    return {
+      contract: CONSOLE_CONTRACT_VERSION,
+      comparison_id: id,
+      draft_id: candidate.draft_id,
+      revision_source_id: lineage.id,
+      baseline: {
+        revision_id: baseline.draft_revision_id,
+        revision: revisionNumber(baseline.draft_revision_id),
+        outcome_id: baseline.id,
+        outcome: baseline.outcome,
+        reason_code: baseline.reason_code,
+        reason: baseline.reason,
+        session_id: baseline.session_id,
+        agent_id: baseSession.agent_id,
+        runtime_kind: baseSession.runtime_kind,
+        observed_at_ms: baseline.observed_at_ms,
+      },
+      candidate: {
+        revision_id: candidate.draft_revision_id,
+        revision: revisionNumber(candidate.draft_revision_id),
+        outcome_id: candidate.id,
+        outcome: candidate.outcome,
+        reason_code: candidate.reason_code,
+        reason: candidate.reason,
+        session_id: candidate.session_id,
+        agent_id: candSession.agent_id,
+        runtime_kind: candSession.runtime_kind,
+        observed_at_ms: candidate.observed_at_ms,
+      },
+      comparable: decided.comparable,
+      scenario,
+      improvement_goal: lineage.improvement_goal,
+      goal_kind: lineage.goal_kind,
+      verdict: decided.verdict,
+      verdict_reason_code: decided.reason_code,
+      verdict_reason: decided.reason,
+      created_at_ms: now,
+    };
+  }
+
+  /** The owner's history of one lineage: every outcome filed against any of its
+   *  revisions, the lineage rows behind the revisions that came from one, and
+   *  every comparison drawn. `INV-05`: columns, not prose. */
+  consoleOutcomeHistory(auth: AuthContext, draftId: unknown) {
+    this.requireOwnerOrAdmin(auth, "reading the outcome history of a capability");
+    const draft = getDraft(this.db, auth, draftId);
+    const outcomes = this.db
+      .prepare(
+        `SELECT o.* FROM session_outcomes o
+           JOIN agent_sessions s ON s.id = o.session_id
+          WHERE o.draft_id=? AND s.workspace_id=?
+          ORDER BY o.observed_at_ms, o.id`,
+      )
+      .all(draft.draft_id, auth.workspace_id) as Array<Record<string, unknown>>;
+    const lineage = this.db
+      .prepare("SELECT * FROM revision_sources WHERE draft_id=? ORDER BY created_at_ms, id")
+      .all(draft.draft_id) as RevisionSourceRow[];
+    const comparisons = this.db
+      .prepare("SELECT * FROM revision_comparisons WHERE draft_id=? AND workspace_id=? ORDER BY created_at_ms, id")
+      .all(draft.draft_id, auth.workspace_id) as Array<Record<string, unknown>>;
+    return {
+      contract: CONSOLE_CONTRACT_VERSION,
+      draft_id: draft.draft_id,
+      outcomes: outcomes.map((o) => ({
+        outcome_id: o.id,
+        session_id: o.session_id,
+        loadout_entry_id: o.loadout_entry_id,
+        assignment_id: o.assignment_id,
+        draft_revision_id: o.draft_revision_id,
+        content_digest: o.content_digest,
+        outcome: o.outcome,
+        evidence_class: o.evidence_class,
+        reason_code: o.reason_code,
+        reason: o.reason,
+        source: o.source,
+        confirmation_source: o.confirmation_source,
+        invocation_receipt_id: o.invocation_receipt_id,
+        rollback_to_revision_id: o.rollback_to_revision_id,
+        rollback_action_event_id: o.rollback_action_event_id,
+        outcome_digest: o.outcome_digest,
+        observed_at_ms: o.observed_at_ms,
+        conflicts: conflictsOfEntry(this.db, o.loadout_entry_id as string).map((c) => ({
+          conflict_id: c.id,
+          outcome_ref: c.outcome_ref,
+          existing_outcome_id: c.existing_outcome_id,
+          existing_outcome: c.existing_outcome,
+          claimed_outcome: c.claimed_outcome,
+          conflict_digest: c.conflict_digest,
+          observed_at_ms: c.observed_at_ms,
+        })),
+      })),
+      lineage: lineage.map((l) => ({
+        revision_source_id: l.id,
+        draft_revision_id: l.draft_revision_id,
+        parent_revision_id: l.parent_revision_id,
+        origin: l.origin,
+        source_outcome_id: l.source_outcome_id,
+        source_session_id: l.source_session_id,
+        source_receipt_id: l.source_receipt_id,
+        observation: l.observation,
+        improvement_goal: l.improvement_goal,
+        goal_kind: l.goal_kind,
+        created_at_ms: l.created_at_ms,
+      })),
+      comparisons: comparisons.map((c) => ({
+        comparison_id: c.id,
+        baseline_revision_id: c.baseline_revision_id,
+        candidate_revision_id: c.candidate_revision_id,
+        baseline_outcome_id: c.baseline_outcome_id,
+        candidate_outcome_id: c.candidate_outcome_id,
+        baseline_outcome: c.baseline_outcome,
+        candidate_outcome: c.candidate_outcome,
+        comparable: c.comparable === 1,
+        improvement_goal: c.improvement_goal,
+        goal_kind: c.goal_kind,
+        verdict: c.verdict,
+        verdict_reason_code: c.verdict_reason_code,
+        verdict_reason: c.verdict_reason,
+        created_at_ms: c.created_at_ms,
       })),
     };
   }

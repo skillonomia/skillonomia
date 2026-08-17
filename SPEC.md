@@ -1964,10 +1964,10 @@ installs none is conforming.
 
 ## Appendix D. NORMATIVE SQLite DDL
 
-The normative schema is given in **sixteen** migrations, applied in ascending file
+The normative schema is given in **seventeen** migrations, applied in ascending file
 order, and the live schema of a conforming registry is their sum. Each is
 embedded below verbatim and is byte-identical to the file this repository ships;
-a test asserts that for all sixteen. Schema version is tracked in
+a test asserts that for all seventeen. Schema version is tracked in
 `PRAGMA user_version` and nowhere else — there is no bookkeeping table, because
 the live schema is compared object for object against D.1 plus the deltas below,
 and a table this specification does not name would fail that comparison. A
@@ -2092,15 +2092,19 @@ path, and MUST NOT attempt it.
   them by exactly its own four tables, eight triggers and five indexes, on the
   same terms and with its own reversal
   (`migrations/down/0016_session_loadout_and_runtime_receipts.down.sql`), which
-  restores `PRAGMA user_version` to `15`.
-  Those four are the migrations of this
+  restores `PRAGMA user_version` to `15`. D.1q moves
+  them by exactly its own five tables, ten triggers and six indexes, on the
+  same terms and with its own reversal
+  (`migrations/down/0017_outcomes_and_the_revision_loop.down.sql`), which
+  restores `PRAGMA user_version` to `16`.
+  Those five are the migrations of this
   schema that ship a reversal; D.1 through D.1l ship none, which
   `v1/P0-BASELINE.md` records as a fact about the released base. After all
-  sixteen migrations
+  seventeen migrations
   `PRAGMA user_version`
-  MUST report `16`. A test in this repository asserts the live schema equals D.1
+  MUST report `17`. A test in this repository asserts the live schema equals D.1
   plus exactly those twelve edits and the new objects of D.1f, D.1g, D.1h, D.1m,
-  D.1n, D.1o and D.1p —
+  D.1n, D.1o, D.1p and D.1q —
   the five of D.1b, the one of D.1c, the one of D.1d, the two of D.1e, the one
   rebuilt table of D.1f, the one further edit of D.1i to that same rebuilt table
   and the one column D.1j adds to `observed_records`, together with the one column
@@ -4583,6 +4587,254 @@ CREATE TRIGGER tg_runtime_receipts_no_upd BEFORE UPDATE ON runtime_receipts BEGI
 CREATE TRIGGER tg_runtime_receipts_no_del BEFORE DELETE ON runtime_receipts BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 ```
 
+### D.1q NORMATIVE DELTA — seventeenth migration (verbatim)
+
+OUTCOMES AND THE REVISION LOOP. Five tables, six indexes and ten triggers, with
+nothing edited: `session_closures` records that a runtime session ended;
+`session_outcomes` carries the normalised outcome of one loadout entry;
+`outcome_conflicts` carries a contradicting redelivery without letting it
+overwrite its predecessor; `revision_sources` records where a new revision came
+from and what it promised; `revision_comparisons` records the judgement drawn
+between two of them.
+
+THE OUTCOME VOCABULARY IS EXACTLY FOUR MEMBERS. A conforming registry MUST
+support `worked`, `failed`, `rolled_back` and `nothing_reported` and no others.
+`worked` MUST NOT be reachable from the stages `proposed` or `loaded` alone: the
+CHECK in this migration refuses a `worked` row unless it either names the
+`invoked` receipt it rests on or is an explicit owner confirmation carrying the
+source the owner saw it in. `nothing_reported` MUST be writable only by the
+closure of a session, and the closure of a session MUST write nothing else — a
+session that ends with no outcome filed is not a success. `rolled_back` MUST name
+both the rollback action it records and the revision that action selected, and
+MUST be a NEW row: the outcome that preceded it is not rewritten.
+
+REDELIVERY AND CONTRADICTION. `UNIQUE(loadout_entry_id,outcome_ref)` makes the
+reporter's own identifier the replay key: a second delivery of one outcome is the
+same row. A second delivery under that key that says something ELSE MUST leave
+the stored row untouched and MUST become a row of `outcome_conflicts` carrying
+the whole of what was claimed, which the outcome view then reports as a
+structured state.
+
+THE OWNER'S WORD IS LABELLED AS THE OWNER'S WORD. `source` gains an `owner`
+member that no other observed table has, and the CHECKs fence it both ways:
+`source='owner'` if and only if `evidence_class='owner_confirmation'`, and such a
+row MUST carry a `confirmation_source`. Nothing in this migration writes
+`assignment_observations`: the observed STAGE of an entry stays exactly what a
+`0016` receipt made it, and an owner confirmation never becomes one.
+
+REVERSAL is `migrations/down/0017_outcomes_and_the_revision_loop.down.sql`, which
+drops the ten triggers, the six indexes and the five tables and sets
+`PRAGMA user_version` back to `16`. Reversal discards the outcomes, the recorded
+conflicts, the lineage claims and the comparisons; it touches no revision,
+approval, assignment, session, loadout or runtime receipt.
+`PRAGMA user_version` = `17`.
+
+```sql
+-- 0017 — THE NORMALISED OUTCOME, AND THE LOOP THAT COMES BACK FROM IT.
+--
+-- `0016` ended at `invoked`: a runtime read an exact revision and called it.
+-- Whether calling it HELPED is a different fact with a different source, and
+-- this migration is where that fact lives. Five INSERT-only tables are added and
+-- nothing existing is edited.
+--
+-- ---------------------------------------------------------------------------
+-- `session_closures` — A SESSION THAT ENDED.
+--
+-- `P5-FR-04`: a session that finishes with no outcome receipt yields
+-- `nothing_reported`, never a success. Something has to say a session FINISHED,
+-- and `agent_sessions` is INSERT-only, so the closure is its own row rather than
+-- a column somebody would have to update. Closing is an ADAPTER act for the
+-- reason opening one is (`INV-02`): it produces observed facts, so `source` has
+-- no `owner` member here either.
+--
+-- ---------------------------------------------------------------------------
+-- `session_outcomes` — THE FOUR VALUES, AND WHAT EACH ONE IS ALLOWED TO REST ON.
+--
+-- `P5-FR-01` fixes the vocabulary at exactly four members and the CHECK is that
+-- list. The interesting rules are the other three CHECKs, because each one makes
+-- a requirement unfalsifiable BY THE DATABASE rather than by the discipline of
+-- every future writer:
+--
+--   `P5-FR-02`  `worked` is refused unless it either names the `invoked` receipt
+--               it rests on, or is an explicit owner confirmation carrying the
+--               source the owner saw it in. There is no third way to write it,
+--               and no way at all to reach it from `proposed` or `loaded`: those
+--               are stages of `0016` and are not outcomes.
+--   `P5-FR-03`  every row carries `reason_code` and `reason`, and `failed`
+--               carries provenance in `payload_json` beside them.
+--   `P5-FR-04`  `nothing_reported` is writable ONLY by the closure path, and the
+--               closure path can write nothing else.
+--   `P5-FR-05`  `rolled_back` must name the rollback action it records and the
+--               revision that action selected. It is a NEW ROW: the outcome it
+--               follows is not touched, which is what "without rewriting the
+--               outcome that came before it" means in storage.
+--
+-- `source` gains an `owner` member that no other observed table has, and it is
+-- fenced: `source='owner'` implies `evidence_class='owner_confirmation'` and the
+-- converse, so an owner credential cannot file a row that reads as runtime
+-- evidence, and a runtime cannot file one that reads as an owner's word.
+-- `assignment_observations` is NOT written from here — the observed STAGE of an
+-- entry stays exactly what `0016`'s receipts made it, and an owner confirmation
+-- never becomes a stage.
+--
+-- `UNIQUE(loadout_entry_id, outcome_ref)` is `P5-FR-06`: the reporter's own
+-- identifier for the outcome is the replay key, so redelivering one receipt hits
+-- the same row instead of writing a second.
+--
+-- ---------------------------------------------------------------------------
+-- `outcome_conflicts` — A SECOND, DIFFERENT CLAIM UNDER ONE KEY.
+--
+-- `P5-FR-07`: a conflicting receipt does not overwrite its predecessor. The
+-- predecessor stands in `session_outcomes`, the contradiction is recorded here
+-- with the whole of what was claimed, and the outcome view reports it. A
+-- conflict is therefore a structured state carrying its own evidence rather than
+-- a lost write or a silently-preferred one.
+--
+-- ---------------------------------------------------------------------------
+-- `revision_sources` — WHERE A NEW REVISION CAME FROM, AND WHAT IT PROMISED.
+--
+-- `P5-FR-08`: a revision created from a failure or a piece of feedback carries
+-- its parent revision and the receipt it came from. Both are columns and both
+-- are foreign keys, so a lineage claim that names nothing is not writable.
+--
+-- `improvement_goal` is stored HERE, at creation, because `P5-FR-12` requires a
+-- binary goal stated IN ADVANCE. A goal a comparison could supply afterwards is
+-- a goal chosen once the answer is known.
+--
+-- ---------------------------------------------------------------------------
+-- `revision_comparisons` — THE OLD ONE, THE NEW ONE, AND WHETHER IT HELPED.
+--
+-- `P5-FR-11` names the four things a comparison must show and they are four
+-- columns: the exact old and new revisions and the two outcomes behind them.
+-- `comparable` and `verdict` are computed by the service from those rows and
+-- stored, never supplied by a caller.
+PRAGMA defer_foreign_keys=ON;
+
+CREATE TABLE session_closures(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  session_id TEXT NOT NULL UNIQUE REFERENCES agent_sessions(id) ON DELETE RESTRICT,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT,
+  closed_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  source TEXT NOT NULL CHECK(source IN ('backend','adapter','runtime')),
+  reason_code TEXT NOT NULL CHECK(length(reason_code) BETWEEN 1 AND 64),
+  reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 2000),
+  entries_without_outcome INTEGER NOT NULL CHECK(entries_without_outcome>=0),
+  closed_at_ms INTEGER NOT NULL CHECK(closed_at_ms>0),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0)
+);
+
+CREATE TABLE session_outcomes(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE RESTRICT,
+  loadout_id TEXT NOT NULL REFERENCES session_loadouts(id) ON DELETE RESTRICT,
+  loadout_entry_id TEXT NOT NULL REFERENCES session_loadout_entries(id) ON DELETE RESTRICT,
+  assignment_id TEXT NOT NULL REFERENCES skill_assignments(id) ON DELETE RESTRICT,
+  draft_id TEXT NOT NULL CHECK(length(draft_id)=26),
+  draft_revision_id TEXT NOT NULL REFERENCES draft_revisions(id) ON DELETE RESTRICT,
+  content_digest TEXT NOT NULL CHECK(length(content_digest)=71),
+  outcome TEXT NOT NULL CHECK(outcome IN ('worked','failed','rolled_back','nothing_reported')),
+  evidence_class TEXT NOT NULL CHECK(evidence_class IN ('runtime_receipt','owner_confirmation','session_closed','rollback_confirmation')),
+  outcome_ref TEXT NOT NULL CHECK(length(outcome_ref) BETWEEN 1 AND 200),
+  reason_code TEXT NOT NULL CHECK(length(reason_code) BETWEEN 1 AND 64),
+  reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 2000),
+  source TEXT NOT NULL CHECK(source IN ('backend','adapter','runtime','owner')),
+  confirmation_source TEXT CHECK(confirmation_source IS NULL OR length(confirmation_source) BETWEEN 1 AND 200),
+  runtime_session_ref TEXT CHECK(runtime_session_ref IS NULL OR length(runtime_session_ref) BETWEEN 1 AND 200),
+  invocation_ref TEXT CHECK(invocation_ref IS NULL OR length(invocation_ref) BETWEEN 1 AND 200),
+  invocation_receipt_id TEXT REFERENCES runtime_receipts(id) ON DELETE RESTRICT,
+  rollback_to_revision_id TEXT REFERENCES draft_revisions(id) ON DELETE RESTRICT,
+  rollback_action_event_id TEXT REFERENCES skill_assignment_events(id) ON DELETE RESTRICT,
+  reported_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  outcome_digest TEXT NOT NULL CHECK(length(outcome_digest)=71),
+  payload_json TEXT NOT NULL CHECK(length(payload_json) BETWEEN 2 AND 20000),
+  observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms>0),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0),
+  UNIQUE(loadout_entry_id,outcome_ref),
+  CHECK(outcome<>'worked' OR (evidence_class='runtime_receipt' AND invocation_receipt_id IS NOT NULL) OR evidence_class='owner_confirmation'),
+  CHECK(outcome<>'rolled_back' OR (rollback_to_revision_id IS NOT NULL AND rollback_action_event_id IS NOT NULL)),
+  CHECK((outcome='nothing_reported')=(evidence_class='session_closed')),
+  CHECK((source='owner')=(evidence_class='owner_confirmation')),
+  CHECK(evidence_class<>'owner_confirmation' OR confirmation_source IS NOT NULL)
+);
+CREATE INDEX idx_session_outcomes_session ON session_outcomes(session_id,observed_at_ms);
+CREATE INDEX idx_session_outcomes_entry ON session_outcomes(loadout_entry_id,observed_at_ms);
+CREATE INDEX idx_session_outcomes_revision ON session_outcomes(draft_revision_id,observed_at_ms);
+
+CREATE TABLE outcome_conflicts(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE RESTRICT,
+  loadout_entry_id TEXT NOT NULL REFERENCES session_loadout_entries(id) ON DELETE RESTRICT,
+  outcome_ref TEXT NOT NULL CHECK(length(outcome_ref) BETWEEN 1 AND 200),
+  existing_outcome_id TEXT NOT NULL REFERENCES session_outcomes(id) ON DELETE RESTRICT,
+  existing_outcome TEXT NOT NULL CHECK(existing_outcome IN ('worked','failed','rolled_back','nothing_reported')),
+  claimed_outcome TEXT NOT NULL CHECK(claimed_outcome IN ('worked','failed','rolled_back','nothing_reported')),
+  claimed_payload_json TEXT NOT NULL CHECK(length(claimed_payload_json) BETWEEN 2 AND 20000),
+  conflict_digest TEXT NOT NULL CHECK(length(conflict_digest)=71),
+  reported_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  source TEXT NOT NULL CHECK(source IN ('backend','adapter','runtime','owner')),
+  observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms>0),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0)
+);
+CREATE INDEX idx_outcome_conflicts_entry ON outcome_conflicts(loadout_entry_id,server_at_ms);
+
+CREATE TABLE revision_sources(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  draft_id TEXT NOT NULL CHECK(length(draft_id)=26),
+  draft_revision_id TEXT NOT NULL UNIQUE REFERENCES draft_revisions(id) ON DELETE RESTRICT,
+  parent_revision_id TEXT NOT NULL REFERENCES draft_revisions(id) ON DELETE RESTRICT,
+  origin TEXT NOT NULL CHECK(origin IN ('failure','feedback')),
+  source_outcome_id TEXT NOT NULL REFERENCES session_outcomes(id) ON DELETE RESTRICT,
+  source_session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE RESTRICT,
+  source_receipt_id TEXT REFERENCES runtime_receipts(id) ON DELETE RESTRICT,
+  observation TEXT NOT NULL CHECK(length(observation) BETWEEN 1 AND 2000),
+  improvement_goal TEXT NOT NULL CHECK(length(improvement_goal) BETWEEN 1 AND 2000),
+  goal_kind TEXT NOT NULL CHECK(goal_kind IN ('failure_to_worked','declared_binary')),
+  created_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0)
+);
+CREATE INDEX idx_revision_sources_draft ON revision_sources(draft_id,created_at_ms);
+
+CREATE TABLE revision_comparisons(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT,
+  draft_id TEXT NOT NULL CHECK(length(draft_id)=26),
+  revision_source_id TEXT NOT NULL REFERENCES revision_sources(id) ON DELETE RESTRICT,
+  baseline_revision_id TEXT NOT NULL REFERENCES draft_revisions(id) ON DELETE RESTRICT,
+  candidate_revision_id TEXT NOT NULL REFERENCES draft_revisions(id) ON DELETE RESTRICT,
+  baseline_outcome_id TEXT NOT NULL REFERENCES session_outcomes(id) ON DELETE RESTRICT,
+  candidate_outcome_id TEXT NOT NULL REFERENCES session_outcomes(id) ON DELETE RESTRICT,
+  baseline_outcome TEXT NOT NULL CHECK(baseline_outcome IN ('worked','failed','rolled_back','nothing_reported')),
+  candidate_outcome TEXT NOT NULL CHECK(candidate_outcome IN ('worked','failed','rolled_back','nothing_reported')),
+  comparable INTEGER NOT NULL CHECK(comparable IN (0,1)),
+  scenario_json TEXT NOT NULL CHECK(length(scenario_json) BETWEEN 2 AND 8000),
+  improvement_goal TEXT NOT NULL CHECK(length(improvement_goal) BETWEEN 1 AND 2000),
+  goal_kind TEXT NOT NULL CHECK(goal_kind IN ('failure_to_worked','declared_binary')),
+  verdict TEXT NOT NULL CHECK(verdict IN ('improved','not_improved','not_comparable')),
+  verdict_reason_code TEXT NOT NULL CHECK(length(verdict_reason_code) BETWEEN 1 AND 64),
+  verdict_reason TEXT NOT NULL CHECK(length(verdict_reason) BETWEEN 1 AND 2000),
+  created_by_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0),
+  server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0)
+);
+CREATE INDEX idx_revision_comparisons_draft ON revision_comparisons(draft_id,created_at_ms);
+
+-- `INV-06` in storage: an outcome, a conflict, a lineage row and a comparison
+-- are all statements about a moment, and a statement about a moment that can be
+-- edited later is not evidence. Every table of this migration is INSERT-only,
+-- for the reason every journal in this tree is.
+CREATE TRIGGER tg_session_closures_no_upd BEFORE UPDATE ON session_closures BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_session_closures_no_del BEFORE DELETE ON session_closures BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_session_outcomes_no_upd BEFORE UPDATE ON session_outcomes BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_session_outcomes_no_del BEFORE DELETE ON session_outcomes BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_outcome_conflicts_no_upd BEFORE UPDATE ON outcome_conflicts BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_outcome_conflicts_no_del BEFORE DELETE ON outcome_conflicts BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_revision_sources_no_upd BEFORE UPDATE ON revision_sources BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_revision_sources_no_del BEFORE DELETE ON revision_sources BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_revision_comparisons_no_upd BEFORE UPDATE ON revision_comparisons BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_revision_comparisons_no_del BEFORE DELETE ON revision_comparisons BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+```
+
 ### D.2 SQL negative probes
 
 Every probe below is executed as a test in this repository; each names the
@@ -5210,10 +5462,17 @@ Internal worker surface (NOT public, service-authenticated, single-binary in-pro
 | — | `POST /v1/console/assignments/{assignment_id}/revision` | a live console session (owner/admin) | `{"revision_id","if_version"?,"reason"?,"idempotency_key"?}` | `200` — the same shape. The target MUST be an approved revision of this lineage; nothing is deleted and no earlier selection is rewritten. Selecting an earlier approved revision is a rollback and is recorded as one |
 | — | `GET /v1/console/assignments/{assignment_id}/audit` | a live console session (owner/admin) | — | `200 {"contract","assignment_id","items":[{"entry_id","assignment_id","event_seq","event","desired_state","desired_revision_id","effective_from","actor_agent_id","actor_role","source","reason_code","reason","content_digest","provenance","server_at_ms"}]}` — structured columns, oldest first |
 | — | `POST /v1/assignments/{assignment_id}/observations` | Bearer, a registered evidence principal | `{"observed_status","reason_code","reason","observed_at_ms"?,"revision_id"?,"session_ref"?,"provenance","idempotency_key"?}` | `201 {"assignment_id","observed"}`. The OBSERVED-state intake, and the only writer of it. Authorized ONLY for a credential the deployment registered as an evidence principal (`evidence-principals.json` in the data directory); an owner or admin credential is `403` and a console session cannot reach this route at all. `source` is one of `backend`, `adapter`, `runtime` and is DERIVED from that registration — a body that supplies `source` is `400` |
-| — | `GET /v1/console/sessions/{session_id}` | a live console session (owner/admin) | — | `200 {"contract","session","loadout","entries","receipts"}` — the owner's READ of one session: what the loadout froze, the stage each entry reached and the receipts behind them. There is deliberately no `POST` under this prefix: opening a session and filing a receipt write OBSERVED state and live on the machine surface below |
+| — | `GET /v1/console/sessions/{session_id}` | a live console session (owner/admin) | — | `200 {"contract","session","loadout","entries","outcomes","closure","receipts"}` — the owner's READ of one session: what the loadout froze, the stage each entry reached, the OUTCOME of each entry beside that stage, the closure if the session has ended, and the receipts behind them. A stage and an outcome are separate members because they are separate facts and neither is derived from the other. There is deliberately no `POST` under this prefix: opening a session and filing a receipt write OBSERVED state and live on the machine surface below |
 | — | `POST /v1/sessions` | Bearer, a registered evidence principal | `{"agent_id","runtime_kind":"codex\|claude_code","runtime_version","idempotency_key"?}` | `201 {"contract","loadout_id","session_id","agent_id","runtime_kind","runtime_version","adapter_version","entry_count","loadout_digest","created_at_ms","entries","excluded"}`. Opens a session and FREEZES its loadout from the ACTIVE desired assignments of that agent; an unapproved, paused or revoked revision does not enter it and is reported in `excluded` with a reason code. Each included entry gets a `proposed` observation. An owner or admin credential is `403` before the body is read |
 | — | `GET /v1/sessions/{session_id}/loadout` | Bearer, a registered evidence principal | — | `200 {"contract","session","loadout","contents"}` — the frozen entries and, for each, the canonical content the adapter renders. The adapter authors nothing |
 | — | `POST /v1/sessions/{session_id}/receipts` | Bearer, a registered evidence principal | `{"stage":"loaded\|invoked","runtime_session_ref","revision_id","content_digest","invocation_ref"?,"observed_at_ms"?,"transcript_excerpt"?,"idempotency_key"?}` | `201 {"contract","receipt_id","session_id","loadout_id","assignment_id","stage","receipt_digest","observed"}`. The ONLY writer of `loaded` and `invoked`. The receipt is refused unless the revision is in this session's loadout and the `content_digest` is the one that loadout froze, and an `invoked` receipt is refused unless a `loaded` one precedes it and it names an `invocation_ref`. `source` is DERIVED from the registration — a body that supplies one is `400`. An owner or admin credential is `403` before the body is read |
+| — | `POST /v1/sessions/{session_id}/outcomes` | Bearer, a registered evidence principal | `{"outcome":"worked\|failed","outcome_ref","invocation_ref","runtime_session_ref","revision_id","content_digest","reason_code","reason","observed_at_ms"?,"transcript_excerpt"?,"idempotency_key"?}` | `201 {"contract","outcome_id","session_id","loadout_entry_id","assignment_id","draft_revision_id","outcome","evidence_class","outcome_digest","replayed"}`. The runtime's outcome of ONE invocation. It is refused unless an `invoked` receipt of this session names the same `invocation_ref` and `runtime_session_ref`, so `worked` is never reachable from `proposed` or `loaded`. `outcome_ref` is the replay key: the same ref with the same payload replays the stored row with `replayed:true`, and the same ref with a DIFFERENT payload is `CONFLICT` whose `current_state` carries the structured conflict — the first outcome stands. A runtime reports only `worked` or `failed`. `source` and `evidence_class` are DERIVED — a body that supplies either is `400`. An owner or admin credential is `403` before the body is read |
+| — | `POST /v1/sessions/{session_id}/close` | Bearer, a registered evidence principal | `{"reason"?,"idempotency_key"?}` | `201 {"contract","closure_id","session_id","closed_at_ms","nothing_reported","already_closed"}`. The session ended. EVERY loadout entry with no outcome — including one that reached `invoked` — gets `nothing_reported`, which is never a success. Closing twice is one closure and answers `already_closed:true`. After a closure the outcome and rollback intakes of that session are `CONFLICT` |
+| — | `POST /v1/sessions/{session_id}/rollback-confirmations` | Bearer, a registered evidence principal | `{"entry_id","rollback_action_event_id","reason"?,"observed_at_ms"?,"idempotency_key"?}` | `201 {"contract","outcome_id","session_id","loadout_entry_id","assignment_id","draft_revision_id","outcome","evidence_class","outcome_digest","replayed"}`. Records `rolled_back` against a NEW session that actually carries the rolled-back revision. The named event MUST be a `revision_selected` of this entry's assignment, its selected revision MUST be the one this session's entry carries, and this session MUST have opened after it — otherwise `PRECONDITION_FAILED` with `ROLLBACK_TARGET_NOT_LOADED`, `NOT_A_ROLLBACK_ACTION` or `SESSION_PREDATES_ROLLBACK`. The outcome that preceded it is not rewritten |
+| — | `POST /v1/console/outcomes` | a live console session (owner/admin) | `{"session_id","entry_id","outcome":"worked\|failed","outcome_ref","confirmation_source","reason_code","reason","observed_at_ms"?,"idempotency_key"?}` | `201 {"contract","outcome_id","session_id","loadout_entry_id","assignment_id","draft_revision_id","outcome","evidence_class","outcome_digest","replayed"}`. The owner's explicit confirmation, and the ONLY outcome an owner writes. Every row it writes carries `source:"owner"`, `evidence_class:"owner_confirmation"` and the `confirmation_source` naming where the owner saw it; it writes no observation, no stage and no receipt, so the runtime evidence surface stays unreachable from the console. Replay and conflict behave as on the machine intake |
+| — | `POST /v1/console/outcomes/{outcome_id}/revision` | a live console session (owner/admin) | `{"origin":"failure\|feedback","observation","improvement_goal","goal_kind":"failure_to_worked\|declared_binary"?,"revision":{…the ordinary revision body},"idempotency_key"?}` | `201 {"contract","revision_source_id","parent_revision_id","source_outcome_id","source_receipt_id","origin","improvement_goal","goal_kind","revision"}`. Creates a new DRAFT revision from a failure or a remark, through the same compiler, the same semantic and security preview and the same owner approval any other revision faces. The lineage row records the parent revision, the outcome that prompted it, the receipt behind that outcome and the binary goal — stated HERE, before the new revision has run anywhere. `origin:"failure"` on an outcome that is not `failed` is `PRECONDITION_FAILED` |
+| — | `POST /v1/console/comparisons` | a live console session (owner/admin) | `{"baseline_outcome_id","candidate_outcome_id","idempotency_key"?}` | `201 {"contract","comparison_id","draft_id","revision_source_id","baseline","candidate","comparable","scenario","improvement_goal","goal_kind","verdict","verdict_reason_code","verdict_reason","created_at_ms"}`. Shows the exact old and new revisions, the observation behind the old one and the new outcome. The verdict is COMPUTED and never supplied: `improved` requires a comparable scenario — same lineage, same agent, same runtime kind — and a proved transition to `worked` against the goal stated in advance; anything else is `not_improved` or `not_comparable` with the reason code saying which condition failed. A candidate revision with no lineage row is `PRECONDITION_FAILED` |
+| — | `GET /v1/console/capabilities/{draft_id}/outcomes` | a live console session (owner/admin) | — | `200 {"contract","draft_id","outcomes","lineage","comparisons"}` — every outcome filed against any revision of this lineage with its conflicts, every revision created from one, and every comparison drawn. Structured columns throughout |
 
 Every mutating console route above is refused unless the request carries an `Origin` matching this origin AND the `X-Skillonomia-Console-CSRF` header holding the session's own token; either missing or wrong is `FORBIDDEN`. The console routes take the same `idempotency_key` the rest of this appendix does, so a resent form replays the stored response rather than deciding twice.
 
