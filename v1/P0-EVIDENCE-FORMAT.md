@@ -614,7 +614,24 @@ evidence/
     44-negative-probes-fix1.txt    the validator negative probes at the final SHA
     45-output-sha-agreement-fix1.txt  the output-SHA agreement across the phase package
     46-secret-scan-fix1.txt        the closing secret sweep, run after the last word was written
-    47-evidence-check-fix1.txt     the closing evidence-record check — the last file P5 writes
+    47-evidence-check-fix1.txt     the closing evidence-record check of FIX-1's package
+    48-session-record-fix2.md      FIX-2's role, model contract, task and session IDs, and its commits
+    49-fix2-record.md              the two REVIEW-2 findings, the one seam that closes both, and what FIX-2 does NOT claim
+    50-gate-summary-fix2.md        every mandatory P5 gate at FIX-2's final SHA, its command and its exit code
+    51-gate-results-fix2.tsv       that battery's raw per-gate results, one line per gate
+    52-repro-before-and-after-fix2.txt  the reviewer's own reproduction, run at the input SHA and at the final SHA
+    53-outcome-regressions-fix2.txt     the new outcome regressions, and the same regressions with the fix disabled one piece at a time so they are seen to fail
+    54-p5-consistency-check-fix2.txt    the consistency validator over a real run's database and over the product-path fixture it used to refuse, plus a copy with three refused conflict shapes planted
+    55-browser-e2e-p5-fix2.txt     the browser gate at the final SHA
+    56-runtime-codex-fix2.txt      the actual Codex runtime gate at the final SHA
+    57-runtime-claude-code-fix2.txt   the actual Claude Code runtime gate at the final SHA
+    58-refs-tags-and-base-fix2.txt    refs, tags, ancestry and clean-worktree at the final SHA
+    59-branch-reflog-fix2.txt      the full branch reflog after FIX-2's commits
+    60-clean-clone-fix2.txt        the clean-clone transcript at the final SHA: clone, npm ci, npm test, nothing between
+    61-negative-probes-fix2.txt    the validator negative probes at the final SHA
+    62-output-sha-agreement-fix2.txt  the output-SHA agreement across the phase package
+    63-secret-scan-fix2.txt        the closing secret sweep, run after the last word was written
+    64-evidence-check-fix2.txt     the closing evidence-record check — the last file P5 writes
     runs.jsonl                     one record per run, in the schema of section 1
     logs/                          full captured output of each command, one file per record
     logs-fix1-aborted/             the first five logs of a FIX-1 battery stopped on purpose before this listing was committed, with its own README.md
@@ -643,6 +660,20 @@ listing, and only then ran the certifying battery, the clean clone and the four 
 checks — a commit after the markers are written invalidates every one of them, and the
 first battery of this session was stopped mid-run for exactly that reason. Its logs are
 kept under evidence/P5/logs-fix1-aborted/ rather than deleted.
+
+**P5 REVIEW-2 returned two blocking findings, and `FIX-2` closed both.** `P5-R2-001`
+made an identical redelivery of one receipt a conflict whenever the caller used the
+optional observation time the contract documents, and `P5-R2-002` made the consistency
+validator refuse a conflict the product itself writes whenever the two normalised
+outcomes agreed. Both are one seam — what identifies a delivery, and what makes a
+disagreement real — and evidence/P5/49-fix2-record.md states how it was drawn, with the
+reviewer's own reproduction before and after in
+evidence/P5/52-repro-before-and-after-fix2.txt and the new regressions seen RED with the
+fix disabled in evidence/P5/53-outcome-regressions-fix2.txt. Under contract section 8
+points 6 and 8 there is no REVIEW-3: the phase passes on the deterministic gates of
+evidence/P5/50-gate-summary-fix2.md and nothing else. `FIX-2` committed the fix, then the
+phase document, then THIS listing, and only then ran the certifying battery, the clean
+clone and the four closing checks.
 
 **P4 REVIEW-1 returned one blocking finding, and `FIX-1` closed it.** The finding,
 `P4-R1-001`, is recorded in evidence/P4/28-finding-p4-r1-001.md with the reproduction
