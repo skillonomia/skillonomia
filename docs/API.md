@@ -545,3 +545,61 @@ the conflict rather than a success it did not get.
 **Rollback deletes nothing.** `POST .../revision` selects any approved revision
 of the lineage. Selecting an earlier one is a rollback and is recorded as one;
 the newer revision keeps its row, its approval and its place in the lineage.
+
+## Session loadout and the two native runtimes
+
+A runtime session gets ONE immutable snapshot of what its agent was desired to
+be carrying at the moment it opened, and every stage past that snapshot is
+written from a structured receipt and from nothing else.
+
+```
+POST /v1/sessions                            Bearer, evidence principal — open a session and FREEZE its loadout
+     {"agent_id","runtime_kind":"codex|claude_code","runtime_version"}
+GET  /v1/sessions/{session_id}/loadout       Bearer, evidence principal — the frozen entries and their canonical content
+POST /v1/sessions/{session_id}/receipts      Bearer, evidence principal — the runtime receipt
+     {"stage":"loaded|invoked","runtime_session_ref","revision_id","content_digest","invocation_ref"?,"observed_at_ms"?,"transcript_excerpt"?}
+GET  /v1/console/sessions/{session_id}       a console session — the owner's READ of all of it
+```
+
+**The owner cannot open a session and cannot file a receipt.** Both write
+OBSERVED state, so both are refused to any owner or admin credential and are
+unreachable from a console session; they require a credential the deployment
+registered as an evidence principal, which is the same boundary the observation
+intake is behind. The owner's access is the `GET` above.
+
+**Only ACTIVE, approved assignments enter a loadout.** An assignment that is
+merely assigned, or paused, or revoked, does not, and neither does an active one
+whose desired revision is not approved. Every exclusion is reported in
+`excluded` with a reason code, because a snapshot that says only what it
+contains cannot answer why it does not contain something.
+
+**The snapshot never changes.** It carries the loadout id, the session id, the
+agent id, the runtime kind and `runtime_version`, the adapter version, the
+created timestamp and, per entry, the assignment id, the skill and revision ids,
+the revision number and the content digest. The tables are INSERT-only in the
+database, so this is a property of the storage. Pausing, revoking or selecting
+another revision changes the NEXT session's snapshot and never this one's.
+
+**A stage past `proposed` needs a receipt.** `proposed` is written when the
+loadout is built. `loaded` is written when an adapter has read the materialized
+entry file back out of the location the runtime opens. `invoked` is written only
+from a receipt naming `runtime_session_ref` — the runtime's OWN session id — and
+an `invocation_ref`, and only after a `loaded` receipt precedes it. A receipt
+also carries the reporter's `observed_at_ms`, which is when the runtime did the
+thing rather than when the receipt arrived.
+
+**A receipt proves a REVISION, not a name.** The materialized `SKILL.md` states
+its own revision id and content digest and instructs the runtime to echo that
+line; the adapter lifts it out of the runtime's own output and files it, and the
+registry refuses the receipt unless the digest is the one the loadout froze for
+that revision. A receipt for a revision outside this session's loadout is
+refused too. A run that names the skill and echoes nothing produces no receipt,
+and the entry stays `unknown` with a reason and a source — which is the honest
+answer and is never turned into `loaded`.
+
+**The native files are derived.** `skillonomia adapter open` materializes them
+into a session-scoped runtime home and points the runtime at it through the
+runtime's own environment variable (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`); you
+write no manifest, no package, no signature and no runtime config. `skillonomia
+adapter cleanup` removes them and destroys no registry data: the next session
+rebuilds them from the same rows.

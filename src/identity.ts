@@ -203,6 +203,45 @@ export const IDENTITY_INTAKE: Record<string, IdentityColumnClass> = {
   "assignment_observations.id": MINTED,
   "assignment_observations.assignment_id": RESOLVED,
   "idempotency_request_digests.idempotency_key_id": RESOLVED,
+
+  // --------------------------------------------------------- V1 P4 identities
+  // The session, its immutable loadout and the receipts. Not one of these
+  // columns takes a caller's string: an adapter names an AGENT and a REVISION
+  // and the registry resolves everything else out of its own rows.
+  "agent_sessions.id": MINTED,
+  "session_loadouts.id": MINTED,
+  "session_loadouts.session_id": {
+    intake: "registry_generated",
+    note:
+      "the session this registry has just minted, in the same transaction. UNIQUE, which is what makes one session carry exactly one loadout in the database rather than in a check",
+  },
+  "session_loadout_entries.id": MINTED,
+  "session_loadout_entries.loadout_id": RESOLVED,
+  "session_loadout_entries.assignment_id": {
+    intake: "registry_generated",
+    note: "an ACTIVE assignment of this agent, selected by this registry from its own rows. No caller lists the entries of a loadout",
+  },
+  "session_loadout_entries.draft_revision_id": {
+    intake: "registry_generated",
+    note: "the desired revision of that assignment, re-checked against `revision_approvals` before the write",
+  },
+  "session_loadout_entries.skill_name": {
+    intake: "registry_generated",
+    note:
+      "DERIVED by `nativeSkillName` from the lineage's own title and the tail of its draft id, and matching [a-z0-9][a-z0-9-]{0,63}. It is UNIQUE per loadout, and it becomes a path component in a runtime home — which is why it is minted here and never taken from anybody",
+  },
+  "runtime_receipts.id": MINTED,
+  "runtime_receipts.session_id": RESOLVED,
+  "runtime_receipts.loadout_entry_id": {
+    intake: "registry_generated",
+    note:
+      "resolved by looking the REPORTED revision up in this session's own frozen loadout; a revision that is not in it is refused before anything is written, and the digest is compared against the entry's before the row exists",
+  },
+  "runtime_receipts.stage": {
+    intake: "checked_at_boundary",
+    note:
+      "one of `loaded` or `invoked` — `validateReceipt` in `src/session-loadout.ts` refuses anything else before a row exists, and the CHECK in `0016` refuses it again in the database. `proposed` is not a member, because no runtime confirms it",
+  },
   "assignment_events.assignment_id": RESOLVED,
   "assignment_events.idempotency_key": {
     intake: "registry_generated",

@@ -116,6 +116,22 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["docs/API.md", "9f77c151c1d5d2f6", "behaviour", "the capture and its replay row are one transaction, proved by injecting a failure at that boundary: test/v1p1-r2-fixes.test.ts"],
     ["docs/API.md", "48fc7738ef86d1cf", "behaviour", "every redaction finding names its source field as a structured value: test/v1p1-r2-fixes.test.ts"],
   ],
+  // ---------------------------------------------------------- docs/API, V1 P4
+  //
+  // The session loadout and the two native runtimes. Every one of these is a
+  // rule of the running service with a test behind it, and the two that are
+  // about an ACTUAL runtime session name the gate that drives the real binary
+  // rather than a suite that could only simulate one.
+  [
+    ["docs/API.md", "f57a5884a6c2de76", "behaviour", "one immutable snapshot per session and every later stage from a receipt: test/v1p4-session-loadout.test.ts"],
+    ["docs/API.md", "127e44eb191f46c8", "behaviour", "an owner or admin credential is 403 on both intakes and a console session is 401: test/v1p4-session-loadout.test.ts"],
+    ["docs/API.md", "343afec858bb58d5", "behaviour", "only ACTIVE, approved assignments enter a loadout: test/v1p4-session-loadout.test.ts"],
+    ["docs/API.md", "9de237ae5fa2ffc1", "behaviour", "every exclusion is reported in `excluded` with a reason code: test/v1p4-session-loadout.test.ts"],
+    ["docs/API.md", "57e9d4b22e675651", "behaviour", "the snapshot's tables refuse UPDATE and DELETE in the database itself: test/v1p4-session-loadout.test.ts"],
+    ["docs/API.md", "ad92f5c26c470e8b", "behaviour", "pause and revoke leave a running session's loadout byte-for-byte and change the next one: test/v1p4-session-loadout.test.ts"],
+    ["docs/API.md", "97fc281670c7bb28", "behaviour", "an invoked receipt needs an invocation_ref and a preceding load receipt: test/v1p4-session-loadout.test.ts"],
+    ["docs/API.md", "adaea69f6edb2014", "behaviour", "an entry with no receipt is `unknown` with all four INV-03 fields: test/v1p4-session-loadout.test.ts"],
+  ],
   // ---------------------------------------------------------- docs/API, V1 P2
   //
   // The Owner Console. Each of these is a statement about product behaviour with
@@ -893,11 +909,11 @@ test("the true form of each planted family passes", () => {
     "No caller may reach `/v1/skills` without a key.",
     "`SKILLONOMIA_DATA` must always be set.",
     "All eight safety gates run in one invocation.",
-    "One executable, six subcommands, on every packaging path.",
+    "One executable, seven subcommands, on every packaging path.",
     "Only four packaging paths exist, and all of them are local.",
     "The threat model and the ten red-team tests that cover it are shipped.",
     "Gate 5 admits only what it can read: ten classes are refused.",
-    "The normative schema is given in **fifteen** migrations, applied in ascending order.",
+    "The normative schema is given in **sixteen** migrations, applied in ascending order.",
     "The package ships four classes of defective bundle and one positive control.",
   ];
   assert.equal(TRUE_FORMS.length, PLANTINGS.length, "every planted family needs its true form beside it");

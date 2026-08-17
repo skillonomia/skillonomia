@@ -758,6 +758,10 @@ export const JOURNAL_INTAKE: Record<string, JournalColumnClass> = {
  */
 export const JOURNAL_WRITERS: Record<string, readonly string[]> = {
   adoption_receipts: ["src/service.ts", "src/transfer.ts"],
+  agent_sessions: ["src/session-loadout.ts"],
+  session_loadouts: ["src/session-loadout.ts"],
+  session_loadout_entries: ["src/session-loadout.ts"],
+  runtime_receipts: ["src/session-loadout.ts"],
   assignment_observations: ["src/assignment-lifecycle.ts"],
   captures: ["src/capture.ts"],
   idempotency_request_digests: ["src/idempotency.ts"],
