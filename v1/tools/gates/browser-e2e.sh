@@ -16,20 +16,27 @@
 # The assertions and the requirement each one is owed to are listed at the head
 # of `v1/tools/e2e/console-e2e.mjs`, and the run prints one line per check.
 #
-# TWO HARNESSES, THREE RUNS. `console-e2e.mjs` drives the workflow;
+# THREE HARNESSES, FIVE RUNS. `console-e2e.mjs` drives the P2 workflow;
 # `console-error-contract.mjs` drives the versioned-contract boundary on the
 # answers that FAIL — a `400`, a `409` and a `412`, each with its version missing
 # and with a foreign one (`INV-05`, P2 REVIEW-2 finding `P2-R2-001`) — and then
-# runs again against a rebuilt PRE-FIX bundle, where those probes must fail. All
-# three must pass for this gate to pass.
+# runs again against a rebuilt PRE-FIX bundle, where those probes must fail.
+# `console-p3-e2e.mjs`, added by V1 P3, drives the assignment and lifecycle
+# screen: assign, activate, rollback, desired beside observed, and a REAL `412`
+# and a REAL `409` with the refetch and reconciliation `P3-FR-12` requires — and
+# it too runs again against a PRE-FIX bundle whose conflict handling is undone,
+# where its conflict probes must fail. All five runs must pass for this gate to
+# pass.
 #
-# WHAT P2 DOES NOT COVER, SAID HERE RATHER THAN LEFT TO BE ASSUMED. The contract
-# P0 wrote for this gate also names `P3-FR-12` — a `409`/`412` conflict makes the
-# console refetch canonical state. The P2 run DOES exercise both statuses (a
-# second decision is `409`, an approval of a draft with a blocking finding is
-# `412`) and asserts the page shows the conflict rather than a false success. The
-# rest of `P3-FR-12`'s surface is assignment and lifecycle, which P3 builds; this
-# gate grows with it, in the way `registry-compat.sh` grows.
+# WHERE `P3-FR-12` IS COVERED, SAID HERE RATHER THAN LEFT TO BE ASSUMED. The
+# contract P0 wrote for this gate names `P3-FR-12` — a `409`/`412` conflict makes
+# the console refetch canonical state. The P2 run exercises both statuses on the
+# DRAFT surface (a second decision is `409`, an approval of a draft with a
+# blocking finding is `412`). The P3 run exercises them on the ASSIGNMENT
+# surface, which is where the requirement was written: the assignment moves under
+# the rendered page and its lifecycle command comes back `412`, and one
+# idempotency key over two payloads comes back `409`. Both refusals are this
+# server's own, and the run records the statuses the browser actually received.
 #
 # THE BROWSER IS A DEPENDENCY, AND A MISSING ONE IS A REFUSAL, NOT A PASS.
 # Playwright and its Chromium build are not in `package.json`: they are a harness
@@ -48,6 +55,7 @@ cd "$(dirname "$0")/../../.." || exit 2
 command -v node >/dev/null 2>&1 || { echo "REFUSED: node is not on PATH." >&2; exit 2; }
 [ -f src/cli.ts ] || { echo "REFUSED: src/cli.ts is not here; this is not the registry checkout." >&2; exit 2; }
 [ -f v1/tools/e2e/console-e2e.mjs ] || { echo "REFUSED: the browser run is missing." >&2; exit 2; }
+[ -f v1/tools/e2e/console-p3-e2e.mjs ] || { echo "REFUSED: the P3 screen run is missing." >&2; exit 2; }
 
 # The built console. The gate drives what a production build produced, never a
 # source file served on the fly: P2's evidence list requires a production build
@@ -134,8 +142,36 @@ SKLN_ERROR_CONTRACT_PORT="${SKLN_ERROR_CONTRACT_NEG_PORT:-$((PORT - 2))}" node v
 rc=$?
 echo
 case "$rc" in
-  0) echo "PASS  browser E2E, the error-contract probes, and the demonstration that they can fail" ;;
-  2) echo "REFUSED the negative demonstration — the harness could not reach its subject" >&2 ;;
-  *) echo "FAIL  the negative demonstration (exit $rc): the probes did not fail against a client that has the defect" >&2 ;;
+  0) echo "ok    the error-contract probes fail against a client that has the defect" ;;
+  2) echo "REFUSED the negative demonstration — the harness could not reach its subject" >&2 ; exit 2 ;;
+  *) echo "FAIL  the negative demonstration (exit $rc): the probes did not fail against a client that has the defect" >&2 ; exit "$rc" ;;
+esac
+
+# THE THIRD HARNESS — V1 P3's assignment and lifecycle screen, and the conflict
+# and precondition reconciliation the contract's P3 evidence list names.
+echo
+echo "gate:  the assignment and lifecycle screen, with a real 409 and a real 412 (P3-FR-01..16, INV-02, INV-03, INV-07)"
+echo
+SKLN_P3_E2E_PORT="${SKLN_P3_E2E_PORT:-$((PORT - 3))}" node v1/tools/e2e/console-p3-e2e.mjs
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo
+  case "$rc" in
+    2) echo "REFUSED the P3 screen run — the harness could not reach its subject" >&2 ;;
+    *) echo "FAIL  the P3 screen run (exit $rc)" >&2 ;;
+  esac
+  exit "$rc"
+fi
+
+echo
+echo "demo:  the same conflict probes against a PRE-FIX client, which must fail them"
+echo
+SKLN_P3_E2E_PORT="${SKLN_P3_E2E_NEG_PORT:-$((PORT - 4))}" node v1/tools/e2e/console-p3-e2e.mjs --broken-client
+rc=$?
+echo
+case "$rc" in
+  0) echo "PASS  the P2 browser E2E, the error-contract probes, the P3 assignment and lifecycle screen, and both demonstrations that their probes can fail" ;;
+  2) echo "REFUSED the P3 negative demonstration — the harness could not reach its subject" >&2 ;;
+  *) echo "FAIL  the P3 negative demonstration (exit $rc): the conflict probes did not fail against a client that has the defect" >&2 ;;
 esac
 exit "$rc"
