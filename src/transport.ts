@@ -239,6 +239,24 @@ export interface UrlPolicy {
    * left to resolve.
    */
   refuseBlockedLiteral?: boolean;
+  /**
+   * Refuse a host that names THIS machine — a loopback literal or the name
+   * `localhost` — WHATEVER the scheme.
+   *
+   * Loopback is the one destination class §5.2 rule 4 lets a deployment opt
+   * into, so it is the one class that cannot be decided by the address table
+   * alone: it is decided by the delivery policy. The transport leaves this off
+   * because it applies that policy itself, per resolved address, at the socket.
+   * A caller with no resolver turns it on when the policy is off, because
+   * `https://127.0.0.1/…` reaches the same place `http://127.0.0.1/…` does —
+   * the scheme does not change where the socket goes — and a deployment that
+   * will not deliver to this machine must not register a destination on it.
+   *
+   * Judged by NAME as well as by literal, and that is not a resolution:
+   * `localhost` is this machine by definition (RFC 6761 section 6.3), which is
+   * the same ground on which `requireLoopbackHost` already accepts it.
+   */
+  refuseLoopbackHost?: boolean;
 }
 
 /**
@@ -301,10 +319,24 @@ export function vetEndpointUrl(rawUrl: unknown, policy: UrlPolicy): URL {
     }
   }
 
+  // A host that names this machine is judged by the DELIVERY POLICY, not by the
+  // address table below, because loopback is the one class §5.2 rule 4 lets a
+  // deployment opt into — and it is judged whatever the scheme, because the
+  // scheme does not change where the socket goes.
+  if (policy.refuseLoopbackHost === true && isLoopbackHost(host)) {
+    throw new WebhookRefused(
+      `refused: ${host} is this machine, and this deployment does not deliver to loopback destinations`,
+    );
+  }
+
   // A literal address is final: no resolver stands between this string and the
   // socket, so the transport's own table can decide it now.
   if (policy.refuseBlockedLiteral === true && isIP(host)) {
     const reason = blockedReason(host);
+    // …except for a loopback literal, whose admissibility is the policy question
+    // decided immediately above, exactly as the transport decides it per address
+    // (`if (this.policy.allowLoopback && isLoopback(address)) continue`). Reaching
+    // this line with a loopback literal therefore means the policy permits it.
     if (reason !== null && !isLoopbackHost(host)) {
       throw new WebhookRefused(`refused: ${host} is a forbidden address (${reason})`);
     }
@@ -321,12 +353,26 @@ export function vetEndpointUrl(rawUrl: unknown, policy: UrlPolicy): URL {
  * flag off, `http://` is not a scheme this deployment delivers over, so it is
  * not a scheme this deployment registers.
  *
- * The two members registration adds are narrowings the transport cannot make
- * and does not need. `requireLoopbackHost` holds it to a host that IS this
- * machine, which is the whole of the exception §5.2 grants. `refuseBlockedLiteral`
+ * `refuseLoopbackHost` is the SAME policy value read for the destination rather
+ * than for the scheme, and it is here because reading it only for the scheme
+ * left a hole. `allowHttp` alone closes `http://127.0.0.1/hook` with the flag
+ * off, and closes nothing about `https://127.0.0.1/hook` — which is the same
+ * machine, the same socket and the same refusal from the transport, whose
+ * address check knows nothing about schemes. So with the flag off registration
+ * answered `201` and minted a secret for a destination this process guarantees
+ * it will never deliver to, and §5.2 had already retired the endpoint that
+ * worked. One policy value, both halves of the destination.
+ *
+ * The other two members are narrowings the transport cannot make and does not
+ * need. `requireLoopbackHost` holds `http://` to a host that IS this machine,
+ * which is the whole of the exception §5.2 grants. `refuseBlockedLiteral`
  * judges an IP literal now, because a literal cannot change between here and
- * the socket. Registration is therefore never LOOSER than delivery, which is
- * the direction `INV-08` closes; it stays free to be stricter, and it is.
+ * the socket.
+ *
+ * The claim these four members are here to make good is one-directional and
+ * exact: for every destination, registration refuses whatever THIS process's
+ * transport would refuse. It stays free to be stricter, and it is — a NAME that
+ * resolves to a forbidden address registers here and is declined at the socket.
  *
  * What this deliberately does NOT do is promise reachability. A NAME is still
  * resolved nowhere but at the socket, on every connect, so a registration that
@@ -334,7 +380,12 @@ export function vetEndpointUrl(rawUrl: unknown, policy: UrlPolicy): URL {
  * later delivery will succeed.
  */
 export function registrationUrlPolicy(policy: WebhookDeliveryPolicy): UrlPolicy {
-  return { allowHttp: policy.allowLoopback, requireLoopbackHost: true, refuseBlockedLiteral: true };
+  return {
+    allowHttp: policy.allowLoopback,
+    requireLoopbackHost: true,
+    refuseBlockedLiteral: true,
+    refuseLoopbackHost: !policy.allowLoopback,
+  };
 }
 
 // ------------------------------------------------------------- the transport

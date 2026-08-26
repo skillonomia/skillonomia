@@ -10,6 +10,12 @@
 //   in BOTH flag states, against the real `HttpsWebhookTransport`, and the
 //   transport is asked the same question the registration surface was asked.
 //
+//   And the claim is a PROPERTY, over every spelling of a destination, not over
+//   the strings §5.2 happens to use to describe one. A table keyed to
+//   `http://localhost` is green on a build that admits `https://127.0.0.1` —
+//   the same machine, the same socket, the same refusal from the transport —
+//   which is what `LOOPBACK_SPELLINGS` below is for.
+//
 //   THE ISOLATION CLAIM. A test push must move no endpoint health and no queue
 //   row. A test that merely showed the call answering `200` would be green on a
 //   build that incremented `failure_count` on every probe. So the assertion is
@@ -236,6 +242,117 @@ test("§6.5.1: with the loopback flag off, an http loopback URL is refused befor
   );
   assert.equal(deliveryState(fx), beforeDelivery, "a refused registration moved §5.2 state");
   assert.equal(secretState(fx), beforeSecrets, "a refused registration wrote a secret");
+  fx.db.close();
+});
+
+/**
+ * EVERY SPELLING OF "THIS MACHINE", because the rule is a property and not a
+ * string.
+ *
+ * The gate above says HTTP loopback, which is what §5.2's Appendix D.1
+ * exception is worded around — and a suite that tests the words tests one
+ * spelling. `https://127.0.0.1:9/hook` is the same host, the same socket and
+ * the same refusal from the transport, whose address check reads the delivery
+ * policy and knows nothing about schemes; it was admitted with `201` and a
+ * secret while the identical `http://` string was refused. So the table is the
+ * class: literal, alternate literal inside `127.0.0.0/8`, IPv6 `::1`, the
+ * IPv4-mapped form, the name `localhost`, that name in another case, and both
+ * schemes.
+ *
+ * Registration and delivery are asked of THE SAME transport object, in both
+ * flag states, and each row asserts the transport's answer FIRST — a row where
+ * the transport does not decline the destination would make the registration
+ * assertion meaningless.
+ */
+const LOOPBACK_SPELLINGS: readonly string[] = [
+  "https://127.0.0.1:9/hook",
+  "https://127.0.0.1",
+  "https://127.0.0.5:9/hook",
+  "https://[::1]:9/hook",
+  "https://[::ffff:127.0.0.1]:9/hook",
+  "https://localhost:9/hook",
+  "https://LocalHost:9/hook",
+  "http://127.0.0.1:9/hook",
+  "http://localhost:9/hook",
+];
+
+/** Short deadlines: the flag-ON half opens real sockets to CLOSED ports on this
+ *  machine, and a refused connection should not wait out a production timeout. */
+const PROBE_TIMEOUTS = { connectTimeoutMs: 1_000, totalTimeoutMs: 2_000 };
+
+test("§6.5.1: with the flag off, EVERY spelling of a loopback destination is refused before any row or secret moves", async () => {
+  const strict = new HttpsWebhookTransport({ allowLoopback: false, ...PROBE_TIMEOUTS });
+  assert.equal(deliveryPolicyOf(strict).allowLoopback, false);
+  const fx = fixture(strict);
+
+  // A WORKING ENDPOINT THAT MUST SURVIVE THE ATTEMPT. §5.2 selects one endpoint
+  // per adopter and registering retires the previous, so a registration that
+  // accepts an undeliverable destination does not merely add a bad row — it
+  // takes away the good one. Without this row the "no state moved" assertion
+  // below would hold on an empty table and prove nothing about that.
+  const prior = await call(fx, {
+    method: "POST",
+    path: "/v1/webhooks",
+    key: fx.keys.member,
+    body: { url: "https://adopter.example.com/hook" },
+  });
+  assert.equal(prior.status, 201, prior.body);
+  const priorId = prior.json.webhook_id as string;
+  const beforeDelivery = deliveryState(fx);
+  const beforeSecrets = secretState(fx);
+
+  for (const url of LOOPBACK_SPELLINGS) {
+    const declined = await strict.send({ url, body: "{}", signature: "00" });
+    assert.equal(
+      declined.refused,
+      true,
+      `${url}: this transport does not DECLINE the destination, so the registration assertion below measures nothing (${declined.error})`,
+    );
+
+    const res = await call(fx, { method: "POST", path: "/v1/webhooks", key: fx.keys.member, body: { url } });
+    assert.equal(res.status, 400, `${url} was admitted by a deployment whose own transport declines it`);
+    assert.equal(res.json.error.code, "INVALID_SCHEMA", `${url}: ${res.body}`);
+  }
+
+  // BYTE-IDENTICAL, not "no new endpoint": no row inserted, no row retired, no
+  // secret minted and none dropped.
+  assert.equal(deliveryState(fx), beforeDelivery, "a refused registration moved §5.2 state");
+  assert.equal(secretState(fx), beforeSecrets, "a refused registration wrote or dropped a secret");
+  assert.equal(
+    (fx.db.prepare("SELECT COUNT(*) AS c FROM webhooks").get() as { c: number }).c,
+    1,
+    "a refused registration changed the webhook row count",
+  );
+  assert.equal(
+    (fx.db.prepare("SELECT status FROM webhooks WHERE id=?").get(priorId) as { status: string }).status,
+    "active",
+    "a refused registration retired the endpoint that was working",
+  );
+  fx.db.close();
+});
+
+test("§6.5.1: with the flag on, the same spellings register and the transport does not decline them", async () => {
+  const permissive = new HttpsWebhookTransport({ allowLoopback: true, ...PROBE_TIMEOUTS });
+  assert.equal(deliveryPolicyOf(permissive).allowLoopback, true);
+  const fx = fixture(permissive);
+
+  for (const url of LOOPBACK_SPELLINGS) {
+    const res = await call(fx, { method: "POST", path: "/v1/webhooks", key: fx.keys.member, body: { url } });
+    assert.equal(res.status, 201, `${url} was refused by a deployment that delivers to this machine: ${res.body}`);
+    assert.equal(res.json.url, url, "the URL is echoed exactly as written");
+
+    // The other half of the parity, and the only half the transport can be
+    // asked for a destination with nothing listening on it: whatever happens at
+    // the socket, it must not be a POLICY refusal. `refused` is the structured
+    // flag §6.5.2 reads; a connection that was allowed and then failed is not
+    // one, and that is precisely the difference this asserts.
+    const attempted = await permissive.send({ url, body: "{}", signature: "00" });
+    assert.notEqual(
+      attempted.refused,
+      true,
+      `${url}: registration admitted a destination the SAME transport declines (${attempted.error})`,
+    );
+  }
   fx.db.close();
 });
 
@@ -486,17 +603,28 @@ async function discriminate(opts: {
 }
 
 test("[P1.W1] the loopback refusal is the flag's, and its removal admits the URL — and writes a secret", async () => {
+  // BOTH readings of the flag are neutralised here, and that is the honest
+  // shape of the rule rather than a weakening of the probe. `http://` is
+  // admissible only to a host that IS this machine (`requireLoopbackHost`, probed
+  // by W4), so for an `http://` URL the scheme reading and the destination
+  // reading of the same policy value overlap completely: removing either one
+  // alone leaves the other refusing. What separates them is the MESSAGE, and the
+  // G-P1-11 test above asserts exactly that — `https is required`, with no
+  // parenthesis offering a loopback alternative this deployment has not got.
+  // W5 probes the destination reading alone, on the `https` spelling, where the
+  // scheme reading cannot apply.
   await discriminate({
     id: "P1.W1",
     rule: "http:// is admitted only where the transport policy delivers to loopback",
     url: "http://localhost:8080/hook",
     policy: { allowLoopback: false },
     edits: [
+      // the pre-v1.1 shape: registration deciding the loopback question itself
+      { file: "transport.ts", find: "    allowHttp: policy.allowLoopback,", replace: "    allowHttp: true," },
       {
-        // the pre-v1.1 shape: registration deciding the scheme question itself
         file: "transport.ts",
-        find: "  return { allowHttp: policy.allowLoopback, requireLoopbackHost: true, refuseBlockedLiteral: true };",
-        replace: "  return { allowHttp: true, requireLoopbackHost: true, refuseBlockedLiteral: true };",
+        find: "    refuseLoopbackHost: !policy.allowLoopback,",
+        replace: "    refuseLoopbackHost: false,",
       },
     ],
   });
@@ -511,8 +639,8 @@ test("[P1.W2] a blocked IP literal is refused by the transport's own table, unde
     edits: [
       {
         file: "transport.ts",
-        find: "  return { allowHttp: policy.allowLoopback, requireLoopbackHost: true, refuseBlockedLiteral: true };",
-        replace: "  return { allowHttp: policy.allowLoopback, requireLoopbackHost: true, refuseBlockedLiteral: false };",
+        find: "    refuseBlockedLiteral: true,",
+        replace: "    refuseBlockedLiteral: false,",
       },
     ],
   });
@@ -543,8 +671,26 @@ test("[P1.W4] a host that merely begins with a loopback spelling is not this mac
     edits: [
       {
         file: "transport.ts",
-        find: "  return { allowHttp: policy.allowLoopback, requireLoopbackHost: true, refuseBlockedLiteral: true };",
-        replace: "  return { allowHttp: policy.allowLoopback, requireLoopbackHost: false, refuseBlockedLiteral: true };",
+        find: "    requireLoopbackHost: true,",
+        replace: "    requireLoopbackHost: false,",
+      },
+    ],
+  });
+});
+
+test("[P1.W5] a loopback destination is refused by the flag, whatever the scheme — and its removal admits https to this machine", async () => {
+  await discriminate({
+    id: "P1.W5",
+    rule: "a host that IS this machine is admitted only where the transport policy delivers to loopback, for every scheme",
+    url: "https://127.0.0.1:9/hook",
+    policy: { allowLoopback: false },
+    edits: [
+      {
+        // the shape this FIX replaced: the flag read for the scheme only, so
+        // the `https` spelling of the same socket walked straight through
+        file: "transport.ts",
+        find: "    refuseLoopbackHost: !policy.allowLoopback,",
+        replace: "    refuseLoopbackHost: false,",
       },
     ],
   });

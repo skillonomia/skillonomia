@@ -157,6 +157,15 @@ export interface RegisteredWebhook {
  * judged against the transport's own address table immediately, because a
  * literal cannot change between here and the socket.
  *
+ * A LOOPBACK DESTINATION IS JUDGED WHATEVER THE SCHEME. `https://127.0.0.1/hook`
+ * names the same machine as `http://127.0.0.1/hook` and reaches the same socket;
+ * the transport's address check reads the policy, not the scheme, and refuses
+ * both where loopback delivery is off. So this surface refuses both there too —
+ * for the literal, for `[::1]` and for the name `localhost`. A version of this
+ * check that read the flag for the scheme alone answered `201` for the `https`
+ * spelling, handed back a secret, and — because §5.2 retires the previous
+ * endpoint on register — took away the endpoint that was working.
+ *
  * AND THE `http://` QUESTION IS NO LONGER DECIDED HERE AT ALL (§6.5.1,
  * `INV-08`). It used to be an unconditional `allowHttp: true` written in this
  * file, beside a transport that delivers over `http://` only when

@@ -209,6 +209,8 @@ test("[P1.K3] the eleven console views ARE the dashboard's, and each payload is 
   publishedVersion(fx, "parity-published");
   reviewedVersion(fx, "parity-reviewed");
   const s = signIn(fx, "owner");
+  let inspected = 0;
+  let viewsWithCells = 0;
 
   for (const view of CONSOLE_VIEWS) {
     const bearer = call(fx, { path: `/v1/dashboard/${view}`, key: fx.keys.owner });
@@ -262,9 +264,35 @@ test("[P1.K3] the eleven console views ARE the dashboard's, and each payload is 
         }
       }
     }
-    assert.ok(cells >= 0);
-    assert.ok(answered >= 0);
+    // AND THE WALK ABOVE ACTUALLY WALKED SOMETHING. `cells >= 0` and
+    // `answered >= 0` hold for every payload there is, including an empty one,
+    // so they said nothing about whether a single per-cell assertion ran. The
+    // coverage claim is tied to what the payload itself declares, because two of
+    // the eleven views — `approvals` and `dead_letters` — legitimately carry no
+    // row in this fixture and a constant would be wrong for them: a view that
+    // produced rows must have produced cells, and a view that produced cells
+    // must have produced ANSWERING ones, or the Proofline checks above ran zero
+    // times for it.
+    const rows = (console_.json.sections as Array<{ rows: Array<Record<string, string>> }>).reduce(
+      (n, sec) => n + sec.rows.length,
+      0,
+    );
+    assert.equal(cells > 0, rows > 0, `${view}: ${rows} row(s) yielded ${cells} cell(s)`);
+    assert.equal(
+      answered > 0,
+      rows > 0,
+      `${view}: ${rows} row(s) yielded ${answered} answering cell(s) — no Proofline was checked here`,
+    );
+    inspected += cells;
+    if (cells > 0) viewsWithCells += 1;
   }
+
+  // …AND OVER THE SET, because an empty dashboard satisfies every per-view
+  // implication above by having no rows anywhere. This fixture publishes one
+  // version, reviews a second and signs the owner in, and nine of the eleven
+  // views answer with data because of it; the two that do not are named above.
+  assert.equal(viewsWithCells, 9, `only ${viewsWithCells} of the eleven views carried a single cell`);
+  assert.ok(inspected >= 100, `the parity walk inspected ${inspected} cells across eleven views — the payload is near-empty`);
 
   // The console is served `no-store` — `INV-04`. A Proofline in a shared cache
   // is one operator's view of a workspace handed to the next reader.
