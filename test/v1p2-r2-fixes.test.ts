@@ -24,7 +24,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { handleRest, type RestResponse } from "../src/http.ts";
 import { CONSOLE_COOKIE } from "../src/console-session.ts";
-import { CONSOLE_CONTRACT_VERSION } from "../src/console-view.ts";
+import { CONSOLE_CONTRACT_V2 } from "../src/console-v2.ts";
 import { ERROR_CODES } from "../src/errors.ts";
 import { Registry } from "../src/service.ts";
 import { p4Fixture, type P4Fixture } from "./p4-helpers.ts";
@@ -165,7 +165,7 @@ test("P2-R2-001: the console surface's 400, 409 and 412 all carry the contract v
     assert.equal(res.status, status, `${what}: ${res.body}`);
     assert.equal(res.json.error.code, code, res.body);
     // the field the finding was about
-    assert.equal(res.json.contract, CONSOLE_CONTRACT_VERSION, `${what} answered without a contract version: ${res.body}`);
+    assert.equal(res.json.contract, CONSOLE_CONTRACT_V2, `${what} answered without a contract version: ${res.body}`);
     // and the envelope beside it is untouched — the marker is ADDITIVE
     assert.equal(typeof res.json.error.message, "string");
   }
@@ -221,7 +221,7 @@ test("P2-R2-001: the refusals of every console route carry it, not only the deci
 
   for (const [what, res] of refused) {
     assert.ok(res.status >= 400, `${what} was not a refusal: ${res.status}`);
-    assert.equal(res.json?.contract, CONSOLE_CONTRACT_VERSION, `${what} answered ${res.status} without a contract version: ${res.body}`);
+    assert.equal(res.json?.contract, CONSOLE_CONTRACT_V2, `${what} answered ${res.status} without a contract version: ${res.body}`);
     assert.equal(typeof res.json?.error?.code, "string", `${what}: ${res.body}`);
   }
   fx.db.close();
@@ -300,7 +300,7 @@ test("INV-08: the marker follows the request path — one failure, two surfaces"
   for (const [what, consoleSide, m2mSide] of pairs) {
     const c = JSON.parse(consoleSide.body);
     const m = JSON.parse(m2mSide.body);
-    assert.equal(c.contract, CONSOLE_CONTRACT_VERSION, `${what} on the console surface carried no marker: ${consoleSide.body}`);
+    assert.equal(c.contract, CONSOLE_CONTRACT_V2, `${what} on the console surface carried no marker: ${consoleSide.body}`);
     assert.deepEqual(Object.keys(m).sort(), ["error"], `${what} on the M2M surface gained a field: ${m2mSide.body}`);
     assert.equal(typeof c.error.code, "string");
     assert.equal(typeof m.error.code, "string");

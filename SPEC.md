@@ -1853,7 +1853,7 @@ Route-level ACL:
 | Console route | owner/admin | reviewer | Additional check |
 |---|---:|---:|---|
 | `GET /v1/console/dashboard/{view}` | by the existing dashboard ACL | by the existing dashboard ACL | no widening of Registry visibility |
-| `GET /v1/console/approvals` | every kind available to it | only an explicit `kind=review` | same workspace; a reviewer asking for `all` or for another kind is `FORBIDDEN` |
+| the Approval Inbox read route | every kind available to it | only an explicit `kind=review` | same workspace; a reviewer asking for `all` or for another kind is `FORBIDDEN` |
 | `POST /v1/console/versions/{id}/reviews` | yes | yes | the existing self-review prohibition and the existing state ACL |
 | `POST /v1/console/versions/{id}/approvals` | human owner/admin only | no | `agents.type='human'` plus the existing §7.3 gate |
 | a revoke or replace console route | yes | no | the existing author / skill-owner / admin / owner ACL |

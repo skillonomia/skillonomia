@@ -1322,6 +1322,29 @@ export const RECONCILIATION_LEGEND: DashboardNotice = {
     "`in_sync` (green) means every deployment intended active has an observed arrival, and nothing more than that.",
 };
 
+/**
+ * `INV-07` — QUEUED IS NOT DELIVERED, said on the page that is most likely to be
+ * misread as saying otherwise.
+ *
+ * The `dead_letters` view carries two tables about two DIFFERENT facts: one
+ * counts adoption requests the delivery machine gave up on, and one reports the
+ * health of the endpoints it delivers through. A reader who took the first for
+ * "these adopters were not told" or the second for "these adopters were told"
+ * would be wrong in opposite directions, and neither table is evidence of an
+ * arrival: an arrival is confirmed by its own delivery result. The distinction
+ * is a `legend` because that is the notice kind for explaining what a rendering
+ * device MEANS, and it travels in the payload so both adapters carry it.
+ */
+export const DELIVERY_SEPARATION_LEGEND: DashboardNotice = {
+  kind: "legend",
+  subject: "queued is not delivered",
+  detail:
+    "The upper table counts adoption requests the delivery machine gave up on; the lower table reports the " +
+    "health of the endpoints it delivers through. Queuing a notification is not delivering one, and neither " +
+    "table says a notification arrived: a delivery is confirmed by its own delivery result and by nothing " +
+    "on this page.",
+};
+
 export interface FleetAgentInput {
   agent: AgentInventoryRow;
   /** [A-5]'s answer for this agent: the filesystem number and the intent beside it */

@@ -47,6 +47,7 @@ import { buildPackage, makeManifest } from "./p2-helpers.ts";
 import { DASHBOARD_VIEWS, escapeHtml, isMintedCell } from "../src/dashboard.ts";
 import {
   APPROVAL_NOTICES,
+  DELIVERY_SEPARATION_LEGEND,
   RECONCILIATION_LEGEND,
   auditDashboardPayload,
   auditRenderedHtml,
@@ -2122,7 +2123,7 @@ test("[I-1]/[I-3] all ELEVEN views audit clean on the finished HTML and the fini
   let payloadStrings = 0;
   const problems: string[] = [];
   /** every notice this build can serve, from the source constants */
-  const DECLARED_NOTICES = [RECONCILIATION_LEGEND, ...APPROVAL_NOTICES];
+  const DECLARED_NOTICES = [RECONCILIATION_LEGEND, DELIVERY_SEPARATION_LEGEND, ...APPROVAL_NOTICES];
   for (const view of DASHBOARD_VIEWS) {
     const html = rest(fx, "GET", `/v1/dashboard/${view}?format=html`, fx.keys.owner);
     assert.equal(html.status, 200, html.raw);

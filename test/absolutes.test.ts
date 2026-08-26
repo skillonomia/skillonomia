@@ -116,6 +116,16 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["docs/API.md", "9f77c151c1d5d2f6", "behaviour", "the capture and its replay row are one transaction, proved by injecting a failure at that boundary: test/v1p1-r2-fixes.test.ts"],
     ["docs/API.md", "48fc7738ef86d1cf", "behaviour", "every redaction finding names its source field as a structured value: test/v1p1-r2-fixes.test.ts"],
   ],
+  // ---------------------------------------------------------- docs/API, v1.1
+  //
+  // The Console Proofline. Both of these are rules of the running service, and
+  // both are compared against the BEARER answer rather than described: the
+  // parity test deep-compares all eleven views, and the format guard is one of
+  // the discriminating pairs the console probe log records.
+  [
+    ["docs/API.md", "ad09febd932ee2b8", "behaviour", "the console payload equals the bearer payload modulo the envelope, for all eleven views, with every cell's method intact: test/v1p1-p1-console.test.ts"],
+    ["docs/API.md", "d7d449869663b57b", "behaviour", "a `format` selector on the console Proofline is INVALID_SCHEMA, shown to be its own guard: test/v1p1-p1-console-probes.test.ts"],
+  ],
   // ---------------------------------------------------------- docs/API, V1 P4
   //
   // The session loadout and the two native runtimes. Every one of these is a
@@ -931,7 +941,7 @@ test("the true form of each planted family passes", () => {
     "Only four packaging paths exist, and all of them are local.",
     "The threat model and the ten red-team tests that cover it are shipped.",
     "Gate 5 admits only what it can read: ten classes are refused.",
-    "The normative schema is given in **eighteen** migrations, applied in ascending order.",
+    "The normative schema is given in **nineteen** migrations, applied in ascending order.",
     "The package ships four classes of defective bundle and one positive control.",
   ];
   assert.equal(TRUE_FORMS.length, PLANTINGS.length, "every planted family needs its true form beside it");

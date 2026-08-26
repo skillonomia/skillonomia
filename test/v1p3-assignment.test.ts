@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { handleRest, type RestResponse } from "../src/http.ts";
 import { CONSOLE_COOKIE } from "../src/console-session.ts";
-import { CONSOLE_CONTRACT_VERSION } from "../src/console-view.ts";
+import { CONSOLE_CONTRACT_V2 } from "../src/console-v2.ts";
 import { LIFECYCLE_TRANSITIONS, DESIRED_STATES, isLegalLifecycleTransition } from "../src/assignment-lifecycle.ts";
 import { readFileSync } from "node:fs";
 import { p4Fixture, evidenceReporter, type P4Fixture } from "./p4-helpers.ts";
@@ -163,7 +163,7 @@ test("P3-FR-01: only an approved revision, and only an agent of the closed fleet
   // and the pair that IS eligible
   const ok = assign(fx, s, fx.owner.agent_id, d.revision_id);
   assert.equal(ok.status, 201, ok.body);
-  assert.equal(ok.json.contract, CONSOLE_CONTRACT_VERSION);
+  assert.equal(ok.json.contract, CONSOLE_CONTRACT_V2);
   assert.equal(ok.json.assignment.desired.state, "assigned");
   assert.equal(ok.json.assignment.desired.revision_id, d.revision_id);
 
@@ -420,7 +420,7 @@ test("P3-FR-09/10: the same key with the same payload replays; with another payl
   assert.equal(conflicting.status, 409, conflicting.body);
   assert.equal(conflicting.json.error.code, "CONFLICT");
   assert.equal(conflicting.json.error.current_state, "used_with_a_different_payload");
-  assert.equal(conflicting.json.contract, CONSOLE_CONTRACT_VERSION, "the refusal left the console's contract boundary");
+  assert.equal(conflicting.json.contract, CONSOLE_CONTRACT_V2, "the refusal left the console's contract boundary");
   fx.db.close();
 });
 
@@ -453,7 +453,7 @@ test("P3-FR-11: a stale entity version is 412 with the state to converge on", ()
   assert.equal(lost.status, 412, lost.body);
   assert.equal(lost.json.error.code, "PRECONDITION_FAILED");
   assert.equal(lost.json.error.current_state, "active");
-  assert.equal(lost.json.contract, CONSOLE_CONTRACT_VERSION);
+  assert.equal(lost.json.contract, CONSOLE_CONTRACT_V2);
 
   // and the refetch the console performs shows the canonical state
   const refetched = call(fx, { path: `/v1/console/assignments/${id}`, cookie: s.cookie });
@@ -553,7 +553,7 @@ test("P3-FR-13: every lifecycle mutation is a structured audit event", () => {
   }
   const audit = call(fx, { path: `/v1/console/assignments/${id}/audit`, cookie: s.cookie });
   assert.equal(audit.status, 200, audit.body);
-  assert.equal(audit.json.contract, CONSOLE_CONTRACT_VERSION);
+  assert.equal(audit.json.contract, CONSOLE_CONTRACT_V2);
   assert.deepEqual(audit.json.items.map((i: any) => i.event), ["assigned", "activated", "paused", "revoked"]);
   for (const item of audit.json.items) {
     // INV-05: every field a reader needs is a COLUMN, not a sentence
@@ -678,7 +678,7 @@ test("P3-FR-12: a 409 and a 412 both carry the state and the contract the consol
     body: { if_version: stale, idempotency_key: "c-2" },
   });
   assert.equal(precondition.status, 412);
-  assert.equal(precondition.json.contract, CONSOLE_CONTRACT_VERSION);
+  assert.equal(precondition.json.contract, CONSOLE_CONTRACT_V2);
   assert.ok(precondition.json.error.current_state);
 
   // the key of a SUCCESSFUL call — a call that failed leaves its key unconsumed,
@@ -691,7 +691,7 @@ test("P3-FR-12: a 409 and a 412 both carry the state and the contract the consol
     body: { reason: "another payload entirely", idempotency_key: "c-1" },
   });
   assert.equal(conflict.status, 409, conflict.body);
-  assert.equal(conflict.json.contract, CONSOLE_CONTRACT_VERSION);
+  assert.equal(conflict.json.contract, CONSOLE_CONTRACT_V2);
   assert.ok(conflict.json.error.current_state);
   fx.db.close();
 });
@@ -733,7 +733,7 @@ test("P3: the capability detail carries the server's verdicts as fields", () => 
   const d = approvedDraft(fx, s);
   const cap = call(fx, { path: `/v1/console/capabilities/${d.draft_id}`, cookie: s.cookie });
   assert.equal(cap.status, 200, cap.body);
-  assert.equal(cap.json.contract, CONSOLE_CONTRACT_VERSION);
+  assert.equal(cap.json.contract, CONSOLE_CONTRACT_V2);
   assert.equal(cap.json.effective_from, "next_session");
   assert.equal(cap.json.approved_revisions.length, 1);
   assert.equal(cap.json.head_approval.draft_revision_id, d.revision_id);

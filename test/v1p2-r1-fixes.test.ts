@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleRest, type RestResponse } from "../src/http.ts";
 import { CONSOLE_COOKIE } from "../src/console-session.ts";
-import { CONSOLE_CONTRACT_VERSION } from "../src/console-view.ts";
+import { CONSOLE_CONTRACT_V2 } from "../src/console-v2.ts";
 import { Registry } from "../src/service.ts";
 import { openDb, migrate } from "../src/db.ts";
 import { p4Fixture, type P4Fixture } from "./p4-helpers.ts";
@@ -423,7 +423,7 @@ test("P2-R1-004: every console response carries the contract version", () => {
 
   for (const [name, res] of responses) {
     assert.ok(res.status === 200 || res.status === 201, `${name} answered ${res.status}: ${res.body}`);
-    assert.equal(res.json.contract, CONSOLE_CONTRACT_VERSION, `${name} carries no contract version`);
+    assert.equal(res.json.contract, CONSOLE_CONTRACT_V2, `${name} carries no contract version`);
   }
   // and there are no console success routes beyond the ones listed above
   assert.equal(responses.length, 9);

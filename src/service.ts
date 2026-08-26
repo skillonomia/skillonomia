@@ -312,6 +312,7 @@ import {
 } from "./dashboard.ts";
 import {
   APPROVAL_NOTICES,
+  DELIVERY_SEPARATION_LEGEND,
   RECONCILIATION_LEGEND,
   agentSections,
   approvalSections,
@@ -3796,23 +3797,14 @@ export class Registry {
       ],
       // `INV-07`, on the page rather than in a commit message. The two sections
       // above are two DIFFERENT facts and the view exists to keep them apart: a
-      // dead-lettered adoption request is a statement about the ADOPTION —
-      // the notice could not be handed over — while a failing endpoint is a
-      // statement about the DELIVERY CHANNEL. A reader who took the first table
-      // for "these adopters were not told" or the second for "these adopters
-      // were told" would be wrong in opposite directions, so the distinction is
-      // declared as a `legend` beside the tables it decodes.
-      [
-        {
-          kind: "legend",
-          subject: "queued is not delivered",
-          detail:
-            "The upper table counts adoption requests the delivery machine gave up on; the lower table reports the " +
-            "health of the endpoints it delivers through. Queuing a notification is not delivering one, and neither " +
-            "table says a notification arrived: a delivery is confirmed by its own delivery result and by nothing " +
-            "on this page.",
-        },
-      ],
+      // dead-lettered adoption request is a statement about the ADOPTION — the
+      // notice could not be handed over — while a failing endpoint is a
+      // statement about the DELIVERY CHANNEL. The sentence is a source constant
+      // in `src/fleet-dashboard.ts` beside the other two, because every notice a
+      // view can serve is compared against that set byte for byte: text on a
+      // dashboard that is not a constant of this build is text the data could
+      // have reached a reader through.
+      [DELIVERY_SEPARATION_LEGEND],
     );
   }
 

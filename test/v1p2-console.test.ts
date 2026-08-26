@@ -15,7 +15,8 @@ import { readFileSync } from "node:fs";
 import { handleRest, type RestResponse } from "../src/http.ts";
 import { p4Fixture, type P4Fixture } from "./p4-helpers.ts";
 import { CONSOLE_COOKIE, MAX_SESSION_MS, TICKET_TTL_MS } from "../src/console-session.ts";
-import { CONSOLE_CONTRACT_VERSION, INBOX_STATES } from "../src/console-view.ts";
+import { INBOX_STATES } from "../src/console-view.ts";
+import { CONSOLE_CONTRACT_V2 } from "../src/console-v2.ts";
 import { CONSOLE_SCRIPT_PATH, consolePage, loginPage } from "../src/console-page.ts";
 import { Registry } from "../src/service.ts";
 import { openDb, migrate } from "../src/db.ts";
@@ -297,7 +298,7 @@ test("P2-FR-04: the Inbox is the backend's drafts, with the contract version on 
   const fx = p4Fixture();
   const { cookie } = signIn(fx);
   const empty = call(fx, { path: "/v1/console/drafts", cookie });
-  assert.equal(empty.json.contract, CONSOLE_CONTRACT_VERSION);
+  assert.equal(empty.json.contract, CONSOLE_CONTRACT_V2);
   assert.deepEqual(empty.json.items, [], "a deployment with no captures has an empty inbox, not a fixture");
   assert.deepEqual(empty.json.states, [...INBOX_STATES]);
 
@@ -324,7 +325,7 @@ test("P2-FR-05: the detail carries every panel the requirement names", () => {
   const { cookie } = signIn(fx);
   const detail = call(fx, { path: `/v1/console/drafts/${draft.draft_id}`, cookie });
   assert.equal(detail.status, 200, detail.body);
-  assert.equal(detail.json.contract, CONSOLE_CONTRACT_VERSION);
+  assert.equal(detail.json.contract, CONSOLE_CONTRACT_V2);
   const content = detail.json.draft.revision.content;
   for (const section of [
     "title", "purpose", "when_to_use", "procedure", "inputs", "outputs",
@@ -576,7 +577,7 @@ test("INV-05: the console audit is one field set over P1's events and P2's decis
   });
   const audit = call(fx, { path: `/v1/console/drafts/${draft.draft_id}/audit`, cookie });
   assert.equal(audit.status, 200);
-  assert.equal(audit.json.contract, CONSOLE_CONTRACT_VERSION);
+  assert.equal(audit.json.contract, CONSOLE_CONTRACT_V2);
   const FIELDS = [
     "entry_id", "event", "draft_id", "draft_revision_id", "capture_id", "actor_agent_id",
     "actor_role", "source", "correlation_ref", "reason_code", "result", "content_digest",

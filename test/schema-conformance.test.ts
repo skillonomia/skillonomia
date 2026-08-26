@@ -370,6 +370,21 @@ const AUTHORIZED_LATER_EDITS: ReadonlyArray<{ readonly object: string; readonly 
     from: "server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0) )",
     to: "server_at_ms INTEGER NOT NULL CHECK(server_at_ms>0) , evidence TEXT CHECK(evidence IS NULL OR (length(evidence) BETWEEN 2 AND 4000)))",
   },
+  // D.1s (`0019`) widens one `CHECK` on each of the two console tables `0014`
+  // created, and widens it by exactly one value. The two entries are written out
+  // rather than derived from a pattern for the reason the entry above is: a
+  // THIRD role admitted tomorrow, or a widening of one of the other tables that
+  // carry this column, fails this test until somebody writes down why.
+  {
+    object: "console_tickets",
+    from: "actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin'))",
+    to: "actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin','reviewer'))",
+  },
+  {
+    object: "owner_sessions",
+    from: "actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin'))",
+    to: "actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin','reviewer'))",
+  },
 ];
 
 function applyAuthorizedEdits(normalized: string): string {
@@ -488,14 +503,19 @@ test("object counts: 48 tables, 65 triggers, 37 indexes; no bookkeeping table", 
   // already had — the v1.1 disposition/lineage invariants of §5.1b. The three
   // scratch tables it uses to check the rows that already exist live and die
   // inside its own transaction, which is why the table count does not move.
+  // D.1s adds nothing and removes nothing: it rewrites two of D.1n's tables to
+  // carry a wider `CHECK`, and each comes back with the same name, the same two
+  // INSERT-only triggers and — for `owner_sessions` — the same index. Its two
+  // scratch tables live and die inside its own transaction, so all three counts
+  // are exactly what D.1r left.
   assert.equal(count("table"), 48);
   assert.equal(count("trigger"), 65);
   assert.equal(count("index"), 37);
   const uv = db.prepare("PRAGMA user_version").get() as { user_version: number };
   assert.equal(
     uv.user_version,
-    18,
-    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote, 0013 = D.1m the capture and draft domain of V1 — three INSERT-only tables added and nothing edited, 0014 = D.1n the Owner Console of V1 — five INSERT-only tables added and nothing edited, 0015 = D.1o assignment and lifecycle control — five INSERT-only tables added and nothing edited, 0016 = D.1p the immutable session loadout and the runtime receipts — four INSERT-only tables added and nothing edited, 0017 = D.1q outcomes and the revision loop — five INSERT-only tables added and nothing edited, 0018 = D.1r a revocation and a replacement are two facts — three indexes and two triggers over the columns D.1 already had, no table and no column added and nothing edited; tracked in user_version",
+    19,
+    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote, 0013 = D.1m the capture and draft domain of V1 — three INSERT-only tables added and nothing edited, 0014 = D.1n the Owner Console of V1 — five INSERT-only tables added and nothing edited, 0015 = D.1o assignment and lifecycle control — five INSERT-only tables added and nothing edited, 0016 = D.1p the immutable session loadout and the runtime receipts — four INSERT-only tables added and nothing edited, 0017 = D.1q outcomes and the revision loop — five INSERT-only tables added and nothing edited, 0018 = D.1r a revocation and a replacement are two facts — three indexes and two triggers over the columns D.1 already had, no table and no column added and nothing edited, 0019 = D.1s a reviewer may open the console — one CHECK widened on each of two D.1n tables, which are rewritten to carry it and come back with the same triggers and the same index, so no object is added or lost; tracked in user_version",
   );
 });
 

@@ -1390,9 +1390,9 @@ test("P5-FR-14: every outcome answer announces its contract version before a fie
   assert.equal(filed.json.contract, "outcome.v1");
 
   const view = sessionView(fx, s, lo.session_id);
-  assert.equal(view.contract, "console.v1");
+  assert.equal(view.contract, "console.v2");
   const history = call(fx, { path: `/v1/console/capabilities/${lo.entries[0].draft_id}/outcomes`, cookie: s.cookie, csrf: s.csrf });
-  assert.equal(history.json.contract, "console.v1");
+  assert.equal(history.json.contract, "console.v2");
 });
 
 // ===========================================================================

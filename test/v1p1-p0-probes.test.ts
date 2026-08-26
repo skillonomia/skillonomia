@@ -52,7 +52,21 @@ const MIGRATION_FILES = readdirSync(MIGRATION_DIR)
 const BASELINE_VERSION = Math.max(
   ...MIGRATION_FILES.map((f) => parseInt(f.slice(0, 4), 10)).filter((n) => n < 18),
 );
-const V11_VERSION = 18;
+/**
+ * The version this phase migrates TO: the highest migration on disk.
+ *
+ * Derived rather than typed, for the reason `BASELINE_VERSION` above is. P0
+ * shipped `0018` and this constant was the literal `18`; P1 added `0019`, and a
+ * literal would have left every probe below measuring a database stopped one
+ * migration short of the one the registry actually opens — which is the exact
+ * shape of "the suite is green and the claim is about something else".
+ */
+const V11_VERSION = Math.max(...MIGRATION_FILES.map((f) => parseInt(f.slice(0, 4), 10)));
+
+/** Every migration above the v1.0.0 baseline, ascending. The reversal probe
+ *  walks this list backwards, because a reversal that is applied out of order is
+ *  a reversal of a schema that was never there. */
+const V11_MIGRATIONS = MIGRATION_FILES.filter((f) => parseInt(f.slice(0, 4), 10) > BASELINE_VERSION);
 
 /** Where the gate manifest expects this run's evidence. Appended to, never
  *  truncated: a probe log that a later run silently replaces is a log that
@@ -168,12 +182,19 @@ test("[P0.0] a scratch directory, and the shape of the evidence this phase leave
     1,
     "P0 claims a migration 0018; the set of migration files does not contain exactly one",
   );
-  // …and it ships a reversal, which every migration from 0013 on does.
+  // …and it ships a reversal, which every migration from 0013 on does — and so
+  // does every migration this phase and the ones after it add, which is the
+  // convention stated as a rule over the set rather than as a fact about one
+  // file.
   const downs = readdirSync(join(MIGRATION_DIR, "down"));
-  assert.ok(
-    downs.some((f) => f.startsWith("0018_") && f.endsWith(".down.sql")),
-    "0018 ships no reversal, and the convention has been unbroken since 0013",
-  );
+  for (const file of V11_MIGRATIONS) {
+    const n = file.slice(0, 4);
+    assert.ok(
+      downs.some((f) => f.startsWith(`${n}_`) && f.endsWith(".down.sql")),
+      `${n} ships no reversal, and the convention has been unbroken since 0013`,
+    );
+  }
+  record(`[P0.0] migrations above the baseline, each with a reversal: ${V11_MIGRATIONS.join(", ")}`);
 });
 
 // ===========================================================================
@@ -289,22 +310,35 @@ test("[P0.5] the reversal drops exactly what the migration added, and restores t
   })();
 
   const db = openMigrated(path);
-  const down = readFileSync(
-    join(MIGRATION_DIR, "down", "0018_a_revocation_and_a_replacement_are_two_facts.down.sql"),
-    "utf8",
-  );
-  db.exec("BEGIN");
-  db.exec(down);
-  db.exec("COMMIT");
+  // NEWEST FIRST. Each reversal restores the schema the migration below it
+  // leaves, so applying them in any other order reverses a schema that was
+  // never there. The whole walk is one transaction per file, exactly as the
+  // runner applies them forwards.
+  const downs = [...V11_MIGRATIONS].reverse().map((file) => {
+    const n = file.slice(0, 4);
+    const name = readdirSync(join(MIGRATION_DIR, "down")).find((f) => f.startsWith(`${n}_`) && f.endsWith(".down.sql"));
+    assert.ok(name, `${n} ships no reversal`);
+    return readFileSync(join(MIGRATION_DIR, "down", name), "utf8");
+  });
+  const walkBack = (): void => {
+    for (const down of downs) {
+      db.exec("BEGIN");
+      db.exec(down);
+      db.exec("COMMIT");
+    }
+  };
+  walkBack();
   assert.equal(userVersion(db), BASELINE_VERSION);
   assert.deepEqual(schemaOf(db), beforeMigration.schema, "the reversal did not restore the baseline schema object for object");
   assert.deepEqual(census(db), beforeMigration.rows, "the reversal changed a row count — it must write no data either");
   // …and it converges: a reversal run against a database that never reached
-  // this version must not refuse, which is what `DROP … IF EXISTS` is for.
-  db.exec(down);
+  // this version must not refuse, which is what `DROP … IF EXISTS` is for, and
+  // what a rebuild that re-creates a table under its own name gives for free.
+  walkBack();
   assert.equal(userVersion(db), BASELINE_VERSION);
+  assert.deepEqual(schemaOf(db), beforeMigration.schema, "a second reversal walk changed the schema");
   db.close();
-  record(`[P0.5] reversal restores schema ${BASELINE_VERSION} object for object and is convergent`);
+  record(`[P0.5] the ${downs.length} reversals restore schema ${BASELINE_VERSION} object for object and are convergent`);
 });
 
 // ===========================================================================
