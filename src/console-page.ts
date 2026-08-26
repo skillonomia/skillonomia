@@ -21,6 +21,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { consoleAssetDir } from "./assets.ts";
+// The Proofline's own words, from the one file that declares them, so the shell
+// and the bundle cannot disagree about what the region is called.
+import { PROOFLINE_TEXT } from "./console-proofline.ts";
 
 /** Where the built bundle is served from, and the one place the path is written. */
 export const CONSOLE_SCRIPT_PATH = "/console/app.js";
@@ -38,6 +41,33 @@ pre{white-space:pre-wrap;word-break:break-word;background:#8881;padding:.5rem;ma
 .row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
 .muted{opacity:.7}
 .blocking{color:#b00020;font-weight:600}
+/* THE PROOFLINE (v1.1, SPEC.md section 6.4).
+   The nav wraps and the tables scroll INSIDE their own box rather than pushing
+   the page sideways, which is what keeps a narrow viewport from losing an
+   action off the right edge. :focus-visible is an outline and not a colour
+   swap, so the focused control is visible to a reader who sees no colour. */
+#proofline-nav{display:flex;gap:.35rem;flex-wrap:wrap;margin:.5rem 0}
+#proofline-nav a{padding:.3rem .55rem;border:1px solid #8884;text-decoration:none}
+#proofline-nav a[aria-current="page"]{font-weight:700;border-color:currentColor}
+:focus-visible{outline:3px solid currentColor;outline-offset:2px}
+.scroll-x{overflow-x:auto;max-width:100%}
+.cell-value{font-weight:600}
+.cell-method{margin:.15rem 0 0;font-size:.85em;opacity:.85}
+.cell-method div{display:flex;gap:.3rem}
+.cell-method dt{font-weight:600;white-space:nowrap}
+.cell-method dd{margin:0;word-break:break-word}
+/* INV-03: four answers, four renderings. The mark before the word is what makes
+   them tellable apart without colour: unknown is not a zero, and a reader
+   with a monochrome screen is still told which of the four this is. */
+.cell-value::before{content:"";margin-right:.25rem}
+td.answer-unknown .cell-value::before{content:"? "}
+td.answer-nothing_reported .cell-value::before{content:"∅ "}
+td.answer-worked .cell-value::before{content:"✓ "}
+td.answer-broke .cell-value::before{content:"✗ "}
+td.answer-unknown{background:#8881}
+.notice{border-left:3px solid currentColor;padding:.25rem .6rem;margin:.5rem 0}
+.partial{border-left:3px solid #b8860b;padding:.25rem .6rem;margin:.5rem 0}
+@media (max-width:600px){body{padding:.75rem}#proofline-nav a{flex:1 1 auto}}
 `;
 
 function shell(title: string, body: string, withScript: boolean): string {
@@ -101,7 +131,16 @@ export function loginPage(): string {
 export function consolePage(): string {
   return shell(
     "Skillonomia — owner console",
-    `<div class="row"><h1>Draft inbox</h1><span id="who" class="muted"></span>
+    `<nav id="proofline-region" aria-labelledby="proofline-heading">
+  <h1 id="proofline-heading">${PROOFLINE_TEXT.heading}</h1>
+  <div id="proofline-nav" role="list" aria-label="${PROOFLINE_TEXT.nav_label}"></div>
+  <div class="row">
+    <label for="proofline-filter">${PROOFLINE_TEXT.filter_label}</label>
+    <input id="proofline-filter" type="search" size="24" autocomplete="off">
+  </div>
+</nav>
+<div id="proofline" class="panel" aria-live="polite" aria-busy="false"></div>
+<div class="row"><h1>Draft inbox</h1><span id="who" class="muted"></span>
 <button id="logout" type="button">Log out</button></div>
 <div class="row">
   <label for="state-filter">State</label>
@@ -110,15 +149,15 @@ export function consolePage(): string {
   <span id="session-note" class="muted"></span>
 </div>
 <p id="error" class="blocking" role="alert"></p>
-<table id="inbox"><thead><tr>
+<div class="scroll-x"><table id="inbox"><thead><tr>
   <th>Title</th><th>State</th><th>Head approved</th><th>Rev</th><th>Semantic</th><th>Security</th><th>Approvable</th><th></th>
-</tr></thead><tbody id="inbox-rows"></tbody></table>
+</tr></thead><tbody id="inbox-rows"></tbody></table></div>
 <div id="detail" class="panel" hidden></div>
 <div id="audit" class="panel" hidden></div>
 <div class="row"><h1>Capabilities</h1><button id="refresh-capabilities" type="button">Refresh</button></div>
-<table id="capabilities"><thead><tr>
+<div class="scroll-x"><table id="capabilities"><thead><tr>
   <th>Capability</th><th>Approved revisions</th><th>Head approval</th><th>Assignments</th><th>Active</th><th></th>
-</tr></thead><tbody id="capability-rows"></tbody></table>
+</tr></thead><tbody id="capability-rows"></tbody></table></div>
 <div id="capability" class="panel" hidden></div>
 <div class="row"><h1>Outcomes</h1><button id="refresh-outcomes" type="button">Refresh</button></div>
 <div id="outcomes" class="panel" hidden></div>

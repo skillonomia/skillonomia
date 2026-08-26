@@ -35,6 +35,21 @@
 // one: the only credential it ever holds is a CSRF token, and the only thing
 // that authenticates its requests is a cookie the browser attaches.
 
+// The Proofline's grammar and its words, from the one file that declares them
+// (`src/console-proofline.ts`). It is imported rather than restated because a
+// second copy of the cell separator or of a sentence on a dashboard is a second
+// thing to keep in step — and because the gates compare the bytes on the page
+// against these exact constants.
+import {
+  CONSOLE_FIRST_VIEW,
+  PROOFLINE_TEXT,
+  PROVENANCE_SEP,
+  answerToken,
+  parseCell,
+  partialDetail,
+  refusalDetail,
+} from "../src/console-proofline.ts";
+
 interface Eligibility {
   approvable: boolean;
   reason_code: string;
@@ -1922,6 +1937,302 @@ async function openSessionView(sessionId: string): Promise<void> {
   renderSessionView(view);
 }
 
+// -------------------------------------------------------------- the Proofline
+//
+// THE ELEVEN VIEWS THE REGISTRY HAS ALWAYS SERVED, IN THE BROWSER.
+//
+// The confirmed v1.0.0 gap was not that the data was missing: `Registry.
+// dashboard()` answered all eleven views over Bearer and over MCP, and the
+// Console showed none of them. So this region is a RENDERER and deliberately
+// nothing else. It does not know what a view means, does not decide what a cell
+// says, does not compute a total and does not translate a value into a verdict.
+// Everything below is `payload.<field>` (`INV-01`, `INV-02`).
+//
+// WHAT IT MUST NOT LOSE, AND HOW THE CODE MAKES THAT HARD TO GET WRONG. Every
+// dashboard value arrives as ONE STRING carrying its answer and its method —
+// `unknown · why: … · kind: … · source: … · window: … · boundary: …`. A renderer
+// that printed the answer and dropped the tail would be the provenance loss
+// SPEC.md section 6.4 forbids, and it would look perfectly fine on the screen.
+// So the cell is parsed with the lossless parser in `src/console-proofline.ts`
+// and EVERY part is written into the DOM — `formatCell(parseCell(t)) === t`, and
+// the gate reassembles a cell from the rendered nodes and compares it to the
+// bytes the server sent.
+//
+// AND `unknown` STAYS `unknown` (`INV-03`). The four answers that must not
+// collapse into one another get four class tokens and four visible marks, and
+// the token is the ANSWER reduced — never a palette word, because a mapping step
+// is where two answers land on one class.
+
+interface ProoflineSection {
+  key: string;
+  title: string;
+  fields: string[];
+  rows: Array<Record<string, string>>;
+  empty: string;
+  note?: string;
+  row_class_field?: string;
+  next_cursor?: string | null;
+}
+
+interface ProoflineNotice {
+  kind: string;
+  subject: string;
+  detail: string;
+}
+
+interface ProoflineEnvelope {
+  contract: string;
+  view: string;
+  title: string;
+  views: string[];
+  sections: ProoflineSection[];
+  demo_mode: boolean;
+  notices: ProoflineNotice[];
+}
+
+/** The view the address bar names, or null while none is open. The hash is the
+ *  navigation: a link is a link, the back button works, and a reload opens the
+ *  same view — none of which is true of a click handler that keeps the current
+ *  view in a variable. */
+const PROOFLINE_HASH = "#/proofline/";
+
+let prooflineFilter = "";
+
+/** The view list the navigation is built from. It comes from the server's
+ *  payload and is held so a view that FAILED can still be navigated away from. */
+let prooflineViews: string[] = [];
+
+function prooflineViewOfHash(): string | null {
+  const hash = window.location.hash;
+  if (!hash.startsWith(PROOFLINE_HASH)) return null;
+  const view = decodeURIComponent(hash.slice(PROOFLINE_HASH.length));
+  return view.length === 0 ? null : view;
+}
+
+/** The navigation, built from the SERVER's list of views and never from a list
+ *  compiled into this bundle — a bundle-side copy is a second place for a view
+ *  to fail to appear, which is the defect being fixed rather than a fix. */
+function renderProoflineNav(views: string[], current: string | null): void {
+  const nav = byId("proofline-nav");
+  clear(nav);
+  for (const view of views) {
+    const link = el("a", view);
+    link.href = `${PROOFLINE_HASH}${encodeURIComponent(view)}`;
+    link.setAttribute("role", "listitem");
+    link.dataset.view = view;
+    if (view === current) link.setAttribute("aria-current", "page");
+    nav.appendChild(link);
+  }
+}
+
+/** ONE CELL. The answer, then every part of its method, each under its own key.
+ *  Nothing is summarised and nothing is dropped. */
+function renderProoflineCell(td: HTMLTableCellElement, text: string): void {
+  const cell = parseCell(text);
+  td.classList.add(answerToken(cell.value));
+  td.dataset.answer = cell.value;
+  const value = el("span", cell.value, "cell-value");
+  td.appendChild(value);
+  if (cell.parts.length === 0) return;
+  const dl = el("dl", undefined, "cell-method");
+  dl.setAttribute("aria-label", PROOFLINE_TEXT.provenance_label);
+  for (const part of cell.parts) {
+    const wrap = el("div");
+    if (part.key === null) {
+      wrap.dataset.unkeyed = "true";
+    } else {
+      wrap.appendChild(el("dt", part.key));
+    }
+    wrap.appendChild(el("dd", part.text));
+    dl.appendChild(wrap);
+  }
+  td.appendChild(dl);
+}
+
+function renderProoflineSection(parent: HTMLElement, s: ProoflineSection): void {
+  const box = el("section");
+  box.dataset.sectionKey = s.key;
+  box.appendChild(el("h3", s.title));
+  if (s.note !== undefined) box.appendChild(el("p", s.note, "muted"));
+
+  if (s.rows.length === 0) {
+    // A FILTER THAT SELECTED NOTHING IS NOT AN EMPTY REGISTRY. The server's own
+    // `empty` sentence is a statement about the data; saying it while a filter
+    // is on would attribute the filter's work to the registry. The two states
+    // are different words and a different action.
+    if (prooflineFilter.length > 0) {
+      box.dataset.rows = "filtered-to-zero";
+      box.appendChild(el("p", PROOFLINE_TEXT.filtered_to_zero, "muted"));
+      const clear_ = el("button", PROOFLINE_TEXT.clear_filter);
+      clear_.type = "button";
+      clear_.dataset.action = "clear-filter";
+      clear_.addEventListener("click", () => {
+        byId<HTMLInputElement>("proofline-filter").value = "";
+        prooflineFilter = "";
+        guard(() => showProofline());
+      });
+      box.appendChild(clear_);
+    } else {
+      box.dataset.rows = "empty";
+      box.appendChild(el("p", s.empty, "muted"));
+    }
+    parent.appendChild(box);
+    return;
+  }
+
+  box.dataset.rows = String(s.rows.length);
+  const scroll = el("div", undefined, "scroll-x");
+  const table = el("table");
+  const thead = el("thead");
+  const hrow = el("tr");
+  for (const field of s.fields) hrow.appendChild(el("th", field));
+  thead.appendChild(hrow);
+  table.appendChild(thead);
+  const tbody = el("tbody");
+  for (const row of s.rows) {
+    const tr = el("tr");
+    if (s.row_class_field !== undefined) {
+      const value = row[s.row_class_field];
+      if (value !== undefined) tr.dataset.rowState = parseCell(value).value;
+    }
+    for (const field of s.fields) {
+      const td = el("td");
+      td.dataset.field = field;
+      const text = row[field];
+      // A FIELD THE SECTION ANNOUNCED AND THE ROW DOES NOT CARRY is reported as
+      // that, not drawn as an empty box. An empty box is the dash `INV-03`
+      // forbids wearing a different hat.
+      renderProoflineCell(td, text === undefined ? `unknown${PROVENANCE_SEP}why: the server sent no ${field} for this row` : text);
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  box.appendChild(scroll);
+  parent.appendChild(box);
+}
+
+function renderProofline(payload: ProoflineEnvelope): void {
+  const box = byId("proofline");
+  clear(box);
+  box.dataset.state = "loaded";
+  box.dataset.view = payload.view;
+  box.setAttribute("aria-busy", "false");
+  renderProoflineNav(payload.views, payload.view);
+
+  box.appendChild(el("h2", payload.title));
+  if (payload.demo_mode) {
+    const badge = el("p", "demo_mode", "muted");
+    badge.dataset.demoMode = "true";
+    box.appendChild(badge);
+  }
+
+  // The registry's own notices, verbatim. `dead_letters` carries the one that
+  // says queued is not delivered (`INV-07`); it is rendered as sent, beside two
+  // sections this renderer never merges.
+  for (const notice of payload.notices) {
+    const n = el("div", undefined, "notice");
+    n.dataset.noticeKind = notice.kind;
+    n.appendChild(el("h3", `${notice.kind}: ${notice.subject}`));
+    n.appendChild(el("p", notice.detail));
+    box.appendChild(n);
+  }
+
+  // §7 `partial`: an unknown value is a value, and the ones that were read stay
+  // on the page beside it. This is a COUNT of what the server sent and not a
+  // judgement about it — and it is not a loading state, which is why it renders
+  // with the data rather than instead of it.
+  let unknown = 0;
+  let total = 0;
+  for (const s of payload.sections) {
+    for (const row of s.rows) {
+      for (const field of s.fields) {
+        const text = row[field];
+        if (text === undefined) continue;
+        total += 1;
+        if (parseCell(text).value === "unknown") unknown += 1;
+      }
+    }
+  }
+  if (unknown > 0) {
+    const partial = el("div", undefined, "partial");
+    partial.dataset.partial = "true";
+    partial.dataset.unknownCells = String(unknown);
+    partial.dataset.totalCells = String(total);
+    partial.appendChild(el("h3", PROOFLINE_TEXT.partial_heading));
+    partial.appendChild(el("p", partialDetail(unknown, total)));
+    box.appendChild(partial);
+  }
+
+  for (const s of payload.sections) renderProoflineSection(box, s);
+}
+
+/** The refusal and the failure, told apart, because they are different facts
+ *  and only one of them is worth retrying. Both print the SERVER's code and the
+ *  SERVER's message; neither infers anything from them. */
+function renderProoflineFailure(view: string, failure: ApiFailure): void {
+  const box = byId("proofline");
+  clear(box);
+  box.setAttribute("aria-busy", "false");
+  box.dataset.view = view;
+  const denied = failure.code === "FORBIDDEN" || failure.status === 403;
+  box.dataset.state = denied ? "forbidden" : "error";
+  box.dataset.code = failure.code;
+  box.appendChild(el("h2", denied ? PROOFLINE_TEXT.forbidden_heading : PROOFLINE_TEXT.error_heading));
+  const p = el("p", refusalDetail(failure.code, failure.message), "blocking");
+  p.setAttribute("role", "alert");
+  box.appendChild(p);
+  if (!denied) {
+    // BOUNDED RECOVERY, and only where recovery is the answer. A `FORBIDDEN`
+    // retried is a `FORBIDDEN` again, and a button offering it would be the
+    // console suggesting the server did not mean it.
+    const retry = el("button", PROOFLINE_TEXT.retry);
+    retry.type = "button";
+    retry.dataset.action = "retry";
+    retry.addEventListener("click", () => guard(() => showProofline()));
+    box.appendChild(retry);
+  }
+}
+
+/** Open the view the address bar names. */
+async function showProofline(): Promise<void> {
+  const view = prooflineViewOfHash();
+  if (view === null) return;
+  const box = byId("proofline");
+  clear(box);
+  box.dataset.state = "loading";
+  box.dataset.view = view;
+  box.setAttribute("aria-busy", "true");
+  box.appendChild(el("p", PROOFLINE_TEXT.loading, "muted"));
+  renderProoflineNav(prooflineViews, view);
+  const query = prooflineFilter.length > 0 ? `?q=${encodeURIComponent(prooflineFilter)}` : "";
+  try {
+    const payload = await api<ProoflineEnvelope>("GET", `/v1/console/dashboard/${encodeURIComponent(view)}${query}`);
+    renderProofline(payload);
+  } catch (e) {
+    renderProoflineFailure(view, failureOf(e));
+  }
+}
+
+function wireProofline(views: string[]): void {
+  prooflineViews = views;
+  renderProoflineNav(views, prooflineViewOfHash());
+  window.addEventListener("hashchange", () => guard(() => showProofline()));
+  const filter = byId<HTMLInputElement>("proofline-filter");
+  filter.addEventListener("change", () => {
+    const next = filter.value.trim();
+    // A `change` THAT CHANGED NOTHING RELOADS NOTHING. The browser fires this
+    // event on blur as well as on commit, so a reader who typed a filter and
+    // then reached for a control would otherwise re-issue the same request and
+    // redraw the section under their own pointer — the control they were about
+    // to press detached between the press and the release.
+    if (next === prooflineFilter) return;
+    prooflineFilter = next;
+    guard(() => showProofline());
+  });
+}
+
 // ------------------------------------------------------------------ the boot
 
 async function boot(): Promise<void> {
@@ -1949,6 +2260,25 @@ async function boot(): Promise<void> {
   byId("open-session").addEventListener("click", () =>
     guard(() => openSessionView(byId<HTMLInputElement>("session-id").value.trim())),
   );
+  // THE PROOFLINE IS WIRED FROM THE SERVER'S OWN VIEW LIST. One request for one
+  // view yields the vocabulary the navigation is built from, so a view added to
+  // `DASHBOARD_VIEWS` appears in this Console without an edit here — which is
+  // the whole of why the list is not compiled into this bundle.
+  // THE BUSY STATE IS STAMPED BEFORE THE REQUEST, not after it. A region that
+  // acquired a state only once an answer arrived would be a region with NO state
+  // for exactly as long as the server is slow — which is the whole of the §7
+  // `initial loading` row, and the one moment an operator is actually looking at
+  // it.
+  const region = byId("proofline");
+  region.dataset.state = "loading";
+  region.setAttribute("aria-busy", "true");
+  region.appendChild(el("p", PROOFLINE_TEXT.loading, "muted"));
+  const first = await api<ProoflineEnvelope>("GET", `/v1/console/dashboard/${CONSOLE_FIRST_VIEW}`);
+  wireProofline(first.views);
+  if (prooflineViewOfHash() === null) {
+    window.location.hash = `${PROOFLINE_HASH}${encodeURIComponent(first.view)}`;
+  }
+  await showProofline();
   await loadInbox();
   await loadCapabilities();
   if (openDraftId) await openDraft(openDraftId);
