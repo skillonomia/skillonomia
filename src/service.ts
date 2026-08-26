@@ -267,7 +267,6 @@ import {
   type RevisionSourceRow,
 } from "./outcome-loop.ts";
 import {
-  CONSOLE_CONTRACT_VERSION,
   consoleAssignmentView,
   consoleAudit,
   consoleCapabilities,
@@ -281,6 +280,7 @@ import {
   type ConsoleDraft,
   type ConsoleInbox,
 } from "./console-view.ts";
+import { CONSOLE_CONTRACT_V2 } from "./console-v2.ts";
 import {
   createGrant,
   findGrant,
@@ -3747,7 +3747,10 @@ export class Registry {
       if (!agentIds.includes(auth.agent_id)) agentIds.push(auth.agent_id);
     }
 
-    return this.payload("dead_letters", "Dead letters", [
+    return this.payload(
+      "dead_letters",
+      "Dead letters",
+      [
       {
         key: "dead_letters",
         title: "Dead-lettered adoption requests (§5.2 — undeliverability is loud)",
@@ -3790,7 +3793,27 @@ export class Registry {
         })),
         empty: "no webhook endpoint is registered for this actor",
       },
-    ]);
+      ],
+      // `INV-07`, on the page rather than in a commit message. The two sections
+      // above are two DIFFERENT facts and the view exists to keep them apart: a
+      // dead-lettered adoption request is a statement about the ADOPTION —
+      // the notice could not be handed over — while a failing endpoint is a
+      // statement about the DELIVERY CHANNEL. A reader who took the first table
+      // for "these adopters were not told" or the second for "these adopters
+      // were told" would be wrong in opposite directions, so the distinction is
+      // declared as a `legend` beside the tables it decodes.
+      [
+        {
+          kind: "legend",
+          subject: "queued is not delivered",
+          detail:
+            "The upper table counts adoption requests the delivery machine gave up on; the lower table reports the " +
+            "health of the endpoints it delivers through. Queuing a notification is not delivering one, and neither " +
+            "table says a notification arrived: a delivery is confirmed by its own delivery result and by nothing " +
+            "on this page.",
+        },
+      ],
+    );
   }
 
   // ------------------------------------------- the migration counter (read)
@@ -5100,7 +5123,7 @@ export class Registry {
       provenance: JSON.parse(e.provenance_json),
       server_at_ms: e.server_at_ms,
     }));
-    return { contract: CONSOLE_CONTRACT_VERSION, assignment_id: row.id, items };
+    return { contract: CONSOLE_CONTRACT_V2, assignment_id: row.id, items };
   }
 
   /**
@@ -5485,7 +5508,7 @@ export class Registry {
     const session = this.requireSessionOfWorkspace(auth, sessionId);
     const now = this.now();
     return {
-      contract: CONSOLE_CONTRACT_VERSION,
+      contract: CONSOLE_CONTRACT_V2,
       session: {
         session_id: session.id,
         agent_id: session.agent_id,
@@ -5688,8 +5711,8 @@ export class Registry {
       () => {
         const out = recordOwnerConfirmationInTx(this.db, session, auth.agent_id, confirmation, this.now());
         return "conflict" in out
-          ? { contract: CONSOLE_CONTRACT_VERSION, conflict: out.conflict }
-          : { contract: CONSOLE_CONTRACT_VERSION, ...out.result };
+          ? { contract: CONSOLE_CONTRACT_V2, conflict: out.conflict }
+          : { contract: CONSOLE_CONTRACT_V2, ...out.result };
       },
       requestDigest({ ...body }),
     ));
@@ -5772,7 +5795,7 @@ export class Registry {
           now,
         );
         return {
-          contract: CONSOLE_CONTRACT_VERSION,
+          contract: CONSOLE_CONTRACT_V2,
           revision_source_id: id,
           parent_revision_id: outcome.draft_revision_id,
           source_outcome_id: outcome.id,
@@ -5877,7 +5900,7 @@ export class Registry {
       now,
     );
     return {
-      contract: CONSOLE_CONTRACT_VERSION,
+      contract: CONSOLE_CONTRACT_V2,
       comparison_id: id,
       draft_id: candidate.draft_id,
       revision_source_id: lineage.id,
@@ -5937,7 +5960,7 @@ export class Registry {
       .prepare("SELECT * FROM revision_comparisons WHERE draft_id=? AND workspace_id=? ORDER BY created_at_ms, id")
       .all(draft.draft_id, auth.workspace_id) as Array<Record<string, unknown>>;
     return {
-      contract: CONSOLE_CONTRACT_VERSION,
+      contract: CONSOLE_CONTRACT_V2,
       draft_id: draft.draft_id,
       outcomes: outcomes.map((o) => ({
         outcome_id: o.id,

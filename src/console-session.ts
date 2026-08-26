@@ -33,6 +33,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Db } from "./sqlite.ts";
 import type { AuthContext, Role } from "./auth.ts";
 import { sha256Hex } from "./auth.ts";
+import { CONSOLE_SESSION_ROLES, type ConsoleSessionRole } from "./console-v2.ts";
 import { ApiError } from "./errors.ts";
 import { ulid } from "./ulid.ts";
 
@@ -54,17 +55,29 @@ export const DEFAULT_SESSION_MS = 30 * 60 * 1000;
  *  terminal an hour later is worth nothing. */
 export const TICKET_TTL_MS = 5 * 60 * 1000;
 
-/** The two roles that may open a console. V1 is one owner and a closed fleet
- *  (contract section 3); `admin` is admitted because the existing workspace
- *  model already treats the two as the human roles, and `reviewer`/`member` are
- *  not console principals. */
-const CONSOLE_ROLES = new Set<Role>(["owner", "admin"]);
+/**
+ * The three roles that may open a console (SPEC.md section 6.4).
+ *
+ * v1.0.0 admitted `owner` and `admin` only, and the schema said so. v1.1 adds
+ * `reviewer`, because the actor whose whole job is to record a verdict on a
+ * version had no surface to record one on except a Bearer key and a
+ * hand-written body. The set is `CONSOLE_SESSION_ROLES` and not a second list:
+ * the contract module owns the vocabulary and this is the enforcement of it.
+ *
+ * ADMISSION IS NOT AUTHORIZATION, and the distinction is the whole of the
+ * change. Being let into a session buys a reviewer the routes SPEC.md section
+ * 6.4's table admits a reviewer to and nothing else — the route consults the
+ * session's role before it calls anything, and the service method it then calls
+ * receives the same `AuthContext` a Bearer key would have produced. `member` is
+ * still not a console principal at all.
+ */
+const CONSOLE_ROLES = new Set<Role>(CONSOLE_SESSION_ROLES);
 
 export interface ConsoleSession {
   session_id: string;
   agent_id: string;
   workspace_id: string;
-  actor_role: "owner" | "admin";
+  actor_role: ConsoleSessionRole;
   created_at_ms: number;
   expires_at_ms: number;
   /** the anti-forgery nonce this session's page echoes on every mutation. It
@@ -91,11 +104,11 @@ function opaque(prefix: string): string {
   return `${prefix}_${randomBytes(32).toString("base64url")}`;
 }
 
-function requireConsoleRole(role: Role | null): "owner" | "admin" {
+function requireConsoleRole(role: Role | null): ConsoleSessionRole {
   if (role === null || !CONSOLE_ROLES.has(role)) {
-    throw new ApiError("FORBIDDEN", "the owner console is an owner or admin surface");
+    throw new ApiError("FORBIDDEN", `the console admits ${CONSOLE_SESSION_ROLES.join(", ")} and no other role`);
   }
-  return role as "owner" | "admin";
+  return role as ConsoleSessionRole;
 }
 
 /**
@@ -120,7 +133,7 @@ interface TicketRow {
   id: string;
   workspace_id: string;
   agent_id: string;
-  actor_role: "owner" | "admin";
+  actor_role: ConsoleSessionRole;
   expires_at_ms: number;
 }
 
@@ -211,7 +224,7 @@ interface SessionRow {
   id: string;
   workspace_id: string;
   agent_id: string;
-  actor_role: "owner" | "admin";
+  actor_role: ConsoleSessionRole;
   csrf_token: string;
   created_at_ms: number;
   absolute_expires_at_ms: number;

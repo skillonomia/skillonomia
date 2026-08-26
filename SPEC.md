@@ -1819,6 +1819,107 @@ measurement state, its source and its selection window — and the two columns o
 §5.5 are counted SEPARATELY, so that an intent count and an observation count
 can never be the same number by construction.
 
+### 6.4 Console contract (auxiliary, normative)
+
+**One contract version for the whole surface.** Every `/v1/console/*` payload —
+succeeding OR failing — declares `contract: "console.v2"`. A refusal is such a
+payload: its `code` decides what the operator is told happened, so a browser that
+read a `400`, a `409` or a `412` before checking its version would be reading a
+document from a server it was not built against. `console.v1` is the name of the
+v1.0.0 console contract and is not renamed, not retired and not reused; a bundle
+handed a version it does not recognise MUST refuse the payload rather than parse
+the fields it recognises, and MUST say which version it got. Dashboard payloads
+OUTSIDE the console — the Bearer route and the MCP tool — keep the v1.0.0
+contract and are unversioned by this marker.
+
+**Console HTML, the bundle and every session response carry `Cache-Control:
+no-store`**, for the reason `INV-04` gives: none of them may sit in a shared
+cache where a later reader finds a session's CSRF token or an operator's view of
+another workspace.
+
+**Three roles open a console: `owner`, `admin`, `reviewer`.** `ConsoleSession.actor_role`
+draws on that same set, and the schema admits exactly those three (D.1s).
+
+**Admission to a session is not admission to a resource.** A route checks the
+SESSION's role first, and then calls the existing service method with the
+`AuthContext` that session produces — the same context a Bearer API key would
+have produced for the same principal. A reviewer admitted to the console
+therefore sees no row a reviewer's API key could not fetch, and the registry's
+answer to "may this actor do this" is computed exactly once, in the service
+layer, for every channel.
+
+Route-level ACL:
+
+| Console route | owner/admin | reviewer | Additional check |
+|---|---:|---:|---|
+| `GET /v1/console/dashboard/{view}` | by the existing dashboard ACL | by the existing dashboard ACL | no widening of Registry visibility |
+| `GET /v1/console/approvals` | every kind available to it | only an explicit `kind=review` | same workspace; a reviewer asking for `all` or for another kind is `FORBIDDEN` |
+| `POST /v1/console/versions/{id}/reviews` | yes | yes | the existing self-review prohibition and the existing state ACL |
+| `POST /v1/console/versions/{id}/approvals` | human owner/admin only | no | `agents.type='human'` plus the existing §7.3 gate |
+| a revoke or replace console route | yes | no | the existing author / skill-owner / admin / owner ACL |
+| a webhook test console route | yes | no | the existing endpoint and workspace ACL |
+
+A console route that this table does not name is closed to a reviewer. The
+classification is closed by DEFAULT and not by enumeration, so a route added
+later and left unclassified refuses a reviewer rather than admitting one.
+
+**Closure invariant.** A reviewer can open the Console and record a review
+verdict, and receives `FORBIDDEN` on a human approval, on revoke, and on every
+owner-only route. The version's author and the skill's owner keep the
+self-review prohibition whatever role they hold, and a principal that is not
+`agents.type='human'` does not pass a human gate however privileged its role —
+a service principal holding `admin` included.
+
+#### 6.4.1 Console Proofline
+
+`GET /v1/console/dashboard/{view}`, where `view` is one of the eleven the
+dashboard has: `library`, `evidence`, `receipts`, `approvals`, `dead_letters`,
+`migrations`, `fleet`, `agent`, `skill_approval`, `capability`, `outcomes`.
+
+The answer is `{"contract","view","title","views","sections","demo_mode","notices"}`.
+Normatively:
+
+- the data is built by the SAME read the Bearer route and the MCP tool use, and
+  the ACL is that read's ACL, unchanged;
+- every cell keeps its value, its kind, its why, its source, its selection
+  window and its bounds — a console-side reshaping of a section would be a place
+  for a provenance field to be dropped on its way to the operator;
+- the console MUST NOT parse the HTML dashboard representation. The route serves
+  the JSON contract and REFUSES a `format` selector with `INVALID_SCHEMA` rather
+  than ignoring one;
+- `dead_letters` MUST separate, visibly, the ADOPTION state from the
+  NOTIFICATION DELIVERY: an undeliverable adoption request and an unhealthy
+  endpoint are two different facts, and neither table says a notification
+  arrived (`INV-07`).
+
+#### 6.4.2 Console mutations
+
+`POST /v1/console/versions/{id}/reviews` and
+`POST /v1/console/versions/{id}/approvals` are WRAPPERS over the service methods
+the Bearer surface already calls. Each requires, in this order: a live console
+session, a matching `Origin`, the session's own CSRF token, the route-level ACL
+above, and then the service's own eligibility. No ACL, no eligibility and no
+state transition is recomputed in the route.
+
+Review body: `{"action":"request|verdict","verdict":"approve|reject|conditional","note"?,"idempotency_key"?}`.
+A `verdict` is REQUIRED when `action` is `verdict` and FORBIDDEN when it is
+`request`, because the two are different acts and a body carrying both is
+ambiguous rather than merely redundant.
+
+Human-approval body: `{"scope":"publish|adopt_high_risk","decision":"approved|denied","adoption_request_id"?,"note"?,"idempotency_key"?}`.
+`adoption_request_id` is REQUIRED for `adopt_high_risk` — it is what binds the
+approval to one exact request so it cannot be spent on another — and FORBIDDEN
+for `publish`, so that a publish approval cannot arrive carrying a request id a
+later reader would take for a binding it does not have.
+
+A human decision control carries one of exactly four labels: `Approve this
+adoption`, `Deny this adoption`, `Approve publication`, `Deny publication`.
+`Confirm`, `OK`, `Yes` and a bare `Submit` are forbidden for these four actions,
+because a control reading `Confirm` tells an operator nothing about what is being
+confirmed or how far it reaches.
+
+---
+
 ---
 
 ## 7. Deterministic gates, sandbox declaration, and human approval
@@ -2049,10 +2150,10 @@ installs none is conforming.
 
 ## Appendix D. NORMATIVE SQLite DDL
 
-The normative schema is given in **eighteen** migrations, applied in ascending file
+The normative schema is given in **nineteen** migrations, applied in ascending file
 order, and the live schema of a conforming registry is their sum. Each is
 embedded below verbatim and is byte-identical to the file this repository ships;
-a test asserts that for all eighteen. Schema version is tracked in
+a test asserts that for all nineteen. Schema version is tracked in
 `PRAGMA user_version` and nowhere else — there is no bookkeeping table, because
 the live schema is compared object for object against D.1 plus the deltas below,
 and a table this specification does not name would fail that comparison. A
@@ -2187,14 +2288,24 @@ path, and MUST NOT attempt it.
   nothing — on the same terms and with its own reversal
   (`migrations/down/0018_a_revocation_and_a_replacement_are_two_facts.down.sql`),
   which restores `PRAGMA user_version` to `17`.
-  Those six are the migrations of this
+- **D.1s is the nineteenth migration**, shipped as
+  `migrations/0019_a_reviewer_may_open_the_console.sql`. It widens one `CHECK` on
+  each of two tables — `console_tickets.actor_role` and
+  `owner_sessions.actor_role` gain the value `reviewer` (§6.4) — and changes
+  nothing else: no column is added or removed, no row is edited, and the two
+  tables' four INSERT-only triggers and one index are re-created with the text
+  D.1n gives them. It ships its own reversal
+  (`migrations/down/0019_a_reviewer_may_open_the_console.down.sql`), which
+  restores `PRAGMA user_version` to `18`.
+  Those seven are the migrations of this
   schema that ship a reversal; D.1 through D.1l ship none, which
   `v1/P0-BASELINE.md` records as a fact about the released base. After all
-  eighteen migrations
+  nineteen migrations
   `PRAGMA user_version`
-  MUST report `18`. A test in this repository asserts the live schema equals D.1
+  MUST report `19`. A test in this repository asserts the live schema equals D.1
   plus exactly those twelve edits and the new objects of D.1f, D.1g, D.1h, D.1m,
-  D.1n, D.1o, D.1p, D.1q and D.1r —
+  D.1n, D.1o, D.1p, D.1q and D.1r, with D.1s's two widened `CHECK`s applied to
+  the two D.1n tables that carry them —
   the five of D.1b, the one of D.1c, the one of D.1d, the two of D.1e, the one
   rebuilt table of D.1f, the one further edit of D.1i to that same rebuilt table
   and the one column D.1j adds to `observed_records`, together with the one column
@@ -5158,6 +5269,153 @@ BEGIN
 END;
 ```
 
+### D.1s NORMATIVE DELTA — nineteenth migration (verbatim)
+
+A REVIEWER MAY OPEN THE CONSOLE. One value added to one `CHECK` on each of two
+tables, and nothing else in the schema moves. `console_tickets.actor_role` and
+`owner_sessions.actor_role` admitted `owner` and `admin`; they now admit
+`reviewer` as well, because §6.4 makes the console a three-role surface and the
+actor whose whole job is to record a verdict on a version had no console to
+record one from.
+
+WHAT IS DELIBERATELY NOT WIDENED. `draft_decisions.actor_role` (D.1n) and the
+assignment tables' `actor_role` (D.1p) keep `CHECK(actor_role IN ('owner','admin'))`.
+A reviewer admitted to a SESSION is not a reviewer admitted to every row that
+session can name: §6.4 checks the session's role at the route and then calls the
+same service method with the same `AuthContext` a Bearer key produces, and these
+two columns are the database's own refusal underneath that, for the rows a
+reviewer must never write.
+
+WHY THE TABLES ARE REWRITTEN. SQLite cannot relax a `CHECK` in place. Each table
+is copied into a scratch table, dropped, RE-CREATED UNDER ITS OWN NAME and
+refilled; `ALTER TABLE … RENAME` is not used, because with `PRAGMA
+foreign_keys=ON` — which a conforming registry always runs with — a rename
+rewrites the `REFERENCES` clause of every table pointing at the one renamed, and
+`console_ticket_uses` and `owner_session_revocations` would come to reference a
+scratch name. `PRAGMA defer_foreign_keys=ON` holds those two children's
+`ON DELETE RESTRICT` open across the drop; the rows are back under the same table
+name before the transaction commits, so the constraint is SATISFIED at COMMIT
+rather than waived, and a database whose children do not resolve leaves the
+migration by ROLLBACK. No row is lost and no row is edited: every column is
+copied across by name.
+
+REVERSAL is `migrations/down/0019_a_reviewer_may_open_the_console.down.sql`,
+which runs the same rebuild the other way and sets `PRAGMA user_version` back to
+`18`. It REFUSES rather than deletes: a reviewer ticket or session written since
+the migration ran is a row the narrower `CHECK` cannot hold, and the two answers
+available are to destroy the record of who was admitted to the console or to
+stop. It stops, the runner rolls back, and `PRAGMA user_version` is left where it
+was found — which is why the documented rollback procedure makes its target a
+copy taken before the migration rather than a database walked backwards through
+it.
+`PRAGMA user_version` = `19`.
+
+```sql
+-- 0019 — A REVIEWER MAY OPEN THE CONSOLE, AND OPENING IT WIDENS NOTHING ELSE.
+--
+-- WHAT WAS WRONG. v1.0.0's console was an OWNER console and said so in the
+-- schema: `console_tickets.actor_role` and `owner_sessions.actor_role` both
+-- carry `CHECK(actor_role IN ('owner','admin'))`. A reviewer is the actor whose
+-- whole job is to record a verdict on a version, and the only surface that
+-- recorded one was the machine-to-machine API. So the reviewer's normal path
+-- ran through a Bearer key and a hand-written JSON body, and the console — the
+-- surface a human is supposed to use — was closed to the one human role that
+-- exists to make a judgement.
+--
+-- WHAT IS TRUE INSTEAD (SPEC.md section 6.4). The console admits three roles:
+-- `owner`, `admin` and `reviewer`. A ticket may be minted for a reviewer and a
+-- session may be opened as one, so `actor_role` on both tables admits the third
+-- value. That is the whole of this migration.
+--
+-- WHAT THIS DELIBERATELY DOES NOT WIDEN, and the reason each is left alone:
+--
+--   `draft_decisions.actor_role` keeps `CHECK(actor_role IN ('owner','admin'))`.
+--   An owner decision about a draft is not a reviewer's to make, and leaving the
+--   column narrow means the database refuses one even if a route ever forgets
+--   to. The same is true of `0015`'s assignment tables. A reviewer admitted to a
+--   SESSION is not a reviewer admitted to every row the session can name, and
+--   the columns that would have to change for that are exactly the ones that do
+--   not change here.
+--
+--   The resource ACL is untouched. Which versions a reviewer may see and which
+--   calls it may make are decided by the service layer against the same
+--   `AuthContext` a Bearer key produces; this migration changes what may be
+--   STORED in two columns and nothing about what may be READ.
+--
+-- WHY THIS IS A REBUILD AND NOT AN `ALTER`. SQLite cannot relax a `CHECK` in
+-- place, so a wider constraint means the table is written again. The form below
+-- is chosen so that no foreign key is ever left pointing at a name that has
+-- moved: each table is copied into a scratch table, DROPPED, RE-CREATED UNDER
+-- ITS OWN NAME, and refilled. `ALTER TABLE … RENAME` is deliberately not used —
+-- with `PRAGMA foreign_keys=ON`, which this deployment always runs with, a
+-- rename rewrites the `REFERENCES` clause of every table pointing at the one
+-- being renamed, and `console_ticket_uses` and `owner_session_revocations` would
+-- silently come to reference a scratch name. Creating the replacement under the
+-- original name leaves those two children exactly as `0014` wrote them.
+--
+-- `PRAGMA defer_foreign_keys=ON` holds the children's `ON DELETE RESTRICT`
+-- open across the drop: the rows are re-inserted into the same table name
+-- before the migration's transaction commits, so the references resolve and the
+-- constraint is satisfied at COMMIT rather than waived. A database whose
+-- children do NOT resolve leaves this migration by ROLLBACK.
+--
+-- NO ROW IS LOST AND NO ROW IS EDITED. Every column is copied across by name.
+-- The four INSERT-only triggers and the one index that `0014` attached to these
+-- two tables are dropped with them and re-created here with the same text
+-- `0014` uses, so the live schema keeps saying what `0014` said about them.
+--
+-- `PRAGMA user_version` = `19`.
+
+PRAGMA defer_foreign_keys=ON;
+
+-- ==================== 1. console_tickets ====================
+
+CREATE TABLE mig0019_console_tickets AS SELECT * FROM console_tickets;
+DROP TABLE console_tickets;
+CREATE TABLE console_tickets(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin','reviewer')),
+  ticket_hash TEXT NOT NULL UNIQUE CHECK(length(ticket_hash)=71),
+  created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0),
+  expires_at_ms INTEGER NOT NULL,
+  CHECK(expires_at_ms - created_at_ms BETWEEN 1 AND 300000)
+);
+INSERT INTO console_tickets(id, workspace_id, agent_id, actor_role, ticket_hash, created_at_ms, expires_at_ms)
+  SELECT id, workspace_id, agent_id, actor_role, ticket_hash, created_at_ms, expires_at_ms
+    FROM mig0019_console_tickets;
+DROP TABLE mig0019_console_tickets;
+
+CREATE TRIGGER tg_console_tickets_no_upd BEFORE UPDATE ON console_tickets BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_console_tickets_no_del BEFORE DELETE ON console_tickets BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+
+-- ==================== 2. owner_sessions ====================
+
+CREATE TABLE mig0019_owner_sessions AS SELECT * FROM owner_sessions;
+DROP TABLE owner_sessions;
+CREATE TABLE owner_sessions(
+  id TEXT PRIMARY KEY CHECK(length(id)=26),
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin','reviewer')),
+  token_hash TEXT NOT NULL UNIQUE CHECK(length(token_hash)=71),
+  csrf_token TEXT NOT NULL CHECK(length(csrf_token) BETWEEN 16 AND 128),
+  created_at_ms INTEGER NOT NULL CHECK(created_at_ms>0),
+  absolute_expires_at_ms INTEGER NOT NULL,
+  CHECK(absolute_expires_at_ms - created_at_ms BETWEEN 1 AND 3600000)
+);
+INSERT INTO owner_sessions(id, workspace_id, agent_id, actor_role, token_hash, csrf_token, created_at_ms, absolute_expires_at_ms)
+  SELECT id, workspace_id, agent_id, actor_role, token_hash, csrf_token, created_at_ms, absolute_expires_at_ms
+    FROM mig0019_owner_sessions;
+DROP TABLE mig0019_owner_sessions;
+
+CREATE INDEX idx_owner_sessions_agent ON owner_sessions(agent_id,created_at_ms);
+
+CREATE TRIGGER tg_owner_sessions_no_upd BEFORE UPDATE ON owner_sessions BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+CREATE TRIGGER tg_owner_sessions_no_del BEFORE DELETE ON owner_sessions BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+```
+
 ### D.2 SQL negative probes
 
 Every probe below is executed as a test in this repository; each names the
@@ -5795,6 +6053,9 @@ Internal worker surface (NOT public, service-authenticated, single-binary in-pro
 | — | `POST /v1/console/outcomes` | a live console session (owner/admin) | `{"session_id","entry_id","outcome":"worked\|failed","outcome_ref","confirmation_source","reason_code","reason","observed_at_ms"?,"idempotency_key"?}` | `201 {"contract","outcome_id","session_id","loadout_entry_id","assignment_id","draft_revision_id","outcome","evidence_class","outcome_digest","replayed"}`. The owner's explicit confirmation, and the ONLY outcome an owner writes. Every row it writes carries `source:"owner"`, `evidence_class:"owner_confirmation"` and the `confirmation_source` naming where the owner saw it; it writes no observation, no stage and no receipt, so the runtime evidence surface stays unreachable from the console. Replay and conflict behave as on the machine intake |
 | — | `POST /v1/console/outcomes/{outcome_id}/revision` | a live console session (owner/admin) | `{"origin":"failure\|feedback","observation","improvement_goal","goal_kind":"failure_to_worked\|declared_binary"?,"revision":{…the ordinary revision body},"idempotency_key"?}` | `201 {"contract","revision_source_id","parent_revision_id","source_outcome_id","source_receipt_id","origin","improvement_goal","goal_kind","revision"}`. Creates a new DRAFT revision from a failure or a remark, through the same compiler, the same semantic and security preview and the same owner approval any other revision faces. The lineage row records the parent revision, the outcome that prompted it, the receipt behind that outcome and the binary goal — stated HERE, before the new revision has run anywhere. `origin:"failure"` on an outcome that is not `failed` is `PRECONDITION_FAILED` |
 | — | `POST /v1/console/comparisons` | a live console session (owner/admin) | `{"baseline_outcome_id","candidate_outcome_id","idempotency_key"?}` | `201 {"contract","comparison_id","draft_id","revision_source_id","baseline","candidate","comparable","scenario","improvement_goal","goal_kind","verdict","verdict_reason_code","verdict_reason","created_at_ms"}`. Shows the exact old and new revisions, the observation behind the old one and the new outcome. The verdict is COMPUTED and never supplied: `improved` requires a comparable scenario — same lineage, same agent, same runtime kind — and a proved transition to `worked` against the goal stated in advance; anything else is `not_improved` or `not_comparable` with the reason code saying which condition failed. A candidate revision with no lineage row is `PRECONDITION_FAILED` |
+| — | `GET /v1/console/dashboard/{view}` | a live console session (owner/admin/reviewer) | — | `200 {"contract","view","title","views","sections","demo_mode","notices"}` — the Proofline (§6.4.1). `view` is one of the eleven `dashboard.view` serves and the payload is that read's payload with the contract marker in front of it: the same data, built by the same method, filtered by the same ACL, with every cell keeping its value, kind, why, source, window and bounds. A `format` selector is `INVALID_SCHEMA`: the console reads this contract and MUST NOT parse the HTML rendering. `dead_letters` separates the adoption state from the notification delivery, and neither says a notification arrived (`INV-07`). An unrecognised `view` is `INVALID_SCHEMA` |
+| — | `POST /v1/console/versions/{version_id}/reviews` | a live console session (owner/admin/reviewer) | `{"action":"request\|verdict","verdict":"approve\|reject\|conditional"?,"note"?,"idempotency_key"?}` | `200 {"contract",…the body of `skill.review.request`…}`. A wrapper over surface 3 and nothing else: the route checks the session, the `Origin`, the CSRF token and the §6.4 route ACL, then calls the same service method the Bearer route calls with the session's own `AuthContext`. `verdict` is required when `action` is `verdict` and `INVALID_SCHEMA` when `action` is `request`. The self-review prohibition, the state ACL and the idempotent replay are the service's and are not recomputed here |
+| — | `POST /v1/console/versions/{version_id}/approvals` | a live console session (owner/admin), and the principal MUST be `agents.type='human'` | `{"scope":"publish\|adopt_high_risk","decision":"approved\|denied","adoption_request_id"?,"note"?,"idempotency_key"?}` | `201 {"contract",…the body of `skill.approve`…}`. A wrapper over the §7.3 approval recorder. A reviewer session is `FORBIDDEN` at the route, before the service is called; a service or admin principal that is not `agents.type='human'` is `FORBIDDEN` by the service's own gate. `adoption_request_id` is required for `adopt_high_risk` and `INVALID_SCHEMA` for `publish`, so an approval is bound to one exact request and cannot be spent on a second |
 | — | `GET /v1/console/capabilities/{draft_id}/outcomes` | a live console session (owner/admin) | — | `200 {"contract","draft_id","outcomes","lineage","comparisons"}` — every outcome filed against any revision of this lineage with its conflicts, every revision created from one, and every comparison drawn. Structured columns throughout |
 
 Every mutating console route above is refused unless the request carries an `Origin` matching this origin AND the `X-Skillonomia-Console-CSRF` header holding the session's own token; either missing or wrong is `FORBIDDEN`. The console routes take the same `idempotency_key` the rest of this appendix does, so a resent form replays the stored response rather than deciding twice.

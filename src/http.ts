@@ -19,7 +19,14 @@ import {
   sessionCookie,
   type ConsoleSession,
 } from "./console-session.ts";
-import { CONSOLE_CONTRACT_VERSION } from "./console-view.ts";
+import {
+  CONSOLE_CONTRACT_V2,
+  consoleRouteAdmits,
+  consoleRouteClass,
+  validateConsoleApproval,
+  validateConsoleReview,
+  type ContractViolation,
+} from "./console-v2.ts";
 import { consolePage, consoleScript, loginPage } from "./console-page.ts";
 
 /** Reported by `/health`; the release version of the running build.
@@ -91,8 +98,9 @@ function html(status: number, body: string, contentType = "text/html; charset=ut
 /**
  * `P2-R2-001` — WHERE THE VERSIONED-CONTRACT BOUNDARY IS DRAWN, AND WHY THERE.
  *
- * `console/app.ts` refuses a response that does not announce `console.v1` before
- * it reads a field of it (`INV-05`). Until this fix that held for the answers a
+ * `console/app.ts` refuses a response that does not announce the console
+ * contract version it was built against before it reads a field of it
+ * (`INV-05`). Until this fix that held for the answers a
  * console route SUCCEEDS with and for none of the answers it FAILS with: a `400`,
  * a `409` and a `412` left here as a bare `{"error":{…}}`, and the browser read
  * `code`, `message` and `current_state` out of a document whose version nobody
@@ -114,6 +122,18 @@ function html(status: number, body: string, contentType = "text/html; charset=ut
  * inside the service layer, which knows nothing about channels, and a flag would
  * be a second thing to keep in step with the routes — which is the shape of the
  * defect being closed here.
+ *
+ * WHICH VERSION IS STAMPED, AND WHY IT MOVED — v1.1, SPEC.md section 6.4.
+ * `CONSOLE_CONTRACT_V2` (`src/console-v2.ts`), for every payload of this
+ * surface, succeeding or failing. `console.v1` is not renamed and not retired —
+ * it is the name of the v1.0.0 console contract and `src/console-view.ts` keeps
+ * saying so — but it is no longer what this surface announces, because what a
+ * `/v1/console/*` envelope MEANS changed: the surface now carries Proofline
+ * dashboards and lifecycle mutations beside the draft console, and a payload
+ * whose meaning moved while its version did not is a payload an older bundle
+ * parses confidently and wrongly. The bundle's accepted version moves in the
+ * same commit as this one, because a server and a browser that disagree about
+ * the version are a console that refuses every response.
  */
 const CONSOLE_SURFACE = "/v1/console";
 
@@ -133,7 +153,7 @@ function isConsoleSurface(rawUrl: string | undefined): boolean {
  *  internal-error tail — goes through it, so the marker is a property of the
  *  SURFACE rather than of the exits somebody remembered. */
 function errorBody(envelope: { error: { code: string; message: string; current_state?: string } }, rawUrl: string | undefined): string {
-  return JSON.stringify(isConsoleSurface(rawUrl) ? { contract: CONSOLE_CONTRACT_VERSION, ...envelope } : envelope);
+  return JSON.stringify(isConsoleSurface(rawUrl) ? { contract: CONSOLE_CONTRACT_V2, ...envelope } : envelope);
 }
 
 function errorResponse(e: ApiError, rawUrl: string | undefined): RestResponse {
@@ -170,6 +190,21 @@ function decodeSource(body: any): Buffer {
     throw new ApiError("INVALID_SCHEMA", "source (base64 string of the source tree) required");
   }
   return Buffer.from(body.source, "base64");
+}
+
+/**
+ * A contract violation → the refusal a caller reads.
+ *
+ * The validators in `src/console-v2.ts` return a LIST, because a body can be
+ * wrong in more than one place and telling a caller about one error at a time is
+ * how a form takes four round trips to submit. The first violation names the
+ * code and the message; the JSON pointer of every violation travels in the
+ * message so a page can say which member it means without a second request.
+ */
+function refuseViolations(violations: ContractViolation[]): void {
+  if (violations.length === 0) return;
+  const detail = violations.map((v) => `${v.pointer}: ${v.detail}`).join("; ");
+  throw new ApiError(violations[0].code as "INVALID_SCHEMA", detail);
 }
 
 /** No coercion (verdict 1 major #2): a non-string key is INVALID_SCHEMA. */
@@ -211,7 +246,7 @@ function consoleMutationResponse(
 ): RestResponse {
   const extra: Record<string, string> = out.replayed ? { "Idempotency-Replayed": "true" } : {};
   const body = JSON.parse(out.responseJson) as Record<string, unknown>;
-  return json(successStatus, JSON.stringify({ contract: CONSOLE_CONTRACT_VERSION, ...body }), extra);
+  return json(successStatus, JSON.stringify({ contract: CONSOLE_CONTRACT_V2, ...body }), extra);
 }
 
 /**
@@ -295,7 +330,7 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       return json(
         201,
         JSON.stringify({
-          contract: CONSOLE_CONTRACT_VERSION,
+          contract: CONSOLE_CONTRACT_V2,
           agent_id: opened.agent_id,
           actor_role: opened.actor_role,
           expires_at_ms: opened.expires_at_ms,
@@ -335,9 +370,39 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       path.startsWith("/v1/console/assignments") ||
       path.startsWith("/v1/console/sessions") ||
       path.startsWith("/v1/console/outcomes") ||
-      path.startsWith("/v1/console/comparisons")
+      path.startsWith("/v1/console/comparisons") ||
+      // v1.1 (SPEC.md section 6.4). A console path absent from this list is a
+      // console path with NO SESSION CHECK — the block below is where the
+      // cookie is required — so a route added under `/v1/console/` and left out
+      // here is an access-control defect and not a style lapse. Both v1.1
+      // additions are named.
+      path.startsWith("/v1/console/dashboard") ||
+      path.startsWith("/v1/console/versions")
     ) {
       if (!session) throw new ApiError("UNAUTHORIZED", "the owner console requires a session");
+
+      // ---- THE ROUTE-LEVEL ACL, AND IT IS CHECKED HERE: BEFORE THE SERVICE
+      // CALL, AFTER THE SESSION, AND ONCE (SPEC.md section 6.4).
+      //
+      // What it decides is one question — may a session holding THIS role ask
+      // THIS class of route at all — and what it deliberately does not decide is
+      // everything else. Whether the subject exists, whether this actor is its
+      // author, whether the version is in a state that admits the act, and
+      // whether the principal is `agents.type='human'` are all asked by the
+      // service method below, of the SAME `AuthContext` a Bearer key would have
+      // produced. That is `INV-01`: admitting a reviewer to a session widens
+      // what a reviewer may ASK and widens nothing about what the registry will
+      // ANSWER, because the answer is computed in one place and this is not it.
+      //
+      // The classification is closed by default (`src/console-v2.ts`): a console
+      // route nobody classified is `owner_only`.
+      const routeClass = consoleRouteClass(path);
+      if (!consoleRouteAdmits(session.actor_role, routeClass)) {
+        throw new ApiError(
+          "FORBIDDEN",
+          `a console session holding the role ${session.actor_role} may not reach this route`,
+        );
+      }
       // Every MUTATION under the console carries both defences: the request must
       // come from this origin, and it must echo the token only this page holds
       // (`P2-FR-13`). Reads carry neither, because a read changes nothing and a
@@ -357,7 +422,7 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
         return json(
           200,
           JSON.stringify({
-            contract: CONSOLE_CONTRACT_VERSION,
+            contract: CONSOLE_CONTRACT_V2,
             agent_id: session.agent_id,
             actor_role: session.actor_role,
             expires_at_ms: session.expires_at_ms,
@@ -384,7 +449,7 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
             "active",
           );
         }
-        return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_VERSION, logged_out: true }), {
+        return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_V2, logged_out: true }), {
           "Set-Cookie": clearedCookie(secureFor(req.headers["host"])),
           "Cache-Control": "no-store",
         });
@@ -393,6 +458,66 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       // From here the session becomes the ordinary `AuthContext` every service
       // method takes, rate-limited on the same limiter an API key uses.
       const cauth = registry.consoleAuth(session);
+
+      // ================================================================ v1.1
+      // THE CONSOLE PROOFLINE — SPEC.md section 6.4.
+      //
+      // The eleven views the dashboard has always had, answered for a console
+      // session. `registry.dashboard()` is the SAME method the Bearer route and
+      // the MCP tool call, with the same ACL, and `serializeDashboard` is the
+      // same boundary that flattens a cell to its text after checking its
+      // provenance — so every cell arrives carrying its value, its kind, its
+      // why, its source, its window and its bounds, and the console is not a
+      // second place where a provenance field can be dropped.
+      //
+      // The payload IS the dashboard payload with `contract` in front of it.
+      // Not a re-shaping of it: a console-side projection would be a second
+      // answer to "what does this view say", and the confirmed v1.0.0 gap was
+      // that the data for all eleven existed and the Console showed none of
+      // them — which a second projection restates rather than fixes.
+      m = /^\/v1\/console\/dashboard\/([^/]+)$/.exec(path);
+      if (method === "GET" && m) {
+        // `format` IS REFUSED RATHER THAN IGNORED. The HTML rendering is a
+        // rendering; the console reads the JSON contract and must not parse the
+        // page. Silently ignoring the selector would leave a caller believing it
+        // had asked for something it did not get, and a console that ever
+        // learned to read the HTML would find the door already open.
+        if (url.searchParams.get("format") !== null) {
+          throw new ApiError(
+            "INVALID_SCHEMA",
+            "the console reads the JSON dashboard contract; the HTML rendering is not a console representation",
+          );
+        }
+        const payload = serializeDashboard(registry.dashboard(cauth, m[1], searchParamsOf(url)));
+        return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_V2, ...payload }), {
+          "Cache-Control": "no-store",
+        });
+      }
+
+      // ---- the two mutation wrappers (SPEC.md section 6.4).
+      //
+      // WRAPPERS, and the word is exact: each parses its body against the
+      // published contract, then hands the parsed body to the service method the
+      // Bearer surface already calls, with the console session's own
+      // `AuthContext`. No ACL, no eligibility and no transition is recomputed
+      // here — self-review, the version's state, the human-approval gate, the
+      // binding of an approval to one exact adoption request and the idempotency
+      // of a resent form are all decided exactly once, in the service, for every
+      // channel (`INV-01`).
+
+      m = /^\/v1\/console\/versions\/([^/]+)\/reviews$/.exec(path);
+      if (method === "POST" && m) {
+        const body = parseBody(req);
+        refuseViolations(validateConsoleReview(body));
+        return consoleMutationResponse(registry.review(cauth, m[1], body, idemKey(body)), 200);
+      }
+
+      m = /^\/v1\/console\/versions\/([^/]+)\/approvals$/.exec(path);
+      if (method === "POST" && m) {
+        const body = parseBody(req);
+        refuseViolations(validateConsoleApproval(body));
+        return consoleMutationResponse(registry.approve(cauth, m[1], body, idemKey(body)), 201);
+      }
 
       if (method === "GET" && path === "/v1/console/drafts") {
         return json(200, JSON.stringify(registry.consoleInbox(cauth)), { "Cache-Control": "no-store" });
@@ -448,7 +573,7 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       }
 
       if (method === "GET" && path === "/v1/console/fleet") {
-        return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_VERSION, agents: registry.fleetAgents(cauth) }), {
+        return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_V2, agents: registry.fleetAgents(cauth) }), {
           "Cache-Control": "no-store",
         });
       }
@@ -553,7 +678,7 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
     // holds a credential because the credential never leaves this side.
     if (method === "POST" && path === "/v1/console/tickets") {
       const minted = registry.mintConsoleTicket(auth);
-      return json(201, JSON.stringify({ contract: CONSOLE_CONTRACT_VERSION, ...minted }), {
+      return json(201, JSON.stringify({ contract: CONSOLE_CONTRACT_V2, ...minted }), {
         "Cache-Control": "no-store",
       });
     }

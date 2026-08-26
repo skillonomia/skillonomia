@@ -25,6 +25,7 @@
 // union is computed on the way out, over a field set both rows already share.
 import type { Db } from "./sqlite.ts";
 import type { AuthContext } from "./auth.ts";
+import { CONSOLE_CONTRACT_V2 } from "./console-v2.ts";
 import {
   draftAudit,
   getDraft,
@@ -81,9 +82,23 @@ function closingDecision(
   return revisionApproved ? decision : null;
 }
 
-/** The version of these shapes. A console reads it and refuses a payload it was
- *  not built for, which is what "versioned structured API contracts" means in
- *  `INV-05` — a wire format with no version is one nobody can change safely. */
+/**
+ * THE NAME OF THE v1.0.0 CONSOLE CONTRACT, AND IT KEEPS ITS NAME.
+ *
+ * A console reads a version and refuses a payload it was not built for, which
+ * is what "versioned structured API contracts" means in `INV-05` — a wire
+ * format with no version is one nobody can change safely.
+ *
+ * `console.v1` is what the v1.0.0 draft console announced. v1.1 moves what the
+ * `/v1/console/*` SURFACE stamps to `console.v2` (SPEC.md section 6.4), because
+ * the surface's meaning changed; it does not rename this constant, retire it or
+ * reuse the string for something else, because a version that is renamed is a
+ * version an operator can no longer use to tell one build from another. So this
+ * stays here as the recorded name of the earlier contract — the value
+ * `fixtures/v1.0-compat/lifecycle-responses.json` freezes and a v1.0.0 bundle
+ * still refuses anything but — and the payloads below announce the version the
+ * surface serves today.
+ */
 export const CONSOLE_CONTRACT_VERSION = "console.v1";
 
 export interface ConsoleInboxItem extends DraftListItem {
@@ -180,7 +195,7 @@ export function consoleInbox(db: Db, auth: AuthContext): ConsoleInbox {
       state: stateOf(decision),
     };
   });
-  return { contract: CONSOLE_CONTRACT_VERSION, states: INBOX_STATES, items };
+  return { contract: CONSOLE_CONTRACT_V2, states: INBOX_STATES, items };
 }
 
 /**
@@ -200,7 +215,7 @@ export function consoleDraft(db: Db, auth: AuthContext, draftId: unknown, revisi
     closingDecision(decision, thisApproval !== null),
   );
   return {
-    contract: CONSOLE_CONTRACT_VERSION,
+    contract: CONSOLE_CONTRACT_V2,
     draft: detail,
     decision,
     eligibility,
@@ -287,7 +302,7 @@ export function consoleCapabilities(db: Db, auth: AuthContext, nowMs: number): C
       active_assignment_count: mine.filter((a) => assignmentDetail(db, a, nowMs).desired.state === "active").length,
     });
   }
-  return { contract: CONSOLE_CONTRACT_VERSION, items };
+  return { contract: CONSOLE_CONTRACT_V2, items };
 }
 
 export function consoleCapability(db: Db, auth: AuthContext, draftId: unknown, nowMs: number): ConsoleCapability {
@@ -301,7 +316,7 @@ export function consoleCapability(db: Db, auth: AuthContext, draftId: unknown, n
     .filter((a) => a.draft_id === detail.draft_id)
     .map((a) => assignmentDetail(db, a, nowMs));
   return {
-    contract: CONSOLE_CONTRACT_VERSION,
+    contract: CONSOLE_CONTRACT_V2,
     draft_id: detail.draft_id,
     title: titleOfDraft(db, auth, detail.draft_id),
     approved_revisions: approvals,
@@ -327,7 +342,7 @@ export function consoleCapability(db: Db, auth: AuthContext, draftId: unknown, n
 
 export function consoleAssignmentView(db: Db, assignment: AssignmentDetail): ConsoleAssignmentView {
   return {
-    contract: CONSOLE_CONTRACT_VERSION,
+    contract: CONSOLE_CONTRACT_V2,
     assignment,
     effective_from: EFFECTIVE_FROM,
     desired_state_source: DESIRED_STATE_SOURCE,
@@ -390,5 +405,5 @@ export function consoleAudit(db: Db, auth: AuthContext, draftId: unknown): Conso
   const items = base.items.map(fromDraftEvent);
   if (decision) items.push(fromDecision(decision));
   items.sort((a, b) => a.server_at_ms - b.server_at_ms || (a.entry_id < b.entry_id ? -1 : a.entry_id > b.entry_id ? 1 : 0));
-  return { contract: CONSOLE_CONTRACT_VERSION, draft_id: base.draft_id, items };
+  return { contract: CONSOLE_CONTRACT_V2, draft_id: base.draft_id, items };
 }

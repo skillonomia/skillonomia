@@ -184,10 +184,20 @@ interface AuditEntry {
   server_at_ms: number;
 }
 
-/** The contract version this build was written against. A payload announcing a
- *  different one is refused rather than rendered on a guess — which is the point
- *  of a versioned contract (`INV-05`). */
-const CONTRACT = "console.v1";
+/**
+ * The contract version this build was written against. A payload announcing a
+ * different one is refused rather than rendered on a guess — which is the point
+ * of a versioned contract (`INV-05`).
+ *
+ * IT MOVES WITH THE SERVER AND IN THE SAME COMMIT. v1.1 changed what a
+ * `/v1/console/*` envelope means, so the surface announces `console.v2` and this
+ * bundle reads `console.v2`. The two literals are one decision: a server that
+ * stamps a version this file does not know produces a console that refuses every
+ * response, and a bundle that accepts a version the server no longer sends is
+ * the hole `requireContract` exists to close. A DEPLOYED older bundle meeting
+ * this server refuses, loudly and by name, which is the behaviour asked for.
+ */
+const CONTRACT = "console.v2";
 
 /** Why an approve button is disabled, in words, from the machine-readable code.
  *  The DECISION came from the server; this table only names it. */
@@ -303,7 +313,7 @@ async function api<T>(method: string, path: string, body?: unknown, idempotencyK
  * `INV-05` — the refusal, in the one place every response passes through.
  *
  * A console response is a versioned document — SUCCEEDING OR FAILING. This build
- * reads `console.v1`; a body that announces anything else, or announces nothing,
+ * reads `console.v2`; a body that announces anything else, or announces nothing,
  * is refused HERE, before the caller can read a field of it. Refusing is the
  * point of a version: a payload from a server this bundle was not built against
  * may have moved a field, changed what a code means, or dropped a check, and

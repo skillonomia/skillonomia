@@ -504,3 +504,92 @@ export function isConsoleSessionRole(v: unknown): v is ConsoleSessionRole {
  *  kind, or `all` — is `FORBIDDEN` rather than silently filtered, because a
  *  silently narrowed list reads as "there is nothing to decide". */
 export const REVIEWER_VISIBLE_KINDS: readonly ApprovalKindFilter[] = ["review"];
+
+// ===========================================================================
+// The route-level ACL
+// ===========================================================================
+
+/**
+ * WHAT A CONSOLE ROUTE IS, FOR THE PURPOSE OF DECIDING WHO MAY REACH IT.
+ *
+ * SPEC.md section 6.4 states the admission per route as a table, and this is
+ * that table as a value. Routes are grouped into CLASSES rather than listed one
+ * by one, because the rule is about the kind of act — reading a Proofline,
+ * recording a technical verdict, passing a human gate, doing something only the
+ * owner of a workspace does — and a per-path list would drift from the router
+ * the first time a path gained a segment.
+ *
+ * `owner_only` is the class of every console route v1.0.0 shipped: the draft
+ * inbox, the capability library, the assignments, the sessions view and the
+ * outcome loop. None of them is a reviewer's business, and none of them is
+ * named below — they arrive here by being unclassified, which is the point of
+ * the next paragraph.
+ */
+export type ConsoleRouteClass =
+  | "session"
+  | "dashboard"
+  | "approval_inbox"
+  | "review"
+  | "human_approval"
+  | "owner_only";
+
+/**
+ * Who may reach each class.
+ *
+ * A reviewer appears in four of the six and in none of the two that decide
+ * something: `human_approval` is a human owner or admin, and `owner_only` is
+ * whatever the v1.0.0 console already was. Admission to `dashboard` and to
+ * `approval_inbox` is admission to ASK — what comes back is still whatever the
+ * existing Registry ACL says this principal may see, computed by the same
+ * service method the Bearer and MCP surfaces call, so a reviewer session shows
+ * a reviewer no row a reviewer's API key could not fetch.
+ */
+export const CONSOLE_ROUTE_ACL: Readonly<Record<ConsoleRouteClass, readonly ConsoleSessionRole[]>> = {
+  session: ["owner", "admin", "reviewer"],
+  dashboard: ["owner", "admin", "reviewer"],
+  approval_inbox: ["owner", "admin", "reviewer"],
+  review: ["owner", "admin", "reviewer"],
+  human_approval: ["owner", "admin"],
+  owner_only: ["owner", "admin"],
+};
+
+/**
+ * A console path → its class. TOTAL, AND CLOSED BY DEFAULT.
+ *
+ * The default is `owner_only`, and that choice is the load-bearing one. A route
+ * added under `/v1/console/` next month and not classified here is a route a
+ * reviewer cannot reach — the failure mode is a reviewer meeting `FORBIDDEN` on
+ * something they should have been allowed, which somebody reports, rather than
+ * a reviewer reaching something nobody meant them to reach, which nobody
+ * reports. An allowlist read the other way round would make forgetting this
+ * function a silent widening of an access-control boundary.
+ *
+ * The classification is by PATH and not by an argument threaded from the route
+ * body, for the same reason `src/http.ts` stamps the contract marker by path: a
+ * flag passed at each call site is a second thing to keep in step with the
+ * routes, and that is the shape of the defect being avoided.
+ */
+export function consoleRouteClass(path: string): ConsoleRouteClass {
+  if (path === "/v1/console/session" || path === "/v1/console/logout") return "session";
+  if (path === "/v1/console/dashboard" || path.startsWith("/v1/console/dashboard/")) return "dashboard";
+  if (path === "/v1/console/approvals" || path.startsWith("/v1/console/approvals/")) return "approval_inbox";
+  if (/^\/v1\/console\/versions\/[^/]+\/reviews$/.test(path)) return "review";
+  if (/^\/v1\/console\/versions\/[^/]+\/approvals$/.test(path)) return "human_approval";
+  return "owner_only";
+}
+
+/**
+ * The refusal, raised BEFORE the service call and never instead of it.
+ *
+ * This decides one question — may a session holding this role ask this class of
+ * route at all — and it decides nothing else. It does not evaluate whether the
+ * subject exists, whether the actor is the author, whether the version is in a
+ * state that admits the act, or whether the principal is a human. Every one of
+ * those stays in the service layer, is asked of the same `AuthContext` a Bearer
+ * key produces, and is asked AFTER this returns (INV-01). Two checks that both
+ * answered "may this actor do this" would be two answers that could drift, and
+ * this one is deliberately the coarser and the earlier of the pair.
+ */
+export function consoleRouteAdmits(role: ConsoleSessionRole, cls: ConsoleRouteClass): boolean {
+  return CONSOLE_ROUTE_ACL[cls].includes(role);
+}
