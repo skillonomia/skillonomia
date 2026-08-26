@@ -104,8 +104,28 @@ test("G-P2-17: the recorded v1.0.0 baseline is what building v1.0.0 produces", (
   );
   assert.equal(built!.bundle.length, rec.bundle_bytes, "the v1.0.0 bundle is not the size the record states");
   assert.equal(createHash("sha256").update(built!.bundle).digest("hex"), rec.bundle_sha256, "the v1.0.0 bundle is not the bytes the record states");
-  assert.equal(gzip(built!.bundle), rec.gzip_bytes, "the v1.0.0 gzip figure is not what the record states");
-  console.log(`[G-P2-17] v1.0.0 baseline measured at ${rec.baseline_commit.slice(0, 8)}: ${rec.bundle_bytes} B raw, ${rec.gzip_bytes} B gzip`);
+
+  // THE gzip FIGURE IS COMPARED WITH A TOLERANCE, AND THE REASON IS STATED
+  // RATHER THAN HIDDEN. The bundle's BYTES are identical on both runtimes this
+  // suite runs on — that equality is asserted exactly, just above, and it is the
+  // binding that matters. Their zlib implementations are not the same code, and
+  // at level 9 they disagree by a few bytes on the same input, so an exact
+  // equality here would make the record true on whichever runtime wrote it and
+  // false on the other. Two per cent is wide enough for that disagreement and
+  // far too narrow to hide a real growth: the budget itself is measured
+  // separately below, with both sides compressed by the SAME runtime, which is
+  // an exact comparison and is the one the gate turns on.
+  const here = gzip(built!.bundle);
+  const drift = Math.abs(here - rec.gzip_bytes) / rec.gzip_bytes;
+  assert.ok(
+    drift <= 0.02,
+    `this runtime compresses the v1.0.0 bundle to ${here} B where the record states ${rec.gzip_bytes} B — ` +
+      `${(drift * 100).toFixed(1)}% apart, which is more than a zlib implementation difference`,
+  );
+  console.log(
+    `[G-P2-17] v1.0.0 baseline rebuilt at ${rec.baseline_commit.slice(0, 8)}: ${rec.bundle_bytes} B raw ` +
+      `(sha256 ${rec.bundle_sha256.slice(0, 16)}…), ${rec.gzip_bytes} B gzip recorded, ${here} B measured here`,
+  );
 });
 
 test("G-P2-17: the console page loads exactly one script, so the bundle IS the initial JS", () => {
@@ -122,10 +142,14 @@ test("G-P2-17: initial Console JS stays inside the v1.0.0 gzip budget", () => {
     "dist-console/app.js has not been built. `npm test` builds it in `pretest`; run `npm run build:console` first.",
   );
   const rec = record();
+  // BOTH SIDES COMPRESSED BY THE SAME RUNTIME, IN THIS PROCESS. Comparing a
+  // figure this runtime measured against one another runtime recorded would put
+  // a zlib implementation difference inside the budget arithmetic.
+  const baseline = gzip(buildBaseline(rec).bundle);
   const current = gzip(readFileSync(BUNDLE_PATH));
-  const delta = current - rec.gzip_bytes;
+  const delta = current - baseline;
   console.log(
-    `[G-P2-17] initial Console JS: v1.0.0 ${rec.gzip_bytes} B gzip → today ${current} B gzip, ` +
+    `[G-P2-17] initial Console JS: v1.0.0 ${baseline} B gzip → today ${current} B gzip, ` +
       `delta ${delta} B of the ${BUDGET_BYTES} B allowance (${((delta / BUDGET_BYTES) * 100).toFixed(1)}% used)`,
   );
   assert.ok(
