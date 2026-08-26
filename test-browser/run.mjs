@@ -19,5 +19,6 @@ await import("./states.mjs");
 await import("./decisions.mjs");
 await import("./decision-states.mjs");
 await import("./accessibility.mjs");
+await import("./matrix-gaps.mjs");
 
 await run();
