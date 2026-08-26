@@ -158,6 +158,24 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["docs/API.md", "d95e5c94a095bca0", "behaviour", "the journal APPENDS — the earlier rows are byte-for-byte what they were after a later command, and the database refuses an UPDATE: test/v1p3-assignment.test.ts"],
     ["docs/API.md", "8b3e4899496681fb", "behaviour", "entity_version is on the assignment answer and a stale if_version is 412 with the current state: test/v1p3-assignment.test.ts"],
   ],
+  // -------------------------------------------------------- docs/API, v1.1 P1
+  //
+  // Surfaces 10 and 11 under §5.1b: a disposition and a replacement are two
+  // facts, and the document now says what each call writes, what it refuses and
+  // what it declines to claim. Every one of these is a rule of the running
+  // service, and each names the run behind it rather than asking a reader to
+  // take it on trust. The two that are about a NOTICE name the file that builds
+  // the pushed body, because that is where the claim is either true or not.
+  [
+    ["docs/API.md", "13e132d749b66f56", "behaviour", "a published predecessor becomes `superseded` while a deprecated or revoked one keeps its state and gains only the link: test/v1p1-p1-lifecycle.test.ts, test/p4-lifecycle.test.ts"],
+    ["docs/API.md", "62778f7505c9fad5", "behaviour", "the link, the disposition, both log entries and the notices are one transaction, proved by injecting a failure at that boundary and comparing a full snapshot: test/v1p1-p1-lifecycle.test.ts"],
+    ["docs/API.md", "8e1d69b80e02d37e", "behaviour", "an absent successor and an explicit null are one request, and neither removes a recorded link: test/v1p1-p1-lifecycle.test.ts"],
+    ["docs/API.md", "3147e8e3b946910f", "behaviour", "the convergent repeat appends no entry and queues no notice, and the conflicting one writes nothing: test/v1p1-p1-lifecycle.test.ts, test/p5-webhooks.test.ts"],
+    ["docs/API.md", "a5efe8f876820f9d", "behaviour", "`superseded_by` is asserted present on every answer, `null` when there is no successor: test/v1p1-p1-lifecycle.test.ts"],
+    ["docs/API.md", "d3b9518f465e0c4b", "behaviour", "the two queue-count fields are equal on a fresh revoke and both absent on a call that queued nothing: test/v1p1-p1-lifecycle.test.ts"],
+    ["docs/API.md", "4c00a8b354762502", "behaviour", "`tlog_seq` is the revocation's seq and `lineage_tlog_seq` appears only on the call that created the link: test/v1p1-p1-lifecycle.test.ts"],
+    ["docs/API.md", "6319c2451fabc054", "behaviour", "the notice body sets both successor members to null rather than omitting them: src/webhooks.ts, exercised by test/p5-webhooks.test.ts"],
+  ],
   // ------------------------------------------------------------------ README
   [
     ["README.md", "30dbd7abb8b0bb13", "behaviour", "a checkout runs without a build: exercised on both runtimes by test/readme-quickstart.test.ts"],

@@ -830,6 +830,17 @@ by the database (Appendix D.1r), not only by the service:
 6. A predecessor has at most one successor and a successor has at most one
    predecessor. A conflicting existing link is `CONFLICT`.
 
+Surface 10 therefore accepts a predecessor in ANY of those four states, and
+what it writes depends on which: a `published` predecessor retires into
+`superseded`, while one already in a tail KEEPS its disposition — `deprecated`
+stays `deprecated`, `revoked` stays `revoked` — and gains only the pointer. A
+repeat naming the successor already recorded is a convergent noop; one naming a
+different successor is `CONFLICT`. Surface 11 accepts an optional
+`successor_version_id` and, when the version carries no link yet, creates it in
+the same transaction as the revocation — including on a version that is already
+revoked, where the call appends no second `version_revoked` entry and queues no
+second notice, because it revoked nothing.
+
 Both orders converge. `supersede` then `revoke` leaves `state='revoked'` with
 the link intact; `revoke` then `revoke --successor` leaves the same row. What
 neither order does is rewrite history: the transparency log gains a

@@ -4,7 +4,7 @@
 // shown exactly once, and the health rules that decide active/failing/dead.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { p4Fixture, reviewedVersion, publishedVersion, NOW, type P4Fixture } from "./p4-helpers.ts";
+import { p4Fixture, reviewedVersion, publishedVersion, verifiableVersion, NOW, type P4Fixture } from "./p4-helpers.ts";
 import { adoptThroughSurfaces, env } from "./p6-helpers.ts";
 import { handleRest } from "../src/http.ts";
 import {
@@ -437,9 +437,58 @@ test("revoking a version queues a revocation notice per ACTIVE adopter, on the s
     assert.equal(body.skill_version_id, v.versionId);
     assert.equal(body.revocation_reason, "leaks a token", "the adopter learns WHY without another round trip");
     assert.equal(body.receipt_id, null);
+    // §5.1b: the successor question is ANSWERED rather than left out. This
+    // version has no replacement, and a member that is absent would say "this
+    // server does not tell you" instead of "there is none".
+    assert.ok("successor_version_id" in body);
+    assert.ok("successor_semantic_version" in body);
+    assert.equal(body.successor_version_id, null);
+    assert.equal(body.successor_semantic_version, null);
+    // …and where the RECIPIENT can get a verdict of its own. A notice addressed
+    // to an adopter names a call an adopter may make: the stateless verification
+    // route, open to any authenticated principal, over bytes it already holds.
+    assert.equal(body.registry_verification_path, "/v1/verify");
+    assert.equal(body.registry_verification_path.includes("{"), false, "an unfilled template is not a path");
     const secret = hooks.get(sent.url.includes("member") ? "member" : "reviewer")!;
     assert.equal(verifySignature(secret, sent.body, sent.signature), true, "signed like every other push");
   }
+  fx.db.close();
+});
+
+test("a revocation notice that has a replacement to name, names it", async () => {
+  // The other half of the successor members: `[P5.notice]` above proves the two
+  // are ANSWERED when there is no replacement; this proves they carry one when
+  // there is. Both are read at PUSH time, so the link a `revoke --successor`
+  // wrote reaches an adopter whose delivery had not yet gone out.
+  const fx = fixture();
+  const predecessor = publishedVersion(fx, "notice-successor");
+  const successor = verifiableVersion(fx, "notice-successor", {
+    skill_id: predecessor.skillId,
+    semver: "2.0.0",
+    manifest: { skill_id: predecessor.skillId },
+  });
+  fx.registry.verifyVersion(fx.owner, successor.versionId);
+  adoptThroughSurfaces(fx, predecessor, fx.keys.member);
+  const secret = rest(fx, "POST", "/v1/webhooks", fx.keys.member, { url: "https://adopter.example.com/hook" }).body.secret;
+
+  const out = rest(fx, "POST", `/v1/versions/${predecessor.versionId}/revoke`, fx.keys.owner, {
+    reason: "leaks a token",
+    successor_version_id: successor.versionId,
+  });
+  assert.equal(out.status, 200, JSON.stringify(out.body));
+  assert.equal(out.body.superseded_by, successor.versionId);
+  assert.equal(out.body.notifications_queued, 1);
+  assert.equal(out.body.notifications_queued, out.body.notified_adopters);
+
+  const transport = new FakeTransport([{ status: 200 }]);
+  await runWorkerOnce(fx.db, fx.secrets, transport, workerId(NOW, "h", 1), NOW);
+  const notice = transport.sent.map((r) => JSON.parse(r.body)).find((b) => b.kind === "revocation");
+  assert.ok(notice, "the notice was never pushed");
+  assert.equal(notice.successor_version_id, successor.versionId);
+  assert.equal(notice.successor_semantic_version, "2.0.0", "the adopter is told WHICH version to move to, readably");
+  assert.equal(notice.registry_verification_path, "/v1/verify");
+  const sent = transport.sent.find((r) => JSON.parse(r.body).kind === "revocation")!;
+  assert.equal(verifySignature(secret, sent.body, sent.signature), true, "the wider body is signed like every other");
   fx.db.close();
 });
 

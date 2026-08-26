@@ -219,11 +219,41 @@ a second returns the recorded one.
 
 `{"successor_version_id"}`. The successor must itself have reached `verified` or
 `published`. Both versions move atomically and the link is transparency-logged.
+A `published` predecessor becomes `superseded`; one that is already `deprecated`
+or `revoked` keeps that state and gains only the link, because recording a
+replacement is a column write and not a state change. Naming the successor
+already recorded converges (`noop:true`); naming a different one is `409
+CONFLICT` and writes nothing.
 
 ### 11. `skill.revoke` — `POST /v1/versions/{id}/revoke`
 
-`{"reason"}`. Immediate effect on verification verdicts, search and adoption;
-transparency-logged.
+`{"reason","successor_version_id"?}`. Immediate effect on verification verdicts,
+search and adoption; transparency-logged. Any released version —`published`,
+`deprecated` or `superseded` — may be revoked, and a link the version already
+carries survives the move.
+
+`successor_version_id` is optional and points at the replacement. It is written
+in the revocation's own transaction, so a revocation that names a replacement
+never lands as two half-facts; the `version_revoked` entry is appended first and
+the `version_superseded` entry after it. Omitting it means "this revocation
+names no successor" and never "remove the one recorded".
+
+The reason is immutable. A repeat carrying the same reason (and the same link,
+or none) converges with `noop:true` and queues no second notice; a repeat
+carrying a different reason, or a successor other than the one recorded, is
+`409 CONFLICT` and changes nothing. A second call MAY attach a successor to a
+version that was revoked without one — that is not a repeat, and it writes the
+link and its log entry without revoking anything again.
+
+The answer is
+`{"skill_version_id","state","reason","superseded_by","notifications_queued","notified_adopters","tlog_seq","lineage_tlog_seq","noop"}`.
+`superseded_by` is always present and is `null` when there is no replacement, so
+"no successor" is distinguishable from "this server does not say".
+`notifications_queued` and `notified_adopters` are the same count under two
+names — notices QUEUED on the delivery machine, never proof that anything
+arrived — and both are absent on a call that queued nothing. `tlog_seq` is
+always the `version_revoked` entry; `lineage_tlog_seq` appears only when this
+call created the link.
 
 ### 12. `skill.publish` — `POST /v1/versions/{id}/publish`
 
@@ -487,9 +517,21 @@ including a 3xx, because redirects are not followed — counts as a failure unde
 the health rules in `OPERATIONS.md`.
 
 `kind` is `adoption` for a request you made, or `revocation` when a version you
-are running has been revoked. A revocation notice adds `revocation_reason` and
-has `receipt_id: null`; its `adoption_request_id` is a queue row, not something
-you can `skill.adopt` (that call answers `NOT_FOUND` for it).
+are running has been revoked. A revocation notice adds `revocation_reason`,
+`successor_version_id`, `successor_semantic_version` and
+`registry_verification_path`, and has `receipt_id: null`; its
+`adoption_request_id` is a queue row, not something you can `skill.adopt` (that
+call answers `NOT_FOUND` for it).
+
+The two successor members are `null` rather than absent when the version names
+no replacement. `registry_verification_path` is `/v1/verify` — the stateless
+verification call, which any authenticated principal may make over the package
+bytes it already holds, and which answers with the registry's current verdict
+including the revocation reason and the successor. It is not the owner-only
+transition form: a notice sent to you names a call you can make. Revoking does
+not delete the bytes you were given, does not stop them running, and does not
+invalidate their signature; what it does is block new adoptions and tell you
+so.
 
 The registry only connects to `https` endpoints on public addresses, follows no
 redirects, resolves your hostname once and pins the connection to the address it
