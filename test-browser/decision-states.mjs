@@ -26,10 +26,29 @@
 // it carries no filter. Inventing tests for those would be inventing states the
 // specification says are unreachable.
 //
+// TWO CELLS THE TABLE ABOVE IS `R` FOR AND THIS FILE DOES NOT HOLD, named here
+// so the table is a map of where the coverage is rather than a claim that it is
+// all below. Both are Webhook cells whose state `withDecisions` cannot produce,
+// which is what `test-browser/matrix-gaps.mjs` exists for:
+//
+//   disabled            × Webhook — the verdict needs an endpoint that OUTLIVED
+//                         the policy admitting it, so it needs a restart, and
+//                         `withDecisions` holds one server for the whole gate.
+//   empty never-had-any × Approval Inbox — every gate here drives the high-risk
+//                         journey, so an inbox that never had an item is
+//                         unreachable by construction.
+//
+// The three Webhook cells this file DOES hold and did not, until FIX-1, are
+// `disabled`'s two neighbours in the claim: `idempotent replay` and
+// `keyboard/focus` both stopped after the Approval and Revocation halves while
+// the table said `R R R`. A coverage table wider than the code is the same
+// defect class as a product claim wider than the code, so they are covered now
+// rather than the column being narrowed.
+//
 // `decided while open in another session` is the `stale/concurrent decision`
 // row and is tested as that row, not as a class of its own.
 import { test } from "./lib/harness.mjs";
-import { backendInbox, itemById, openItemOfKind, settledRegion, tlogEntries, withDecisions } from "./lib/decisions.mjs";
+import { backendInbox, itemById, openItemOfKind, settledRegion, tabTo, tlogEntries, withDecisions } from "./lib/decisions.mjs";
 import { api } from "./lib/fixture.mjs";
 import { APPROVALS_TEXT, REVOCATION_TEXT, WEBHOOK_TEXT } from "../src/console-surfaces.ts";
 
@@ -757,7 +776,7 @@ test("§7 network/server error · TRIGGER: an injected transport failure and an 
 // ===========================================================================
 
 test("§7 idempotent replay · TRIGGER: the exact key and payload resent after the answer was lost; a replay badge and no second row", async ({ assert }) => {
-  await withDecisions(async ({ page, reader, low, fx, ownerKey }) => {
+  await withDecisions(async ({ page, reader, low, fx, ownerKey, refusing }) => {
     await settledRegion(page, "approvals");
     const items = await backendInbox(reader);
     const target = items.find((i) => i.kind === "adopt_high_risk");
@@ -847,6 +866,59 @@ test("§7 idempotent replay · TRIGGER: the exact key and payload resent after t
     const revocations = (await tlogEntries(fx, ownerKey)).filter((e) => e.event_kind === "version_revoked");
     assert.equal(revocations.length, 1, "a replayed revocation appended a second transparency-log entry");
     assert.equal(String(revocations[0].seq), seq, "the replay reported a seq that is not the original entry's");
+
+    // ---- THE WEBHOOK HALF, which the §7 matrix marks `R` for this row and this
+    // file was claiming without covering.
+    //
+    // THE RECOVERY IS THE SAME BUTTON, and that is the point rather than an
+    // economy. A registration whose answer is lost leaves the URL in the field —
+    // it is cleared only on success — and the console mints the key from THAT
+    // URL, `console-webhook-register-<url>`, not from the attempt. So an
+    // operator who presses `Register this endpoint` again sends the exact key
+    // and the exact payload, which is what this row asks for.
+    let hookDropped = 0;
+    const dropRegister = async (route) => {
+      await route.fetch();
+      hookDropped += 1;
+      await route.abort("connectionreset");
+    };
+    const WEBHOOKS_WRITE = /\/v1\/console\/webhooks$/;
+    await page.route(WEBHOOKS_WRITE, dropRegister, { times: 1 });
+    const before = (await reader.raw("/v1/console/webhooks")).body.items.length;
+    const second = `${refusing.url}/second`;
+    await page.fill("#webhook-url", second);
+    await page.click("#webhook-register");
+    await page.waitForFunction(
+      () => document.getElementById("webhooks")?.dataset.state === "error",
+      undefined,
+      { timeout: 25000 },
+    );
+    assert.equal(hookDropped, 1, "the registration did not reach the registry, so there is nothing to replay");
+
+    // THE REGISTRY DID RECORD IT, and the operator does not know that.
+    const afterFirstHook = (await reader.raw("/v1/console/webhooks")).body.items;
+    assert.equal(afterFirstHook.length, before + 1, "the dropped registration wrote no row, so this is not a replay");
+    assert.equal(await page.$eval("#webhook-url", (n) => n.value), second, "the URL was cleared, so the same payload cannot be resent");
+
+    await page.unroute(WEBHOOKS_WRITE, dropRegister);
+    await page.click("#webhook-register");
+    await page.waitForSelector("#webhooks [data-replayed]", { timeout: 25000 });
+    assert.equal(
+      await page.$eval("#webhooks [data-replayed]", (n) => n.textContent),
+      WEBHOOK_TEXT.replay_badge,
+      "a replayed registration carries no replay badge",
+    );
+
+    // AND NO SECOND ROW. §5.2 selects at most one endpoint per adopter, so a
+    // second registration would also have RETIRED the endpoint the first one
+    // created — a replay that wrote a row would take away a working endpoint.
+    const afterReplay = (await reader.raw("/v1/console/webhooks")).body.items;
+    assert.equal(afterReplay.length, afterFirstHook.length, "a replayed registration wrote a second endpoint");
+    assert.deepEqual(
+      afterReplay.map((i) => `${i.webhook_id}:${i.url}:${i.status}`),
+      afterFirstHook.map((i) => `${i.webhook_id}:${i.url}:${i.status}`),
+      "a replayed registration changed the endpoints the registry holds",
+    );
   });
 });
 
@@ -909,13 +981,21 @@ test("§7 compact/wide viewport · TRIGGER: fixed mobile and desktop viewports; 
 // keyboard/focus — complete the primary path by keyboard; visible focus
 // ===========================================================================
 
-test("§7 keyboard/focus · TRIGGER: a decision and a revocation completed by keyboard alone, with visible focus", async ({ assert }) => {
-  await withDecisions(async ({ page, reader, low }) => {
+// EVERY CONTROL BELOW IS REACHED WITH THE TAB KEY. This test used to call
+// `page.focus(selector)` at each step, which puts focus on a node whether or not
+// any sequence of key presses could have got there — so what it proved was that
+// the controls ACCEPT focus, not that a person with no pointer can reach them.
+// `tabTo` walks from `document.body` and fails if the control is not in the tab
+// order. It also covered two of the three columns; the webhook flow, which the
+// §7 matrix marks `R` for this row, is now the third.
+test("§7 keyboard/focus · TRIGGER: a decision, a revocation and a webhook test completed by keyboard alone, with visible focus", async ({ assert }) => {
+  await withDecisions(async ({ page, reader, low, webhookId, refusing }) => {
     await settledRegion(page, "approvals");
 
     // Reach the row's own control with the keyboard and open it with Enter.
     const opener = '#approval-rows tr[data-kind="publish"] button[data-action="open-approval"]';
-    await page.focus(opener);
+    const presses = await tabTo(page, opener);
+    console.log(`# [§7 keyboard/focus] the inbox row's own control is ${presses} Tab presses from the top of the document`);
     // VISIBLE FOCUS, MEASURED on the element that actually has focus. A computed
     // style asked for the `:focus-visible` pseudo-class answers nothing in
     // Chromium; the style of the focused element is the real question and the
@@ -934,9 +1014,9 @@ test("§7 keyboard/focus · TRIGGER: a decision and a revocation completed by ke
     await page.waitForSelector('#approval-detail[data-state="loaded"]', { timeout: 25000 });
 
     // Type the note and press the decision, all from the keyboard.
-    await page.focus("#approval-note");
+    await tabTo(page, "#approval-note");
     await page.keyboard.type("decided with a keyboard");
-    await page.focus('#approval-controls button[data-decision="approved"]');
+    await tabTo(page, '#approval-controls button[data-decision="approved"]');
     assert.equal(
       await page.evaluate(() => document.activeElement?.getAttribute("data-decision")),
       "approved",
@@ -953,15 +1033,48 @@ test("§7 keyboard/focus · TRIGGER: a decision and a revocation completed by ke
     assert.equal(publish.status, "approved", "the keyboard path did not complete the decision");
     assert.equal(publish.decision.note, "decided with a keyboard");
 
+    // ---- THE WEBHOOK FLOW, which is the column this row was claiming without
+    // covering. Its primary path is two acts — register an endpoint, then send
+    // one test delivery to it — and both are completed here from the keyboard.
+    await settledRegion(page, "webhooks");
+    const before = (await reader.raw("/v1/console/webhooks")).body.items.length;
+    await tabTo(page, "#webhook-url");
+    await page.keyboard.type(refusing.url);
+    await tabTo(page, "#webhook-register");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(
+      () => document.getElementById("webhooks")?.dataset.actionState === "done",
+      undefined,
+      { timeout: 25000 },
+    );
+    const registered = (await reader.raw("/v1/console/webhooks")).body.items;
+    assert.equal(registered.length, before + 1, "the keyboard path did not register an endpoint");
+
+    // …and the test delivery, on the endpoint the journey registered, whose row
+    // the server marks testable. Reached by Tab like everything above it.
+    const testControl = `button[data-action="test-webhook"][data-webhook-id="${webhookId}"]`;
+    const testPresses = await tabTo(page, testControl);
+    console.log(`# [§7 keyboard/focus] the test-delivery control is ${testPresses} Tab presses from the top of the document`);
+    await page.keyboard.press("Enter");
+    await page.waitForSelector("#webhook-test-result", { timeout: 30000 });
+    assert.equal(
+      await page.$eval("#webhook-test-result", (n) => n.dataset.webhookId),
+      webhookId,
+      "the keyboard path produced a test result for a different endpoint",
+    );
+    // THE PROBE REACHED THE ENDPOINT. A refusing receiver answers 500, which is
+    // a real exchange rather than a rendered panel.
+    assert.ok(refusing.hits() > 0, "no test delivery left the process");
+
     // The revocation path, the same way.
-    await page.focus("#revocation-version");
+    await tabTo(page, "#revocation-version");
     await page.keyboard.type(low.skill_version_id);
-    await page.focus("#revocation-load");
+    await tabTo(page, "#revocation-load");
     await page.keyboard.press("Enter");
     await settledRegion(page, "revocation");
-    await page.focus("#revocation-reason");
+    await tabTo(page, "#revocation-reason");
     await page.keyboard.type("revoked with a keyboard");
-    await page.focus("#revoke-primary");
+    await tabTo(page, "#revoke-primary");
     await page.keyboard.press("Enter");
     await page.waitForFunction(
       () => document.getElementById("revocation")?.dataset.state === "committed",

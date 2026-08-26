@@ -163,6 +163,62 @@ export async function settledRegion(page, id, timeout = 20000) {
   return page.$eval(`#${id}`, (b) => b.dataset.state);
 }
 
+/**
+ * REACH A CONTROL WITH THE TAB KEY, from the top of the document.
+ *
+ * `page.focus(selector)` answers a different question from the one §7's
+ * `keyboard/focus` row asks. It puts focus on a node whether or not any sequence
+ * of key presses could have got there: a control removed from the tab order, or
+ * buried behind a trap, still takes programmatic focus and the gate still
+ * passes. Every keyboard assertion in this file used to be written that way, so
+ * what was proved was that the controls accept focus — not that a person with no
+ * pointer can reach them.
+ *
+ * So this presses Tab until the focused element is the one asked for, and it
+ * starts EVERY walk from the top of the document. Clearing focus is not enough
+ * to do that: `blur()` empties `document.activeElement` but leaves Chromium's
+ * sequential-focus starting point where it was, so a second walk would resume
+ * mid-page and a count taken from it would understate the distance. A sentinel
+ * with `tabIndex = 0` is inserted as the FIRST child of `<body>` and focused,
+ * which fixes the starting point, and it is removed before the count is
+ * returned. That one `focus()` is on the sentinel and never on the control: the
+ * hop to the control, and every hop before it, is a key press.
+ *
+ * It returns the number of presses, which the caller logs: a path that suddenly
+ * costs three times as many presses is a tab order that has grown a detour, and
+ * that is worth seeing even when the gate still passes.
+ *
+ * `max` bounds the walk. Exceeding it is a FAILURE and not a fallback to
+ * `focus()`: an unreachable control is the defect this exists to find.
+ */
+const TAB_ORIGIN = "skln-tab-origin";
+
+export async function tabTo(page, selector, max = 250) {
+  await page.evaluate((id) => {
+    document.getElementById(id)?.remove();
+    const origin = document.createElement("span");
+    origin.id = id;
+    origin.tabIndex = 0;
+    document.body.prepend(origin);
+    origin.focus();
+  }, TAB_ORIGIN);
+  const drop = () => page.evaluate((id) => document.getElementById(id)?.remove(), TAB_ORIGIN);
+  for (let presses = 1; presses <= max; presses += 1) {
+    await page.keyboard.press("Tab");
+    const there = await page.evaluate((s) => document.activeElement?.matches(s) === true, selector);
+    if (there) {
+      await drop();
+      return presses;
+    }
+  }
+  const ended = await page.evaluate(() => {
+    const a = document.activeElement;
+    return a === null ? "null" : `${a.tagName}#${a.id}.${a.className}`;
+  });
+  await drop();
+  throw new Error(`\`${selector}\` cannot be reached from the keyboard in ${max} presses (focus ended on ${ended})`);
+}
+
 /** Every row of the Approval Inbox, as the page holds it. */
 export async function readApprovalRows(page) {
   return page.$$eval("#approval-rows tr", (rows) =>
