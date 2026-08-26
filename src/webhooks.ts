@@ -28,6 +28,7 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ulid } from "./ulid.ts";
 import { vetEndpointUrl, WebhookRefused, type UrlPolicy } from "./transport.ts";
+import { REGISTRY_VERIFICATION_PATH } from "./lifecycle-v11.ts";
 
 // -------------------------------------------------------------- secret store
 
@@ -380,10 +381,24 @@ export async function pushOnce(
   // machine (§5.2), and a revocation notice carries the reason with it so the
   // adopter can act without another round trip.
   const kind = req.notification_kind ?? "adoption";
+  // §5.2: the notice carries the reason, the successor when there is one, and
+  // where the recipient can ask the registry for a verdict of its own. All
+  // three are read AT PUSH TIME from the row, so a successor attached after the
+  // revocation — which §5.1b explicitly allows — reaches an adopter whose
+  // delivery had not yet succeeded, rather than a snapshot taken at enqueue.
   const revocation =
     kind === "revocation"
-      ? (db.prepare("SELECT revocation_reason FROM skill_versions WHERE id=?").get(req.skill_version_id) as
-          | { revocation_reason: string | null }
+      ? (db
+          .prepare(
+            `SELECT v.revocation_reason AS revocation_reason,
+                    v.superseded_by_version_id AS successor_version_id,
+                    s.semantic_version AS successor_semantic_version
+               FROM skill_versions v
+               LEFT JOIN skill_versions s ON s.id = v.superseded_by_version_id
+              WHERE v.id = ?`,
+          )
+          .get(req.skill_version_id) as
+          | { revocation_reason: string | null; successor_version_id: string | null; successor_semantic_version: string | null }
           | undefined)
       : undefined;
   const body = JSON.stringify({
@@ -394,7 +409,18 @@ export async function pushOnce(
     adopter_agent_id: req.adopter_agent_id,
     attempt: req.attempt_count,
     server_at_ms: nowMs,
-    ...(kind === "revocation" ? { revocation_reason: revocation?.revocation_reason ?? null } : {}),
+    ...(kind === "revocation"
+      ? {
+          revocation_reason: revocation?.revocation_reason ?? null,
+          // NULL rather than omitted, both of them. An adopter reading a notice
+          // has to be able to tell "there is no replacement" from "this server
+          // does not say", and an absent member says the second thing while
+          // meaning the first.
+          successor_version_id: revocation?.successor_version_id ?? null,
+          successor_semantic_version: revocation?.successor_semantic_version ?? null,
+          registry_verification_path: REGISTRY_VERIFICATION_PATH,
+        }
+      : {}),
   });
 
   const secret = hook.secret_ref === null ? undefined : store.get(hook.secret_ref);

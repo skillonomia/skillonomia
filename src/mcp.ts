@@ -241,7 +241,8 @@ export const MCP_TOOLS = [
   },
   {
     name: "skill.revoke",
-    description: "Surface 11: revoke a published version with a reason; immediate effect on skill.verify verdicts and search.",
+    description:
+      "Surface 11: revoke a released version with a reason, optionally naming the successor that replaces it; immediate effect on skill.verify verdicts and search.",
     // [I-8]: a WRITE, and the most destructive of them: a revoked version is
     // withdrawn and the state is terminal.
     annotations: {
@@ -255,6 +256,10 @@ export const MCP_TOOLS = [
       properties: {
         skill_version_id: { type: "string" },
         reason: { type: "string" },
+        // §5.1b, additive and optional: the replacement, linked in the
+        // revocation's own transaction. Omitting it is a revocation that names
+        // no successor — never a request to remove one already recorded.
+        successor_version_id: { type: "string" },
         idempotency_key: { type: "string" },
       },
       required: ["skill_version_id", "reason"],

@@ -111,7 +111,7 @@ test("only a published version can be superseded; a repeat converges (defect #1)
   rejects(
     () => fx.registry.supersedeVersion(fx.owner, successor.versionId, { successor_version_id: predecessor.versionId }),
     "PRECONDITION_FAILED",
-    /only a published version can be superseded/,
+    /only a released version can name a successor/,
   );
 
   fx.registry.supersedeVersion(fx.owner, predecessor.versionId, { successor_version_id: successor.versionId });
@@ -222,16 +222,23 @@ test("revoke ACL (§6 matrix): author/owner/admin yes, reviewer and plain member
   fx.db.close();
 });
 
-test("only a published version can be revoked; a repeat converges without a second tlog row", () => {
+test("only a released version can be revoked; a repeat converges without a second tlog row", () => {
   const fx = p4Fixture();
   const reviewed = reviewedVersion(fx, "revoke-reviewed");
   rejects(() => fx.registry.revokeVersion(fx.owner, reviewed.versionId, { reason: "too early" }), "PRECONDITION_FAILED");
 
   const v = publishedVersion(fx, "revoke-repeat");
   fx.registry.revokeVersion(fx.owner, v.versionId, { reason: "first" });
-  const again = fx.registry.revokeVersion(fx.owner, v.versionId, { reason: "second" }).response;
+  const again = fx.registry.revokeVersion(fx.owner, v.versionId, { reason: "first" }).response;
   assert.equal(again.noop, true);
   assert.equal(again.reason, "first", "the recorded reason is the one that took effect");
+  // §5.1b rule 2: the reason is IMMUTABLE. v1.0.0 answered a repeat carrying a
+  // DIFFERENT reason with a silent convergence — it discarded the request and
+  // reported success, so a caller who had corrected the wording was told the
+  // correction had landed. It had not, and could not: `migrations/0018` refuses
+  // the write. The typed answer is `CONFLICT`, and nothing moves.
+  rejects(() => fx.registry.revokeVersion(fx.owner, v.versionId, { reason: "second" }), "CONFLICT", /immutable/);
+  assert.equal(row(fx, v.versionId).revocation_reason, "first");
   assert.equal(
     (fx.db.prepare("SELECT COUNT(*) AS c FROM transparency_log WHERE event_kind=?").get(TLOG_REVOKED) as any).c,
     1,
@@ -239,14 +246,23 @@ test("only a published version can be revoked; a repeat converges without a seco
   fx.db.close();
 });
 
-test("a revoked version is terminal: no supersede, no re-verify, no re-publish", () => {
+test("a revoked version keeps its disposition and may still name its replacement (§5.1b)", () => {
   const fx = p4Fixture();
   const { predecessor, successor } = pair(fx, "revoked-terminal");
   fx.registry.revokeVersion(fx.owner, predecessor.versionId, { reason: "terminal" });
-  rejects(
-    () => fx.registry.supersedeVersion(fx.owner, predecessor.versionId, { successor_version_id: successor.versionId }),
-    "PRECONDITION_FAILED",
-  );
+  // Recording a replacement is a COLUMN write, so `revoked` does not have to be
+  // left — and is not. v1.0.0 refused this call outright, which left an owner
+  // who revoked first unable ever to point adopters at the fixed version.
+  const sup = fx.registry
+    .supersedeVersion(fx.owner, predecessor.versionId, { successor_version_id: successor.versionId })
+    .response;
+  assert.equal(sup.state, "revoked", "the disposition is not softened into a replacement notice");
+  assert.equal(sup.superseded_by, successor.versionId);
+  const after = row(fx, predecessor.versionId);
+  assert.equal(after.state, "revoked");
+  assert.equal(after.revocation_reason, "terminal");
+  assert.equal(after.superseded_by_version_id, successor.versionId);
+  // …and `revoked` still leads nowhere as a STATE: verify reports it unchanged.
   assert.equal(fx.registry.verifyVersion(fx.owner, predecessor.versionId).response.state, "revoked");
   assert.equal(NOW > 0, true);
   fx.db.close();

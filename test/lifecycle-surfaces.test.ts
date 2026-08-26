@@ -599,15 +599,32 @@ test("a tail does not return to `published`, and only `revoked` follows another 
   assert.deepEqual([...TRANSITION_WHITELIST.superseded], ["revoked"]);
   assert.deepEqual([...TRANSITION_WHITELIST.revoked], []);
 
-  // The v1.0.0 REST surface still refuses `deprecated → revoked`: the whitelist
-  // is the state rule, and `skill.revoke` carries its own precondition, which
-  // this phase does not widen. That is what makes the edge a CONTRACT change
-  // rather than a behaviour change smuggled in with the schema — the surface
-  // moves in P1, against this assertion.
+  // …and the REST surface now WALKS the edge the whitelist admits. P0 opened
+  // the graph and left surface 11 refusing `deprecated → revoked` with a `412`,
+  // deliberately, so that the widening would be a contract change made on
+  // purpose rather than a behaviour change smuggled in with a schema. This is
+  // that change: a version withdrawn from use and afterwards found to be unsafe
+  // can be said to be unsafe (§5.1, "`revoked` is the one tail every other
+  // released state can reach").
   const revokeIt = restJson(fx, "POST", `/v1/versions/${dep.versionId}/revoke`, fx.keys.owner, { reason: "too late" });
-  assert.equal(revokeIt.status, 412);
-  assert.equal(revokeIt.body.error.current_state, "deprecated");
-  assert.equal(stateOf(fx, dep.versionId), "deprecated");
+  assert.equal(revokeIt.status, 200);
+  assert.equal(revokeIt.body.state, "revoked");
+  assert.equal(revokeIt.body.reason, "too late");
+  assert.equal(revokeIt.body.superseded_by, null);
+  assert.equal(stateOf(fx, dep.versionId), "revoked");
+  // the deprecation is not erased by the revocation: §5.1b's two facts, and the
+  // date one of them stamped, all survive
+  assert.equal(
+    (fx.db.prepare("SELECT deprecation_at_ms AS ms FROM skill_versions WHERE id=?").get(dep.versionId) as any).ms,
+    NOW,
+  );
+
+  // `revoked` itself still leads nowhere: it is the strict tail.
+  const sup = publishedVersion(fx, "terminal-sup");
+  restJson(fx, "POST", `/v1/versions/${sup.versionId}/revoke`, fx.keys.owner, { reason: "unsafe" });
+  const deprecateRevoked = restJson(fx, "POST", `/v1/versions/${sup.versionId}/deprecate`, fx.keys.owner, {});
+  assert.equal(deprecateRevoked.status, 412);
+  assert.equal(stateOf(fx, sup.versionId), "revoked");
 
   // …nor republished. publishVersion() decides LEGALITY first and only then
   // looks at the countersign row, so a version that was published and has
@@ -615,11 +632,13 @@ test("a tail does not return to `published`, and only `revoked` follows another 
   // every other forbidden transition. (It used to answer CONFLICT, because the
   // countersign check ran first and a retired version necessarily carries a
   // countersign — the state is only reachable through `published`.)
-  const republish = restJson(fx, "POST", `/v1/versions/${dep.versionId}/publish`, fx.keys.owner, {});
+  const stillDeprecated = publishedVersion(fx, "terminal-dep-2");
+  restJson(fx, "POST", `/v1/versions/${stillDeprecated.versionId}/deprecate`, fx.keys.owner, {});
+  const republish = restJson(fx, "POST", `/v1/versions/${stillDeprecated.versionId}/publish`, fx.keys.owner, {});
   assert.equal(republish.status, 412);
   assert.equal(republish.body.error.code, "PRECONDITION_FAILED");
   assert.equal(republish.body.error.current_state, "deprecated");
-  assert.equal(stateOf(fx, dep.versionId), "deprecated", "the refusal moved nothing");
+  assert.equal(stateOf(fx, stillDeprecated.versionId), "deprecated", "the refusal moved nothing");
   fx.db.close();
 });
 

@@ -491,7 +491,9 @@ test("a convergent re-revoke queues nothing a second time", async () => {
   const v = publishedVersion(fx, "revoke-twice");
   adoptThroughSurfaces(fx, v, fx.keys.member);
   rest(fx, "POST", `/v1/versions/${v.versionId}/revoke`, fx.keys.owner, { reason: "once" });
-  const again = rest(fx, "POST", `/v1/versions/${v.versionId}/revoke`, fx.keys.owner, { reason: "twice" });
+  // the SAME reason: §5.1b rule 2 makes a repeat carrying a different one a
+  // `CONFLICT`, and this test is about the convergent repeat
+  const again = rest(fx, "POST", `/v1/versions/${v.versionId}/revoke`, fx.keys.owner, { reason: "once" });
   assert.equal(again.body.noop, true);
   assert.equal(again.body.notified_adopters, undefined);
   const count = fx.db

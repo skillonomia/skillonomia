@@ -60,7 +60,16 @@ import {
   shipsArrivalScript,
 } from "./marker.ts";
 import { assertNoPrivateMaterial, systemSigningKey } from "./system-key.ts";
-import { transitionVersion, type VersionState } from "./transitions.ts";
+import { transitionVersion, REVOCABLE_STATES, type VersionState } from "./transitions.ts";
+import {
+  isLineageLinkableState,
+  isSuccessorEligibleState,
+  LINEAGE_LINKABLE_STATES,
+  REVOCATION_REASON_MAX,
+  revokeRequestDigest,
+  supersedeRequestDigest,
+  SUCCESSOR_ELIGIBLE_STATES,
+} from "./lifecycle-v11.ts";
 import { publishVersion as countersignAndPublish, COUNTERSIGN_EVENT } from "./countersign.ts";
 import { verifyPackage, type VerifyOutcome } from "./verify.ts";
 import { runGates, type GateReport } from "./gates.ts";
@@ -855,18 +864,105 @@ export interface SupersedeResponse {
 
 export interface RevokeInput {
   reason?: unknown;
+  /**
+   * §5.1b, additive and OPTIONAL: the version that replaces this one. Absent
+   * and explicit `null` are the SAME request — a v1.0.0 client that sends
+   * `{reason}` alone keeps working and keeps meaning what it meant (INV-09).
+   * The link is written in the revocation's own transaction, so a revocation
+   * that names a replacement never lands as two half-facts.
+   */
+  successor_version_id?: unknown;
 }
 
 export interface RevokeResponse {
   skill_version_id: string;
   state: VersionState;
   reason: string | null;
+  /**
+   * §5.1b, additive and ALWAYS present, `string | null`. Always, because a
+   * client that got no `superseded_by` could not tell "this version has no
+   * replacement" from "this server is too old to say" — and those are
+   * different answers to the one question a revocation notice makes urgent.
+   */
+  superseded_by: string | null;
+  /** The seq of the `version_revoked` entry, and only ever that one. Absent on
+   *  a call that appended none, exactly as in v1.0.0. */
   tlog_seq?: number;
   /** §6 surface 11: how many active adopters were queued a revocation notice
    *  on the §5.2 delivery machine. Absent on a convergent re-revoke, which
-   *  queues nothing. */
+   *  queues nothing. v1.0.0's field, with v1.0.0's meaning: notices QUEUED,
+   *  never notices delivered (INV-07). */
   notified_adopters?: number;
+  /**
+   * The honest NAME for what `notified_adopters` has always counted, added
+   * BESIDE it rather than instead of it. Equal to `notified_adopters` on a
+   * fresh revoke; absent on a convergent repeat, because a call that queued
+   * nothing has no queue count of its own and inventing the first call's
+   * figure here would report a delivery this call did not make.
+   */
+  notifications_queued?: number;
+  /**
+   * The seq of the `version_superseded` entry, present ONLY when THIS call
+   * created the link. A separate name rather than a rule about ordering that a
+   * reader has to remember: `tlog_seq` never silently becomes the lineage
+   * entry on a call that revoked nothing.
+   */
+  lineage_tlog_seq?: number;
   noop?: boolean;
+}
+
+/** The revoke request AS ACCEPTED — the exact value the idempotency digest is
+ *  taken over, and the exact value that is written. */
+interface AcceptedRevoke {
+  reason: string;
+  /** Absent and explicit `null` are the same request, so both arrive here as
+   *  `null`. That is a normalisation of ABSENCE, not of a value: no successor
+   *  id is ever rewritten. */
+  successor_version_id: string | null;
+}
+
+/**
+ * The boundary of `skill.revoke`: accept the request or refuse it, and hand
+ * back exactly what was accepted.
+ *
+ * NOTHING IS REWRITTEN AFTER THIS POINT (§5.1b). The reason is validated
+ * against the §6 surface-11 bounds and then passed through verbatim — the
+ * emptiness check reads a trimmed copy, and the copy is discarded. A reason
+ * that was accepted with its leading whitespace is stored with it, signed with
+ * it and digested with it, because `skill_versions.revocation_reason`, the
+ * transparency-log payload and the idempotency digest have to be the same
+ * string or two of the three are describing a revocation that did not happen.
+ */
+function acceptRevokeInput(input: RevokeInput): AcceptedRevoke {
+  const reason = (input ?? {}).reason;
+  if (typeof reason !== "string" || reason.trim().length === 0 || reason.length > REVOCATION_REASON_MAX) {
+    throw new ApiError(
+      "INVALID_SCHEMA",
+      `reason (non-empty string ≤${REVOCATION_REASON_MAX} chars) required — §6 surface 11`,
+    );
+  }
+  // THE REASON IS WRITTEN TWICE — into `skill_versions.revocation_reason` and
+  // into the transparency-log payload this transaction signs — and the two
+  // have to be the same string. So it is asked the round-trip rule at the
+  // BOUNDARY, in the surface's own vocabulary, rather than meeting it deep
+  // inside `jcsCanonicalize` as an exception about canonicalization. Both
+  // members of the class matter here: an unpaired surrogate is what JCS
+  // refuses, and a U+0000 is what node reads the COLUMN back truncated at,
+  // which would leave a revocation whose signed reason and stored reason
+  // differ. `assertIdentityText` (`src/outcome.ts`) is the one definition;
+  // this translates it.
+  try {
+    assertIdentityText(reason, "reason");
+  } catch (e) {
+    if (!isRefusedText(e)) throw e;
+    throw new ApiError("INVALID_SCHEMA", `reason: ${e.message}`);
+  }
+  const successor = (input ?? {}).successor_version_id;
+  if (successor === undefined || successor === null) return { reason, successor_version_id: null };
+  if (typeof successor !== "string" || successor.length === 0) {
+    throw new ApiError("INVALID_SCHEMA", "successor_version_id must be a non-empty string when present");
+  }
+  return { reason, successor_version_id: successor };
 }
 
 export interface DeprecateResponse {
@@ -2249,18 +2345,48 @@ export class Registry {
 
   // ------------------------------------------------- surface 10: skill.supersede
 
+  /**
+   * `POST /v1/versions/{predecessor}/supersede` — record the replacement.
+   *
+   * **The transaction is opened by the idempotency wrapper, not here.**
+   * `withIdempotencyInTx` runs the writer inside ONE `BEGIN IMMEDIATE` that
+   * also carries the replay row, so a crash between the lineage write and the
+   * `idempotency_keys` insert rolls both back rather than leaving a link whose
+   * key the retry cannot find (§5.1b, `P1-R2-003`). SQLite has no nested
+   * `BEGIN`, so `supersedeInnerInTx` must open none — which is why the writer
+   * below contains no `BEGIN`/`COMMIT`/`ROLLBACK` at all and signals failure by
+   * throwing.
+   *
+   * The digest is taken over the ORDERED pair before the wrapper is entered,
+   * because `same key + different payload → CONFLICT` has to be answered
+   * BEFORE any domain mutation, and the pair is what identifies this request.
+   */
   supersedeVersion(
     auth: AuthContext,
     versionId: string,
     input: SupersedeInput,
     idempotencyKey?: string,
   ): IdempotentOutcome<SupersedeResponse> {
-    return withIdempotency(this.db, auth.agent_id, "skill.supersede", idempotencyKey, this.now(), () =>
-      this.supersedeInner(auth, versionId, input),
+    const successorId = (input ?? {}).successor_version_id;
+    if (typeof successorId !== "string" || successorId.length === 0) {
+      throw new ApiError("INVALID_SCHEMA", "successor_version_id (string) required");
+    }
+    const digest = supersedeRequestDigest({
+      predecessor_version_id: versionId,
+      successor_version_id: successorId,
+    });
+    return withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "skill.supersede",
+      idempotencyKey,
+      this.now(),
+      () => this.supersedeInnerInTx(auth, versionId, successorId),
+      digest,
     );
   }
 
-  private supersedeInner(auth: AuthContext, versionId: string, input: SupersedeInput): SupersedeResponse {
+  private supersedeInnerInTx(auth: AuthContext, versionId: string, successorId: string): SupersedeResponse {
     const row = this.resolveVersionForMutation(auth, versionId);
     // §6 ACL matrix "supersede": author/skill owner, reviewer, admin/owner.
     const allowed =
@@ -2271,22 +2397,132 @@ export class Registry {
       auth.role === "owner";
     if (!allowed) throw new ApiError("FORBIDDEN", "supersede requires the author, skill owner, or a reviewer/admin/owner");
 
-    const successorId = (input ?? {}).successor_version_id;
-    if (typeof successorId !== "string" || successorId.length === 0) {
-      throw new ApiError("INVALID_SCHEMA", "successor_version_id (string) required");
-    }
     if (successorId === versionId) throw new ApiError("INVALID_SCHEMA", "a version cannot supersede itself");
+
+    // THE RECORDED LINK IS READ BEFORE THE SUCCESSOR IS VALIDATED, and the
+    // order is load-bearing. §5.1b rule 5 puts the successor's eligibility
+    // check at LINK CREATION; a repeat of a call that already created the link
+    // creates nothing, so re-asking would let a successor that has since been
+    // deprecated turn yesterday's convergent noop into today's refusal. The
+    // convergence a caller retries for would depend on how much time passed.
+    const existing = row.superseded_by_version_id;
+    if (existing !== null) {
+      if (existing !== successorId) {
+        // §5.1b rule 6: one predecessor, one successor. A different link is a
+        // different fact, and the recorded one is immutable.
+        throw new ApiError("CONFLICT", "this version already names a different successor", existing);
+      }
+      const recorded = this.loadVersion(existing);
+      return {
+        skill_version_id: versionId,
+        state: row.state,
+        superseded_by: existing,
+        successor: { skill_version_id: existing, state: recorded?.state ?? "published" },
+        noop: true,
+      };
+    }
+
+    // §5.1b rule 3: the predecessor must be RELEASED, and that is the
+    // whole precondition. v1.0.0 demanded `published` and so gave a deprecated
+    // or revoked version no way to name its replacement — which is the trap
+    // §5.1b closes: recording a replacement is a COLUMN write, so it neither
+    // needs nor performs a state change on anything but `published`.
+    if (!isLineageLinkableState(row.state)) {
+      throw new ApiError(
+        "PRECONDITION_FAILED",
+        `only a released version can name a successor (§5.1b: ${LINEAGE_LINKABLE_STATES.join(", ")})`,
+        row.state,
+      );
+    }
+
+    const now = this.now();
+    const db = this.db;
+    const successorState = this.resolveSuccessorForLinkInTx(auth, row, successorId);
+    // §5.1b: `published` retires INTO `superseded`; a predecessor already in a
+    // tail keeps the disposition it has. `deprecated` stays `deprecated` and
+    // `revoked` stays `revoked` — writing the pointer must never soften a
+    // revocation into a replacement notice (INV-06). Either way the pointer and
+    // whatever state change accompanies it are ONE statement, so no
+    // intermediate row exists for `migrations/0018` to have to tolerate.
+    const res =
+      row.state === "published"
+        ? db
+            .prepare(
+              "UPDATE skill_versions SET state='superseded', superseded_by_version_id=? WHERE id=? AND state='published' AND superseded_by_version_id IS NULL",
+            )
+            .run(successorId, versionId)
+        : db
+            .prepare(
+              "UPDATE skill_versions SET superseded_by_version_id=? WHERE id=? AND state=? AND superseded_by_version_id IS NULL",
+            )
+            .run(successorId, versionId, row.state);
+    if (res.changes !== 1) {
+      const current = db
+        .prepare("SELECT state, superseded_by_version_id AS link FROM skill_versions WHERE id=?")
+        .get(versionId) as { state: VersionState; link: string | null };
+      if (current.link !== null) {
+        throw new ApiError("CONFLICT", "this version gained a successor during the call", current.link);
+      }
+      throw new ApiError("PRECONDITION_FAILED", "version state changed during supersede", current.state);
+    }
+    this.writeBackLinkInTx(versionId, successorId, successorState);
+    const tlog = appendTlogInTx(
+      db,
+      TLOG_SUPERSEDED,
+      versionId,
+      { skill_version_id: versionId, superseded_by: successorId, actor_agent_id: auth.agent_id },
+      now,
+    );
+    return {
+      skill_version_id: versionId,
+      state: row.state === "published" ? "superseded" : row.state,
+      superseded_by: successorId,
+      successor: { skill_version_id: successorId, state: successorState },
+      tlog_seq: tlog.seq,
+    };
+  }
+
+  /**
+   * Every rule that decides whether a §5.1b link may be CREATED, asked once.
+   *
+   * ONE checker for two surfaces. `skill.supersede` and `skill.revoke
+   * --successor` record the SAME fact, and a link created by one has to be
+   * indistinguishable from a link created by the other or AC-06's "both orders
+   * converge" is a coincidence rather than a property. Two copies of these
+   * checks would be two places for the rule to be true — the defect class
+   * `test/spec-parity.test.ts` exists for — so there is one.
+   *
+   * It WRITES NOTHING. The predecessor's half of the pair is written by the
+   * caller, together with whatever state change accompanies it, so that a
+   * revocation-with-successor is one statement rather than a row that is
+   * briefly revoked without its pointer. The successor's half is
+   * `writeBackLinkInTx` below.
+   *
+   * The caller has already established that the predecessor carries NO link:
+   * every rule here is a link-CREATION rule (§5.1b rule 5 in particular), and
+   * asking them of a link that already exists is what the convergence tests
+   * forbid. Returns the successor's state as observed inside the transaction.
+   */
+  private resolveSuccessorForLinkInTx(auth: AuthContext, row: VersionRow, successorId: string): VersionState {
+    const db = this.db;
+    // §5.1b rule 4: no version is its own predecessor or successor. Asked here
+    // and not only by `skill.supersede`, because `0018`'s trigger would
+    // otherwise abort the write and a SQLITE_CONSTRAINT reaches the caller as a
+    // 500 — the difference between a typed answer and a crash.
+    if (successorId === row.id) throw new ApiError("INVALID_SCHEMA", "a version cannot supersede itself");
     const successor = this.loadVersion(successorId);
     if (!successor || successor.workspace_id !== auth.workspace_id) {
       throw new ApiError("NOT_FOUND", "successor version not found");
     }
+    // §5.1b rule 4: predecessor and successor belong to one skill.
     if (successor.skill_id !== row.skill_id) {
       throw new ApiError("INVALID_SCHEMA", "the successor must be a version of the same skill");
     }
-    if (successor.state !== "verified" && successor.state !== "published") {
+    // §5.1b rule 5, at creation.
+    if (!isSuccessorEligibleState(successor.state)) {
       throw new ApiError(
         "PRECONDITION_FAILED",
-        "the successor must itself have reached `verified` or `published` before it can retire its predecessor",
+        `the successor must itself have reached \`${SUCCESSOR_ELIGIBLE_STATES.join("` or `")}\` before it can retire its predecessor`,
         successor.state,
       );
     }
@@ -2299,102 +2535,103 @@ export class Registry {
     } catch {
       declaredSupersedes = null;
     }
-    if (typeof declaredSupersedes === "string" && declaredSupersedes !== versionId) {
+    if (typeof declaredSupersedes === "string" && declaredSupersedes !== row.id) {
       throw new ApiError(
         "CONFLICT",
         "the successor's signed lifecycle.supersedes names a different version",
         declaredSupersedes,
       );
     }
+    // §6 surface 10: "both versions' Lifecycle fields updated atomically". D.1
+    // gives each side its own column, so the pair is re-read HERE — inside the
+    // transaction — rather than trusted from the snapshot the caller loaded.
+    const fresh = db
+      .prepare("SELECT state, supersedes_version_id FROM skill_versions WHERE id=?")
+      .get(successorId) as { state: VersionState; supersedes_version_id: string | null } | undefined;
+    if (!fresh || !isSuccessorEligibleState(fresh.state)) {
+      throw new ApiError("PRECONDITION_FAILED", "successor state changed during supersede", fresh?.state ?? "unknown");
+    }
+    // §5.1b rule 6, the other direction: one successor, one predecessor.
+    if (fresh.supersedes_version_id !== null && fresh.supersedes_version_id !== row.id) {
+      throw new ApiError("CONFLICT", "the successor already supersedes a different version", fresh.supersedes_version_id);
+    }
+    return fresh.state;
+  }
 
-    if (row.state === "superseded") {
-      // converging noop (defect #1): report the recorded link
-      return {
-        skill_version_id: versionId,
-        state: "superseded",
-        superseded_by: row.superseded_by_version_id,
-        successor: { skill_version_id: successorId, state: successor.state },
-        noop: true,
-      };
-    }
-    if (row.state !== "published") {
-      throw new ApiError("PRECONDITION_FAILED", "only a published version can be superseded (§5.1)", row.state);
-    }
-
-    const now = this.now();
-    const db = this.db;
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      // §6 surface 10: "both versions' Lifecycle fields updated atomically".
-      // D.1 gives each side its own column — the predecessor's
-      // `superseded_by_version_id` (+ state) and the successor's
-      // `supersedes_version_id` — so both writes and the tlog append land in
-      // this one transaction or none of them do.
-      const freshSuccessor = db
-        .prepare("SELECT state, supersedes_version_id FROM skill_versions WHERE id=?")
-        .get(successorId) as { state: VersionState; supersedes_version_id: string | null } | undefined;
-      if (!freshSuccessor || (freshSuccessor.state !== "verified" && freshSuccessor.state !== "published")) {
-        db.exec("ROLLBACK");
-        throw new ApiError("PRECONDITION_FAILED", "successor state changed during supersede", freshSuccessor?.state ?? "unknown");
-      }
-      if (freshSuccessor.supersedes_version_id !== null && freshSuccessor.supersedes_version_id !== versionId) {
-        db.exec("ROLLBACK");
-        throw new ApiError(
-          "CONFLICT",
-          "the successor already supersedes a different version",
-          freshSuccessor.supersedes_version_id,
-        );
-      }
-      const res = db
-        .prepare("UPDATE skill_versions SET state='superseded', superseded_by_version_id=? WHERE id=? AND state='published'")
-        .run(successorId, versionId);
-      if (res.changes !== 1) {
-        db.exec("ROLLBACK");
-        const current = db.prepare("SELECT state FROM skill_versions WHERE id=?").get(versionId) as { state: VersionState };
-        throw new ApiError("PRECONDITION_FAILED", "version state changed during supersede", current.state);
-      }
-      const linked = db
-        .prepare("UPDATE skill_versions SET supersedes_version_id=? WHERE id=? AND supersedes_version_id IS NULL")
-        .run(versionId, successorId);
-      if (linked.changes !== 1 && freshSuccessor.supersedes_version_id !== versionId) {
-        db.exec("ROLLBACK");
-        throw new ApiError("CONFLICT", "successor lifecycle changed during supersede", freshSuccessor.state);
-      }
-      const tlog = appendTlogInTx(
-        db,
-        TLOG_SUPERSEDED,
-        versionId,
-        { skill_version_id: versionId, superseded_by: successorId, actor_agent_id: auth.agent_id },
-        now,
-      );
-      db.exec("COMMIT");
-      return {
-        skill_version_id: versionId,
-        state: "superseded",
-        superseded_by: successorId,
-        successor: { skill_version_id: successorId, state: freshSuccessor.state },
-        tlog_seq: tlog.seq,
-      };
-    } catch (e) {
-      rollbackIfOpen(db);
-      throw e;
-    }
+  /** The successor's half of the §5.1b pair. Separate from the predecessor's
+   *  because D.1 gives each side its own column on its own row, and the
+   *  predecessor's half travels with whatever state change the surface is also
+   *  making. `uq_versions_supersedes` is what makes the CAS necessary: a
+   *  successor that acquired a different predecessor since
+   *  `resolveSuccessorForLinkInTx` read it must be refused, not overwritten. */
+  private writeBackLinkInTx(predecessorId: string, successorId: string, observed: VersionState): void {
+    const back = this.db
+      .prepare("UPDATE skill_versions SET supersedes_version_id=? WHERE id=? AND supersedes_version_id IS NULL")
+      .run(predecessorId, successorId);
+    if (back.changes === 1) return;
+    const current = this.db
+      .prepare("SELECT supersedes_version_id AS link FROM skill_versions WHERE id=?")
+      .get(successorId) as { link: string | null } | undefined;
+    // Already pointing at this predecessor is convergence, not a conflict: the
+    // pair is idempotent and `0018` holds each half immutable.
+    if (current?.link === predecessorId) return;
+    throw new ApiError("CONFLICT", "successor lifecycle changed during supersede", observed);
   }
 
   // ---------------------------------------------------- surface 11: skill.revoke
 
+  /**
+   * `POST /v1/versions/{id}/revoke` — the disposition, and optionally the
+   * replacement, written as one fact each in one transaction (§5.1b).
+   *
+   * **WHY THE BOUNDARY VALIDATION HAPPENS OUT HERE.** The idempotency digest is
+   * SHA-256 over the JCS form of the EXACT ACCEPTED request, and `same key +
+   * different digest → CONFLICT` has to be answered BEFORE any domain
+   * mutation. So the request is accepted — or refused — first, the digest is
+   * taken over what was accepted, and only then is the transaction opened. The
+   * reason is NOT trimmed, case-folded or otherwise rewritten after that
+   * acceptance: a digest over a normalised value would make two different
+   * accepted reasons one key, and the second caller would be handed the first
+   * caller's response for a revocation it did not ask for.
+   *
+   * **WHAT THIS COSTS, NAMED.** A caller who is both unauthorised AND sending a
+   * malformed reason now hears `INVALID_SCHEMA` where v1.0.0 said `FORBIDDEN`.
+   * The refusal is still a refusal and still writes nothing; what moved is
+   * which of two simultaneous faults is reported first, and it moved because
+   * the digest cannot be computed after an authorisation check without opening
+   * the door the digest exists to close.
+   *
+   * **THE WRITER OPENS NO TRANSACTION.** `withIdempotencyInTx` supplies the one
+   * outer `BEGIN IMMEDIATE` that covers the lifecycle state, both lineage
+   * columns, the transparency-log append(s), the queued notices AND the
+   * idempotency response row (§5.1b, `P1-R2-003`). SQLite has no nested
+   * `BEGIN`, so `revokeInnerInTx` contains none and reports failure by
+   * throwing — which the wrapper turns into a `ROLLBACK` of all of it.
+   */
   revokeVersion(
     auth: AuthContext,
     versionId: string,
     input: RevokeInput,
     idempotencyKey?: string,
   ): IdempotentOutcome<RevokeResponse> {
-    return withIdempotency(this.db, auth.agent_id, "skill.revoke", idempotencyKey, this.now(), () =>
-      this.revokeInner(auth, versionId, input),
+    const accepted = acceptRevokeInput(input);
+    const digest = revokeRequestDigest({
+      version_id: versionId,
+      reason: accepted.reason,
+      successor_version_id: accepted.successor_version_id,
+    });
+    return withIdempotencyInTx(
+      this.db,
+      auth.agent_id,
+      "skill.revoke",
+      idempotencyKey,
+      this.now(),
+      () => this.revokeInnerInTx(auth, versionId, accepted),
+      digest,
     );
   }
 
-  private revokeInner(auth: AuthContext, versionId: string, input: RevokeInput): RevokeResponse {
+  private revokeInnerInTx(auth: AuthContext, versionId: string, accepted: AcceptedRevoke): RevokeResponse {
     const row = this.resolveVersionForMutation(auth, versionId);
     // §6 ACL matrix "revoke": author/skill owner, admin/owner — NOT a reviewer.
     const allowed =
@@ -2404,72 +2641,164 @@ export class Registry {
       auth.role === "owner";
     if (!allowed) throw new ApiError("FORBIDDEN", "revoke requires the author, skill owner, or a workspace admin/owner");
 
-    const reason = (input ?? {}).reason;
-    if (typeof reason !== "string" || reason.trim().length === 0 || reason.length > 2000) {
-      throw new ApiError("INVALID_SCHEMA", "reason (non-empty string ≤2000 chars) required — §6 surface 11");
-    }
-    // THE REASON IS WRITTEN TWICE — into `skill_versions.revocation_reason` and
-    // into the transparency-log payload this transaction signs — and the two
-    // have to be the same string. So it is asked the round-trip rule at the
-    // BOUNDARY, in the surface's own vocabulary, rather than meeting it deep
-    // inside `jcsCanonicalize` as an exception about canonicalization. Both
-    // members of the class matter here: an unpaired surrogate is what JCS
-    // refuses, and a U+0000 is what node reads the COLUMN back truncated at,
-    // which would leave a revocation whose signed reason and stored reason
-    // differ. `assertIdentityText` (`src/outcome.ts`) is the one definition;
-    // this translates it.
-    try {
-      assertIdentityText(reason, "reason");
-    } catch (e) {
-      if (!isRefusedText(e)) throw e;
-      throw new ApiError("INVALID_SCHEMA", `reason: ${e.message}`);
-    }
-
-    if (row.state === "revoked") {
-      return { skill_version_id: versionId, state: "revoked", reason: row.revocation_reason, noop: true };
-    }
-    if (row.state !== "published") {
-      throw new ApiError("PRECONDITION_FAILED", "only a published version can be revoked (§5.1)", row.state);
-    }
-
-    const now = this.now();
     const db = this.db;
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const res = db
-        .prepare("UPDATE skill_versions SET state='revoked', revocation_reason=? WHERE id=? AND state='published'")
-        .run(reason, versionId);
+    const now = this.now();
+    const requested = accepted.successor_version_id;
+    const existing = row.superseded_by_version_id;
+
+    // ---- the disposition half (§5.1b rules 1 and 2) -----------------------
+    //
+    // Decided before anything is written, because both answers here are
+    // refusals that must leave the row exactly as it was.
+    const alreadyRevoked = row.state === "revoked";
+    if (alreadyRevoked) {
+      // §5.1b rule 2: the reason is IMMUTABLE. A repeat with the same reason
+      // converges; a repeat with a different one is asking the registry to
+      // change what it already said about these bytes, and v1.0.0's silent
+      // convergence answered that request by discarding it while reporting
+      // success. `migrations/0018` refuses the write from below; this is the
+      // typed answer above it, in §6's vocabulary.
+      if (row.revocation_reason !== accepted.reason) {
+        throw new ApiError(
+          "CONFLICT",
+          "this version is already revoked for a different reason, and a revocation reason is immutable (§5.1b)",
+          "revocation_reason_immutable",
+        );
+      }
+    } else if (!REVOCABLE_STATES.includes(row.state)) {
+      // The legal predecessors are the whitelist read backwards — `published`,
+      // `deprecated` and `superseded` — so this method never restates the edge
+      // set as a literal of its own (§5.1).
+      throw new ApiError(
+        "PRECONDITION_FAILED",
+        `only a released version can be revoked (§5.1: ${REVOCABLE_STATES.join(", ")})`,
+        row.state,
+      );
+    }
+
+    // ---- the lineage half (§5.1b rules 3-6), decided but not yet written ---
+    let linkCreated = false;
+    if (requested !== null) {
+      if (existing !== null) {
+        // Same link is convergence, a different one is `CONFLICT`. Naming NO
+        // successor is neither: it does not ask to change the link, so a bare
+        // re-revoke of a version that carries one simply reports it.
+        if (existing !== requested) {
+          throw new ApiError("CONFLICT", "this version already names a different successor", existing);
+        }
+      } else {
+        linkCreated = true;
+      }
+    }
+
+    // ---- the writes, in the order §5.1b fixes -----------------------------
+    let tlogSeq: number | undefined;
+    let lineageSeq: number | undefined;
+    let queued: number | undefined;
+    // Every link-creation rule is asked BEFORE the first write, so a refusal
+    // here is a refusal that changed nothing — including the disposition, which
+    // a caller asking for `revoke --successor` did not ask to have applied on
+    // its own.
+    const successorState = linkCreated ? this.resolveSuccessorForLinkInTx(auth, row, requested!) : undefined;
+
+    if (!alreadyRevoked) {
+      // ONE statement writes the disposition and, when this call creates it,
+      // the pointer — so `migrations/0018` sees a single consistent row rather
+      // than an intermediate one it would have to be taught to tolerate. The
+      // CAS is on the state this call OBSERVED, not on the literal
+      // `'published'` v1.0.0 hardcoded: `deprecated` and `superseded` are legal
+      // predecessors now, and a hardcoded one silently refused them.
+      const res = linkCreated
+        ? db
+            .prepare(
+              "UPDATE skill_versions SET state='revoked', revocation_reason=?, superseded_by_version_id=? WHERE id=? AND state=?",
+            )
+            .run(accepted.reason, requested, versionId, row.state)
+        : db
+            .prepare("UPDATE skill_versions SET state='revoked', revocation_reason=? WHERE id=? AND state=?")
+            .run(accepted.reason, versionId, row.state);
       if (res.changes !== 1) {
-        db.exec("ROLLBACK");
         const current = db.prepare("SELECT state FROM skill_versions WHERE id=?").get(versionId) as { state: VersionState };
         throw new ApiError("PRECONDITION_FAILED", "version state changed during revoke", current.state);
       }
-      const tlog = appendTlogInTx(
+    } else if (linkCreated) {
+      // §5.1b, and the reason `revoked` needs no outgoing edge: attaching a
+      // successor to an already-revoked version is a COLUMN write. The state
+      // stays `revoked`, no second `version_revoked` entry is appended, and no
+      // second notice is queued — the adopters were told about the revocation
+      // when it happened, and this call did not revoke anything.
+      const res = db
+        .prepare(
+          "UPDATE skill_versions SET superseded_by_version_id=? WHERE id=? AND state='revoked' AND superseded_by_version_id IS NULL",
+        )
+        .run(requested, versionId);
+      if (res.changes !== 1) {
+        const current = db
+          .prepare("SELECT superseded_by_version_id AS link FROM skill_versions WHERE id=?")
+          .get(versionId) as { link: string | null };
+        throw new ApiError("CONFLICT", "this version gained a successor during the call", current.link ?? "unknown");
+      }
+    }
+    // The predecessor's half travelled with the statement above; this is the
+    // successor's.
+    if (linkCreated) this.writeBackLinkInTx(versionId, requested!, successorState!);
+
+    // §5.1b: revoke event FIRST, lineage event SECOND, always. A verifier
+    // reading the chain offline must be able to say which entry belongs to
+    // which half of one call without a timestamp comparison that a
+    // same-millisecond pair would lose.
+    if (!alreadyRevoked) {
+      tlogSeq = appendTlogInTx(
         db,
         TLOG_REVOKED,
         versionId,
-        { skill_version_id: versionId, reason, actor_agent_id: auth.agent_id },
+        { skill_version_id: versionId, reason: accepted.reason, actor_agent_id: auth.agent_id },
         now,
-      );
+      ).seq;
+    }
+    if (linkCreated) {
+      lineageSeq = appendTlogInTx(
+        db,
+        TLOG_SUPERSEDED,
+        versionId,
+        { skill_version_id: versionId, superseded_by: requested, actor_agent_id: auth.agent_id },
+        now,
+      ).seq;
+    }
+    if (!alreadyRevoked) {
       // §6 surface 11 / §5.1 tail table: "active adopters are notified through
       // the delivery machine". Queued in the SAME transaction as the state
       // change, so there is no window in which a version is revoked and its
       // adopters were never told — and no notice for a revocation that rolled
       // back. From here the §5.2 machine owns them: lease, backoff, endpoint
       // health, and a loud dead letter for an adopter with no endpoint.
-      const notices = enqueueRevocationNoticesInTx(db, versionId, now, (adopter) => selectWebhook(db, adopter));
-      db.exec("COMMIT");
-      return {
-        skill_version_id: versionId,
-        state: "revoked",
-        reason,
-        tlog_seq: tlog.seq,
-        notified_adopters: notices.length,
-      };
-    } catch (e) {
-      rollbackIfOpen(db);
-      throw e;
+      queued = enqueueRevocationNoticesInTx(db, versionId, now, (adopter) => selectWebhook(db, adopter)).length;
     }
+
+    const out: RevokeResponse = {
+      skill_version_id: versionId,
+      state: "revoked",
+      // On a convergent repeat the RECORDED reason is the one that took effect,
+      // which rule 2 has just guaranteed is the one that was sent.
+      reason: alreadyRevoked ? row.revocation_reason : accepted.reason,
+      superseded_by: linkCreated ? requested : existing,
+    };
+    if (tlogSeq !== undefined) out.tlog_seq = tlogSeq;
+    if (queued !== undefined) {
+      // Both names, one count, one meaning: notices QUEUED. Neither is proof of
+      // delivery, and neither appears on a call that queued nothing rather than
+      // repeating a historical figure this call did not earn (INV-07).
+      out.notified_adopters = queued;
+      out.notifications_queued = queued;
+    }
+    if (lineageSeq !== undefined) out.lineage_tlog_seq = lineageSeq;
+    // `noop` keeps v1.0.0's meaning and v1.0.0's optionality: present, and
+    // `true`, exactly when this call changed NOTHING. A second revoke that
+    // attached a successor changed the row, so it is not one — reporting
+    // `noop:true` there would tell a caller the link it just created was
+    // already recorded.
+    if (alreadyRevoked && !linkCreated) out.noop = true;
+    return out;
   }
 
   // ------------------------------------------------ surface 13: skill.deprecate

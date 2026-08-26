@@ -117,8 +117,21 @@ export interface RevokeResponseV11 {
  *  timestamp comparison that a same-millisecond pair would lose. */
 export const LIFECYCLE_TLOG_ORDER = ["version_revoked", "version_superseded"] as const;
 
+/**
+ * SHA-256, in the ONE form this registry stores a digest in: the algorithm
+ * label, a colon, then the lowercase hex.
+ *
+ * The label is not decoration. `idempotency_request_digests.request_digest`
+ * bounds itself at exactly 71 characters — the length of this form and not of
+ * bare hex — and `src/journal.ts`'s `correlationDigest` and `src/outcome.ts`'s
+ * `evidenceDigestOf` produce the same shape for the same reason: a column of
+ * opaque hashes with no algorithm on them cannot be migrated to a second
+ * algorithm without guessing what the old rows were. A lifecycle digest goes
+ * into that column, so it is that form, and a digest this file computes and a
+ * digest that column accepts are one thing rather than two that agree today.
+ */
 function sha256Hex(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
+  return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
 }
 
 /**
@@ -193,6 +206,24 @@ export interface RevocationNoticeV11 {
   registry_verification_path: string;
 }
 
-/** The path that answer lives at. One constant, so the notice, the docs and the
- *  Console cannot name three different places. */
-export const REGISTRY_VERIFICATION_PATH = "/v1/versions/{skill_version_id}/verify";
+/**
+ * The path that answer lives at. One constant, so the notice, the docs and the
+ * Console cannot name three different places.
+ *
+ * WHY THIS ROUTE AND NOT THE TRANSITION FORM. This path is carried in a notice
+ * addressed to ADOPTERS, and an adopter is not the owner, the author or a
+ * workspace admin. `POST /v1/versions/{id}/verify` is the owner/admin
+ * TRANSITION form (Appendix H surface 4: "admin/owner"), so naming it here
+ * would have been a notice whose central instruction the recipient is
+ * `FORBIDDEN` from following — the notice would look actionable and not be.
+ * `POST /v1/verify` is the STATELESS §4.4 form on the same surface, open to any
+ * authenticated principal, and it answers in the §4.4.8 verdict vocabulary that
+ * carries `revocation_reason` and `successor_version_id` — the two facts this
+ * notice is about. It needs the package bytes, which is precisely what the
+ * recipient of a revocation notice has: it is the adopter of those bytes.
+ *
+ * What it still does NOT promise: that the bytes were removed, that they will
+ * stop running, or that their signature stopped verifying. None of those is
+ * true and the notice implies none of them.
+ */
+export const REGISTRY_VERIFICATION_PATH = "/v1/verify";

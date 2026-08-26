@@ -354,7 +354,12 @@ test("[P0.C14] no generic transition reaches `revoked` — the two new inbound e
 test("[P0.C15] the revoke digest is sensitive to what a repeat must differ on, and blind to what it must not", () => {
   const base = { version_id: "V1", reason: "leaks a token" };
   const d = revokeRequestDigest(base);
-  assert.match(d, /^[0-9a-f]{64}$/);
+  // The form this registry stores a digest in — the algorithm label, then the
+  // hex — and the exact 71 characters `idempotency_request_digests` bounds
+  // itself at. A bare-hex digest could not be written to the column it exists
+  // to be written to.
+  assert.match(d, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(d.length, 71);
   // stable across calls — otherwise a legitimate replay is a CONFLICT
   assert.equal(revokeRequestDigest(base), d);
   // an ABSENT successor and an explicit null are the same request
@@ -380,14 +385,30 @@ test("[P0.C15] the revoke digest is sensitive to what a repeat must differ on, a
 test("[P0.C16] the two lifecycle log entries have a fixed order and the reason has a stated bound", () => {
   assert.deepEqual([...LIFECYCLE_TLOG_ORDER], ["version_revoked", "version_superseded"]);
   assert.equal(REVOCATION_REASON_MAX, 2000);
-  // the bound the shipped v1.0.0 surface already enforces, so the constant is
-  // the same number and not a second opinion
+  // The bound the shipped v1.0.0 surface already enforces. P0 could only check
+  // that the surface spelled the SAME NUMBER as the constant; P1 wired the
+  // surface to the constant itself, which is strictly stronger — there is now
+  // one number rather than two that agree — so this asserts that wiring.
   const service = readFileSync(join(ROOT, "src", "service.ts"), "utf8");
   assert.ok(
-    service.includes(`reason.length > ${REVOCATION_REASON_MAX}`),
-    "the revoke surface bounds the reason at a different number than the contract states",
+    /reason\.length > REVOCATION_REASON_MAX/.test(service),
+    "the revoke surface no longer reads the contract's bound, so the two could drift",
   );
-  assert.ok(REGISTRY_VERIFICATION_PATH.includes("{skill_version_id}"));
+  assert.equal(/reason\.length > \d+/.test(service), false, "the surface restates the bound as a literal");
+  // THE PATH IN AN ADOPTER'S NOTICE IS ONE AN ADOPTER MAY CALL. The templated
+  // `/v1/versions/{id}/verify` is the owner/admin TRANSITION form (Appendix H
+  // surface 4), and a notice addressed to adopters whose central instruction
+  // the recipient is FORBIDDEN from following is a notice that overstates what
+  // it offers. The stateless §4.4 form is open to any authenticated principal
+  // and answers in the verdict vocabulary that carries the revocation reason
+  // and the successor.
+  assert.equal(REGISTRY_VERIFICATION_PATH, "/v1/verify");
+  assert.equal(REGISTRY_VERIFICATION_PATH.includes("{"), false, "a notice cannot carry an unfilled template");
+  const http = readFileSync(join(ROOT, "src", "http.ts"), "utf8");
+  assert.ok(
+    http.includes(`path === "${REGISTRY_VERIFICATION_PATH}"`),
+    "the notice names a path this server does not route",
+  );
 });
 
 // ===========================================================================
