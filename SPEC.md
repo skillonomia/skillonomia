@@ -160,6 +160,18 @@ not themselves normative.
     host that has none of them. With no `--base-url` it starts a clean
     deployment of its own; the one-time credentials of a running one are read
     from the environment, never from the command line.
+  - `init <directory> --slug <slug> --risk low|medium|high [--force]` — write a
+    source skeleton and mint one new `skill_id` locally (§6.6). The slug is the
+    Registry's public name and is not written into the signed manifest. No
+    private key is created or stored.
+  - `validate <directory> [--json]` — the local, read-only `skill-source-v1`
+    preflight (§6.6): the profile, the eight §7.1 gates and the gate/evidence
+    cross-field check. It writes nothing into the directory.
+  - `create <directory> --slug <slug> --server <url> --api-key-env <ENV_NAME>
+    [--json]` — validate, then hand the source to `skill.create_from_dir`, which
+    packs, marks, hashes and signs it (§6.6). The API key is read only from the
+    named environment variable, and appears in no argument, URL, config file or
+    output stream.
   - `version` — the release version. `help` — the subcommand list.
 
   The registry database of `verify` and `verify-log` comes from `--db`, from a
@@ -2119,6 +2131,144 @@ The wrapper calls the same service method with the console session's own
 admin session and by no other role, and it recomputes no part of the rule above.
 
 ---
+
+### 6.6 Authoring CLI and the source profile (auxiliary, normative)
+
+The ordinary path from a directory on an author's machine to a signed version in
+the registry MUST NOT require hand-written JSON, a hand-built archive, a
+hand-made signature or an API key on a command line. The authoring journey is
+`init`, then `validate`, then `create`.
+
+```text
+skillonomia init <directory> --slug <slug> --risk low|medium|high [--force]
+skillonomia validate <directory> [--json]
+skillonomia create <directory> --slug <slug> --server <url> --api-key-env <ENV_NAME> [--json]
+```
+
+#### 6.6.1 The `skill-source-v1` profile
+
+A SOURCE directory is the input a human hands the registry. It is not a package,
+and the profile says exactly how the two differ:
+
+- every member `skill-package-v1` requires is required, EXCEPT the server-owned
+  `author_agent` and `integrity`;
+- `author_agent` is normally absent. Where it is present it MUST equal the
+  authenticated principal at `create`, or the call is `FORBIDDEN`; declaring
+  yourself to be somebody else is a different error from forgetting a field;
+- `integrity` MUST be absent. It is computed over the packed bytes AFTER the
+  arrival marker exists, so any value written into a source describes different
+  bytes. A validator MAY compute a temporary pre-marker list to judge the shape
+  of the surrounding document, and MUST NOT write it into the source;
+- a source carrying `skill.json` or `SIGNATURE.jws` is refused as already-packed
+  input;
+- after authentication the server sets `author_agent`, adds the arrival marker,
+  computes the final `integrity`, applies the full `skill-package-v1` schema and
+  signs the result.
+
+The profile does NOT narrow the package contract and is not published as a
+replacement for it: a package that validates today validates tomorrow.
+
+**One validator, two callers.** The local `validate` and the server's
+`skill.create_from_dir` MUST share one source-profile validator, with identical
+error codes and identical JSON pointers. Two implementations that agree when they
+are written diverge afterwards, and an author whose preflight is green and whose
+upload is a `400` has been told that their check means something it does not.
+
+#### 6.6.2 What each command guarantees
+
+`init` mints one new ULID `manifest.skill_id`, locally, exactly once, and
+validates `slug` against the Registry grammar `[a-z0-9-]{3,64}`. The slug is the
+Registry's public name: it MUST NOT be written into the signed manifest and MUST
+NOT be derived from the title or the directory name, because an author who
+renames a directory has not renamed their skill. The printed next-step command
+repeats the exact slug. An existing non-empty directory requires `--force`, and
+`--force` MUST NOT delete files it did not write. Generated `gate_id` values are
+snake_case so they can be named from `outcome_contract.evidence[]`. A `high` risk
+template declares both `publish` and `adopt_high_risk`, because §7.3 asks at two
+different moments. No private key is created or stored.
+
+`validate` is a local, read-only preflight. It applies the profile, the eight
+§7.1 safety gates and the cross-field check between
+`procedure.validation_gates[].gate_id` and `outcome_contract.evidence[]`. It
+exits 0 only when no finding is `FAIL`, and it MUST NOT create a Registry row or
+write anything into the source directory.
+
+`create` reads the API key ONLY from the environment variable named by
+`--api-key-env`. The key MUST NOT appear in `argv`, in the URL, in a config file,
+or in anything written to stdout or stderr: an argument is in the process table
+and the shell history, a URL is in every proxy log, and a config file is in every
+backup. `create` runs the same `validate` first, then hands the source archive to
+the existing `skill.create_from_dir` path, which mints the version id, the
+arrival marker, the integrity list and the system signature under the existing
+contract. The idempotency key is generated once per attempt and is safe to repeat
+after transport uncertainty — a key minted per retry is not an idempotency key. If
+the slug already exists under a different `skill_id` the CLI reports a typed
+`CONFLICT` and MUST NOT rewrite the source; authoring a further version of an
+existing skill remains the advanced `POST /v1/skills/{skill_id}/versions/from-source`
+path and is never guessed.
+
+On every validation failure and every transport failure the source directory is
+byte-identical afterwards.
+
+#### 6.6.3 Finding codes and their documentation anchors
+
+Every finding carries an RFC 6901 JSON pointer into the manifest, a stable code,
+a severity (`FAIL`, `WARN`, `INFO`) and a recovery hint that says what to DO. A
+report of `/procedure/validation_gates/0/gate_id: INVALID_SCHEMA` is true and
+leaves a first-time author no better off. Only a `FAIL` decides the exit code.
+
+The codes are stable, because published documentation anchors one section per
+code and author tooling may branch on them:
+
+<a id="source-manifest-missing"></a>
+**`source_manifest_missing`** — the directory has no `manifest.json`, and the
+profile is a profile of that file. Recovery: run `skillonomia init`, which writes
+`manifest.json` and `SKILL.md`.
+
+<a id="source-manifest-not-json"></a>
+**`source_manifest_not_json`** — `manifest.json` is not readable as a single JSON
+object. The parser is strict on purpose: a duplicate member or a trailing comma
+changes what a signature would cover.
+
+<a id="source-skill-md-missing"></a>
+**`source_skill_md_missing`** — `SKILL.md` is absent from the source root. It is
+the document an adopting agent reads.
+
+<a id="source-already-packed"></a>
+**`source_already_packed`** — the directory carries `skill.json` or
+`SIGNATURE.jws`, which packing produces. An already-packed archive goes to
+`skill.create`.
+
+<a id="source-server-owned-member"></a>
+**`source_server_owned_member`** — the manifest carries a member the server owns.
+`integrity` in a source is always wrong. `author_agent` is merely premature, and
+is refused only when it names a principal other than the authenticated one.
+
+<a id="source-schema"></a>
+**`source_schema`** — a member does not satisfy `skill-package-v1`. The pointer is
+the exact path inside `manifest.json`.
+
+<a id="source-outcome-contract"></a>
+**`source_outcome_contract`** — a package this registry packs declares what
+success is. Without `outcome_contract` the §4 `outcome` column can never say
+anything, and `unknown` is a sentence a reader meets when nothing was reported,
+which is never the same as a failure.
+
+<a id="source-gate-evidence-unresolved"></a>
+**`source_gate_evidence_unresolved`** — an `outcome_contract.evidence[]` entry can
+only mean one `validation_gates[].gate_id`, and the two are spelled differently,
+so the fields do not join up. The finding names both.
+
+<a id="source-gate-id-not-nameable"></a>
+**`source_gate_id_not_nameable`** — a `gate_id` is outside the identifier form
+`outcome_contract.evidence[]` uses, so that gate cannot be named as evidence. This
+is a `WARN`: the package schema still admits the value, and narrowing the schema
+would refuse packages that verify today.
+
+<a id="source-safety-gate"></a>
+**`source_safety_gate`** — one of the eight §7.1 gates reported `fail` or `warn`
+on this source. The gate runner is the registry's own; the CLI runs no second
+copy of a gate.
 
 ---
 

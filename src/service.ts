@@ -73,6 +73,7 @@ import {
 import { publishVersion as countersignAndPublish, COUNTERSIGN_EVENT } from "./countersign.ts";
 import { verifyPackage, type VerifyOutcome } from "./verify.ts";
 import { runGates, type GateReport } from "./gates.ts";
+import { validateSourceProfile } from "./source-profile.ts";
 import { appendTlogInTx, type TlogRow } from "./tlog.ts";
 import {
   recordApproval,
@@ -1431,31 +1432,34 @@ export class Registry {
     if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
 
     const source = readArchiveBytes(input.source);
-    const rawManifest = source.get("manifest.json");
-    if (!rawManifest) {
-      throw new ApiError("INVALID_SCHEMA", "manifest.json missing from the source tree (§4.1 source layout)");
-    }
-    if (!source.has("SKILL.md")) throw new ApiError("INVALID_SCHEMA", "SKILL.md missing at source root (§4.1)");
-    // A source tree is not a package. `skill.json` and `SIGNATURE.jws` are
-    // PRODUCED here; a source carrying them is either a packed archive sent to
-    // the wrong surface or an attempt to supply a signature the registry is
-    // about to make. Either way the answer is the same, and it names the
-    // surface that does accept a sealed package.
-    for (const produced of ["skill.json", "SIGNATURE.jws"]) {
-      if (source.has(produced)) {
-        throw new ApiError(
-          "INVALID_SCHEMA",
-          `${produced} is produced by packing and must not be in the source tree — an already-packed archive goes to skill.create`,
-        );
-      }
+
+    // THE SOURCE PROFILE, AND IT IS THE CLI's — one validator, two callers.
+    //
+    // What used to be here was a second reading of the same rules: manifest
+    // present, SKILL.md present, nothing already packed, parses, matches the
+    // schema, declares an outcome contract. `skillonomia validate` has to answer
+    // those same questions on the author's machine, and a second implementation
+    // that agrees today disagrees later — which is not a worry about
+    // carelessness but what the webhook policy in this same repository actually
+    // did. So the semantics live in `src/source-profile.ts`, this calls them,
+    // and an author whose `validate` was green does not meet a 400 here for a
+    // reason their preflight could not have known.
+    //
+    // The FIRST FAIL becomes the typed error, and the code it becomes is
+    // `INVALID_SCHEMA` exactly as before — the profile is where the wording and
+    // the pointer come from, not where the API's error space is decided.
+    const findings = validateSourceProfile(source, { nowMs: this.now() });
+    const firstFail = findings.find((f) => f.severity === "FAIL");
+    if (firstFail !== undefined) {
+      throw new ApiError("INVALID_SCHEMA", `${firstFail.pointer}: ${firstFail.detail} (${firstFail.code}) — ${firstFail.recovery}`);
     }
 
-    let manifest: any;
-    try {
-      manifest = parseJsonStrict(utf8Decode(rawManifest));
-    } catch (e: any) {
-      throw new ApiError("INVALID_SCHEMA", `manifest.json: ${e.message}`);
-    }
+    // Parsed again rather than carried out of the validator, deliberately: the
+    // profile is a JUDGEMENT on a source and hands back findings, not a parsed
+    // document this path could then mutate. `parseJsonStrict` is deterministic
+    // and the bytes have not moved.
+    const rawManifest = source.get("manifest.json")!;
+    const manifest: any = parseJsonStrict(utf8Decode(rawManifest));
     // Defect #2, at the one place a packer could otherwise decide it: the author
     // is the authenticated agent. Unlike `skill.create` this is not a refusal
     // but an assignment — there is no author-supplied signature to invalidate,
@@ -1478,43 +1482,19 @@ export class Registry {
       files.set(path, bytes);
     }
 
-    // The source manifest is validated HERE, before anything is resolved or
-    // written, for the reason `skill.create` validates before its transaction:
-    // `resolveTargetSkill` reads `manifest.skill_id` and the row carries
-    // `semantic_version`, so a manifest that is merely junk would otherwise
-    // surface as a database binding error instead of a typed INVALID_SCHEMA.
+    // The shape and D-2's definition of success were BOTH decided above, by the
+    // profile, before anything was resolved or written — for the reason
+    // `skill.create` validates before its transaction: `resolveTargetSkill`
+    // reads `manifest.skill_id` and the row carries `semantic_version`, so a
+    // manifest that is merely junk would otherwise surface as a database
+    // binding error instead of a typed `INVALID_SCHEMA`. A source without an
+    // outcome contract therefore leaves no row, no key and no blob behind, and
+    // an author met that refusal on their own machine first.
     //
-    // `integrity` is the one field a SOURCE legitimately lacks — packing
-    // computes it, and it cannot be computed before the marker exists — so the
-    // check runs against a copy carrying the pre-marker list. Its VALUE is
-    // discarded; only the shape of the surrounding document is being judged,
-    // and the real list is computed and validated again after the marker lands.
-    const shapeCheck = validateManifest({ ...manifest, integrity: computeIntegrity(files) });
-    if (!shapeCheck.valid) throw new ApiError("INVALID_SCHEMA", shapeCheck.errors.slice(0, 5).join("; "));
-
-    // D-2: THIS PATH REQUIRES A DEFINITION OF SUCCESS, and the older one does
-    // not. `skill.create` accepts a package an author signed elsewhere — the
-    // seed, the fifteen dogfood fixtures and `skills/git-bundle-verify` were
-    // signed before this section existed, and a registry that refused them would
-    // be demanding a document their authors could not have written. Those
-    // packages report `outcome` = `unknown` with the reason
-    // `no_outcome_contract`, which is the honest answer and never `no` [I-1],
-    // [A-0].
-    //
-    // A package packed HERE is different: the registry is producing it, now, and
-    // a skill whose success nobody defined is a skill whose §4 `outcome` column
-    // can never say anything. The refusal is BEFORE the transaction and before
-    // the marker, so a source without a contract leaves no row, no key and no
-    // blob behind. The section then rides inside the manifest that gets signed,
-    // which is what makes the definition of success unchangeable without a new
-    // version [M-6].
-    const contract = outcomeContractOf(manifest);
-    if (!contract.valid) {
-      throw new ApiError(
-        "INVALID_SCHEMA",
-        `a package packed by this registry declares what success is: manifest.outcome_contract with \`check\`, \`evidence\` and \`unknown\` (${contract.reason}) — D-2`,
-      );
-    }
+    // The real `integrity` list is computed and validated again below, after the
+    // marker lands. What the profile judged was a copy carrying a pre-marker
+    // list, whose VALUE it discarded: only the shape of the surrounding document
+    // can be judged before the bytes are final.
 
     // The convergence identity, computed on the SOURCE and therefore BEFORE the
     // marker is written. Canonical rather than byte-wise: reformatting

@@ -23,6 +23,8 @@ import { runAdapter } from "./adapter-cli.ts";
 import { verifyPackageAt } from "./verify-cli.ts";
 import { verifyLogAt } from "./verify-log.ts";
 import { runDemo } from "./demo.ts";
+import { runInit, runValidate, runCreate } from "./cli-authoring.ts";
+import { isRiskLevel, RISK_LEVELS } from "./cli-authoring-contract.ts";
 
 export const EXIT_OK = 0;
 export const EXIT_CHECK_FAILED = 1;
@@ -81,6 +83,22 @@ export const HELP: string = [
   "        refuses an owner or admin credential on every one of these surfaces.",
   "        SKILLONOMIA_BASE_URL and SKILLONOMIA_ADAPTER_KEY are read when the",
   "        options are absent.",
+  "  init <directory> --slug SLUG --risk low|medium|high [--force]",
+  "        write a source skeleton — manifest.json, SKILL.md, a fixture and an",
+  "        outcome-contract template — and mint one new skill_id locally. The",
+  "        slug is the Registry's public name and is NOT written into the signed",
+  "        manifest. --force overwrites the generated files only; it deletes",
+  "        nothing it did not write. No private key is created or stored.",
+  "  validate <directory> [--json]",
+  "        local read-only preflight: the skill-source-v1 profile, the eight",
+  "        safety gates and the gate/evidence cross-field check. Every error",
+  "        carries a JSON pointer, a stable code, a severity and a fix. Exit 0",
+  "        only when nothing FAILed. Writes nothing to the directory.",
+  "  create <directory> --slug SLUG --server URL --api-key-env ENV_NAME [--json]",
+  "        validate, then hand the source to the registry, which packs, adds the",
+  "        arrival marker, computes integrity and signs. The API key is read",
+  "        ONLY from the named environment variable — never an argument, a URL",
+  "        or a config file. The source directory is never rewritten.",
   "  version",
   "        print the release version.",
   "  help",
@@ -342,6 +360,62 @@ async function cmdAdapter(argv: readonly string[], io: CliIo): Promise<number> {
   return await runAdapter([sub], parsed.values, io);
 }
 
+// ------------------------------------------------------- authoring (§6.6)
+
+/**
+ * The three authoring subcommands, parsed here and executed in
+ * `src/cli-authoring.ts`.
+ *
+ * The split is the one this file already makes for every other command: argument
+ * shapes, exit codes and output form here, behaviour there. What is different is
+ * that these three read a CLOCK and an ENVIRONMENT, and both are passed in
+ * rather than reached for — `init` stamps `created_at`, `create` reads the API
+ * key from a named variable, and a module that took either from a global would
+ * be a module a test cannot pin and cannot prove reads the key from one place.
+ */
+function cmdInit(argv: readonly string[], io: CliIo): number {
+  const parsed = parseArgs(argv, ["--slug", "--risk"], ["--force"]);
+  const directory = parsed.positional[0];
+  if (directory === undefined) throw new UsageError("init needs a directory");
+  if (parsed.positional.length > 1) throw new UsageError(`init takes one directory (got ${parsed.positional[1]} as well)`);
+  const slug = parsed.values["--slug"];
+  if (slug === undefined) throw new UsageError("init needs --slug");
+  const risk = parsed.values["--risk"];
+  if (!isRiskLevel(risk)) throw new UsageError(`--risk must be one of ${RISK_LEVELS.join(", ")}`);
+  return runInit({ directory, slug, risk, force: parsed.flags.has("--force") }, io, { nowMs: Date.now() });
+}
+
+function cmdValidate(argv: readonly string[], io: CliIo): number {
+  const parsed = parseArgs(argv, [], ["--json"]);
+  const directory = parsed.positional[0];
+  if (directory === undefined) throw new UsageError("validate needs a directory");
+  if (parsed.positional.length > 1) throw new UsageError(`validate takes one directory (got ${parsed.positional[1]} as well)`);
+  return runValidate({ directory, json: parsed.flags.has("--json") }, io, { nowMs: Date.now() });
+}
+
+async function cmdCreate(argv: readonly string[], io: CliIo): Promise<number> {
+  const parsed = parseArgs(argv, ["--slug", "--server", "--api-key-env"], ["--json"]);
+  const directory = parsed.positional[0];
+  if (directory === undefined) throw new UsageError("create needs a directory");
+  if (parsed.positional.length > 1) throw new UsageError(`create takes one directory (got ${parsed.positional[1]} as well)`);
+  const slug = parsed.values["--slug"];
+  const server = parsed.values["--server"];
+  const apiKeyEnv = parsed.values["--api-key-env"];
+  if (slug === undefined) throw new UsageError("create needs --slug");
+  if (server === undefined) throw new UsageError("create needs --server");
+  // There is deliberately no `--api-key`. The option does not exist, so it
+  // cannot be used by mistake, and the usage error says why rather than saying
+  // "unknown option" and leaving the author to guess.
+  if (apiKeyEnv === undefined) {
+    throw new UsageError("create needs --api-key-env NAME — the NAME of an environment variable, never the key itself");
+  }
+  return await runCreate(
+    { directory, slug, server, api_key_env: apiKeyEnv, json: parsed.flags.has("--json") },
+    io,
+    { nowMs: Date.now(), env: process.env },
+  );
+}
+
 // ---------------------------------------------------------------- dispatch
 
 /**
@@ -377,6 +451,12 @@ export async function runCli(argv: readonly string[], io: CliIo = CONSOLE_IO): P
         return await cmdDemo(rest, io);
       case "adapter":
         return await cmdAdapter(rest, io);
+      case "init":
+        return cmdInit(rest, io);
+      case "validate":
+        return cmdValidate(rest, io);
+      case "create":
+        return await cmdCreate(rest, io);
       default:
         throw new UsageError(`unknown command ${cmd}`);
     }

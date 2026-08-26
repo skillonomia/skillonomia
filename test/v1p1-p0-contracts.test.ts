@@ -454,6 +454,7 @@ test("[P0.C19] only a FAIL decides the exit code, and `ok` is derived rather tha
     severity,
     detail: "d",
     recovery: "r",
+    anchor: "SPEC.md#source-schema",
   });
   assert.deepEqual([...FINDING_SEVERITIES], ["FAIL", "WARN", "INFO"]);
   assert.equal(validateExitCode([]), 0);

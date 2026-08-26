@@ -160,12 +160,17 @@ export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
 /**
  * One finding.
  *
- * All four members are required, and the fourth is the one that is usually
- * missing elsewhere: `recovery` says what to DO. A validator that reports
+ * Every member is required, and two of them are the ones usually missing
+ * elsewhere. `recovery` says what to DO: a validator that reports
  * `/procedure/validation_gates/0/gate_id: INVALID_SCHEMA` and stops has told a
- * first-time author the truth and left them no better off. `pointer` is an RFC
- * 6901 JSON pointer into the manifest so an editor can jump to it; `code` is
- * stable so the published documentation can anchor one section per category.
+ * first-time author the truth and left them no better off. `anchor` says where
+ * to READ MORE, and it is a field rather than a sentence inside `detail`
+ * because a caller rendering findings — the CLI, the Console, an editor
+ * plugin — must be able to link it without parsing prose out of a message.
+ *
+ * `pointer` is an RFC 6901 JSON pointer into the manifest so an editor can jump
+ * to it; `code` is stable so the published documentation can anchor one section
+ * per category, and `anchor` is derived from `code` so the two cannot drift.
  */
 export interface SourceFinding {
   pointer: string;
@@ -173,6 +178,7 @@ export interface SourceFinding {
   severity: FindingSeverity;
   detail: string;
   recovery: string;
+  anchor: string;
 }
 
 /** `validate --json`. `ok` is DERIVED from the findings rather than reported

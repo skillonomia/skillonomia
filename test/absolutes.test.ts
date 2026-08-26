@@ -950,7 +950,7 @@ test("the true form of each planted family passes", () => {
     "No caller may reach `/v1/skills` without a key.",
     "`SKILLONOMIA_DATA` must always be set.",
     "All eight safety gates run in one invocation.",
-    "One executable, seven subcommands, on every packaging path.",
+    "One executable, ten subcommands, on every packaging path.",
     "Only four packaging paths exist, and all of them are local.",
     "The threat model and the ten red-team tests that cover it are shipped.",
     "Gate 5 admits only what it can read: ten classes are refused.",

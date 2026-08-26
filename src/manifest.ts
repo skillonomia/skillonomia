@@ -46,6 +46,25 @@ export function validateManifest(manifest: unknown): ValidationResult {
   };
 }
 
+/** One schema error, with its location kept SEPARATE from its wording.
+ *  `validateManifest` joins the two into a sentence, which is what an API error
+ *  message wants and exactly what a caller that must print a JSON pointer then
+ *  has to take apart again. Ajv already produces the pointer; this stops it
+ *  being thrown away and re-derived. */
+export interface SchemaError {
+  /** RFC 6901 pointer into the manifest — `/` for the document itself */
+  pointer: string;
+  message: string;
+}
+
+export function manifestSchemaErrors(manifest: unknown): SchemaError[] {
+  if (validators.manifest(manifest) as boolean) return [];
+  return (validators.manifest.errors ?? []).map((e: any) => ({
+    pointer: e.instancePath === "" ? "/" : String(e.instancePath),
+    message: String(e.message ?? "is not valid against the schema"),
+  }));
+}
+
 export { OUTCOME_CHECK_KINDS, OUTCOME_CHECK_SHAPE, type OutcomeCheck, type OutcomeContract } from "./outcome.ts";
 
 /**

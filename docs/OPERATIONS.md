@@ -382,7 +382,7 @@ different markers, because only one of them exercised the registry.
 
 ## The command line
 
-One executable, seven subcommands — the same set on all four packaging paths
+One executable, ten subcommands — the same set on all four packaging paths
 (the container image, a checkout run with Node ≥22.6, the `@skillonomia/cli`
 tarball, the compiled binary). Three of the four have a published artifact — the
 compiled binary as a release asset, the tarball as `@skillonomia/cli` on npm and
@@ -393,9 +393,36 @@ skillonomia serve [--port N] [--data DIR] [--host H]
 skillonomia verify <package> [<registry-db>] [--db PATH] [--json]
 skillonomia verify-log [<registry-db>] [--db PATH] [--json]
 skillonomia demo [--base-url URL] [--data DIR] [--json]
+skillonomia adapter open|invoke|close|cleanup [...]
+skillonomia init <directory> --slug SLUG --risk low|medium|high [--force]
+skillonomia validate <directory> [--json]
+skillonomia create <directory> --slug SLUG --server URL --api-key-env ENV_NAME [--json]
 skillonomia version
 skillonomia help
 ```
+
+`init`, `validate` and `create` are the authoring journey (§6.6). `init` mints
+a new `skill_id` locally and writes a source skeleton; the slug it prints back is
+the Registry's public name, and `test/v1p2-p2-authoring-cli.test.ts` asserts that
+it does not reach the signed manifest, so renaming a directory does not rename a
+skill. `validate` is a local read-only preflight, and the same file hashes the
+tree either side of a run to show it writes nothing into the directory. Both it
+and the server's `skill.create_from_dir` call `src/source-profile.ts`, so a green
+preflight is not followed by a `400` for a reason the preflight could not have
+known — that parity is asserted over HTTP in the same test file, code and JSON
+pointer alike.
+
+`create` reads the API key from the environment variable named by
+`--api-key-env`. `src/cli-authoring.ts` looks it up there and puts it in one
+request header, and `test/v1p2-p2-authoring-cli.test.ts` asserts that
+`src/cli-commands.ts` publishes no `--api-key` option and that neither output
+stream nor the source tree contains the key the server issued. The reasons are
+worth stating: an argument sits in the process table where `ps` reads it, a URL
+is written to proxy logs, and a config file survives in backups.
+The source directory is byte-identical after each failure path exercised there —
+a rejected validation, a refused server and a dead socket — and no private key is
+created or stored, because the registry signs with its own system key
+(`src/system-key.ts`).
 
 `demo` runs the §9.1 quickstart in Node, with no `bash`, `curl` or `tar`: the
 bootstrap exchange, the seed package, an adoption, the package's own declared
