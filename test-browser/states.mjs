@@ -291,11 +291,21 @@ test("§7 permission denied · TRIGGER: the server's own typed FORBIDDEN; nothin
     // marker are the server's; only the request it answers is the test's.
     const refusals = [];
     for (const probe of [
+      // A REAL ANTI-FORGERY REFUSAL. The token is not this session's, so the
+      // server's own CSRF check answers a typed `FORBIDDEN` — a refusal this
+      // deployment genuinely produces on this route, rather than one arranged by
+      // leaving a header off and hoping the omission is still refused.
+      {
+        path: "/v1/console/versions/nonexistent-version/approvals",
+        method: "POST",
+        body: { scope: "publish", decision: "approved" },
+        csrf: "not-the-token-this-session-holds",
+      },
       { path: "/v1/console/versions/nonexistent-version/approvals", method: "POST", body: { scope: "publish", decision: "approved" } },
       { path: "/v1/console/webhooks/nonexistent/test", method: "POST", body: {} },
       { path: "/v1/console/dashboard/library", method: "GET" },
     ]) {
-      const r = await reader.raw(probe.path, probe.method, probe.body);
+      const r = await reader.raw(probe.path, probe.method, probe.body, { csrf: probe.csrf });
       refusals.push({ probe, status: r.status, code: r.body?.error?.code, text: r.text });
     }
     const real = refusals.find((r) => r.code === "FORBIDDEN");

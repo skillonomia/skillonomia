@@ -38,13 +38,22 @@ export async function newContext(base, opts = {}) {
   // test. A request anywhere else is aborted AND recorded, so a gate can assert
   // the list is empty rather than trusting that it is.
   const foreign = [];
-  await context.route("**/*", (route, request) => {
+  await context.route("**/*", async (route, request) => {
     const url = request.url();
-    if (url.startsWith(base) || url.startsWith("data:") || url.startsWith("about:")) {
-      return route.continue();
+    const allowed = url.startsWith(base) || url.startsWith("data:") || url.startsWith("about:");
+    if (!allowed) foreign.push(url);
+    // A ROUTE CAN OUTLIVE THE PAGE THAT ASKED FOR IT. A gate that holds a
+    // response open across a reload leaves this handler resuming a request
+    // Playwright has already disposed of, and an unhandled rejection here would
+    // take down a run over tidy-up rather than over an assertion. The FENCE
+    // itself is not weakened: `foreign` is recorded above, before the attempt,
+    // so a request to a third-party host is still counted whether or not the
+    // abort lands — and the gates assert that list is empty.
+    try {
+      await (allowed ? route.continue() : route.abort());
+    } catch {
+      /* the page this request belonged to is gone */
     }
-    foreign.push(url);
-    return route.abort();
   });
   const logs = [];
   context.on("console", (msg) => logs.push(`${msg.type()}: ${msg.text()}`));

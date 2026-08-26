@@ -71,7 +71,32 @@ td.answer-broke .cell-value::before{content:"✗ "}
 td.answer-unknown{background:#8881}
 .notice{border-left:3px solid currentColor;padding:.25rem .6rem;margin:.5rem 0}
 .partial{border-left:3px solid #b8860b;padding:.25rem .6rem;margin:.5rem 0}
-@media (max-width:600px){body{padding:.75rem}#proofline-nav a{flex:1 1 auto}}
+/* THE DECISION SURFACES (v1.1, SPEC.md section 6.4, SPEC.md section 6.5).
+   A manifest hash is 64 characters and an endpoint URL is arbitrary, and both
+   are read from a phone. overflow-wrap anywhere rather than break-word, because
+   a hash has no break opportunity at all, and a value that cannot break is a
+   value that makes the whole document scroll sideways — which is how an action
+   ends up off the right-hand edge. The inputs are bounded for the same reason: a
+   size attribute is a request, not a limit.
+   NOTE: no backtick appears anywhere between here and the closing delimiter of
+   this template literal, and none may be added. */
+#approvals h2,#approvals h3,#approvals p,#approvals dd,#approvals li,
+#approval-detail h2,#approval-detail h3,#approval-detail p,#approval-detail dd,#approval-detail li,
+#revocation h2,#revocation h3,#revocation p,#revocation dd,#revocation li,
+#webhooks h2,#webhooks h3,#webhooks p,#webhooks dd,#webhooks li{overflow-wrap:anywhere;min-width:0}
+#approvals input,#approvals select,#approvals textarea,
+#approval-detail input,#approval-detail select,#approval-detail textarea,
+#revocation input,#revocation select,#revocation textarea,
+#webhooks input,#webhooks select,#webhooks textarea,
+#revocation-region input,#webhooks-region input,#approvals-region select{max-width:100%;box-sizing:border-box}
+#approval-detail dl,#revocation dl,#webhooks dl{margin:.25rem 0}
+#approval-detail dl>div,#revocation dl>div{display:flex;gap:.4rem;flex-wrap:wrap}
+#approval-detail dt,#revocation dt,#webhooks dt{font-weight:600;white-space:nowrap}
+#approval-detail dd,#revocation dd,#webhooks dd{margin:0}
+#approval-detail p,#approval-detail dd{overflow-wrap:anywhere}
+#revocation ul{margin:.25rem 0;padding-left:1.1rem}
+@media (max-width:600px){body{padding:.75rem}#proofline-nav a{flex:1 1 auto}
+  #approvals-region .row,#revocation-region .row,#webhooks-region .row{flex-direction:column;align-items:flex-start}}
 `;
 
 function shell(title: string, body: string, withScript: boolean): string {

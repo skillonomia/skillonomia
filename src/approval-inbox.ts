@@ -665,6 +665,8 @@ export function consoleApprovalInbox(
     contract: CONSOLE_CONTRACT_V2,
     statuses: APPROVAL_STATUSES,
     kinds: APPROVAL_KINDS,
+    status_filters: APPROVAL_STATUS_FILTERS,
+    kind_filters: APPROVAL_KIND_FILTERS,
     items,
     next_cursor: next,
   };

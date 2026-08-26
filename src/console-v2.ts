@@ -332,6 +332,19 @@ export interface ConsoleInboxEnvelope {
   contract: typeof CONSOLE_CONTRACT_V2;
   statuses: readonly ApprovalStatus[];
   kinds: readonly ApprovalKind[];
+  /**
+   * THE VOCABULARIES A FILTER MAY BE WRITTEN IN, which are NOT the vocabularies
+   * an item is written in.
+   *
+   * `statuses` are the four states an item can be IN; `status_filters` are the
+   * three values the query parameter ACCEPTS, and `decided` is one of them while
+   * `conditional` is not. A client that built its filter control out of
+   * `statuses` would offer an operator a filter the route answers
+   * `INVALID_SCHEMA` to — which is exactly the second vocabulary this pair
+   * exists to prevent being invented in a browser.
+   */
+  status_filters: readonly ApprovalStatusFilter[];
+  kind_filters: readonly ApprovalKindFilter[];
   items: ConsoleInboxItemV2[];
   /** opaque; `null` when the page is the last one */
   next_cursor: string | null;

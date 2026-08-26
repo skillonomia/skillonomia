@@ -201,8 +201,15 @@ export async function consoleReader(base, apiKey) {
   if (res.status !== 201) throw new Error(`the reader session was refused: ${res.status} ${await res.text()}`);
   const setCookie = res.headers.getSetCookie?.() ?? [res.headers.get("set-cookie")];
   const cookie = setCookie.filter(Boolean).map((c) => c.split(";")[0]).join("; ");
+  // THE CSRF TOKEN THIS SESSION HOLDS. Read from the route a reload uses, so a
+  // gate that acts as a SECOND OPERATOR — the concurrent-decision row is exactly
+  // that — carries the same two defences a browser carries and is refused for
+  // the reason under test rather than for a missing header.
+  const opened = await fetch(`${base}/v1/console/session`, { headers: { cookie, accept: "application/json" } });
+  const csrf = (await opened.json()).csrf_token;
   return {
     cookie,
+    csrf,
     async view(name, query = "") {
       const r = await fetch(`${base}/v1/console/dashboard/${encodeURIComponent(name)}${query}`, {
         headers: { cookie, accept: "application/json" },
@@ -210,13 +217,21 @@ export async function consoleReader(base, apiKey) {
       const text = await r.text();
       return { status: r.status, body: text.length ? JSON.parse(text) : null };
     },
-    async raw(path, method = "GET", body) {
+    /**
+     * One request over this session. `opts.csrf` overrides the token this
+     * session holds — a caller that needs the server's own anti-forgery refusal
+     * asks for it by name rather than by omitting a header and hoping.
+     */
+    async raw(path, method = "GET", body, opts = {}) {
+      const token = opts.csrf === undefined ? csrf : opts.csrf;
       const r = await fetch(`${base}${path}`, {
         method,
         headers: {
           cookie,
           accept: "application/json",
-          ...(body === undefined ? {} : { "content-type": "application/json", origin: base }),
+          ...(body === undefined
+            ? {}
+            : { "content-type": "application/json", origin: base, "x-skillonomia-console-csrf": token }),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
       });

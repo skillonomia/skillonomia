@@ -2401,6 +2401,8 @@ interface ApprovalEnvelope {
   contract: string;
   statuses: string[];
   kinds: string[];
+  status_filters: string[];
+  kind_filters: string[];
   items: ApprovalItem[];
   next_cursor: string | null;
 }
@@ -2581,11 +2583,19 @@ function renderFailure(
     kept.dataset.preserved = "true";
     notice.appendChild(kept);
   }
-  // A BOUNDED RECOVERY, and only where recovery is the answer. `FORBIDDEN`
-  // retried is `FORBIDDEN` again; a stale item is refreshed rather than retried,
-  // because the point is to show what the other session actually did.
-  if (failure.code !== FORBIDDEN_CODE) {
-    const stale = STALE_CODES.includes(failure.code);
+  // A BOUNDED RECOVERY, AND ONLY WHERE RECOVERY IS THE ANSWER.
+  //
+  //   `FORBIDDEN` — none. Retried, it is `FORBIDDEN` again, and a button
+  //     offering it would be this console suggesting the server did not mean it.
+  //   `INVALID_SCHEMA` — none. The recovery is to change the note, the reason or
+  //     the URL, and those are on the page with what the operator wrote still in
+  //     them; a button that re-sent the same refused body would be a button that
+  //     produces the same refusal.
+  //   stale — a REFRESH, not a retry, because the point is to show what the
+  //     other session actually did rather than to try again over the top of it.
+  //   anything else — one retry.
+  if (box.dataset.state === "stale" || box.dataset.state === "error") {
+    const stale = box.dataset.state === "stale";
     const button = el("button", stale ? text.stale_refresh : text.retry);
     button.type = "button";
     button.dataset.action = stale ? "refresh" : "retry";
@@ -2633,9 +2643,16 @@ function approvalItem(itemId: string): ApprovalItem | null {
   return null;
 }
 
+/** A filter control, built from the FILTER vocabulary the server sent.
+ *
+ *  NOT from the item vocabulary beside it. `statuses` are the four states an
+ *  item can be in and `status_filters` are the three values the query parameter
+ *  accepts; a control built from the first would offer an operator `conditional`
+ *  as a filter and the route would answer `INVALID_SCHEMA`. The two lists are
+ *  both the server's, and picking the right one is this function's whole job. */
 function fillFilter(select: HTMLSelectElement, values: string[], current: string): void {
   clear(select);
-  for (const value of ["all", ...values]) {
+  for (const value of values) {
     const option = el("option", value);
     option.value = value;
     if (value === current) option.selected = true;
@@ -2651,8 +2668,8 @@ function renderApprovals(envelope: ApprovalEnvelope): void {
   box.dataset.state = "loaded";
   box.dataset.items = String(envelope.items.length);
 
-  fillFilter(byId<HTMLSelectElement>("approvals-status"), envelope.statuses, approvalsStatus);
-  fillFilter(byId<HTMLSelectElement>("approvals-kind"), envelope.kinds, approvalsKind);
+  fillFilter(byId<HTMLSelectElement>("approvals-status"), envelope.status_filters, approvalsStatus);
+  fillFilter(byId<HTMLSelectElement>("approvals-kind"), envelope.kind_filters, approvalsKind);
 
   if (envelope.items.length === 0) {
     // ZERO ROWS IS NOT ONE STATE. A filter that selected nothing is a statement
@@ -2887,7 +2904,7 @@ async function decideApproval(item: ApprovalItem, decision: string): Promise<voi
     if (reloaded !== null) renderApprovalDetail(reloaded);
     replayBadge(byId("approval-detail"), replay.replayed, APPROVALS_TEXT.replay_badge);
   } catch (e) {
-    renderApprovalFailure(failureOf(e), note, item.item_id);
+    renderApprovalFailure(failureOf(e), note, item.item_id, () => guard(() => decideApproval(item, decision)));
   }
 }
 
@@ -2908,12 +2925,12 @@ async function recordVerdict(item: ApprovalItem, verdict: string): Promise<void>
     if (reloaded !== null) renderApprovalDetail(reloaded);
     replayBadge(byId("approval-detail"), replay.replayed, APPROVALS_TEXT.replay_badge);
   } catch (e) {
-    renderApprovalFailure(failureOf(e), note, item.item_id);
+    renderApprovalFailure(failureOf(e), note, item.item_id, () => guard(() => recordVerdict(item, verdict)));
   }
 }
 
 /** A refused decision, with the note still on the page. */
-function renderApprovalFailure(failure: ApiFailure, note: string, itemId: string): void {
+function renderApprovalFailure(failure: ApiFailure, note: string, itemId: string, again: (() => void) | null = null): void {
   const box = byId("approval-detail");
   box.setAttribute("aria-busy", "false");
   box.dataset.actionState = "failed";
@@ -2928,10 +2945,25 @@ function renderApprovalFailure(failure: ApiFailure, note: string, itemId: string
       retry: APPROVALS_TEXT.retry,
       stale_refresh: APPROVALS_TEXT.stale_refresh,
     },
-    () => guard(async () => {
-      await loadApprovals();
-      await openApproval(itemId);
-    }),
+    // A LOST RESPONSE IS THE CASE THIS EXISTS FOR. The request may have reached
+    // the registry and the answer may have been dropped on the way back, so the
+    // recovery is to SEND THE SAME REQUEST AGAIN — same key, same payload —
+    // which the registry answers with the original response rather than with a
+    // second decision. That is what an idempotency key is for, and a recovery
+    // that reloaded instead would leave the operator guessing whether their
+    // decision landed.
+    // WHICH RECOVERY BELONGS TO WHICH REFUSAL — the same split the revocation
+    // surface makes, and for the same reasons. A stale item is RELOADED, because
+    // the point is to show the decision the other session recorded. Anything
+    // else is RESENT with the same key and the same payload, because a lost
+    // answer is what an idempotency key is for and a reload would leave the
+    // operator guessing whether their decision landed.
+    again === null || STALE_CODES.includes(failure.code)
+      ? () => guard(async () => {
+          await loadApprovals();
+          await openApproval(itemId);
+        })
+      : again,
     // THE NOTE IS STILL IN THE FIELD and it is also stated on the page, so the
     // promise is visible rather than merely true.
     note.length === 0 ? APPROVALS_TEXT.note_preserved : `${APPROVALS_TEXT.note_preserved} ${note}`,
@@ -3219,7 +3251,14 @@ async function commitRevocation(ctx: RevocationContext): Promise<void> {
         retry: REVOCATION_TEXT.retry,
         stale_refresh: REVOCATION_TEXT.stale_refresh,
       },
-      () => guard(() => loadRevocation(ctx.skill_version_id)),
+      // WHICH RECOVERY BELONGS TO WHICH REFUSAL.
+      //
+      //   stale — RELOAD. Another session changed this version, and the point is
+      //     to show what they recorded, not to try again over the top of it.
+      //   anything else — RESEND, with the same key and the same payload. A lost
+      //     answer is the case an idempotency key exists for: the registry
+      //     replays the original response instead of writing a second time.
+      () => guard(() => (STALE_CODES.includes(failureOf(e).code) ? loadRevocation(ctx.skill_version_id) : commitRevocation(ctx))),
       // THE REASON IS STILL IN THE FIELD, and this is the one that matters most
       // on this surface: a revocation reason is immutable once recorded, so a
       // page that cleared it would make the operator retype from memory the one
