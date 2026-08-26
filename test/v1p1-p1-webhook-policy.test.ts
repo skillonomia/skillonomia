@@ -581,7 +581,12 @@ test("ยง6.5.2: a test push moves NO endpoint health and NO delivery-queue row โ€
     fx.db.prepare("UPDATE webhooks SET status='failing', failure_count=2, last_error='an earlier delivery' WHERE id=?").run(hookId);
 
     const before = deliveryState(fx);
-    const beforeRow = fx.db.prepare("SELECT status, failure_count, last_error FROM webhooks WHERE id=?").get(hookId);
+    type Health = { status: string; failure_count: number; last_error: string | null };
+    const health = (id: string): Health => {
+      const r = fx.db.prepare("SELECT status, failure_count, last_error FROM webhooks WHERE id=?").get(id) as Health;
+      return { status: r.status, failure_count: r.failure_count, last_error: r.last_error };
+    };
+    const beforeRow = health(hookId);
 
     for (let i = 0; i < 3; i += 1) {
       const res = await call(fx, { method: "POST", path: `/v1/webhooks/${hookId}/test`, key: fx.keys.member });
@@ -592,8 +597,7 @@ test("ยง6.5.2: a test push moves NO endpoint health and NO delivery-queue row โ€
     }
 
     const after = deliveryState(fx);
-    const afterRow = fx.db.prepare("SELECT status, failure_count, last_error FROM webhooks WHERE id=?").get(hookId);
-    assert.deepEqual({ ...afterRow }, { ...beforeRow }, "a test push moved the endpoint's health");
+    assert.deepEqual(health(hookId), beforeRow, "a test push moved the endpoint's health");
     assert.equal(after, before, "a test push moved ยง5.2 state: the full row snapshot differs");
     assert.equal(
       (fx.db.prepare("SELECT COUNT(*) AS c FROM adoption_requests").get() as { c: number }).c,
