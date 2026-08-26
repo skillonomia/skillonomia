@@ -220,10 +220,66 @@ export function endpointHost(url: URL): string {
   return url.hostname.replace(/^\[|\]$/g, "");
 }
 
-/** A host that names this machine and no other. Literals, plus `localhost`. */
+/**
+ * THE ONE SPELLING. Every loopback and every literal decision below compares
+ * this string, and none of them compares the raw one.
+ *
+ * It exists because the comparison kept being made BEFORE the host was
+ * canonical, and each time a different spelling walked through it: first the
+ * `http://` form, then the `https://` loopback literal, then
+ * `https://localhost.:9/hook` — the valid absolute-DNS form, whose trailing
+ * root dot is the same name to every resolver on this machine (`localhost.`
+ * answers `::1` and `127.0.0.1` here) and a different string to `===`.
+ * Answering that by adding `localhost.` to a list of names would be a fourth
+ * spelling waiting for a fifth. The defect is not the list; it is comparing
+ * before canonicalising. So the canonicalisation happens ONCE, here, and the
+ * name arm, the literal arm and the address table are all fed from it — there
+ * is no second place to forget it.
+ *
+ * Three steps, each a spelling the WHATWG URL parser leaves to us:
+ *
+ *   * brackets stripped, so `[::1]` is judged by the same functions as `::1`;
+ *   * percent-escapes decoded — `https://localhost%2e:9/hook`. A URL built for
+ *     a special scheme arrives decoded already; this function is exported and
+ *     callable with a bare host, and decoding an already-decoded host is a
+ *     no-op, so it is done rather than assumed;
+ *   * case folded, then trailing root labels removed — `LOCALHOST.`. Removed
+ *     repeatedly, because `localhost..` is a spelling too: it resolves nowhere
+ *     on this machine, and the safe reading of a name that is only root dots
+ *     away from this machine is that it is this machine.
+ *
+ * What is deliberately NOT here is Unicode. The URL parser has already applied
+ * IDNA, which is why `ｌｏｃａｌｈｏｓｔ` and `localhost。` reach this function as
+ * `localhost` and `localhost.`; a second, weaker copy of that mapping here
+ * would be exactly the duplication this function exists to end.
+ */
+export function canonicalHost(rawHost: string): string {
+  let host = rawHost.replace(/^\[|\]$/g, "");
+  if (host.includes("%")) {
+    try {
+      host = decodeURIComponent(host);
+    } catch {
+      // a malformed escape is not a spelling of anything; leave it as it came
+      // and let the comparisons below decline it on its own terms
+    }
+  }
+  host = host.toLowerCase();
+  while (host.endsWith(".")) host = host.slice(0, -1);
+  return host;
+}
+
+/**
+ * A host that names this machine and no other: a loopback literal in any
+ * spelling, or the name `localhost` in any spelling.
+ *
+ * Both arms read the CANONICAL host. A literal arm and a name arm that
+ * canonicalise separately are two places to forget, and one of them was
+ * forgotten.
+ */
 export function isLoopbackHost(hostname: string): boolean {
-  if (isIP(hostname)) return isLoopback(hostname);
-  return hostname.toLowerCase() === "localhost";
+  const host = canonicalHost(hostname);
+  if (isIP(host)) return isLoopback(host);
+  return host === "localhost";
 }
 
 export interface UrlPolicy {
@@ -305,7 +361,10 @@ export function vetEndpointUrl(rawUrl: unknown, policy: UrlPolicy): URL {
   if (url.username !== "" || url.password !== "") {
     throw new WebhookRefused("refused: endpoint URL carries credentials");
   }
-  const host = endpointHost(url);
+  // Canonical from here down. Every rule below — the `http://` narrowing, the
+  // loopback policy, the literal table — compares this one string, so a
+  // spelling that gets past one of them cannot get past a different one.
+  const host = canonicalHost(endpointHost(url));
   if (host === "") throw new WebhookRefused("refused: endpoint URL has no host");
 
   if (url.protocol !== "https:") {
@@ -369,15 +428,32 @@ export function vetEndpointUrl(rawUrl: unknown, policy: UrlPolicy): URL {
  * judges an IP literal now, because a literal cannot change between here and
  * the socket.
  *
- * The claim these four members are here to make good is one-directional and
- * exact: for every destination, registration refuses whatever THIS process's
- * transport would refuse. It stays free to be stricter, and it is — a NAME that
- * resolves to a forbidden address registers here and is declined at the socket.
+ * THE CLAIM THESE FOUR MEMBERS MAKE GOOD, AND ITS EDGE.
  *
- * What this deliberately does NOT do is promise reachability. A NAME is still
- * resolved nowhere but at the socket, on every connect, so a registration that
- * passed says the destination is admissible under today's policy — never that a
- * later delivery will succeed.
+ * A comment here used to say that for every destination, registration refuses
+ * whatever this process's transport would refuse. That was not true and could
+ * not be made true. Registration cannot reach full parity with delivery for
+ * NAMES: a name is resolved at the socket, on every connect, and
+ * `evil.example.com` may answer `127.0.0.1` tomorrow. Nothing decided once, at
+ * registration, can know that. That case is delivery's to refuse, and it does —
+ * every resolved address, every time, all-or-nothing (see `vet`).
+ *
+ * What registration can guarantee is narrower, and it is exact:
+ *
+ *     every SPELLING of a known-loopback destination — literal or name — is
+ *     refused at registration when the policy forbids loopback.
+ *
+ * "Known-loopback" is what can be decided with no resolver: a loopback literal,
+ * its IPv4-mapped form included, and the name `localhost`, which is this
+ * machine by definition (RFC 6761 section 6.3). Each in EVERY spelling, because
+ * `canonicalHost` reduces the spellings to one before anything is compared —
+ * that is the whole of what changed when `https://localhost.:9/hook`, a name
+ * this machine's resolver answers with `::1`, was found registering under a
+ * policy that forbids loopback.
+ *
+ * Nothing wider than that sentence is claimed. Registration promises no
+ * reachability either: a registration that passed says the destination is
+ * admissible under today's policy, never that a later delivery will succeed.
  */
 export function registrationUrlPolicy(policy: WebhookDeliveryPolicy): UrlPolicy {
   return {

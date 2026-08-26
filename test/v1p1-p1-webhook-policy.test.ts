@@ -52,7 +52,14 @@ import {
   MAX_TEST_ERROR_DETAIL,
   type WebhookTransport,
 } from "../src/webhooks.ts";
-import { HttpsWebhookTransport, defaultTransport, registrationUrlPolicy } from "../src/transport.ts";
+import {
+  HttpsWebhookTransport,
+  canonicalHost,
+  defaultTransport,
+  endpointHost,
+  isLoopbackHost,
+  registrationUrlPolicy,
+} from "../src/transport.ts";
 import { loadRequest, pollDelivery, workerId } from "../src/delivery.ts";
 import { ulid } from "../src/ulid.ts";
 
@@ -263,6 +270,16 @@ test("§6.5.1: with the loopback flag off, an http loopback URL is refused befor
  * flag states, and each row asserts the transport's answer FIRST — a row where
  * the transport does not decline the destination would make the registration
  * assertion meaningless.
+ *
+ * THE LAST FOUR ROWS ARE THE SAME NAME, SPELLED FOUR WAYS. `localhost.` is the
+ * absolute-DNS spelling — one trailing root dot — and this machine's resolver
+ * answers it with `::1` and `127.0.0.1`, exactly as it answers `localhost`. It
+ * registered under a policy that forbids loopback while the transport refused
+ * to deliver to it, because the host was compared before it was canonical. They
+ * are rows here because the table is what a reader checks against; they are NOT
+ * the repair. Adding a spelling to a list is what the previous two rounds did,
+ * and the list kept being short by one. The repair is `canonicalHost`, asserted
+ * as a property by the test below this pair.
  */
 const LOOPBACK_SPELLINGS: readonly string[] = [
   "https://127.0.0.1:9/hook",
@@ -274,6 +291,10 @@ const LOOPBACK_SPELLINGS: readonly string[] = [
   "https://LocalHost:9/hook",
   "http://127.0.0.1:9/hook",
   "http://localhost:9/hook",
+  "https://localhost.:9/hook",
+  "https://LOCALHOST.:9/hook",
+  "https://localhost%2e:9/hook",
+  "http://localhost.:9/hook",
 ];
 
 /** Short deadlines: the flag-ON half opens real sockets to CLOSED ports on this
@@ -354,6 +375,89 @@ test("§6.5.1: with the flag on, the same spellings register and the transport d
     );
   }
   fx.db.close();
+});
+
+/**
+ * THE REPAIR, ASSERTED AS A PROPERTY — because three more rows in a table is
+ * what the previous two rounds shipped.
+ *
+ * The table above is a reader's check. It cannot be the guarantee: it was
+ * complete by inspection twice, and twice a spelling nobody had listed walked
+ * through — `https://127.0.0.1`, then `https://localhost.`. What those have in
+ * common is not their strings. It is that the host was COMPARED BEFORE IT WAS
+ * CANONICAL, so every new way of writing the same name was a new hole.
+ *
+ * So this asserts the canonicalisation itself, on both arms of the decision,
+ * with the discrimination that keeps the assertion honest — plus the two edges
+ * that bound the claim `src/transport.ts` now makes: the over-refusal mirror,
+ * and the case registration deliberately does NOT decide.
+ */
+test("§6.5.1: the loopback decision is taken on a CANONICAL host, so a spelling cannot be one short", async () => {
+  // one name, every spelling, one string — and both arms read that string
+  for (const spelling of ["localhost", "LOCALHOST", "localhost.", "LocalHost.", "localhost%2e", "localhost.."]) {
+    assert.equal(canonicalHost(spelling), "localhost", `${spelling} is a spelling of localhost`);
+    assert.equal(isLoopbackHost(spelling), true, `${spelling} names this machine`);
+  }
+
+  // …and the spellings the URL PARSER reduces, asserted through the same two
+  // calls registration makes rather than against `canonicalHost` alone. IDNA is
+  // the parser's half of this and is deliberately not reimplemented here; what
+  // matters is that the composition of the two halves is total, which is a
+  // different claim from either half and the one the surface depends on.
+  for (const raw of [
+    "https://localhost。:9/hook",
+    "https://ｌｏｃａｌｈｏｓｔ:9/hook",
+    "https://LOCALHOST.:9/hook",
+    "https://localhost%2e:9/hook",
+  ]) {
+    assert.equal(canonicalHost(endpointHost(new URL(raw))), "localhost", `${raw} addresses localhost`);
+  }
+  for (const literal of ["127.0.0.1", "[::1]", "::1", "[::FFFF:127.0.0.1]", "127.0.0.5"]) {
+    assert.equal(isLoopbackHost(literal), true, `${literal} names this machine`);
+  }
+  // …without which the two loops above are green on a function that returns
+  // `true`. A name that merely contains a loopback spelling is another host.
+  for (const other of ["notlocalhost", "localhost.attacker.com", "127.0.0.1.attacker.com", "evil.example.com.", "93.184.216.34"]) {
+    assert.equal(isLoopbackHost(other), false, `${other} does not name this machine`);
+  }
+
+  // THE MIRROR. The missing canonicalisation failed in the over-refusal
+  // direction too, and a fix that closed only the admit direction would leave
+  // it: with loopback delivery ON, `http://localhost.` is a destination this
+  // deployment does deliver to, and registration was refusing it.
+  const permissive = new HttpsWebhookTransport({ allowLoopback: true, ...PROBE_TIMEOUTS });
+  const on = fixture(permissive);
+  const admittedHttp = await call(on, {
+    method: "POST",
+    path: "/v1/webhooks",
+    key: on.keys.member,
+    body: { url: "http://localhost.:9/hook" },
+  });
+  assert.equal(
+    admittedHttp.status,
+    201,
+    `the http:// exception is to a host that IS this machine, however that host is spelled: ${admittedHttp.body}`,
+  );
+  on.db.close();
+
+  // THE EDGE, ASSERTED SO THE COMMENT IN src/transport.ts CANNOT OUTGROW IT.
+  // Registration resolves no name, so a name that is not known-loopback
+  // registers even where it answers `127.0.0.1` — and DELIVERY declines it, on
+  // every connect. That pair is why the narrow claim is safe, and a claim of
+  // full registration/delivery parity for names would be false.
+  const strict = new HttpsWebhookTransport({
+    allowLoopback: false,
+    ...PROBE_TIMEOUTS,
+    resolve: async () => ["127.0.0.1"],
+  });
+  const off = fixture(strict);
+  const url = "https://rebinds-later.example.com/hook";
+  const admittedName = await call(off, { method: "POST", path: "/v1/webhooks", key: off.keys.member, body: { url } });
+  assert.equal(admittedName.status, 201, `registration resolves no name and must not pretend to: ${admittedName.body}`);
+  const declined = await strict.send({ url, body: "{}", signature: "00" });
+  assert.equal(declined.refused, true, "the socket is where a name is judged, and it did not judge it");
+  assert.match(declined.error!, /forbidden address \(loopback 127\.0\.0\.0\/8\)/);
+  off.db.close();
 });
 
 test("§6.5.1: with the loopback flag on, the same URL registers and the transport agrees", async () => {
