@@ -13,9 +13,15 @@
 # TLS-terminating reverse proxy in front (README → The network boundary,
 # docs/OPERATIONS.md → The container: two decisions).
 #
-# Bun 1.3.14 is the canonical runtime (§2) and runs the TypeScript sources
-# directly — there is no build step to go stale, and the image contains exactly
-# the reviewed files plus the two runtime dependencies (ajv, ajv-formats).
+# Bun 1.3.14 is the canonical runtime (§2) and runs the server's TypeScript
+# sources directly, so the image contains exactly the reviewed files plus the two
+# runtime dependencies (ajv, ajv-formats). The ONE build step is the Owner
+# Console bundle: a browser cannot be handed TypeScript, `src/console-page.ts`
+# serves `dist-console/app.js` and nothing else, and an image without that file
+# answers `/console/app.js` with a 500 — a deployment whose Console cannot load
+# at all. It is built HERE, from `console/` in this same image, rather than
+# copied from the build host, so the bytes an owner's browser runs are the bytes
+# this Dockerfile produced and a build from a clean checkout is complete.
 # The base image is pinned BY DIGEST, not by tag. A tag is a mutable pointer:
 # `oven/bun:1.3.14-slim` can be repushed, and then two builds of this identical
 # Dockerfile produce two different images with nothing in the repository to show
@@ -46,6 +52,11 @@ COPY migrations ./migrations
 COPY schema ./schema
 COPY seed ./seed
 COPY README.md ./
+
+# the Owner Console bundle, built with the same bundler and the same flags as
+# `npm run build:console`, into the location `src/assets.ts` resolves
+COPY console ./console
+RUN bun build --target=browser --format=esm --minify console/app.ts --outfile dist-console/app.js
 
 # /data holds the SQLite file, the package blobs and the webhook secret store
 RUN mkdir -p /data && chown -R bun:bun /data /app

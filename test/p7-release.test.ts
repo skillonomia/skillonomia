@@ -472,7 +472,11 @@ test("the asset resolver finds migrations, schemas and the seed, and says so whe
 test("the launcher runs the BUILT entry point, because Node refuses to strip types under node_modules", () => {
   const root = assetRoot();
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  assert.equal(pkg.scripts.prepack, "npm run build:js", "packing builds the JS entry");
+  // `prepack` builds every artifact the tarball ships that is not a source
+  // file: the JS entry point asserted here, and the Owner Console bundle
+  // asserted by `test/console-asset-shipping.test.ts`. The claim this line
+  // makes is the first of those and nothing about the length of the chain.
+  assert.match(pkg.scripts.prepack, /(^|&&\s*)npm run build:js(\s|$|&)/, "packing builds the JS entry");
   assert.match(pkg.scripts["build:js"], /src\/cli\.ts --outfile dist-js\/cli\.js/);
   assert.ok(pkg.files.includes("dist-js/"), "the published tarball ships the built entry");
 

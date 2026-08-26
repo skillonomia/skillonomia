@@ -30,10 +30,11 @@
     "start": "node --experimental-strip-types --no-warnings src/cli.ts serve",
     "gen-seed": "node --experimental-strip-types --no-warnings tools/gen-seed.ts",
     "pack-skill": "node --experimental-strip-types --no-warnings tools/pack-skill.ts",
-    "build:binary": "bun build --compile --target=bun-linux-x64 src/cli.ts --outfile dist/skillonomia && mkdir -p dist/migrations dist/schema dist/seed && cp -r migrations/. dist/migrations/ && cp -r schema/. dist/schema/ && cp -r seed/. dist/seed/",
+    "prebuild:binary": "npm run build:console",
+    "build:binary": "bun build --compile --target=bun-linux-x64 src/cli.ts --outfile dist/skillonomia && mkdir -p dist/migrations dist/schema dist/seed dist/dist-console && cp -r migrations/. dist/migrations/ && cp -r schema/. dist/schema/ && cp -r seed/. dist/seed/ && cp -r dist-console/. dist/dist-console/",
     "build:js": "bun build --target=node --format=esm --external bun:sqlite src/cli.ts --outfile dist-js/cli.js",
     "build:console": "bun build --target=browser --format=esm --minify console/app.ts --outfile dist-console/app.js",
-    "prepack": "npm run build:js"
+    "prepack": "npm run build:js && npm run build:console"
   },
   "dependencies": {
     "ajv": "^8.20.0",
@@ -49,6 +50,7 @@
   "files": [
     "bin/",
     "dist-js/",
+    "dist-console/",
     "src/",
     "migrations/",
     "schema/",

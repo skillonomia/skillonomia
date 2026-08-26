@@ -350,7 +350,7 @@ function run(file, args, opts = {}) {
 function packageAssets(outDir) {
   run("npm", ["run", "-s", "build:binary"], { cwd: ROOT, stdio: ["ignore", "inherit", "inherit"] });
   const dist = join(ROOT, "dist");
-  for (const member of ["skillonomia", "migrations", "schema", "seed"]) {
+  for (const member of ["skillonomia", "migrations", "schema", "seed", "dist-console"]) {
     if (!existsSync(join(dist, member))) fail(`build:binary left no dist/${member} — the archive would be incomplete`);
   }
   mkdirSync(outDir, { recursive: true });
@@ -358,7 +358,7 @@ function packageAssets(outDir) {
   run("tar", [
     "--format=ustar", "--sort=name", "--owner=0", "--group=0", "--numeric-owner", "--mtime=@0",
     "-cf", tarPath,
-    "-C", dist, "skillonomia", "migrations", "schema", "seed",
+    "-C", dist, "skillonomia", "migrations", "schema", "seed", "dist-console",
     "-C", ROOT, "LICENSE",
   ]);
   const archive = join(outDir, ARCHIVE);
