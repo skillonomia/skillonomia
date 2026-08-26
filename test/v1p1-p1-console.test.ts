@@ -40,6 +40,7 @@ import {
 } from "../src/console-v2.ts";
 import { CONSOLE_CONTRACT_VERSION } from "../src/console-view.ts";
 import { DASHBOARD_VIEWS } from "../src/dashboard.ts";
+import { consoleScript } from "../src/console-page.ts";
 import { ulid } from "../src/ulid.ts";
 import { NOW } from "./p2-helpers.ts";
 
@@ -141,9 +142,16 @@ test("[P1.K1] `console.v2` is what the surface stamps, and `console.v1` keeps it
     !new RegExp(`const CONTRACT = "${CONSOLE_CONTRACT_VERSION}";`).test(bundle),
     "the browser bundle still reads the previous version",
   );
-  // and the built asset the router serves is built from that source
-  const built = readFileSync(join(ROOT, "dist-console", "app.js"), "utf8");
-  assert.ok(built.includes(CONSOLE_CONTRACT_V2), "the shipped bundle does not carry the version it must accept");
+  // …and the asset the ROUTER SERVES is built from that source. Asked of
+  // `consoleScript()` rather than of a path, because that function is what the
+  // route returns and a compiled binary resolves the asset directory
+  // differently from a checkout.
+  const served = consoleScript();
+  assert.ok(served.includes(CONSOLE_CONTRACT_V2), "the shipped bundle does not carry the version it must accept");
+  assert.ok(
+    !served.includes(`"${CONSOLE_CONTRACT_VERSION}"`),
+    "the shipped bundle still accepts the previous version",
+  );
 });
 
 test("[P1.K2] every console answer announces the contract — the successes and the refusals alike", () => {
