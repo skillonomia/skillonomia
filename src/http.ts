@@ -48,6 +48,24 @@ export interface RestResponse {
   status: number;
   headers: Record<string, string>;
   body: string;
+  /**
+   * SET ONLY BY A ROUTE WHOSE ANSWER NEEDS A SOCKET — today, exactly the two
+   * §6.5.2 test-delivery routes.
+   *
+   * `handleRest` is synchronous, and that is worth keeping: it is the property
+   * that lets the whole contract be driven without a listener, in a hundred
+   * test files. One route cannot be, because it pushes to an endpoint and
+   * reports what came back. Rather than make every caller of every route await,
+   * the route does all of its SYNCHRONOUS work here — authentication, the
+   * console session, the route ACL, the CSRF and Origin checks, the service
+   * dispatch — and hands the remaining promise out on this member.
+   *
+   * `handleRestAsync` below is what a listener calls, and it is the only reader
+   * of this member. The placeholder status and body a deferred response carries
+   * are deliberately an internal error: a caller that ignores `pending` has not
+   * answered the request, and must not appear to have.
+   */
+  pending?: Promise<RestResponse>;
 }
 
 /** Uploads are base64 in JSON; §4.1b caps the archive at 64 MiB uncompressed. */
@@ -161,6 +179,47 @@ function errorBody(envelope: { error: { code: string; message: string; current_s
 
 function errorResponse(e: ApiError, rawUrl: string | undefined): RestResponse {
   return json(e.httpStatus, errorBody(e.toEnvelope(), rawUrl));
+}
+
+/**
+ * A route that has finished DECIDING and has not finished ANSWERING — §6.5.2.
+ *
+ * `work` is started immediately, so the socket is already open while this
+ * returns, and its rejection is converted here rather than escaping as an
+ * unhandled one. The conversion is `asApiError`, the same mapping the router's
+ * own `catch` uses, so a refusal raised inside the promise reads exactly as it
+ * would have read had it been raised a line earlier.
+ */
+function deferred(work: () => Promise<RestResponse>, rawUrl: string | undefined): RestResponse {
+  const pending = (async () => {
+    try {
+      return await work();
+    } catch (e) {
+      const api = asApiError(e);
+      if (api) return errorResponse(api, rawUrl);
+      return json(500, errorBody({ error: { code: "INTERNAL", message: "internal error" } }, rawUrl));
+    }
+  })();
+  return {
+    status: 500,
+    headers: JSON_HEADERS,
+    body: errorBody(
+      { error: { code: "INTERNAL", message: "this route answers asynchronously and the caller did not await it" } },
+      rawUrl,
+    ),
+    pending,
+  };
+}
+
+/**
+ * The entry point a LISTENER uses. Identical to `handleRest` for every route
+ * that answers synchronously, and the one place `RestResponse.pending` is
+ * awaited. `startServer` below goes through here, so no deployment can serve
+ * the placeholder above.
+ */
+export async function handleRestAsync(registry: Registry, req: RestRequest): Promise<RestResponse> {
+  const out = handleRest(registry, req);
+  return out.pending === undefined ? out : await out.pending;
 }
 
 function parseBody(req: RestRequest): any {
@@ -381,7 +440,12 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       // additions are named.
       path.startsWith("/v1/console/dashboard") ||
       path.startsWith("/v1/console/approvals") ||
-      path.startsWith("/v1/console/versions")
+      path.startsWith("/v1/console/versions") ||
+      // §6.5.2's console wrapper. Named here for the reason the paragraph above
+      // gives: it is not classified in `consoleRouteClass`, so it falls to
+      // `owner_only` — owner or admin, never a reviewer — but a path missing
+      // from THIS list would never reach that check at all.
+      path.startsWith("/v1/console/webhooks")
     ) {
       if (!session) throw new ApiError("UNAUTHORIZED", "the owner console requires a session");
 
@@ -553,6 +617,26 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
         const body = parseBody(req);
         refuseViolations(validateConsoleApproval(body));
         return consoleMutationResponse(registry.approve(cauth, m[1], body, idemKey(body)), 201);
+      }
+
+      // §6.5.2's console wrapper, and `wrapper` is exact in the sense the two
+      // above are: the ownership rule, the workspace rule, the transport, the
+      // secret and the audit row are all the service's, called with the console
+      // session's own `AuthContext`. What the console adds is the envelope.
+      //
+      // The route ACL that already ran classified this path as `owner_only`,
+      // which is where §6.5.2's "workspace admin/owner" lands for a browser
+      // session; the endpoint-owner half of that same sentence is the service's
+      // check, and it is the check the Bearer route gets too.
+      m = /^\/v1\/console\/webhooks\/([^/]+)\/test$/.exec(path);
+      if (method === "POST" && m) {
+        const webhookId = m[1];
+        return deferred(async () => {
+          const result = await registry.testWebhook(cauth, webhookId);
+          return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_V2, ...result }), {
+            "Cache-Control": "no-store",
+          });
+        }, req.url);
       }
 
       if (method === "GET" && path === "/v1/console/drafts") {
@@ -1088,6 +1172,22 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       return json(200, JSON.stringify(registry.listWebhooks(auth)));
     }
 
+    // §6.5.2 — THE ONE ROUTE IN THIS ROUTER THAT OPENS A SOCKET.
+    //
+    // Matched BEFORE the bare `/v1/webhooks/{id}` form below: `([^/]+)` matches
+    // no slash, so the two cannot collide, and the order is written down anyway
+    // because a later widening of either pattern would make it matter.
+    // Everything about the answer is the service's; `deferred` carries out the
+    // promise so the rest of this router stays synchronous.
+    m = /^\/v1\/webhooks\/([^/]+)\/test$/.exec(path);
+    if (method === "POST" && m) {
+      const webhookId = m[1];
+      return deferred(async () => {
+        const result = await registry.testWebhook(auth, webhookId);
+        return json(200, JSON.stringify(result), { "Cache-Control": "no-store" });
+      }, req.url);
+    }
+
     m = /^\/v1\/webhooks\/([^/]+)$/.exec(path);
     if (method === "DELETE" && m) {
       return json(200, JSON.stringify(registry.deleteWebhook(auth, m[1])));
@@ -1205,30 +1305,37 @@ export function startServer(registry: () => Registry, port: number, host = "127.
     });
     req.on("end", () => {
       if (res.writableEnded) return;
-      try {
-        const out = handleRest(registry(), {
-          method: req.method ?? "GET",
-          url: req.url ?? "/",
-          // The forwarded set is a LIST, not the whole request. Everything the
-          // router reads is here and nothing else is: the console needs the
-          // cookie it authenticates with, the `Origin` and `Host` it compares,
-          // and the CSRF header it echoes. A header the router does not read is a
-          // header the router cannot be surprised by.
-          headers: {
-            authorization: req.headers.authorization,
-            cookie: req.headers.cookie,
-            origin: req.headers.origin as string | undefined,
-            host: req.headers.host,
-            [CSRF_HEADER]: req.headers[CSRF_HEADER] as string | undefined,
-          },
-          body: Buffer.concat(chunks),
-        });
-        res.writeHead(out.status, out.headers);
-        res.end(out.body);
-      } catch {
-        res.writeHead(500, JSON_HEADERS);
-        res.end(errorBody({ error: { code: "INTERNAL", message: "internal error" } }, req.url));
-      }
+      // `handleRestAsync`, not `handleRest`: §6.5.2's test delivery answers only
+      // once a socket it opened has closed, and a listener that wrote the
+      // synchronous return value would serve the placeholder that member
+      // documents. Every other route still resolves in the turn it was decided.
+      void (async () => {
+        try {
+          const out = await handleRestAsync(registry(), {
+            method: req.method ?? "GET",
+            url: req.url ?? "/",
+            // The forwarded set is a LIST, not the whole request. Everything the
+            // router reads is here and nothing else is: the console needs the
+            // cookie it authenticates with, the `Origin` and `Host` it compares,
+            // and the CSRF header it echoes. A header the router does not read is a
+            // header the router cannot be surprised by.
+            headers: {
+              authorization: req.headers.authorization,
+              cookie: req.headers.cookie,
+              origin: req.headers.origin as string | undefined,
+              host: req.headers.host,
+              [CSRF_HEADER]: req.headers[CSRF_HEADER] as string | undefined,
+            },
+            body: Buffer.concat(chunks),
+          });
+          res.writeHead(out.status, out.headers);
+          res.end(out.body);
+        } catch {
+          if (res.writableEnded) return;
+          res.writeHead(500, JSON_HEADERS);
+          res.end(errorBody({ error: { code: "INTERNAL", message: "internal error" } }, req.url));
+        }
+      })();
     });
   });
   return new Promise<Server>((resolve, reject) => {

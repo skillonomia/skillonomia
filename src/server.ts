@@ -207,7 +207,18 @@ export async function serve(opts: ServeOptions = {}): Promise<Instance> {
     mkdirSync(dataDir, { recursive: true });
     const db = openMigrated(join(dataDir, DB_FILENAME));
     const secrets = new FsSecretStore(join(dataDir, "secrets"));
+    // The real outbound transport, with the §5.2 address/redirect/timeout rules
+    // (src/transport.ts). A deployment may supply its own; passing NullTransport
+    // switches push delivery off, which is a choice, not a default.
+    //
+    // It is built HERE, above the registry, because §6.5.1 makes it TWO
+    // surfaces' business: the delivery worker below pushes through it, and the
+    // registration surface asks it what it would refuse. One process, one
+    // policy — a second transport object would be a second answer to the
+    // loopback question, which is exactly the drift `INV-08` closes.
+    const transport = opts.transport ?? defaultTransport();
     const registry = new Registry(db, {
+      transport,
       activation,
       inventory,
       blobs: new FsBlobStore(join(dataDir, "blobs")),
@@ -244,10 +255,6 @@ export async function serve(opts: ServeOptions = {}): Promise<Instance> {
       });
     }
 
-    // The real outbound transport, with the §5.2 address/redirect/timeout rules
-    // (src/transport.ts). A deployment may supply its own; passing NullTransport
-    // switches push delivery off, which is a choice, not a default.
-    const transport = opts.transport ?? defaultTransport();
     const worker = workerId(Date.now());
     const tick = async (nowMs: number = Date.now()): Promise<void> => {
       sweep(db, nowMs);

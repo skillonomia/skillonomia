@@ -7,7 +7,7 @@ import { makeManifest, buildPackage, ctxFor, NOW } from "./p2-helpers.ts";
 import { Registry } from "../src/service.ts";
 import { mintApiKey, type AuthContext, type Role } from "../src/auth.ts";
 import { MemoryEvidencePrincipals, type EvidenceSource } from "../src/evidence-principal.ts";
-import type { SecretStore } from "../src/webhooks.ts";
+import type { SecretStore, WebhookTransport } from "../src/webhooks.ts";
 import type { ActivationRoots } from "../src/activation.ts";
 import type { RuntimeRecordSource } from "../src/assignments.ts";
 import type { InventoryRoots } from "../src/fleet-scan.ts";
@@ -93,6 +93,13 @@ export function p4Fixture(
      *  rollback was decided, say — cannot do it with a stopped clock, and says
      *  so at its call site. */
     clock?: () => number;
+    /** §6.5.1: HOW A PUSH WOULD LEAVE THIS PROCESS, and therefore what the
+     *  registration surface admits. Absent = `defaultTransport()` reading this
+     *  process's environment, which is the shipped default and, with
+     *  `SKILLONOMIA_WEBHOOK_ALLOW_LOOPBACK` unset, refuses `http://` outright.
+     *  A suite exercising the loopback spellings Appendix D.1 stores has to say
+     *  which deployment it is, and says so at its call site. */
+    transport?: WebhookTransport;
   } = {},
 ): P4Fixture {
   const seed = seedGraph(opts.db);
@@ -106,6 +113,7 @@ export function p4Fixture(
     inventory: opts.inventory,
     observations: opts.observations,
     rateLimit: opts.rateLimit,
+    transport: opts.transport,
   });
   const reviewer = agentCtx(seed.db, seed, "reviewer-a", "agent", "reviewer");
   const reviewer2 = agentCtx(seed.db, seed, "reviewer-a2", "agent", "reviewer");

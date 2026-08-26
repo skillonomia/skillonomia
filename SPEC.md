@@ -2014,6 +2014,93 @@ narrowed list reads as "there is nothing else to decide".
 
 ---
 
+### 6.5 Webhook endpoint policy (auxiliary, normative)
+
+§5.2 fixes what the delivery transport will connect to, and Appendix H fixes
+what `POST /v1/webhooks` accepts. This section fixes the relation BETWEEN them,
+and adds the surface an operator needs in order to find out whether a
+registered endpoint works.
+
+#### 6.5.1 Registration parity
+
+A conforming registry MUST NOT accept an endpoint URL at registration that the
+transport of the SAME PROCESS would decline to deliver to.
+
+- An `https://` endpoint is admitted after the URL and address validation §5.2
+  already requires.
+- An `http://` endpoint naming a loopback host — a loopback literal or the name
+  `localhost` — is admitted ONLY where the process's transport policy permits
+  loopback delivery. In the shipped implementation that policy is
+  `SKILLONOMIA_WEBHOOK_ALLOW_LOOPBACK=1`, read once, where the transport is
+  constructed.
+- With that policy off, registration MUST answer `INVALID_SCHEMA` **before any
+  row is written and before any secret is generated or stored**. A refusal that
+  arrives after the secret exists has minted a credential for an endpoint the
+  registry then declined to record.
+- Private, link-local, reserved, multicast and credential-bearing destinations
+  remain refused under either policy. The loopback class is the only one a
+  deployment may opt back into, and opting into it widens nothing else.
+- The registration surface and the transport MUST read ONE policy value, not
+  two copies of one rule. The failure this closes is drift: a registration check
+  that admits `http://localhost` while delivery declines it reports an endpoint
+  as accepted and then dead-letters every notice queued for it, and the operator
+  is told something untrue about their own deployment.
+
+Registration still resolves NO name (§5.2): a name is judged at the socket, on
+every connect, so DNS revalidation remains a delivery-time obligation. A
+registration that passed therefore says the destination is admissible under the
+policy in force now — it does not promise that a later delivery will reach it,
+and a conforming registry MUST NOT describe it as one.
+
+#### 6.5.2 Test delivery
+
+```http
+POST /v1/webhooks/{webhook_id}/test
+```
+
+- Available to the endpoint's own agent and to an admin or owner of that agent's
+  workspace. An endpoint of another workspace, and another member's endpoint
+  asked for by a principal who is neither, are `NOT_FOUND`.
+- It pushes through the REAL transport, signed with the REAL secret through
+  `secret_ref`, with a body carrying `kind:"test"`. The body carries no
+  `adoption_request_id` and no `receipt_id`, because no request and no receipt
+  exist: the push proves the endpoint answers and establishes nothing about any
+  adoption.
+- It MUST NOT alter `webhooks.failure_count`, `webhooks.status` or the
+  production delivery queue, and MUST NOT create, claim or complete an
+  `adoption_requests` row. A diagnostic that can move an endpoint from `failing`
+  to `dead` damages what it measures; one that can hold an endpoint alive turns
+  the health column into a record of the operator's clicking. A `dead` endpoint
+  therefore stays `dead` and remains testable, which is how an operator learns
+  that a repaired receiver answers again.
+- It writes an audit event. That event MUST carry neither the signing secret nor
+  the endpoint's response body.
+- It answers `200 {"delivered","http_status","latency_ms","error_code","error_detail"}`.
+  `delivered` is true exactly on a 2xx from the endpoint. `http_status` is the
+  status the endpoint returned, or `null` where no exchange produced one.
+  `error_code` is `null` on a delivered test and otherwise one of `non_2xx`,
+  `refused` (the transport declined the destination), `transport_error` (it
+  could not complete an exchange) and `secret_unresolved` (the signing secret
+  did not resolve, so nothing was sent).
+- The endpoint's response body is NOT reflected. `error_detail` is a bounded,
+  sanitized line describing the failure, and a conforming registry MUST NOT put
+  the endpoint's body, the secret or the signature in it.
+- The call takes no `idempotency_key`. A replayed diagnostic would answer with a
+  stored result, and a stored result is what a caller asking whether the
+  endpoint works now must not receive.
+
+Console wrapper:
+
+```http
+POST /v1/console/webhooks/{webhook_id}/test
+```
+
+The wrapper calls the same service method with the console session's own
+`AuthContext` and adds the console envelope. It is reachable by an owner or
+admin session and by no other role, and it recomputes no part of the rule above.
+
+---
+
 ---
 
 ## 7. Deterministic gates, sandbox declaration, and human approval
@@ -6108,6 +6195,8 @@ Internal worker surface (NOT public, service-authenticated, single-binary in-pro
 | — | `POST /v1/webhooks` | member+, own endpoint only | `{"url"}` — NO `idempotency_key`, for the reason §6.1 gives for the two secret-returning provisioning calls | `201 {"webhook_id","url","secret"}`; `secret` is shown ONCE and the URL is echoed exactly as written (§5.2). A URL the §5.2 registration rules refuse, or one longer than 2000 characters, or one Appendix D.1's `CHECK` cannot store → `INVALID_SCHEMA` with the reason |
 | — | `GET /v1/webhooks` | member+, own endpoints only | — | `200 {"items":[{"webhook_id","url","status","failure_count"}…]}` — never the secret, never its reference |
 | — | `DELETE /v1/webhooks/{id}` | the endpoint's own agent | — | `200 {"deleted":true}`; another agent's endpoint → `NOT_FOUND` |
+| — | `POST /v1/webhooks/{webhook_id}/test` | the endpoint's own agent, or an admin/owner of that agent's workspace | — — NO `idempotency_key`, because a replayed diagnostic would answer with a stored result | `200 {"delivered","http_status","latency_ms","error_code","error_detail"}` — one push over the real transport, signed with the real secret, carrying `kind:"test"` (§6.5.2). It alters no `failure_count`, no `status` and no delivery-queue row, and writes an audit event carrying neither the secret nor the endpoint's response body. `delivered` is true exactly on a 2xx; `http_status` is `null` where no exchange produced one; `error_code` is `null` on a delivered test and otherwise `non_2xx`, `refused`, `transport_error` or `secret_unresolved`; `error_detail` is a bounded sanitized line and never the endpoint's body. Another agent's endpoint, or one of another workspace → `NOT_FOUND` |
+| — | `POST /v1/console/webhooks/{webhook_id}/test` | a live console session holding `owner` or `admin` | — | `200 {"contract", …the members of the row above}` — the console wrapper of §6.5.2: the same service method, the same ACL and the same audit row, plus the console envelope. A `reviewer` session → `FORBIDDEN` |
 | `capture.submit` | `POST /v1/captures` | member+ | `{"kind":"workflow\|session\|native_skill", "text"?, "title"?, "source_ref"?, "session"?:{"session_ref"?,"turns":[{"role":"user\|assistant\|system\|tool","text"}…]}, "native"?:{"runtime":"claude_code\|codex","path","content"}, "idempotency_key"?}`. `text` is required for `workflow`, `session.turns` for `session` and the three `native` fields for `native_skill`; a source over 100000 characters is `LIMIT_EXCEEDED` | `201 {"outcome":"drafted\|refused","capture_id","source_kind","source_format","source_digest","classification","draft","refusal"}`. `classification` is `{"category","skillable","reason_code","reason","routing_reason","signals","scores","step_count","classifier_version"}` — `category` ∈ `reusable_procedure \| memory \| rule \| automation \| connector \| loadout \| one_off \| ambiguous`. On `drafted`, `draft` is the object surface `draft.get` returns and `refusal` is `null`; on `refused`, `draft` is `null` and `refusal` is `{"code","category","reason_code","reason","routing_reason"}`, where `code` is `NOT_SKILLABLE` for a capture the classifier declined, `MALFORMED_NATIVE_SOURCE`, `UNSUPPORTED_NATIVE_SOURCE` or `UNSAFE_NATIVE_PATH` for an import that could not be read, `EMPTY_SOURCE` for a source with no content, and `SOURCE_TOO_LARGE` or `DRAFT_TOO_LARGE` for a source or a compiled draft that does not fit the column that would hold it. A `source_ref` or a native path whose REDACTED form exceeds 200 characters is `LIMIT_EXCEEDED` and records nothing; the `idempotency_key` of this surface is stored as a digest of itself. A CONFORMING REGISTRY MUST redact the normalised source before it classifies, compiles, stores, audits or returns any part of it, MUST NOT store a raw secret value in `captures.redacted_source`, `captures.source_ref`, `draft_revisions.content_json`, `draft_revisions.semantic_json`, `draft_revisions.security_json` or `draft_events.correlation_ref`, and MUST NOT emit a partial draft for a refused import |
 | `draft.list` | `GET /v1/drafts` | member+ (the caller's workspace) | — | `200 {"items":[{"draft_id","latest_revision_id","latest_revision","revisions","capture_id","title","content_digest","semantic_status","semantic_blocking","security_blocking","created_at_ms"}…]}` — one row per lineage, ordered by `draft_id` |
 | `draft.get` | `GET /v1/drafts/{draft_id}` · `GET /v1/drafts/{draft_id}/revisions/{revision_id}` | member+ (the caller's workspace) | `{"draft_id","revision_id"?}` over MCP; the REST forms take both from the path | `200 {"draft_id","revision","lineage":[{"revision_id","revision","parent_revision_id","origin","content_digest","created_at_ms"}…]}`. `revision` is `{"draft_id","revision_id","revision","parent_revision_id","capture_id","origin","author_agent_id","compiler_version","content_digest","created_at_ms","content","semantic_review","security_review"}`. `content` carries the ten canonical sections — `title`, `purpose`, `when_to_use`, `procedure`, `inputs`, `outputs`, `permissions`, `dependencies`, `failure_modes`, `redactions` and `provenance` — and a section the capture did not state is EMPTY and reported by the semantic review, never filled in. `semantic_review` is `{"status":"complete\|incomplete","blocking_count","missing_sections","findings":[{"code","section","severity","detail","line"}…],"compiler_version"}`; `security_review` is `{"requested_permissions","dependencies","risky_actions":[{"code","severity","detail","line"}…],"redactions":[{"category","source_field","detector","line","column","removed_characters","reason"}…],"blocking_count","compiler_version"}`. A redaction entry MUST NOT carry the removed value or a digest of it. Without `revision_id` the latest revision is returned; an unknown one is `NOT_FOUND` |

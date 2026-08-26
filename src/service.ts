@@ -358,10 +358,15 @@ import {
   deleteWebhook,
   listWebhooks,
   webhookHealth,
+  deliveryPolicyOf,
+  testWebhookDelivery,
   MemorySecretStore,
   type RegisteredWebhook,
   type SecretStore,
+  type WebhookTestResult,
+  type WebhookTransport,
 } from "./webhooks.ts";
+import { defaultTransport } from "./transport.ts";
 import { validatePayload } from "./manifest.ts";
 import {
   createPrincipal,
@@ -427,6 +432,20 @@ export interface RegistryOptions {
   blobs?: BlobStore;
   /** §5.2: where webhook signing secrets live — never SQLite */
   secrets?: SecretStore;
+  /**
+   * §5.2/§6.5: HOW A PUSH LEAVES THIS PROCESS, and therefore what this process
+   * is willing to deliver to.
+   *
+   * It is a Registry option and not only a worker argument because two surfaces
+   * need it and `INV-08` says they must need the SAME one: the delivery worker
+   * pushes through it, and `POST /v1/webhooks` asks it what it would refuse
+   * before admitting a URL. A deployment that hands `src/server.ts` a transport
+   * hands the registry that one, so a process has a single policy and not two.
+   *
+   * The default is `defaultTransport()`, which reads the environment ONCE, here
+   * — the same object the shipped deployment delivers through.
+   */
+  transport?: WebhookTransport;
   /**
    * §9.1: where the OUTSTANDING bootstrap token's HASH lives between the first
    * start and the exchange. In memory by default, which is what a test wants;
@@ -1167,6 +1186,9 @@ export class Registry {
   private readonly consoleSessionMs: number;
   /** `INV-02`: the registered reporters of observed state. Empty by default. */
   private readonly evidencePrincipals: EvidencePrincipalStore;
+  /** §6.5: the transport whose policy registration obeys and whose socket the
+   *  test push uses. One object, consulted by both (`INV-08`). */
+  readonly transport: WebhookTransport;
 
   constructor(db: Db, opts: RegistryOptions = {}) {
     this.db = db;
@@ -1188,6 +1210,7 @@ export class Registry {
     this.inventory = opts.inventory ?? NO_INVENTORY_ROOTS;
     this.blobs = opts.blobs ?? new MemoryBlobStore();
     this.secrets = opts.secrets ?? new MemorySecretStore();
+    this.transport = opts.transport ?? defaultTransport();
     this.limiter = new RateLimiter(opts.rateLimit ?? DEFAULT_RATE_LIMIT);
     this.now = opts.now ?? Date.now;
     this.bootstrapStore = opts.bootstrap ?? new MemoryBootstrapStore();
@@ -3016,13 +3039,39 @@ export class Registry {
    *  again (Appendix H); SQLite stores only its hash and its ref (§5.2). */
   registerWebhook(auth: AuthContext, input: { url?: unknown }): RegisteredWebhook {
     if (auth.role === null) throw new ApiError("FORBIDDEN", "workspace membership required");
-    return registerWebhook(this.db, this.secrets, auth.agent_id, (input ?? {}).url, this.now());
+    // §6.5.1: the URL rules come from THIS process's transport, so a URL this
+    // deployment would not deliver to is not a URL this deployment registers.
+    return registerWebhook(
+      this.db,
+      this.secrets,
+      auth.agent_id,
+      (input ?? {}).url,
+      this.now(),
+      deliveryPolicyOf(this.transport),
+    );
   }
 
   /** `DELETE /v1/webhooks/{id}` — own only. */
   deleteWebhook(auth: AuthContext, webhookId: string): { deleted: boolean } {
     if (typeof webhookId !== "string") throw new ApiError("INVALID_SCHEMA", "webhook_id must be a string");
     return deleteWebhook(this.db, this.secrets, auth.agent_id, webhookId);
+  }
+
+  /**
+   * `POST /v1/webhooks/{webhook_id}/test` — §6.5.2.
+   *
+   * ASYNCHRONOUS, and the only method on this class that is: it opens a socket.
+   * `src/http.ts` carries the promise out through `RestResponse.pending` rather
+   * than making every other route await, and `handleRestAsync` is what a
+   * listener calls.
+   *
+   * Nothing here is idempotency-keyed. A replayed test would answer with a
+   * STORED result, and a stored result is the one thing a diagnostic must never
+   * return — an operator asking "is it working NOW" would be shown what was
+   * true when they last asked.
+   */
+  testWebhook(auth: AuthContext, webhookId: unknown): Promise<WebhookTestResult> {
+    return testWebhookDelivery(this.db, this.secrets, this.transport, auth, webhookId, this.now());
   }
 
   /** `GET /v1/webhooks` — own endpoints, with the health §5.2 defines. */

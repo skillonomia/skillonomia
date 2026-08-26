@@ -18,6 +18,7 @@ import {
   type WebhookTransport,
 } from "../src/webhooks.ts";
 import { loadRequest, workerId, recordWebhookResult, deadLetters, MAX_ATTEMPTS } from "../src/delivery.ts";
+import { HttpsWebhookTransport } from "../src/transport.ts";
 import { isApiError } from "../src/errors.ts";
 
 /** A transport that records what it was asked to send and answers to script. */
@@ -39,7 +40,17 @@ interface WhFixture extends P4Fixture {
 
 function fixture(): WhFixture {
   const secrets = new MemorySecretStore();
-  const fx = p4Fixture({ secrets }) as WhFixture;
+  // §6.5.1: A DEPLOYMENT THAT DELIVERS TO LOOPBACK, stated rather than assumed.
+  //
+  // Registration now asks the process's transport what it would refuse
+  // (`INV-08`), so `http://localhost…` registers exactly where a push to
+  // `http://localhost…` would be attempted. These suites exercise the HOST
+  // rules of Appendix D.1's loopback exception — that `localhost.attacker.com`
+  // is not this machine — so they need the deployment in which that exception
+  // exists at all. The other direction, where the flag is off and the same URL
+  // is refused before a row or a secret is written, is asserted in
+  // test/v1p1-p1-webhook-policy.test.ts.
+  const fx = p4Fixture({ secrets, transport: new HttpsWebhookTransport({ allowLoopback: true }) }) as WhFixture;
   fx.secrets = secrets;
   // seedGraph() ships one `pending` request; park it so each test's own job is
   // the only claimable one.

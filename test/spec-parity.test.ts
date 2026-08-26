@@ -446,6 +446,7 @@ const RESPONSE_SHAPES: ReadonlyArray<{ row: string; file: string; iface: string 
   { row: "`GET /v1/receipts/{id}`", file: "src/service.ts", iface: "ReceiptView" },
   { row: "`tlog.read`", file: "src/tlog.ts", iface: "TlogRow" },
   { row: "`POST /v1/webhooks`", file: "src/webhooks.ts", iface: "RegisteredWebhook" },
+  { row: "`POST /v1/webhooks/{webhook_id}/test`", file: "src/webhooks.ts", iface: "WebhookTestResult" },
   { row: "`migration.count`", file: "src/skill-migrations.ts", iface: "MigrationCountResponse" },
   { row: "`migration.count`", file: "src/skill-migrations.ts", iface: "SkillMigrationCount" },
   { row: "`dashboard.view`", file: "src/dashboard.ts", iface: "DashboardPayload" },

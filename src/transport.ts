@@ -41,6 +41,27 @@ import { isIP } from "node:net";
 import type { WebhookRequest, WebhookResponse, WebhookTransport } from "./webhooks.ts";
 import { SIGNATURE_HEADER } from "./webhooks.ts";
 
+/**
+ * THE DEPLOYMENT DECISION, AS ONE OBJECT — §6.5.1.
+ *
+ * `SKILLONOMIA_WEBHOOK_ALLOW_LOOPBACK` is not a property of a URL; it is a
+ * property of THIS PROCESS's transport, and until v1.1 it was readable in only
+ * one place — inside `HttpsWebhookTransport.vet`. Registration therefore could
+ * not ask it, so it applied a rule of its own that said `http://localhost`
+ * registers, and delivery applied a rule that said it does not. An adopter
+ * registering a local receiver on a deployment with the flag off was told the
+ * endpoint was accepted and then every notice dead-lettered.
+ *
+ * The repair is this type, and its being a VALUE the transport holds rather
+ * than a boolean each surface re-reads: `vet` and `deliveryPolicy` return the
+ * same object, and registration takes it from the transport. A second copy of
+ * the rule is what drifted, so there is no second copy.
+ */
+export interface WebhookDeliveryPolicy {
+  /** whether this transport will deliver over `http://` to this machine */
+  readonly allowLoopback: boolean;
+}
+
 export const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 export const DEFAULT_TOTAL_TIMEOUT_MS = 10_000;
 export const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024;
@@ -291,23 +312,56 @@ export function vetEndpointUrl(rawUrl: unknown, policy: UrlPolicy): URL {
   return url;
 }
 
+/**
+ * The registration-time reading of a delivery policy — §6.5.1, `INV-08`.
+ *
+ * ONE FUNCTION, and registration is its only caller, because the parity claim
+ * is that registration refuses what THIS process's transport would refuse. The
+ * `allowHttp` member is the policy's `allowLoopback` and nothing else: with the
+ * flag off, `http://` is not a scheme this deployment delivers over, so it is
+ * not a scheme this deployment registers.
+ *
+ * The two members registration adds are narrowings the transport cannot make
+ * and does not need. `requireLoopbackHost` holds it to a host that IS this
+ * machine, which is the whole of the exception §5.2 grants. `refuseBlockedLiteral`
+ * judges an IP literal now, because a literal cannot change between here and
+ * the socket. Registration is therefore never LOOSER than delivery, which is
+ * the direction `INV-08` closes; it stays free to be stricter, and it is.
+ *
+ * What this deliberately does NOT do is promise reachability. A NAME is still
+ * resolved nowhere but at the socket, on every connect, so a registration that
+ * passed says the destination is admissible under today's policy — never that a
+ * later delivery will succeed.
+ */
+export function registrationUrlPolicy(policy: WebhookDeliveryPolicy): UrlPolicy {
+  return { allowHttp: policy.allowLoopback, requireLoopbackHost: true, refuseBlockedLiteral: true };
+}
+
 // ------------------------------------------------------------- the transport
 
 export class HttpsWebhookTransport implements WebhookTransport {
   private readonly totalTimeoutMs: number;
   private readonly connectTimeoutMs: number;
   private readonly maxResponseBytes: number;
-  private readonly allowLoopback: boolean;
+  /** The §6.5.1 policy object. `vet` below reads it, `deliveryPolicy` hands the
+   *  SAME object to the registration surface, and there is no third reader. */
+  private readonly policy: WebhookDeliveryPolicy;
   private readonly resolveHost: (hostname: string) => Promise<string[]>;
 
   constructor(opts: HttpsTransportOptions = {}) {
     this.totalTimeoutMs = opts.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS;
     this.connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
     this.maxResponseBytes = opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
-    this.allowLoopback = opts.allowLoopback ?? false;
+    this.policy = { allowLoopback: opts.allowLoopback ?? false };
     this.resolveHost =
       opts.resolve ??
       (async (hostname: string) => (await dnsLookup(hostname, { all: true, verbatim: true })).map((a) => a.address));
+  }
+
+  /** §6.5.1: what this transport will and will not deliver to, as the object
+   *  `vet` consults. Registration asks for it so the two cannot disagree. */
+  deliveryPolicy(): WebhookDeliveryPolicy {
+    return this.policy;
   }
 
   async send(req: WebhookRequest): Promise<WebhookResponse> {
@@ -315,7 +369,12 @@ export class HttpsWebhookTransport implements WebhookTransport {
       const { url, address } = await this.vet(req.url);
       return await this.exchange(url, address, req);
     } catch (e) {
-      if (e instanceof WebhookRefused) return { status: 0, error: e.message };
+      // `refused` is a STRUCTURED flag and not a prefix of the message: a
+      // destination this transport will not connect to and a destination that
+      // failed to answer are different facts, and §6.5.2's `error_code` has to
+      // tell them apart without parsing English (`src/console-view.ts` says why
+      // no reader in this tree may).
+      if (e instanceof WebhookRefused) return { status: 0, error: e.message, refused: true };
       // a resolver failure, a TLS failure, anything unforeseen: a delivery
       // failure with a message, never a thrown exception into the worker loop
       return { status: 0, error: `delivery failed: ${short(e)}` };
@@ -327,7 +386,7 @@ export class HttpsWebhookTransport implements WebhookTransport {
     // The scheme/credential half is `vetEndpointUrl`, shared verbatim with the
     // registration surface so the two cannot drift apart. The address half
     // below is this transport's alone, because only it has a resolver.
-    const url = vetEndpointUrl(rawUrl, { allowHttp: this.allowLoopback });
+    const url = vetEndpointUrl(rawUrl, { allowHttp: this.policy.allowLoopback });
 
     const hostname = endpointHost(url);
     const addresses = isIP(hostname) ? [hostname] : await this.resolveAddresses(hostname);
@@ -338,7 +397,7 @@ export class HttpsWebhookTransport implements WebhookTransport {
     for (const address of addresses) {
       const reason = blockedReason(address);
       if (reason === null) continue;
-      if (this.allowLoopback && isLoopback(address)) continue;
+      if (this.policy.allowLoopback && isLoopback(address)) continue;
       throw new WebhookRefused(`refused: ${hostname} resolves to a forbidden address (${reason})`);
     }
     return { url, address: addresses[0] };
