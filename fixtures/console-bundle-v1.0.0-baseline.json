@@ -1,0 +1,8 @@
+{
+  "baseline_commit": "1de63be92ab67de79b3888468bcf7fc89b4127d8",
+  "source_path": "console/app.ts",
+  "source_sha256": "eeb6e3b1c5c2adcd6399463206a78c78718c028d628b32c2e9cc68b0214dc617",
+  "bundle_bytes": 31016,
+  "bundle_sha256": "a5c57039c782d46643bdc2fc4b99251d27c3724636c5e0a7aebecf44ba104202",
+  "gzip_bytes": 8716
+}
