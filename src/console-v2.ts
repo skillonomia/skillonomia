@@ -651,6 +651,24 @@ export function consoleInboxKindAdmits(role: ConsoleSessionRole, kind: ApprovalK
   return (APPROVAL_KIND_FILTERS as readonly string[]).includes(kind);
 }
 
+/**
+ * THE SAME RULE, ASKED THE OTHER WAY: which filters may this session ask for.
+ *
+ * It exists because of what the refusal above leaves behind. "…and leaves the
+ * reviewer able to ask the one that is" is only true if the reviewer has a
+ * control that asks it, and the Console's kind selector is filled from the
+ * Inbox response — the very response a reviewer's default `kind=all` request is
+ * refused. The selector was therefore EMPTY for exactly the role that needs it,
+ * and a reviewer could not reach the Approval Inbox in a browser at all.
+ *
+ * So the admissible set is published on the session, before any Inbox request,
+ * and it is DERIVED from the predicate above rather than restated: one rule,
+ * asked as a question by the route and as a vocabulary by the page (`INV-01`).
+ */
+export function consoleInboxKindFilters(role: ConsoleSessionRole): ApprovalKindFilter[] {
+  return APPROVAL_KIND_FILTERS.filter((kind) => consoleInboxKindAdmits(role, kind));
+}
+
 // ===========================================================================
 // The route-level ACL
 // ===========================================================================

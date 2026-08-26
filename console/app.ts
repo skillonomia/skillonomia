@@ -2268,11 +2268,31 @@ function wireProofline(views: string[]): void {
 // ------------------------------------------------------------------ the boot
 
 async function boot(): Promise<void> {
-  const me = await api<{ agent_id: string; expires_at_ms: number; csrf_token: string; contract: string }>(
-    "GET",
-    "/v1/console/session",
-  );
+  const me = await api<{
+    agent_id: string;
+    expires_at_ms: number;
+    csrf_token: string;
+    contract: string;
+    inbox_kinds?: string[];
+  }>("GET", "/v1/console/session");
   csrfToken = me.csrf_token;
+  // v1.1: THE INBOX FILTERS THIS SESSION IS ENTITLED TO ASK FOR, taken from the
+  // server before the first Inbox request is made.
+  //
+  // The Approval Inbox's kind selector used to be filled from the Inbox
+  // RESPONSE. A reviewer session may not ask for `kind=all` — the server refuses
+  // the question rather than narrowing the answer — so a reviewer's first load
+  // was `FORBIDDEN`, no envelope arrived, the selector stayed EMPTY, and the one
+  // control that could have asked the admissible question was the control that
+  // never got drawn. A reviewer could not reach the Approval Inbox in a browser
+  // at all, which is every claim about recording a review verdict without curl.
+  //
+  // The set is the SERVER'S, and the default is its first member rather than a
+  // name written here: the page must not hold a second opinion about which
+  // filters a role may use (`INV-01`).
+  inboxKinds = Array.isArray(me.inbox_kinds) ? me.inbox_kinds : [];
+  if (inboxKinds.length > 0 && !inboxKinds.includes(approvalsKind)) approvalsKind = inboxKinds[0];
+  if (inboxKinds.length > 0) fillFilter(byId<HTMLSelectElement>("approvals-kind"), inboxKinds, approvalsKind);
   byId("who").textContent = `${me.agent_id}`;
   byId("session-note").textContent = `session ends ${new Date(me.expires_at_ms).toISOString()}`;
   byId("refresh").addEventListener("click", () => guard(() => loadInbox()));
@@ -2648,6 +2668,9 @@ function beginLoading(box: HTMLElement, sentence: string): void {
  *  nothing" two different states with two different sentences. */
 let approvalsStatus = "all";
 let approvalsKind = "all";
+/** The kind filters THIS session may ask the Inbox for, as the server named
+ *  them on `GET /v1/console/session`. Empty until `boot` has read it. */
+let inboxKinds: string[] = [];
 let approvalsEnvelope: ApprovalEnvelope | null = null;
 let openApprovalId: string | null = null;
 
@@ -2686,14 +2709,28 @@ function renderApprovals(envelope: ApprovalEnvelope): void {
   box.dataset.items = String(envelope.items.length);
 
   fillFilter(byId<HTMLSelectElement>("approvals-status"), envelope.status_filters, approvalsStatus);
-  fillFilter(byId<HTMLSelectElement>("approvals-kind"), envelope.kind_filters, approvalsKind);
+  // THE SESSION'S SET WINS over the envelope's. `kind_filters` is the whole
+  // vocabulary of the surface and is the same for every reader; the session's
+  // set is the part THIS reader may ask for, and offering a reviewer the `all`
+  // this envelope lists would be offering a control whose only outcome is a
+  // refusal.
+  fillFilter(
+    byId<HTMLSelectElement>("approvals-kind"),
+    inboxKinds.length > 0 ? inboxKinds : envelope.kind_filters,
+    approvalsKind,
+  );
 
   if (envelope.items.length === 0) {
     // ZERO ROWS IS NOT ONE STATE. A filter that selected nothing is a statement
     // about the filter; an inbox that never had an item is a statement about the
     // workspace. Saying the second while a filter is on would attribute the
     // filter's work to the registry, and the actions differ too.
-    const filtered = approvalsStatus !== "all" || approvalsKind !== "all";
+    // "FILTERED" MEANS NARROWER THAN WHAT THIS SESSION MAY ASK FOR, not narrower
+    // than `all`. A reviewer's widest admissible question is `kind=review`, and
+    // calling that a filter would tell a reviewer with nothing to review that
+    // their filter is hiding something.
+    const widestKind = inboxKinds.includes("all") || inboxKinds.length === 0 ? "all" : inboxKinds[0];
+    const filtered = approvalsStatus !== "all" || approvalsKind !== widestKind;
     box.dataset.state = filtered ? "filtered-to-zero" : "empty";
     box.appendChild(el("p", filtered ? APPROVALS_TEXT.filtered_to_zero : APPROVALS_TEXT.empty, "muted"));
     const action = el("button", filtered ? APPROVALS_TEXT.clear_filter : APPROVALS_TEXT.empty_action);
@@ -2702,7 +2739,9 @@ function renderApprovals(envelope: ApprovalEnvelope): void {
     action.addEventListener("click", () => {
       if (filtered) {
         approvalsStatus = "all";
-        approvalsKind = "all";
+        // …to the widest kind this session may actually ask for, which for a
+        // reviewer is not `all`.
+        approvalsKind = inboxKinds.includes("all") || inboxKinds.length === 0 ? "all" : inboxKinds[0];
       }
       guard(() => loadApprovals());
     });

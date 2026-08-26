@@ -23,6 +23,7 @@ import {
   CONSOLE_CONTRACT_V2,
   REVIEWER_VISIBLE_KINDS,
   consoleInboxKindAdmits,
+  consoleInboxKindFilters,
   consoleRouteAdmits,
   consoleRouteClass,
   validateConsoleApproval,
@@ -402,6 +403,7 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
           // memory. It is deliberately not a cookie: `P2-FR-14` has to be able to
           // say the browser's stores are empty.
           csrf_token: opened.csrf_token,
+          inbox_kinds: consoleInboxKindFilters(opened.actor_role),
         }),
         {
           "Set-Cookie": sessionCookie(
@@ -497,6 +499,14 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
             actor_role: session.actor_role,
             expires_at_ms: session.expires_at_ms,
             csrf_token: session.csrf_token,
+            // WHICH INBOX FILTERS THIS SESSION MAY ASK FOR, published BEFORE the
+            // page asks. A reviewer session is refused `kind=all`, and the
+            // selector that would let it ask for something else is filled from
+            // the Inbox response it cannot get — so without this the control is
+            // empty for exactly the role that needs it. Derived from
+            // `consoleInboxKindAdmits`, so the route's refusal and the page's
+            // vocabulary are one rule (`INV-01`).
+            inbox_kinds: consoleInboxKindFilters(session.actor_role),
           }),
           { "Cache-Control": "no-store" },
         );
