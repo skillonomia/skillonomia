@@ -487,15 +487,25 @@ test("§7 validation error · TRIGGER: an approval note past the contract's boun
 test("§7 permission denied · TRIGGER: a reviewer session on all three surfaces; the server's typed FORBIDDEN and no mutation", async ({ assert }) => {
   await withDecisions(
     async ({ page, reader, low }) => {
-      // The inbox, refused at the FILTER rather than silently narrowed — a
+      // The inbox: refused at the FILTER rather than silently narrowed — a
       // narrowed list would read to a reviewer as "there is nothing to decide".
-      assert.equal(await settledRegion(page, "approvals"), "forbidden");
-      assert.equal(await page.$eval("#approvals", (b) => b.dataset.code), "FORBIDDEN");
-      const shown = await page.$eval("#approvals", (b) => b.textContent ?? "");
-      assert.ok(shown.includes(APPROVALS_TEXT.forbidden_heading));
-      assert.ok(shown.includes("FORBIDDEN"), "the server's own code is not on the page");
-      // A `FORBIDDEN` retried is a `FORBIDDEN` again, so no retry is offered.
-      assert.equal(await page.$('#approvals button[data-action="retry"]'), null);
+      //
+      // WHERE THAT REFUSAL IS ASSERTED MOVED, and only that. It used to be read
+      // off the page, because the page asked `kind=all` and drew the failure
+      // box. That failure box was also the bug: it left the kind selector empty,
+      // so the one question a reviewer may ask was never offered and a reviewer
+      // could not reach the Inbox in a browser at all. The page now asks for the
+      // widest kind this session is entitled to and loads; the route's refusal
+      // of `kind=all` is unchanged and is asserted here against the route.
+      const refusedAll = await reader.raw("/v1/console/approvals?status=all&kind=all");
+      assert.equal(refusedAll.status, 403, "`kind=all` is no longer refused for a reviewer");
+      assert.equal(refusedAll.body.error.code, "FORBIDDEN");
+      assert.equal(await settledRegion(page, "approvals"), "loaded");
+      assert.deepEqual(
+        await page.$$eval("#approvals-kind option", (os) => os.map((o) => o.value)),
+        ["review"],
+        "the page offered a reviewer a kind the route would refuse",
+      );
 
       // The webhook surface: a reviewer is outside the owner-only class.
       assert.equal(await settledRegion(page, "webhooks"), "forbidden");

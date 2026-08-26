@@ -251,12 +251,38 @@ test("G-P2-7 · a reviewer session is offered no path to a human approval or to 
       assert.equal(refused.status, 403);
       assert.equal(refused.body.error.code, "FORBIDDEN");
 
-      // The Console's own default asks for `all`, so the region shows the
-      // server's refusal rather than an empty inbox that would read as
-      // "there is nothing to decide".
+      // The Console asks for the widest kind THIS session is entitled to, which
+      // for a reviewer is `review`, so the region LOADS.
+      //
+      // It used to assert `forbidden` here, and that was a claim about the
+      // page's mechanism rather than about this gate's requirement. The page
+      // defaulted to `kind=all`, was refused, and drew the failure box — which
+      // also left the kind selector empty, so the one question a reviewer may
+      // ask was the one question the page never offered. A reviewer holding a
+      // Console session could not reach the Inbox at all. The refusal itself is
+      // untouched and is asserted above, AT THE ROUTE, which is where it lives.
+      //
+      // What this gate requires is that a reviewer is offered no path to a
+      // human APPROVAL or to a revocation, and that is now checked against a
+      // loaded inbox — a stronger place to check it than a failure box, because
+      // a failure box offers nothing to anyone.
       const state = await settledRegion(page, "approvals");
-      assert.equal(state, "forbidden");
-      assert.equal(await page.$eval("#approvals", (b) => b.dataset.code), "FORBIDDEN");
+      assert.equal(state, "loaded", "a reviewer cannot reach the Inbox at the one kind it may ask for");
+      const offeredKinds = await page.$$eval("#approvals-kind option", (os) => os.map((o) => o.value));
+      assert.deepEqual(offeredKinds, ["review"], `the kind selector offered a reviewer ${JSON.stringify(offeredKinds)}`);
+      const rowKinds = await page.$$eval("#approval-rows tr[data-kind]", (rs) => [
+        ...new Set(rs.map((r) => r.dataset.kind)),
+      ]);
+      assert.deepEqual(
+        rowKinds.filter((k) => k !== "review"),
+        [],
+        `a reviewer's inbox listed a human-approval kind: ${JSON.stringify(rowKinds)}`,
+      );
+      assert.equal(
+        await page.$('#approval-rows tr[data-kind="adopt_high_risk"], #approval-rows tr[data-kind="publish"]'),
+        null,
+        "a human-approval item was offered to a reviewer",
+      );
 
       // …and the revocation surface refuses the same session at the route.
       await page.fill("#revocation-version", low.skill_version_id);
