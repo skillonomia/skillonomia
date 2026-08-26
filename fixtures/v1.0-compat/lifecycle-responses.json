@@ -1,0 +1,93 @@
+{
+  "_what_this_is": "The v1.0.0 lifecycle response contract, frozen. Every member listed here was returned by the published v1.0.0 build and MUST still be returned, with the same type and the same meaning, by every later 1.x build. A member may be ADDED to `added_in_v1_1`; nothing may move out of `required` or `optional`, and nothing may be renamed. The fixture is data rather than prose so that a test can compare it against the live surfaces instead of a reader comparing it against their memory.",
+  "_how_it_is_checked": "test/v1p1-p0-contracts.test.ts drives the real service methods and asserts that every `required` member is present with the frozen type, that every `optional` member is either absent or of the frozen type, and that no `added_in_v1_1` member collides with an existing name. It also asserts the reverse direction where the reverse is meaningful: a response that grew a member neither list names fails, so an addition has to be written down here before it can ship.",
+  "baseline_commit": "1de63be92ab67de79b3888468bcf7fc89b4127d8",
+  "surfaces": {
+    "skill.revoke": {
+      "route": "POST /v1/versions/{id}/revoke",
+      "request_required": { "reason": "string" },
+      "request_optional": { "idempotency_key": "string" },
+      "request_added_in_v1_1": { "successor_version_id": "string|null" },
+      "required": {
+        "skill_version_id": "string",
+        "state": "string",
+        "reason": "string|null"
+      },
+      "optional": {
+        "tlog_seq": "number",
+        "notified_adopters": "number",
+        "noop": "boolean"
+      },
+      "added_in_v1_1": {
+        "superseded_by": "string|null",
+        "notifications_queued": "number",
+        "lineage_tlog_seq": "number"
+      },
+      "meanings_that_may_not_change": {
+        "notified_adopters": "notices QUEUED on the delivery machine, never proof of delivery",
+        "tlog_seq": "the seq of the version_revoked entry, never of any other entry",
+        "state": "the registry disposition after the call; 'revoked' on success"
+      }
+    },
+    "skill.supersede": {
+      "route": "POST /v1/versions/{id}/supersede",
+      "request_required": { "successor_version_id": "string" },
+      "request_optional": { "idempotency_key": "string" },
+      "request_added_in_v1_1": {},
+      "required": {
+        "skill_version_id": "string",
+        "state": "string",
+        "superseded_by": "string|null",
+        "successor": "object"
+      },
+      "optional": {
+        "tlog_seq": "number",
+        "noop": "boolean"
+      },
+      "added_in_v1_1": {},
+      "meanings_that_may_not_change": {
+        "state": "the predecessor's state after the call; in v1.0.0 always 'superseded' on success, and in v1.1 unchanged when the predecessor was already deprecated or revoked",
+        "successor": "the successor's identity and its OWN state, which superseding does not change"
+      }
+    },
+    "skill.deprecate": {
+      "route": "POST /v1/versions/{id}/deprecate",
+      "request_required": {},
+      "request_optional": { "idempotency_key": "string" },
+      "request_added_in_v1_1": {},
+      "required": {
+        "skill_version_id": "string",
+        "state": "string",
+        "deprecation_date": "string|null"
+      },
+      "optional": {
+        "tlog_seq": "number",
+        "noop": "boolean"
+      },
+      "added_in_v1_1": {},
+      "meanings_that_may_not_change": {
+        "deprecation_date": "stamped once from the registry clock; a repeated deprecation converges on the recorded date and never moves it forward"
+      }
+    }
+  },
+  "console_contract": {
+    "v1_0_0": "console.v1",
+    "v1_1_0": "console.v2",
+    "rule": "console.v1 is not renamed, not retired and not reused. A bundle that does not recognise the version it is handed must refuse the payload rather than parse the fields it recognises."
+  },
+  "lifecycle_states": {
+    "_note": "The eight states of skill_versions.state. v1.1 adds none — it adds EDGES. A state added later is a breaking change for every client that switches on this column, and this list is what makes that visible.",
+    "states": ["draft", "linted", "reviewed", "verified", "published", "deprecated", "superseded", "revoked"],
+    "v1_0_0_edges": [
+      "draft>linted",
+      "linted>reviewed",
+      "reviewed>verified",
+      "verified>published",
+      "published>deprecated",
+      "published>superseded",
+      "published>revoked"
+    ],
+    "v1_1_0_added_edges": ["deprecated>revoked", "superseded>revoked"],
+    "v1_1_0_removed_edges": []
+  }
+}
