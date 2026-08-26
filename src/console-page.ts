@@ -55,6 +55,15 @@ pre{white-space:pre-wrap;word-break:break-word;background:#8881;padding:.5rem;ma
 #proofline-nav a[aria-current="page"]{font-weight:700;border-color:currentColor}
 :focus-visible{outline:3px solid currentColor;outline-offset:2px}
 .scroll-x{overflow-x:auto;max-width:100%}
+/* A SCROLLABLE REGION A MOUSE CAN REACH AND A KEYBOARD CANNOT IS A BARRIER,
+   which an accessibility scan reports as scrollable-region-focusable. The
+   box is focusable and named, so the arrow keys move it. */
+.scroll-x:focus-visible{outline:3px solid currentColor;outline-offset:-3px}
+/* AND NOTHING FIXED-WIDTH PUSHES A 375px PAGE SIDEWAYS. An input with a
+   size attribute is as wide as that size until it is told otherwise, and
+   at the sign-in field that was 445px of content in a 375px viewport. */
+input,select,textarea{max-width:100%;box-sizing:border-box}
+#login #ticket{flex:1 1 12rem;min-width:0}
 .cell-value{font-weight:600}
 .cell-method{margin:.15rem 0 0;font-size:.85em;opacity:.85}
 .cell-method div{display:flex;gap:.3rem}
@@ -178,7 +187,7 @@ export function consolePage(): string {
   <span id="session-note" class="muted"></span>
 </div>
 <p id="error" class="blocking" role="alert"></p>
-<div class="scroll-x"><table id="inbox"><thead><tr>
+<div class="scroll-x" tabindex="0" role="region" aria-label="Draft inbox table"><table id="inbox"><thead><tr>
   <th>Title</th><th>State</th><th>Head approved</th><th>Rev</th><th>Semantic</th><th>Security</th><th>Approvable</th><th></th>
 </tr></thead><tbody id="inbox-rows"></tbody></table></div>
 <div id="detail" class="panel" hidden></div>
@@ -213,7 +222,7 @@ export function consolePage(): string {
 </section>
 <div id="webhooks" class="panel" aria-live="polite" aria-busy="false"></div>
 <div class="row"><h1>Capabilities</h1><button id="refresh-capabilities" type="button">Refresh</button></div>
-<div class="scroll-x"><table id="capabilities"><thead><tr>
+<div class="scroll-x" tabindex="0" role="region" aria-label="Capability library table"><table id="capabilities"><thead><tr>
   <th>Capability</th><th>Approved revisions</th><th>Head approval</th><th>Assignments</th><th>Active</th><th></th>
 </tr></thead><tbody id="capability-rows"></tbody></table></div>
 <div id="capability" class="panel" hidden></div>

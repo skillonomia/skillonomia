@@ -279,16 +279,29 @@ test("§7 partial · TRIGGER: unknown dashboard cells; the known facts stay on t
   });
 });
 
-test("§7 permission denied · TRIGGER: the server's own typed FORBIDDEN; nothing is mutated", async ({ assert }) => {
+test("§7 permission denied · RENDERER PROOF ONLY: the Proofline displays a real server FORBIDDEN; this is not an end-to-end refusal", async ({ assert }) => {
   await withConsole(async ({ page, reader, fx, j }) => {
-    // THE REFUSAL IS THE SERVER'S, NOT THIS TEST'S. The route-level console ACL
-    // admits owner, admin and reviewer to every Proofline view, so no owner
-    // session can be refused one — that is what the shipped ACL says and this
-    // test does not pretend otherwise. What it does instead is take a REAL typed
-    // `FORBIDDEN` the running server produced, from a console route it genuinely
-    // refuses this session, and deliver those exact bytes as the answer to a
-    // dashboard request. The envelope, its code, its message and its contract
-    // marker are the server's; only the request it answers is the test's.
+    // WHAT THIS TEST PROVES, AND WHAT IT DOES NOT — narrowed by owner ruling
+    // B-1 of 2026-08-26, which is recorded in the P2 evidence.
+    //
+    // A Proofline view CANNOT return a live `FORBIDDEN` to owner, admin or
+    // reviewer: the route-level console ACL admits all three to every view. The
+    // §7 `permission denied` cell for the Proofline column is therefore recorded
+    // as `N/A — unreachable under current ACL`, which is what the matrix itself
+    // provides for.
+    //
+    // So what follows is RENDERER PROOF and is described as nothing more: it
+    // takes a REAL typed `FORBIDDEN` the running server produced, on a console
+    // route it genuinely refuses this session, and delivers those exact bytes as
+    // the answer to a dashboard request. The envelope, its code, its message and
+    // its contract marker are the server's; only the request it answers is the
+    // test's. It establishes that the Proofline DISPLAYS a typed server refusal
+    // and mutates nothing while doing so.
+    //
+    // THE END-TO-END REFUSAL IS PROVED ELSEWHERE, against a route that genuinely
+    // forbids the action: `test-browser/decision-states.mjs` drives a real
+    // reviewer session into a live `403` on the revocation surface in a browser,
+    // with no mutation. That test — not this one — is P2's end-to-end refusal.
     const refusals = [];
     for (const probe of [
       // A REAL ANTI-FORGERY REFUSAL. The token is not this session's, so the

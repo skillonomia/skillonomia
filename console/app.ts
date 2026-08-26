@@ -231,6 +231,23 @@ const REASON_LABEL: Record<string, string> = {
 let csrfToken = "";
 let openDraftId: string | null = null;
 
+/**
+ * A horizontally scrollable box that a KEYBOARD can reach.
+ *
+ * The wrapper exists so a wide table scrolls inside its own box instead of
+ * pushing the page sideways and taking an action off the right edge. A box that
+ * only a pointer can scroll is a barrier for anyone who does not use one, and an
+ * accessibility scan names it `scrollable-region-focusable`. Focusable, with a
+ * role and a name, the arrow keys move it and a screen reader says what it is.
+ */
+function scrollBox(label: string): HTMLDivElement {
+  const box = el("div", undefined, "scroll-x");
+  box.tabIndex = 0;
+  box.setAttribute("role", "region");
+  box.setAttribute("aria-label", label);
+  return box;
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   // textContent, never innerHTML: this is the whole of `P2-FR-06` in this file
@@ -2098,7 +2115,7 @@ function renderProoflineSection(parent: HTMLElement, s: ProoflineSection): void 
   }
 
   box.dataset.rows = String(s.rows.length);
-  const scroll = el("div", undefined, "scroll-x");
+  const scroll = scrollBox("Proofline table");
   const table = el("table");
   const thead = el("thead");
   const hrow = el("tr");
@@ -2683,7 +2700,7 @@ function renderApprovals(envelope: ApprovalEnvelope): void {
     return;
   }
 
-  const scroll = el("div", undefined, "scroll-x");
+  const scroll = scrollBox("Approval inbox table");
   const table = el("table");
   table.id = "approval-rows-table";
   const thead = el("thead");
@@ -3325,7 +3342,7 @@ function renderWebhooks(items: WebhookRow[]): void {
     return;
   }
 
-  const scroll = el("div", undefined, "scroll-x");
+  const scroll = scrollBox("Webhook endpoints table");
   const table = el("table");
   const thead = el("thead");
   const hrow = el("tr");
