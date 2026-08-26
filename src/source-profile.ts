@@ -35,7 +35,7 @@ import { computeIntegrity, type PackageFiles } from "./archive.ts";
 import { manifestSchemaErrors } from "./manifest.ts";
 import { outcomeContractOf } from "./manifest.ts";
 import { parseJsonStrict, utf8Decode } from "./jcs.ts";
-import { runGates, type GateName } from "./gates.ts";
+import { runGates, schemaCrossFieldProblems, type GateName } from "./gates.ts";
 import {
   ALREADY_PACKED_MARKERS,
   GENERATED_GATE_ID_RE,
@@ -82,6 +82,27 @@ function finding(
 ): SourceFinding {
   return { pointer, code, severity, detail, recovery, anchor: anchorFor(code) };
 }
+
+/**
+ * The `author_agent` the SHAPE CHECK borrows, and it has to be shape-valid.
+ *
+ * A source carries no `author_agent` — the server assigns the authenticated
+ * principal — so the shape check has to supply one or every source would be
+ * told it is missing a member it must not write. The value used before was the
+ * readable string `agt_source_profile_placeholder`, which is not a ULID and
+ * therefore failed the very schema the check exists to apply. Nothing noticed,
+ * because the `/author_agent` schema error was filtered out below and the
+ * schema GATE's report was discarded wholesale — so the shape check has been
+ * running against a document it invented an invalid member for.
+ *
+ * A ULID of twenty-six Crockford zeros is valid under `#/$defs/ulid` and is
+ * mintable by nothing: `ulid()` derives its first ten characters from a
+ * timestamp, so this value cannot collide with a real agent id. It is
+ * substituted UNCONDITIONALLY, over an author-supplied value too, because
+ * whether that value is the right principal is a `create`-time question needing
+ * an authenticated identity and is answered there, not here.
+ */
+export const SHAPE_PLACEHOLDER_AUTHOR = "00000000000000000000000000";
 
 export interface SourceProfileContext {
   /** server clock, injected for the same reason the gate runner injects it:
@@ -214,12 +235,14 @@ export function validateSourceProfile(files: PackageFiles, ctx: SourceProfileCon
     if (path === "manifest.json") continue;
     shipped.set(path, bytes);
   }
-  const forShape = { ...manifest, author_agent: manifest.author_agent ?? "agt_source_profile_placeholder", integrity: computeIntegrity(shipped) };
+  const forShape = { ...manifest, author_agent: SHAPE_PLACEHOLDER_AUTHOR, integrity: computeIntegrity(shipped) };
+  let schemaFindings = 0;
   for (const e of manifestSchemaErrors(forShape)) {
     // A schema error about a server-owned member is reported above, in the
     // author's terms; repeating it in the schema's terms would tell them to fix
     // a field they are not meant to supply.
     if (e.pointer === "/integrity" || e.pointer.startsWith("/integrity/") || e.pointer === "/author_agent") continue;
+    schemaFindings += 1;
     out.push(
       finding(
         "source_schema",
@@ -229,6 +252,21 @@ export function validateSourceProfile(files: PackageFiles, ctx: SourceProfileCon
         "compare this member against the Schema Reference for skill-package-v1; the pointer is the exact path inside manifest.json",
       ),
     );
+  }
+
+  // THE CROSS-FIELD RULES THE SCHEMA CANNOT STATE, reported here with the
+  // pointer an author edits.
+  //
+  // `risk_level: high` with `sandbox_requirement: none` is two individually
+  // valid members whose combination the §7.1 schema gate refuses. The gate says
+  // so in one joined sentence and cannot say WHERE — `lint_reports` stores a
+  // gate name, a result and a sentence — so an author who met it only through
+  // the gate was handed a rule with no member attached to it. The condition is
+  // `src/gates.ts`'s, imported rather than restated, so the gate and this
+  // profile cannot come to different conclusions about the same manifest.
+  for (const p of schemaCrossFieldProblems(forShape)) {
+    schemaFindings += 1;
+    out.push(finding("source_schema", p.pointer, "FAIL", `${p.pointer} ${p.detail}`, p.recovery));
   }
 
   // D-2, and the profile states it because `create_from_dir` enforces it: a
@@ -249,7 +287,7 @@ export function validateSourceProfile(files: PackageFiles, ctx: SourceProfileCon
   }
 
   out.push(...crossFieldGateEvidence(manifest));
-  out.push(...safetyGateFindings(forShape, shipped, ctx));
+  out.push(...safetyGateFindings(forShape, shipped, ctx, schemaFindings > 0));
   return out;
 }
 
@@ -319,18 +357,33 @@ function crossFieldGateEvidence(manifest: any): SourceFinding[] {
   return out;
 }
 
-/** The eight §7.1 safety gates, run on the source and reported in the profile's
- *  own finding shape. The gate runner is the registry's, unchanged: a second
- *  copy of a gate is the thing this file exists to prevent, and the gates are
- *  the most tempting place to make one. */
-function safetyGateFindings(forShape: any, shipped: PackageFiles, ctx: SourceProfileContext): SourceFinding[] {
+/**
+ * The eight §7.1 safety gates, run on the source and reported in the profile's
+ * own finding shape. The gate runner is the registry's, unchanged: a second
+ * copy of a gate is the thing this file exists to prevent, and the gates are
+ * the most tempting place to make one.
+ *
+ * NOTHING NON-PASSING IS DROPPED. This used to skip EVERY `schema` gate report,
+ * pass or fail, on the reasoning that the schema errors above already said it.
+ * That reasoning holds only when something above actually did say it — and for
+ * the two Appendix E cross-field rules, and for the empty-`failure_modes` WARN,
+ * nothing did. The consequence was a validator that answered `ok: true` about a
+ * source the very next `lint` refuses. So the suppression is now CONDITIONAL on
+ * the caller having emitted the pointer-carrying findings, and a schema gate
+ * that fails for a reason nothing above reported is reported here.
+ */
+function safetyGateFindings(
+  forShape: any,
+  shipped: PackageFiles,
+  ctx: SourceProfileContext,
+  /** true when the loops above emitted a `source_schema` finding, in which case
+   *  the gate's joined sentence would make an author fix one thing twice */
+  schemaAlreadyReported: boolean,
+): SourceFinding[] {
   const out: SourceFinding[] = [];
   for (const report of runGates(forShape, shipped, { nowMs: ctx.nowMs })) {
     if (report.result === "pass") continue;
-    // the `schema` gate repeats what the schema errors above already said, in
-    // coarser words and without a pointer; reporting both would make an author
-    // fix one thing twice.
-    if (report.gate === "schema") continue;
+    if (report.gate === "schema" && schemaAlreadyReported) continue;
     out.push(
       finding(
         "source_safety_gate",

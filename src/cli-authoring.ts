@@ -145,7 +145,13 @@ function manifestTemplate(skillId: string, risk: RiskLevel, nowIso: string): Rec
     safety: {
       forbidden_actions: ["network access", "file writes outside the working directory"],
       secrets_policy: "No secrets are used or accepted. Read any credential from the environment; never write one into this directory.",
-      sandbox_requirement: "none",
+      // THE TEMPLATE OBEYS THE GATE IT WILL BE JUDGED BY. §7.1's schema gate
+      // refuses `risk_level: high` unless this is `required`, and §7.2 hands a
+      // high-risk package only to an adopter attesting sandbox capability. A
+      // template that wrote `none` for every risk generated a source the
+      // advertised high-risk path signs and the first `lint` then fails — the
+      // author is told twice that everything succeeded and is left at `draft`.
+      sandbox_requirement: risk === "high" ? "required" : "none",
       url_allowlist: [],
       dependency_manifest: [],
     },

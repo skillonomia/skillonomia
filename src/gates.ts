@@ -962,22 +962,56 @@ export function urlAllowed(url: string, allowlist: string[]): boolean {
 
 // -------------------------------------------------------------------- gates
 
+/**
+ * One Appendix E cross-field rule this gate applies ON TOP of the JSON schema.
+ *
+ * The schema cannot state these: both members are individually valid and it is
+ * their COMBINATION that is refused. They carry a `pointer` because the gate
+ * report cannot — `lint_reports` stores a gate name, a result and a sentence —
+ * and the authoring CLI's finding shape must give an author the exact member to
+ * edit. So the rule lives here once and has two readers: `schemaGate` below,
+ * which joins the sentences, and `src/source-profile.ts`, which reports each
+ * with its pointer. A second copy of these two conditions is exactly the drift
+ * `INV-01` forbids.
+ */
+export interface SchemaCrossFieldProblem {
+  /** RFC 6901 pointer to the member an author edits to satisfy the rule */
+  pointer: string;
+  detail: string;
+  recovery: string;
+}
+
+/** The §4.2/Appendix E cross-field rules for a `high` risk manifest. */
+export function schemaCrossFieldProblems(manifest: any): SchemaCrossFieldProblem[] {
+  const problems: SchemaCrossFieldProblem[] = [];
+  if (manifest?.scope?.risk_level !== "high") return problems;
+  if (manifest?.safety?.sandbox_requirement !== "required") {
+    problems.push({
+      pointer: "/safety/sandbox_requirement",
+      detail: "risk_level high requires safety.sandbox_requirement 'required'",
+      recovery:
+        "set safety.sandbox_requirement to `required` — a high-risk package is handed only to an adopter that attests sandbox capability, so `none` and `recommended` are refused for this risk level",
+    });
+  }
+  const approvals: string[] = Array.isArray(manifest?.scope?.required_approvals) ? manifest.scope.required_approvals : [];
+  if (!approvals.includes("publish") || !approvals.includes("adopt_high_risk")) {
+    problems.push({
+      pointer: "/scope/required_approvals",
+      detail: "risk_level high requires required_approvals to include publish and adopt_high_risk",
+      recovery:
+        "list both `publish` and `adopt_high_risk` — a high-risk skill is decided twice, once to make the version adoptable and once per adoption",
+    });
+  }
+  return problems;
+}
+
 /** Gate 1 — schema completeness (+ Appendix E cross-field rules, §4.2 WARN). */
 function schemaGate(manifest: any): GateReport {
   const val = validateManifest(manifest);
   if (!val.valid) {
     return { gate: "schema", result: "fail", details: val.errors.slice(0, 10).join("; ") };
   }
-  const problems: string[] = [];
-  if (manifest.scope?.risk_level === "high") {
-    if (manifest.safety?.sandbox_requirement !== "required") {
-      problems.push("risk_level high requires safety.sandbox_requirement 'required'");
-    }
-    const approvals: string[] = manifest.scope?.required_approvals ?? [];
-    if (!approvals.includes("publish") || !approvals.includes("adopt_high_risk")) {
-      problems.push("risk_level high requires required_approvals to include publish and adopt_high_risk");
-    }
-  }
+  const problems = schemaCrossFieldProblems(manifest).map((p) => p.detail);
   if (problems.length > 0) {
     return { gate: "schema", result: "fail", details: problems.join("; ") };
   }
