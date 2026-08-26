@@ -617,6 +617,18 @@ through the same SSRF-hardened transport a real delivery uses, with the same
 connect timeout, total timeout and response-size bound. A queued notice is
 labelled queued; it is described as delivered once the transport says so.
 
+`GET /v1/console/webhooks` carries an `eligibility` of `{allowed, reason_code}`
+per row: this deployment's verdict on whether it would send that test delivery
+at all. The Console withholds the control where the verdict is `false` and shows
+the reason code the registry gave. The verdict is judged by the same URL rules
+registration applies, so it changes with the policy: an `http://127.0.0.1`
+endpoint registered while `SKILLONOMIA_WEBHOOK_ALLOW_LOOPBACK` is set becomes
+`{"allowed": false, "reason_code": "ENDPOINT_NOT_DELIVERABLE"}` after a restart
+without it, because the row outlived the policy that admitted it. The endpoint's
+`status` is not consulted: an endpoint marked `dead` by repeated delivery
+failures stays testable, which is how an operator learns that a repaired
+receiver is answering again.
+
 Retries are bounded, and a delivery that exhausts them becomes a dead letter,
 which is a recorded row rather than a discarded one. The dead-letter view is
 reachable in the Console under the Proofline navigation.

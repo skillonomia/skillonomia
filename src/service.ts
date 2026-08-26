@@ -359,6 +359,7 @@ import {
   registerWebhook,
   deleteWebhook,
   listWebhooks,
+  listWebhooksWithEligibility,
   webhookHealth,
   deliveryPolicyOf,
   testWebhookDelivery,
@@ -3167,6 +3168,24 @@ export class Registry {
   /** `GET /v1/webhooks` — own endpoints, with the health §5.2 defines. */
   listWebhooks(auth: AuthContext): { items: ReturnType<typeof listWebhooks> } {
     return { items: listWebhooks(this.db, auth.agent_id) };
+  }
+
+  /**
+   * `GET /v1/console/webhooks` — the same rows, each carrying THIS deployment's
+   * verdict on the one action the console offers for it (§6.5.2's test
+   * delivery).
+   *
+   * A SEPARATE METHOD, and additive: `GET /v1/webhooks` is a machine surface
+   * whose caller decides for itself what to call next, and `INV-09` says no
+   * existing response changes shape. The console is the surface that DRAWS a
+   * control, so it is the one that needs a verdict to withhold the control on —
+   * and `INV-02` says the verdict is the server's. The judgement itself is
+   * `testDeliveryEligibility`, which reads the transport's own policy: the
+   * offered control, the registration surface and the delivery path then read
+   * one rule, which is what §6.5.1's parity means.
+   */
+  listWebhooksForConsole(auth: AuthContext): { items: ReturnType<typeof listWebhooksWithEligibility> } {
+    return { items: listWebhooksWithEligibility(this.db, auth.agent_id, deliveryPolicyOf(this.transport)) };
   }
 
   /**

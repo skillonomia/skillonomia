@@ -684,8 +684,13 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       // is what SPEC.md section 6.5's registration parity means. The secret the
       // registration mints is in the service's response and is NOT forwarded:
       // see `consoleWebhookRegistration` below.
+      // Each row carries this deployment's `{allowed, reason_code}` for the one
+      // action the console offers it (§6.5.2's test delivery), because the
+      // console is the surface that DRAWS a control and `INV-02` says the
+      // verdict a control is withheld on is the server's. The Bearer
+      // `GET /v1/webhooks` below is untouched (`INV-09`).
       if (method === "GET" && path === "/v1/console/webhooks") {
-        return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_V2, ...registry.listWebhooks(cauth) }), {
+        return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_V2, ...registry.listWebhooksForConsole(cauth) }), {
           "Cache-Control": "no-store",
         });
       }

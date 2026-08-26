@@ -2378,6 +2378,7 @@ import {
   disabledDetail,
   revocationSubject,
   revokePrimaryKey,
+  webhookTestWithheldDetail,
 } from "../src/console-surfaces.ts";
 
 interface ConsoleEligibility {
@@ -2474,6 +2475,15 @@ interface WebhookRow {
   url: string;
   status: string;
   failure_count: number;
+  /**
+   * The server's verdict on the one action this row offers. Optional in the
+   * TYPE and never computed when it is missing: a build of this page served an
+   * older registry gets no control and says the verdict is absent, which is the
+   * `INV-03` answer. Guessing `allowed: true` from the row's other columns
+   * would be the client recomputing eligibility that `INV-02` puts on the
+   * server.
+   */
+  eligibility?: ConsoleEligibility;
 }
 
 interface WebhookTestResult {
@@ -3368,13 +3378,36 @@ function renderWebhooks(items: WebhookRow[]): void {
     const failures = el("td", String(row.failure_count));
     failures.dataset.health = "failure_count";
     tr.appendChild(failures);
+    // §7 `disabled` for this column, and the same rule the other two follow: the
+    // server's verdict is on the row, and where it says no THERE IS NO CONTROL.
+    // Not a greyed one — none — and the server's own reason code in its place,
+    // untranslated, because a browser that renamed `ENDPOINT_NOT_DELIVERABLE`
+    // into friendlier words would be restating a decision it did not make.
+    const verdict = row.eligibility;
+    tr.dataset.allowed = verdict === undefined ? "unknown" : String(verdict.allowed);
+    tr.dataset.reasonCode = verdict === undefined ? "" : verdict.reason_code;
     const cell = el("td");
-    const test = el("button", WEBHOOK_TEXT.send_test);
-    test.type = "button";
-    test.dataset.action = "test-webhook";
-    test.dataset.webhookId = row.webhook_id;
-    test.addEventListener("click", () => guard(() => testWebhook(row.webhook_id)));
-    cell.appendChild(test);
+    if (verdict === undefined || !verdict.allowed) {
+      const withheld = el("div", undefined, "notice");
+      // `data-withheld`, and NOT `data-disabled`, for the reason the approval
+      // and revocation halves give: the source guard in
+      // `test/v1p5-outcome-loop.test.ts` reads every assignment to a `disabled`
+      // property in this file, and the attribute says a stronger thing anyway —
+      // no control was drawn at all.
+      withheld.dataset.withheld = "true";
+      withheld.dataset.reasonCode = verdict === undefined ? "" : verdict.reason_code;
+      withheld.appendChild(
+        el("p", verdict === undefined ? WEBHOOK_TEXT.eligibility_absent : webhookTestWithheldDetail(verdict.reason_code)),
+      );
+      cell.appendChild(withheld);
+    } else {
+      const test = el("button", WEBHOOK_TEXT.send_test);
+      test.type = "button";
+      test.dataset.action = "test-webhook";
+      test.dataset.webhookId = row.webhook_id;
+      test.addEventListener("click", () => guard(() => testWebhook(row.webhook_id)));
+      cell.appendChild(test);
+    }
     tr.appendChild(cell);
     tbody.appendChild(tr);
   }

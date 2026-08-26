@@ -294,6 +294,78 @@ export function listWebhooks(db: Db, agentId: string): Array<{ webhook_id: strin
   ).map((r) => ({ webhook_id: r.id, url: r.url, status: r.status, failure_count: r.failure_count }));
 }
 
+// ------------------------------------------- the test-delivery action verdict
+
+/**
+ * Whether this deployment would send a test delivery to an endpoint it already
+ * holds, decided on the SERVER (`INV-02`).
+ *
+ * WHY THIS EXISTS. §6.5.2's console wrapper draws a control per endpoint, and it
+ * drew that control unconditionally: the row carried no verdict, so the browser
+ * had nothing to withhold it on and no reason to display. §7's `disabled` row
+ * for the Webhook column asks for a server `{allowed, reason_code}` and the
+ * exact reason visible, and a missing contract is a gap, not an unreachable
+ * state — treating an omitted requirement as unreachable would turn every one of
+ * them into `N/A`.
+ *
+ * WHAT IT ASKS, AND WHY THAT ONE QUESTION. The stored URL is vetted against the
+ * policy THIS PROCESS's transport declares, with `vetEndpointUrl` and
+ * `registrationUrlPolicy` — the very functions registration uses. A row can
+ * outlive the policy that admitted it: `http://127.0.0.1/hook` is registerable
+ * while `SKILLONOMIA_WEBHOOK_ALLOW_LOOPBACK` is set, and after a restart without
+ * it the same row names a destination this deployment will not open a socket to.
+ * §6.5.1's parity rule is that registration and delivery read ONE policy; this
+ * makes the offered control read it too, so an operator is not invited to press
+ * a button whose only possible answer is `refused`.
+ *
+ * WHAT IT DELIBERATELY DOES NOT ASK. Not `status`. A `dead` endpoint stays
+ * testable on purpose — that is how an operator learns a repaired receiver is
+ * answering again — and withholding the control there would take away the one
+ * diagnostic the state exists for. Not the ACL either: the console lists the
+ * caller's own endpoints, so the actor half is already settled by the route.
+ *
+ * Names are NOT resolved here, exactly as at registration: what a name resolves
+ * to is judged at the socket, every time. A verdict of `TESTABLE` says the
+ * destination is admissible under today's policy — never that a delivery will
+ * arrive.
+ */
+export const WEBHOOK_TEST_REASON_CODES = {
+  testable: "TESTABLE",
+  not_deliverable: "ENDPOINT_NOT_DELIVERABLE",
+} as const;
+
+export interface WebhookActionEligibility {
+  allowed: boolean;
+  reason_code: string;
+}
+
+export function testDeliveryEligibility(url: string, policy: WebhookDeliveryPolicy): WebhookActionEligibility {
+  try {
+    vetEndpointUrl(url, registrationUrlPolicy(policy));
+  } catch (e) {
+    if (!(e instanceof WebhookRefused)) throw e;
+    return { allowed: false, reason_code: WEBHOOK_TEST_REASON_CODES.not_deliverable };
+  }
+  return { allowed: true, reason_code: WEBHOOK_TEST_REASON_CODES.testable };
+}
+
+/** `GET /v1/console/webhooks` — the same rows `listWebhooks` returns, each
+ *  carrying this deployment's verdict on the one action the console offers for
+ *  it. Additive: the Bearer `GET /v1/webhooks` is unchanged (`INV-09`). */
+export function listWebhooksWithEligibility(
+  db: Db,
+  agentId: string,
+  policy: WebhookDeliveryPolicy,
+): Array<{
+  webhook_id: string;
+  url: string;
+  status: string;
+  failure_count: number;
+  eligibility: WebhookActionEligibility;
+}> {
+  return listWebhooks(db, agentId).map((row) => ({ ...row, eligibility: testDeliveryEligibility(row.url, policy) }));
+}
+
 export interface WebhookHealth {
   webhook_id: string;
   agent_id: string;

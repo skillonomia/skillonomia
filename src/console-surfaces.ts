@@ -333,7 +333,29 @@ export const WEBHOOK_TEXT = {
   stale_refresh: "Reload the endpoints and show what is registered now",
   /** the badge a replayed idempotent registration carries */
   replay_badge: "Replayed: this exact endpoint registration was already recorded and no second one was written.",
+  /**
+   * What is said where the row carries NO verdict at all — a build of this page
+   * served by a registry older than the field. Absent is not permitted, because
+   * "the server did not say" and "the server said yes" are different facts and
+   * `INV-03` is the rule that they must not be rendered the same way. No control
+   * is drawn either: a control offered on an unknown verdict is a guess.
+   */
+  eligibility_absent:
+    "This registry sent no verdict on test delivery for this endpoint, so no test-delivery control is offered. That is not a refusal and not a permission — it is an answer that was not given.",
 } as const;
+
+/**
+ * Why no test-delivery control is offered, in the server's own vocabulary.
+ *
+ * A second function rather than `disabledDetail` above, because that one says
+ * "offers no decision on this item" and a test delivery is not a decision: the
+ * sentence has to name what was withheld and state that nothing was sent, which
+ * is the fact an operator needs and the one a generic word would lose. The
+ * `reason_code` is NOT translated, for the reason given there.
+ */
+export function webhookTestWithheldDetail(reasonCode: string): string {
+  return `The server offers no test delivery for this endpoint and gives the reason ${reasonCode}. No request was sent.`;
+}
 
 // ===========================================================================
 // Shared: the states these three regions report, and the codes that reach them
