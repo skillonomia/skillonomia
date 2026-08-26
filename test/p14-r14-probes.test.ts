@@ -78,7 +78,7 @@ import { openMigrated } from "../src/db.ts";
 import { openSqlite } from "../src/sqlite.ts";
 import { ERROR_CODES, isApiError } from "../src/errors.ts";
 import { MCP_TOOLS } from "../src/mcp.ts";
-import { handleRest } from "../src/http.ts";
+import { handleRest, handleRestAsync } from "../src/http.ts";
 import { jcsCanonicalize } from "../src/jcs.ts";
 
 const SRC_DIR = fileURLToPath(new URL("../src/", import.meta.url));
@@ -630,7 +630,16 @@ function fillPath(path: string, live: Record<string, string>): string {
     .join("/");
 }
 
-test("[14.8] no REST route answers a string like this with an untyped exception", () => {
+// THE ROUTER IS DRIVEN THE WAY A LISTENER DRIVES IT — `handleRestAsync`.
+//
+// `handleRest` is synchronous and stays so, but a route may finish DECIDING
+// before it finishes ANSWERING and hand the rest out on `RestResponse.pending`
+// (§6.5.2, src/http.ts). The synchronous return of such a route is a
+// placeholder that deliberately reads as `500 INTERNAL`, because a caller that
+// ignored the promise would not have answered the request at all. A sweep that
+// read that placeholder would be reporting the sweep's own shortcut as a defect
+// of the surface, so this one awaits exactly what `src/server.ts` writes.
+test("[14.8] no REST route answers a string like this with an untyped exception", async () => {
   const routes = restRoutesFromSource();
   const fields = requestFieldsFromSource();
   assert.ok(routes.length >= 30, `only ${routes.length} routes were derived from src/http.ts — the derivation is broken`);
@@ -664,7 +673,7 @@ test("[14.8] no REST route answers a string like this with an untyped exception"
         });
         let res: any;
         try {
-          res = handleRest(fx.registry, {
+          res = await handleRestAsync(fx.registry, {
             method: route.method,
             url,
             headers: { authorization: `Bearer ${fx.keys.owner}` },
