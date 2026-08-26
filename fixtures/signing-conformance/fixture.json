@@ -1,0 +1,195 @@
+{
+  "profile": "EdDSA/Ed25519 detached JWS over SHA-256 of JCS(skill.json) — SPEC.md §4.3",
+  "seed_label": "skillonomia/v1.1/signing-conformance/key-01",
+  "kid": "skln-conformance-01",
+  "manifest_source": "vectors/tv-01/package/skill.json",
+  "canonical_manifest": {
+    "access_policy": "workspace",
+    "author_agent": "01TVAG0000000000000000000A",
+    "capability_statement": "Deterministic low-risk test-vector skill: run one fixture command and verify its output.",
+    "created_at": "2026-08-01T00:00:00Z",
+    "evidence": {
+      "redaction_level": "none",
+      "summary": "Deterministic fixture prints a fixed string; gate g1 compares stdout.",
+      "test_results": "local: g1 pass"
+    },
+    "integrity": [
+      {
+        "path": "SKILL.md",
+        "sha256": "9aa9fcc8c19358ef683f752e3dc2f5462661f3e4770a80b484737d8528cafbbb"
+      },
+      {
+        "path": "fixtures/tv01.sh",
+        "sha256": "956e69331b9fb00e1d465eda3c6a8ed508163fe90428541e3b6d4c645529b360"
+      }
+    ],
+    "license": "Apache-2.0",
+    "lifecycle": {
+      "supersedes": null
+    },
+    "owner": "tv-workspace",
+    "procedure": {
+      "expected_outputs": [
+        "skillonomia-tv01-ok"
+      ],
+      "failure_modes": [
+        {
+          "mitigation": "install a POSIX shell",
+          "mode": "shell-missing",
+          "symptom": "sh not found"
+        }
+      ],
+      "rollback": [
+        "No changes made; nothing to roll back."
+      ],
+      "steps": [
+        {
+          "command": "sh fixtures/tv01.sh",
+          "expected": "skillonomia-tv01-ok",
+          "instruction": "Run the fixture script.",
+          "n": 1
+        }
+      ],
+      "tools_used": [
+        {
+          "id": "shell",
+          "range": "*"
+        }
+      ],
+      "validation_gates": [
+        {
+          "check": "stdout equals expected string",
+          "gate_id": "g1",
+          "pass_criteria": "stdout == 'skillonomia-tv01-ok'"
+        }
+      ]
+    },
+    "runtime": {
+      "cloud_iam_assumptions": [],
+      "mcp_dependencies": [],
+      "model_compat": [
+        {
+          "id": "any",
+          "range": "*"
+        }
+      ],
+      "os": [
+        "linux",
+        "macos"
+      ],
+      "runtime_compat": [
+        {
+          "id": "any",
+          "range": "*"
+        }
+      ],
+      "shell": [
+        "bash",
+        "sh"
+      ],
+      "tool_compat": [
+        {
+          "id": "shell",
+          "range": "*"
+        }
+      ]
+    },
+    "safety": {
+      "dependency_manifest": [],
+      "forbidden_actions": [
+        "network access",
+        "file writes outside workdir"
+      ],
+      "sandbox_requirement": "none",
+      "secrets_policy": "No secrets used or accepted.",
+      "url_allowlist": []
+    },
+    "scope": {
+      "non_goals": [
+        "Any production use"
+      ],
+      "prerequisites": [],
+      "problem_class": "Smoke-testing a Skillonomia deployment end to end.",
+      "required_approvals": [],
+      "risk_level": "low"
+    },
+    "semantic_version": "1.0.0",
+    "skill_id": "01TVSK0000000000000000000A",
+    "title": "TV-01 hello-skillonomia"
+  },
+  "jcs_utf8": "{\"access_policy\":\"workspace\",\"author_agent\":\"01TVAG0000000000000000000A\",\"capability_statement\":\"Deterministic low-risk test-vector skill: run one fixture command and verify its output.\",\"created_at\":\"2026-08-01T00:00:00Z\",\"evidence\":{\"redaction_level\":\"none\",\"summary\":\"Deterministic fixture prints a fixed string; gate g1 compares stdout.\",\"test_results\":\"local: g1 pass\"},\"integrity\":[{\"path\":\"SKILL.md\",\"sha256\":\"9aa9fcc8c19358ef683f752e3dc2f5462661f3e4770a80b484737d8528cafbbb\"},{\"path\":\"fixtures/tv01.sh\",\"sha256\":\"956e69331b9fb00e1d465eda3c6a8ed508163fe90428541e3b6d4c645529b360\"}],\"license\":\"Apache-2.0\",\"lifecycle\":{\"supersedes\":null},\"owner\":\"tv-workspace\",\"procedure\":{\"expected_outputs\":[\"skillonomia-tv01-ok\"],\"failure_modes\":[{\"mitigation\":\"install a POSIX shell\",\"mode\":\"shell-missing\",\"symptom\":\"sh not found\"}],\"rollback\":[\"No changes made; nothing to roll back.\"],\"steps\":[{\"command\":\"sh fixtures/tv01.sh\",\"expected\":\"skillonomia-tv01-ok\",\"instruction\":\"Run the fixture script.\",\"n\":1}],\"tools_used\":[{\"id\":\"shell\",\"range\":\"*\"}],\"validation_gates\":[{\"check\":\"stdout equals expected string\",\"gate_id\":\"g1\",\"pass_criteria\":\"stdout == 'skillonomia-tv01-ok'\"}]},\"runtime\":{\"cloud_iam_assumptions\":[],\"mcp_dependencies\":[],\"model_compat\":[{\"id\":\"any\",\"range\":\"*\"}],\"os\":[\"linux\",\"macos\"],\"runtime_compat\":[{\"id\":\"any\",\"range\":\"*\"}],\"shell\":[\"bash\",\"sh\"],\"tool_compat\":[{\"id\":\"shell\",\"range\":\"*\"}]},\"safety\":{\"dependency_manifest\":[],\"forbidden_actions\":[\"network access\",\"file writes outside workdir\"],\"sandbox_requirement\":\"none\",\"secrets_policy\":\"No secrets used or accepted.\",\"url_allowlist\":[]},\"scope\":{\"non_goals\":[\"Any production use\"],\"prerequisites\":[],\"problem_class\":\"Smoke-testing a Skillonomia deployment end to end.\",\"required_approvals\":[],\"risk_level\":\"low\"},\"semantic_version\":\"1.0.0\",\"skill_id\":\"01TVSK0000000000000000000A\",\"title\":\"TV-01 hello-skillonomia\"}",
+  "jcs_bytes_hex": "7b226163636573735f706f6c696379223a22776f726b7370616365222c22617574686f725f6167656e74223a223031545641473030303030303030303030303030303030303041222c226361706162696c6974795f73746174656d656e74223a2244657465726d696e6973746963206c6f772d7269736b20746573742d766563746f7220736b696c6c3a2072756e206f6e65206669787475726520636f6d6d616e6420616e642076657269667920697473206f75747075742e222c22637265617465645f6174223a22323032362d30382d30315430303a30303a30305a222c2265766964656e6365223a7b22726564616374696f6e5f6c6576656c223a226e6f6e65222c2273756d6d617279223a2244657465726d696e69737469632066697874757265207072696e7473206120666978656420737472696e673b206761746520673120636f6d7061726573207374646f75742e222c22746573745f726573756c7473223a226c6f63616c3a2067312070617373227d2c22696e74656772697479223a5b7b2270617468223a22534b494c4c2e6d64222c22736861323536223a2239616139666363386331393335386566363833663735326533646332663534363236363166336534373730613830623438343733376438353238636166626262227d2c7b2270617468223a2266697874757265732f747630312e7368222c22736861323536223a2239353665363933333162396662303065316434363565646133633661386564353038313633666539303432383534316533623664346336343535323962333630227d5d2c226c6963656e7365223a224170616368652d322e30222c226c6966656379636c65223a7b2273757065727365646573223a6e756c6c7d2c226f776e6572223a2274762d776f726b7370616365222c2270726f636564757265223a7b2265787065637465645f6f757470757473223a5b22736b696c6c6f6e6f6d69612d747630312d6f6b225d2c226661696c7572655f6d6f646573223a5b7b226d697469676174696f6e223a22696e7374616c6c206120504f534958207368656c6c222c226d6f6465223a227368656c6c2d6d697373696e67222c2273796d70746f6d223a227368206e6f7420666f756e64227d5d2c22726f6c6c6261636b223a5b224e6f206368616e676573206d6164653b206e6f7468696e6720746f20726f6c6c206261636b2e225d2c227374657073223a5b7b22636f6d6d616e64223a2273682066697874757265732f747630312e7368222c226578706563746564223a22736b696c6c6f6e6f6d69612d747630312d6f6b222c22696e737472756374696f6e223a2252756e207468652066697874757265207363726970742e222c226e223a317d5d2c22746f6f6c735f75736564223a5b7b226964223a227368656c6c222c2272616e6765223a222a227d5d2c2276616c69646174696f6e5f6761746573223a5b7b22636865636b223a227374646f757420657175616c7320657870656374656420737472696e67222c22676174655f6964223a226731222c22706173735f6372697465726961223a227374646f7574203d3d2027736b696c6c6f6e6f6d69612d747630312d6f6b27227d5d7d2c2272756e74696d65223a7b22636c6f75645f69616d5f617373756d7074696f6e73223a5b5d2c226d63705f646570656e64656e63696573223a5b5d2c226d6f64656c5f636f6d706174223a5b7b226964223a22616e79222c2272616e6765223a222a227d5d2c226f73223a5b226c696e7578222c226d61636f73225d2c2272756e74696d655f636f6d706174223a5b7b226964223a22616e79222c2272616e6765223a222a227d5d2c227368656c6c223a5b2262617368222c227368225d2c22746f6f6c5f636f6d706174223a5b7b226964223a227368656c6c222c2272616e6765223a222a227d5d7d2c22736166657479223a7b22646570656e64656e63795f6d616e6966657374223a5b5d2c22666f7262696464656e5f616374696f6e73223a5b226e6574776f726b20616363657373222c2266696c6520777269746573206f75747369646520776f726b646972225d2c2273616e64626f785f726571756972656d656e74223a226e6f6e65222c22736563726574735f706f6c696379223a224e6f20736563726574732075736564206f722061636365707465642e222c2275726c5f616c6c6f776c697374223a5b5d7d2c2273636f7065223a7b226e6f6e5f676f616c73223a5b22416e792070726f64756374696f6e20757365225d2c2270726572657175697369746573223a5b5d2c2270726f626c656d5f636c617373223a22536d6f6b652d74657374696e67206120536b696c6c6f6e6f6d6961206465706c6f796d656e7420656e6420746f20656e642e222c2272657175697265645f617070726f76616c73223a5b5d2c227269736b5f6c6576656c223a226c6f77227d2c2273656d616e7469635f76657273696f6e223a22312e302e30222c22736b696c6c5f6964223a2230315456534b3030303030303030303030303030303030303041222c227469746c65223a2254562d30312068656c6c6f2d736b696c6c6f6e6f6d6961227d",
+  "jcs_byte_length": 1889,
+  "sha256_bytes_hex": "5498c4f560409b1dbdf78794d5072a36672e54c825dbad6d0f1b89ea5fd794d0",
+  "sha256_hex": "5498c4f560409b1dbdf78794d5072a36672e54c825dbad6d0f1b89ea5fd794d0",
+  "protected_header_utf8": "{\"alg\":\"EdDSA\",\"kid\":\"skln-conformance-01\"}",
+  "protected_header_bytes_hex": "7b22616c67223a224564445341222c226b6964223a22736b6c6e2d636f6e666f726d616e63652d3031227d",
+  "signing_input": "eyJhbGciOiJFZERTQSIsImtpZCI6InNrbG4tY29uZm9ybWFuY2UtMDEifQ.VJjE9WBAmx2994eU1QcqNmcuVMgl261tDxuJ6l_XlNA",
+  "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNrbG4tY29uZm9ybWFuY2UtMDEifQ..LMAnIxLadwohdzGe9qzKfQe-XJbNTkMsIyOfM39rIDCwuXAFydb0ZAylJ3AVKNrpxRMf3NysRWT9nFGCgjI5Cg",
+  "public_key_b64url": "x1uqOnti4aYOlePTVYMMEXFTS5lAXOeo5ElCGEv60Tk",
+  "cases": [
+    {
+      "name": "valid",
+      "verdict": "valid",
+      "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNrbG4tY29uZm9ybWFuY2UtMDEifQ..LMAnIxLadwohdzGe9qzKfQe-XJbNTkMsIyOfM39rIDCwuXAFydb0ZAylJ3AVKNrpxRMf3NysRWT9nFGCgjI5Cg",
+      "public_key_b64url": "x1uqOnti4aYOlePTVYMMEXFTS5lAXOeo5ElCGEv60Tk",
+      "why": "the profile's own output, unmodified"
+    },
+    {
+      "name": "signature-bit-flipped",
+      "verdict": "invalid",
+      "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNrbG4tY29uZm9ybWFuY2UtMDEifQ..LcAnIxLadwohdzGe9qzKfQe-XJbNTkMsIyOfM39rIDCwuXAFydb0ZAylJ3AVKNrpxRMf3NysRWT9nFGCgjI5Cg",
+      "public_key_b64url": "x1uqOnti4aYOlePTVYMMEXFTS5lAXOeo5ElCGEv60Tk",
+      "why": "one bit of the Ed25519 signature is inverted; every other byte is the profile's own"
+    },
+    {
+      "name": "wrong-public-key",
+      "verdict": "invalid",
+      "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNrbG4tY29uZm9ybWFuY2UtMDEifQ..LMAnIxLadwohdzGe9qzKfQe-XJbNTkMsIyOfM39rIDCwuXAFydb0ZAylJ3AVKNrpxRMf3NysRWT9nFGCgjI5Cg",
+      "public_key_b64url": "dkQLhjsBCbE8NOBHMHvvBVmLFf8mXxdEZqf9qarabuI",
+      "why": "the serialization is byte-identical to the valid case and the key is a different one"
+    },
+    {
+      "name": "attached-serialization",
+      "verdict": "invalid",
+      "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNrbG4tY29uZm9ybWFuY2UtMDEifQ.eA.LMAnIxLadwohdzGe9qzKfQe-XJbNTkMsIyOfM39rIDCwuXAFydb0ZAylJ3AVKNrpxRMf3NysRWT9nFGCgjI5Cg",
+      "public_key_b64url": "x1uqOnti4aYOlePTVYMMEXFTS5lAXOeo5ElCGEv60Tk",
+      "why": "the payload segment is non-empty, so this is not the detached serialization the profile fixes"
+    },
+    {
+      "name": "base64url-padded",
+      "verdict": "invalid",
+      "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNrbG4tY29uZm9ybWFuY2UtMDEifQ..LMAnIxLadwohdzGe9qzKfQe-XJbNTkMsIyOfM39rIDCwuXAFydb0ZAylJ3AVKNrpxRMf3NysRWT9nFGCgjI5Cg=",
+      "public_key_b64url": "x1uqOnti4aYOlePTVYMMEXFTS5lAXOeo5ElCGEv60Tk",
+      "why": "padding is not part of the unpadded base64url alphabet the profile fixes"
+    },
+    {
+      "name": "protected-header-not-canonical",
+      "verdict": "invalid",
+      "jws": "eyJraWQiOiJza2xuLWNvbmZvcm1hbmNlLTAxIiwiYWxnIjoiRWREU0EifQ..LMAnIxLadwohdzGe9qzKfQe-XJbNTkMsIyOfM39rIDCwuXAFydb0ZAylJ3AVKNrpxRMf3NysRWT9nFGCgjI5Cg",
+      "public_key_b64url": "x1uqOnti4aYOlePTVYMMEXFTS5lAXOeo5ElCGEv60Tk",
+      "why": "the header members are in the other order, so its bytes are not the canonical bytes for this kid"
+    },
+    {
+      "name": "protected-header-extra-member",
+      "verdict": "invalid",
+      "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNrbG4tY29uZm9ybWFuY2UtMDEiLCJ0eXAiOiJKV1QifQ..LMAnIxLadwohdzGe9qzKfQe-XJbNTkMsIyOfM39rIDCwuXAFydb0ZAylJ3AVKNrpxRMf3NysRWT9nFGCgjI5Cg",
+      "public_key_b64url": "x1uqOnti4aYOlePTVYMMEXFTS5lAXOeo5ElCGEv60Tk",
+      "why": "the profile fixes the header at exactly two members"
+    },
+    {
+      "name": "signature-truncated",
+      "verdict": "invalid",
+      "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNrbG4tY29uZm9ybWFuY2UtMDEifQ..LMAnIxLadwohdzGe9qzKfQe-XJbNTkMsIyOfM39rIDCwuXAFydb0ZAylJ3AVKNrpxRMf3NysRWT9nFGCgjI5",
+      "public_key_b64url": "x1uqOnti4aYOlePTVYMMEXFTS5lAXOeo5ElCGEv60Tk",
+      "why": "an Ed25519 signature is 64 bytes and this one is a byte short"
+    },
+    {
+      "name": "leading-whitespace",
+      "verdict": "invalid",
+      "jws": " eyJhbGciOiJFZERTQSIsImtpZCI6InNrbG4tY29uZm9ybWFuY2UtMDEifQ..LMAnIxLadwohdzGe9qzKfQe-XJbNTkMsIyOfM39rIDCwuXAFydb0ZAylJ3AVKNrpxRMf3NysRWT9nFGCgjI5Cg",
+      "public_key_b64url": "x1uqOnti4aYOlePTVYMMEXFTS5lAXOeo5ElCGEv60Tk",
+      "why": "the serialization is byte-exact, so surrounding whitespace is not tolerated"
+    }
+  ]
+}
