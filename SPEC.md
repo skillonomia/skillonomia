@@ -1080,16 +1080,28 @@ code. A prefix test over the string is not sufficient and MUST NOT be used:
 the `@` is userinfo) and `http://localhost.attacker.com/` is a name the attacker
 controls, and both satisfy a prefix test that means to admit `https://` and
 `http://localhost`. The `http://` exception Appendix D.1 grants is to a host
-that IS this machine — a loopback literal or the name `localhost` — and not to
-a host whose name begins with those characters.
+that IS this machine — a loopback literal, or a name in the reserved `localhost`
+space — and not to a host whose name begins with those characters.
+
+The reserved space is the WHOLE of it. RFC 6761 section 6.3 reserves `localhost.`
+and `*.localhost.` in one breath, and gives them one property: they resolve to a
+loopback address or to nothing. A registry that reads the bare label out of that
+section and stops admits `foo.localhost`, which the same host's resolver answers
+with `::1`. The test a conforming registry applies is therefore over the
+canonical host: it IS `localhost`, or it ENDS IN `.localhost`. Being a suffix
+test and not a substring one, it does not reach `localhost.attacker.com`, which
+is a name the attacker controls and remains an ordinary host.
 
 Registration MUST NOT resolve a name: registration happens once and delivery
 happens later, so a name that passed here can answer differently there, and rule
 4 is evaluated at the socket, every time. An IP LITERAL cannot change, so
-registration judges it under rule 4 immediately. The name `localhost` is not an
-exception to the no-resolution rule but an application of the same reasoning: it
-names this machine by definition, and registration therefore judges it under
-rule 4's loopback clause immediately as well, under either scheme.
+registration judges it under rule 4 immediately. A RESERVED `localhost` name is
+not an exception to the no-resolution rule but an application of the same
+reasoning: it names this machine by definition, and registration therefore judges
+it under rule 4's loopback clause immediately as well, under either scheme. This
+reaches reserved names only. An unreserved name such as `evil.example.com` MAY
+resolve to a loopback address tomorrow; registration cannot know that and does
+not claim to, and rule 4 at the socket is what refuses it.
 
 Appendix D.1's `CHECK` on `webhooks.url` remains a second, coarser net over the
 stored value. It is a prefix test and therefore admits both strings above; it is
@@ -2032,7 +2044,8 @@ transport of the SAME PROCESS would decline to deliver to.
 - An `https://` endpoint is admitted after the URL and address validation §5.2
   already requires.
 - An endpoint naming a loopback host — a loopback literal, its IPv4-mapped IPv6
-  form, or the name `localhost` — is admitted ONLY where the process's transport
+  form, or a name RFC 6761 section 6.3 reserves, which is `localhost` itself and
+  every name under `.localhost` — is admitted ONLY where the process's transport
   policy permits loopback delivery. In the shipped implementation that policy is
   `SKILLONOMIA_WEBHOOK_ALLOW_LOOPBACK=1`, read once, where the transport is
   constructed. **The scheme does not enter into it.** `https://127.0.0.1/hook`

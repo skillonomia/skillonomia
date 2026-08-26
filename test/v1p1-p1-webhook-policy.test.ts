@@ -280,6 +280,15 @@ test("§6.5.1: with the loopback flag off, an http loopback URL is refused befor
  * the repair. Adding a spelling to a list is what the previous two rounds did,
  * and the list kept being short by one. The repair is `canonicalHost`, asserted
  * as a property by the test below this pair.
+ *
+ * THE FINAL GROUP IS A DIFFERENT NAME, NOT A DIFFERENT SPELLING, and that is
+ * why it needed a different repair. `foo.localhost` is already canonical —
+ * lowercase, no trailing dot, no escape — so `canonicalHost` had nothing left to
+ * reduce and the name arm, which asked only whether the host equalled
+ * `localhost`, said no. This machine's resolver says `::1` and `127.0.0.1`,
+ * because RFC 6761 section 6.3 reserves `*.localhost.` alongside the bare label
+ * and the code was citing that section for half of what it says. Same rows, same
+ * caveat: the table is the reader's check and the repair is the predicate.
  */
 const LOOPBACK_SPELLINGS: readonly string[] = [
   "https://127.0.0.1:9/hook",
@@ -295,6 +304,10 @@ const LOOPBACK_SPELLINGS: readonly string[] = [
   "https://LOCALHOST.:9/hook",
   "https://localhost%2e:9/hook",
   "http://localhost.:9/hook",
+  "https://foo.localhost:9/hook",
+  "https://foo.localhost.:9/hook",
+  "https://a.b.localhost:9/hook",
+  "https://FOO.LocalHost:9/hook",
 ];
 
 /** Short deadlines: the flag-ON half opens real sockets to CLOSED ports on this
@@ -415,9 +428,33 @@ test("§6.5.1: the loopback decision is taken on a CANONICAL host, so a spelling
   for (const literal of ["127.0.0.1", "[::1]", "::1", "[::FFFF:127.0.0.1]", "127.0.0.5"]) {
     assert.equal(isLoopbackHost(literal), true, `${literal} names this machine`);
   }
-  // …without which the two loops above are green on a function that returns
-  // `true`. A name that merely contains a loopback spelling is another host.
-  for (const other of ["notlocalhost", "localhost.attacker.com", "127.0.0.1.attacker.com", "evil.example.com.", "93.184.216.34"]) {
+
+  // THE RESERVED SPACE, WHICH IS THE OTHER HALF OF THE NAME ARM AND WAS THE
+  // OTHER HALF OF THE DEFECT. These are canonical already, so the loop above
+  // cannot reach them: what decides them is that RFC 6761 section 6.3 reserves
+  // `*.localhost.` as well as `localhost.`, and the predicate now reads the
+  // whole of that section. Each of these is answered `::1` and `127.0.0.1` by
+  // this machine, which is why registering one and then declining to deliver to
+  // it was the same defect as the row above, one rule further down.
+  for (const under of ["foo.localhost", "FOO.LocalHost", "a.b.localhost", "foo.localhost.", "x.y.z.localhost.."]) {
+    assert.equal(isLoopbackHost(under), true, `${under} is in the reserved localhost space`);
+  }
+
+  // …without which the loops above are green on a function that returns
+  // `true`. A name that merely contains a loopback spelling is another host —
+  // and the reserved-space arm is a SUFFIX test, so a name that ends in the
+  // label without ending in the dotted label is somebody else's too.
+  for (const other of [
+    "notlocalhost",
+    "localhost.attacker.com",
+    "foo.localhost.attacker.com",
+    "notfoo.localhost.evil.example",
+    "xlocalhost",
+    "attacker-localhost",
+    "127.0.0.1.attacker.com",
+    "evil.example.com.",
+    "93.184.216.34",
+  ]) {
     assert.equal(isLoopbackHost(other), false, `${other} does not name this machine`);
   }
 

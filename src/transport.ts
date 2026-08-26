@@ -270,16 +270,28 @@ export function canonicalHost(rawHost: string): string {
 
 /**
  * A host that names this machine and no other: a loopback literal in any
- * spelling, or the name `localhost` in any spelling.
+ * spelling, or a name in the reserved `localhost` space in any spelling.
  *
  * Both arms read the CANONICAL host. A literal arm and a name arm that
  * canonicalise separately are two places to forget, and one of them was
  * forgotten.
+ *
+ * THE NAME ARM IS THE WHOLE RESERVED SPACE, not the bare label. RFC 6761
+ * section 6.3 reserves `localhost.` AND `*.localhost.`, and it reserves them
+ * together, with one consequence: such a name resolves to a loopback address or
+ * to nothing. Reading half of that section admitted `foo.localhost` at
+ * registration — a `201`, a minted secret, and §5.2 retiring the endpoint that
+ * worked — while this same process's resolver answered `::1` and the transport
+ * declined the socket. The predicate is therefore the rule as written: canonical
+ * form IS `localhost`, or ENDS IN `.localhost`.
+ *
+ * A suffix test and not a substring one: `localhost.attacker.com` ends in
+ * neither and is somebody else's host, and so is `notlocalhost`.
  */
 export function isLoopbackHost(hostname: string): boolean {
   const host = canonicalHost(hostname);
   if (isIP(host)) return isLoopback(host);
-  return host === "localhost";
+  return host === "localhost" || host.endsWith(".localhost");
 }
 
 export interface UrlPolicy {
@@ -444,12 +456,23 @@ export function vetEndpointUrl(rawUrl: unknown, policy: UrlPolicy): URL {
  *     refused at registration when the policy forbids loopback.
  *
  * "Known-loopback" is what can be decided with no resolver: a loopback literal,
- * its IPv4-mapped form included, and the name `localhost`, which is this
- * machine by definition (RFC 6761 section 6.3). Each in EVERY spelling, because
- * `canonicalHost` reduces the spellings to one before anything is compared —
- * that is the whole of what changed when `https://localhost.:9/hook`, a name
- * this machine's resolver answers with `::1`, was found registering under a
- * policy that forbids loopback.
+ * its IPv4-mapped form included, and a name in the space RFC 6761 section 6.3
+ * reserves — `localhost` itself and anything under `.localhost` — which is this
+ * machine by definition. Each in EVERY spelling, because `canonicalHost`
+ * reduces the spellings to one before anything is compared.
+ *
+ * Those are two different repairs and it is worth keeping them apart. The
+ * canonical comparison was what changed when `https://localhost.:9/hook`
+ * registered under a policy that forbids loopback; it closed every spelling of
+ * a name at once. The set of reserved names was what changed when
+ * `https://foo.localhost:9/hook` did the same thing afterwards — a name spelled
+ * canonically already, which no amount of canonicalising reaches, and which
+ * only citing the whole of section 6.3 rather than half of it decides.
+ *
+ * NEITHER WIDENS THE SENTENCE ABOVE. `.localhost` is reserved, so it can be
+ * decided here with no resolver; `evil.example.com` is not reserved and cannot,
+ * however it resolves today. Registration is refusing a larger set of RESERVED
+ * names, and is promising nothing about resolution.
  *
  * Nothing wider than that sentence is claimed. Registration promises no
  * reachability either: a registration that passed says the destination is
