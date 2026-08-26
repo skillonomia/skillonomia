@@ -47,6 +47,32 @@ import { p4Fixture, reviewedVersion, rest, type P4Fixture } from "./p6-helpers.t
 
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 
+/**
+ * What `prepack` builds, read out of `package.json` rather than typed here.
+ *
+ * `[B-4]` compares a real `npm pack` against one run with `--ignore-scripts`,
+ * and the difference between them IS this set. Written as a literal it would be
+ * a second declaration of the build recipe that can disagree with the first —
+ * which is how a count of `+1` outlived the day `prepack` began building two
+ * things. Read from the script chain, it cannot: a build added to `prepack`
+ * appears here, and if what it writes does not reach the package the comparison
+ * below fails and names the file.
+ */
+function prepackProducts(): string[] {
+  const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as { scripts?: Record<string, string> };
+  const scripts = pkg.scripts ?? {};
+  const chained = (scripts.prepack ?? "").split("&&").map((s) => s.trim().replace(/^npm run (-s )?/, ""));
+  const out: string[] = [];
+  for (const name of chained) {
+    const outfile = /--outfile\s+(\S+)/.exec(scripts[name] ?? "");
+    assert.ok(outfile, `\`prepack\` chains \`${name}\`, whose script names no --outfile: [B-4] cannot say what it builds`);
+    out.push(outfile[1]);
+  }
+  assert.ok(out.length > 0, "`prepack` builds nothing: the premise of [B-4] is gone");
+  return out;
+}
+const PREPACK_PRODUCTS = prepackProducts();
+
 /** Name a thing that does not exist yet WITHOUT taking the file down with a
  *  module error: a missing export must read as one sentence, not twelve. */
 function required<T>(mod: Record<string, unknown>, name: string, what: string): T {
@@ -394,9 +420,27 @@ test("[B-4] the guard's file set is the set a REAL pack ships, `prepack`'s produ
 
   // THE DISCRIMINATION, STATED AS A FACT ABOUT THE TWO ENUMERATIONS: the flag
   // the guard passes is exactly the difference between them.
-  assert.ok(shipped.includes("dist-js/cli.js"), "a real pack does not ship `prepack`'s product: the premise is wrong");
-  assert.equal(withoutScripts.includes("dist-js/cli.js"), false, "`--ignore-scripts` shipped a build anyway");
-  assert.equal(shipped.length, withoutScripts.length + 1, "the two enumerations differ by something other than the built file");
+  //
+  // NAMED, NOT COUNTED. This used to assert `shipped.length ===
+  // withoutScripts.length + 1`, which is the same claim only for as long as
+  // `prepack` builds exactly one thing. It built two the moment the Owner
+  // Console bundle was added to it, and a probe about WHICH files a user
+  // receives then failed with "121 !== 120" — a number, naming neither the file
+  // that appeared nor the one that should have. The difference is now read out
+  // as a SET and compared against what `prepack` is declared to build, so the
+  // next artifact added to that script either shows up here by name or fails
+  // here by name.
+  const built = PREPACK_PRODUCTS;
+  for (const f of built) {
+    assert.ok(shipped.includes(f), `a real pack does not ship \`prepack\`'s product ${f}: the premise is wrong`);
+    assert.equal(withoutScripts.includes(f), false, `\`--ignore-scripts\` shipped ${f} anyway`);
+  }
+  const onlyInShipped = shipped.filter((f) => !withoutScripts.includes(f)).sort();
+  assert.deepEqual(
+    onlyInShipped,
+    [...built].sort(),
+    "the two enumerations differ by something other than the files `prepack` builds",
+  );
 
   // …AND THE GUARD MUST BE ON THE FIRST SIDE OF THAT DIFFERENCE.
   assert.deepEqual(enumerated, shipped, "the guard enumerates a different package from the one npm ships");
