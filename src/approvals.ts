@@ -47,8 +47,42 @@ export interface ApprovalCondition {
   id: string;
   /** the §7.3 row this encodes, verbatim */
   row: string;
+  /**
+   * WHERE the predicate read its facts, named beside the predicate rather than
+   * beside a reader of it.
+   *
+   * An owner asked to pass a human gate is being told two different kinds of
+   * thing: `signed_manifest` is a fact the AUTHOR declared and signed, and
+   * `signed_manifest+registry` is one that also depends on what this
+   * DEPLOYMENT has since observed. Confusing the two is how an operator comes
+   * to believe a package changed when only the registry's counters moved. The
+   * field is here, in the table, because a second table mapping id → source
+   * would be a second place for that distinction to go stale.
+   */
+  source: "signed_manifest" | "signed_manifest+registry";
   /** deterministic predicate over the declared manifest + registry counters */
   test: (manifest: any, ctx: ApprovalMatrixContext) => boolean;
+}
+
+/** The source of the fail-closed pseudo-condition. It is a fact about the
+ *  registry's copy of the package, not about anything the author declared —
+ *  the author declared nothing this reader could parse. */
+export const UNREADABLE_MANIFEST_CONDITION = "unreadable_manifest";
+export const UNREADABLE_MANIFEST_SOURCE = "registry";
+
+/** The source a condition id was read from, total over both the matrix and the
+ *  fail-closed pseudo-condition, so a caller never has to guess one. */
+export function approvalConditionSource(id: string): string {
+  const c = APPROVAL_MATRIX.find((x) => x.id === id);
+  return c ? c.source : UNREADABLE_MANIFEST_SOURCE;
+}
+
+/** The §7.3 row a condition id encodes, verbatim, or the fail-closed reason. */
+export function approvalConditionDetail(id: string): string {
+  const c = APPROVAL_MATRIX.find((x) => x.id === id);
+  return c
+    ? c.row
+    : "the registry could not read this version's declared manifest, and §7.3 fails closed: an unreadable package requires a human decision rather than an automatic one";
 }
 
 export interface ApprovalMatrixContext {
@@ -64,11 +98,13 @@ export const APPROVAL_MATRIX: ReadonlyArray<ApprovalCondition> = [
   {
     id: "risk_high",
     row: "risk_level: high",
+    source: "signed_manifest",
     test: (m) => m?.scope?.risk_level === "high",
   },
   {
     id: "prod_credentials_iam",
     row: "steps touch prod access / credentials / cloud-IAM",
+    source: "signed_manifest",
     // the declared signal for cloud-IAM/prod reach is §4.2 Runtime
     // `cloud_iam_assumptions` — a required field, empty when there is none
     test: (m) => arr(m?.runtime?.cloud_iam_assumptions).length > 0,
@@ -76,6 +112,7 @@ export const APPROVAL_MATRIX: ReadonlyArray<ApprovalCondition> = [
   {
     id: "destructive",
     row: "destructive operations (data deletion, infra teardown)",
+    source: "signed_manifest",
     // §4.2 gives no dedicated field; the designated extension point carries the
     // author's declaration (x_ext is the ONLY extension point per §4.2)
     test: (m) => m?.x_ext?.destructive === true,
@@ -83,6 +120,7 @@ export const APPROVAL_MATRIX: ReadonlyArray<ApprovalCondition> = [
   {
     id: "network_exfiltration",
     row: "network exfiltration surface (posts data to external URLs)",
+    source: "signed_manifest",
     // a non-empty `url_allowlist` IS the declared external-network surface:
     // gate 4 admits no URL outside it, so an empty list means no external
     // endpoint is reachable from the package at all
@@ -97,6 +135,9 @@ export const APPROVAL_MATRIX: ReadonlyArray<ApprovalCondition> = [
   {
     id: "low_evidence_large_blast_radius",
     row: "low evidence (<3 terminal `adopted` receipts) + large blast radius declared",
+    // the ONLY row whose predicate reads a registry counter as well as the
+    // signed manifest, and the reason the source is per-row data
+    source: "signed_manifest+registry",
     test: (m, ctx) =>
       ctx.adoptedCount < 3 &&
       ["large", "fleet", "org"].includes(String(m?.x_ext?.blast_radius ?? "")),
@@ -105,7 +146,7 @@ export const APPROVAL_MATRIX: ReadonlyArray<ApprovalCondition> = [
 
 /** Which §7.3 conditions hold for this manifest. Order = table order. */
 export function approvalConditions(manifest: any, ctx: ApprovalMatrixContext): string[] {
-  if (manifest === null || typeof manifest !== "object") return ["unreadable_manifest"];
+  if (manifest === null || typeof manifest !== "object") return [UNREADABLE_MANIFEST_CONDITION];
   return APPROVAL_MATRIX.filter((c) => c.test(manifest, ctx)).map((c) => c.id);
 }
 
@@ -119,6 +160,91 @@ export function approvalConditions(manifest: any, ctx: ApprovalMatrixContext): s
  */
 export function requiresHumanApproval(manifest: any, ctx: ApprovalMatrixContext): boolean {
   return approvalConditions(manifest, ctx).length > 0;
+}
+
+// ------------------------------------------------- the review-verdict gate
+
+/**
+ * WHY A REVIEW GATE LIVES BESIDE THE APPROVAL GATE.
+ *
+ * A review verdict and a human approval are different acts by different
+ * actors, and this module keeps them apart — but they are the two things the
+ * Approval Inbox has to publish an `eligibility` for, and an Inbox that
+ * computed either of them for itself would be a second answer to "may this
+ * actor do this" (`INV-01`). That is not a hypothetical: the Inbox renders a
+ * control ENABLED or DISABLED from this verdict, and a control enabled by a
+ * projection and refused by the service is a control that lies.
+ *
+ * So the rule set moves HERE, once, and both readers call it: the review
+ * surface raises the refusal it returns, and the Inbox publishes the reason
+ * code it names. The ORDER is part of the contract — self-review is checked
+ * before role, so an author who also holds `admin` is refused as an author and
+ * not admitted as an admin — and the messages are the ones the surface has
+ * always raised, because a caller reads them.
+ */
+export interface ReviewSubject {
+  /** the version's author */
+  author_agent_id: string;
+  /** the owner of the SKILL the version belongs to */
+  owner_agent_id: string;
+  state: string;
+}
+
+export interface ReviewActor {
+  agent_id: string;
+  role: string | null;
+}
+
+export interface ReviewVerdictRefusal {
+  code: "FORBIDDEN" | "PRECONDITION_FAILED";
+  /** the stable machine reason a disabled control shows */
+  reason_code: string;
+  message: string;
+  /** carried into `ApiError`'s third member where the surface carries one */
+  current_state?: string;
+}
+
+/** The reason code an eligible actor gets. Shared with the human gate so a
+ *  console renders one vocabulary and not two. */
+export const ELIGIBLE_REASON_CODE = "APPROVABLE";
+
+/**
+ * May this actor record a review verdict on this version RIGHT NOW?
+ *
+ * `null` means yes. Anything else is the exact refusal, in the exact order the
+ * surface has always applied it.
+ */
+export function reviewVerdictRefusal(subject: ReviewSubject, actor: ReviewActor): ReviewVerdictRefusal | null {
+  if (subject.author_agent_id === actor.agent_id) {
+    return {
+      code: "FORBIDDEN",
+      reason_code: "SELF_REVIEW_AUTHOR",
+      message: "the version author may not review their own version (self-review, §6 surface 3)",
+    };
+  }
+  if (subject.owner_agent_id === actor.agent_id) {
+    return {
+      code: "FORBIDDEN",
+      reason_code: "SELF_REVIEW_SKILL_OWNER",
+      message: "the skill owner may not review their own skill (self-review, §6 ACL matrix)",
+    };
+  }
+  if (actor.role !== "reviewer" && actor.role !== "admin" && actor.role !== "owner") {
+    return {
+      code: "FORBIDDEN",
+      reason_code: "ROLE_MAY_NOT_REVIEW",
+      message: "a review verdict requires workspace role reviewer/admin/owner (§5.1)",
+    };
+  }
+  if (subject.state !== "linted" && subject.state !== "reviewed") {
+    return {
+      code: "PRECONDITION_FAILED",
+      reason_code: "STATE_NOT_REVIEWABLE",
+      message: "a review verdict applies to a version in state `linted` (or an already `reviewed` one)",
+      current_state: subject.state,
+    };
+  }
+  return null;
 }
 
 // ------------------------------------------------------------ the human gate

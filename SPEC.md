@@ -1918,6 +1918,100 @@ adoption`, `Deny this adoption`, `Approve publication`, `Deny publication`.
 because a control reading `Confirm` tells an operator nothing about what is being
 confirmed or how far it reaches.
 
+#### 6.4.3 The Approval Inbox
+
+`GET /v1/console/approvals?status=pending|decided|all&kind=review|adopt_high_risk|publish|all`.
+
+**The Inbox is a READ-MODEL over rows this registry already has, and not a
+second decision engine.** It MUST NOT re-derive eligibility, an access rule or
+any approval semantics. The `conditions` it publishes are the §7.3 condition set
+the publish gate and the adoption hold already compute; the `eligibility` it
+publishes for a human gate is the §7.3 human gate's own verdict —
+`agents.type='human'` with workspace role admin/owner, re-read from the database
+— and the `eligibility` it publishes for a review verdict is the review
+surface's own rule set, in the review surface's own order. A conforming registry
+computes each of those exactly once and serves the same answer to this read and
+to the mutation that follows it, because a control this read enables and the
+mutation refuses is a control that lies.
+
+**Item identity.** An `item_id` is `<kind>:<subject>`:
+
+| kind | `item_id` | Granularity |
+|---|---|---|
+| `review` | `review:{skill_version_id}` | one current projection per version |
+| `publish` | `publish:{skill_version_id}` | one current projection per version |
+| `adopt_high_risk` | `adopt_high_risk:{adoption_request_id}` | one projection per exact request |
+
+**Status is computed by these rules and never read off the order a query
+returned.** Every "latest" below is the maximum of the pair
+`(created_at_ms, id)`, and the tiebreak on `id` is normative: rows written in
+one millisecond are ordinary in this system, and a projection ordered by time
+alone is a projection whose answer depends on a query plan.
+
+- **`review`** — take the latest review-request activity and the latest review
+  row. With no review row the item is `pending`. With a request strictly newer
+  than the latest review the item is `pending` again — the version is waiting on
+  a fresh verdict and the old verdict is not that verdict. Otherwise the verdict
+  maps `approve → approved`, `reject → denied`, `conditional → conditional`.
+  Repeated requests collapse into this same item.
+- **`publish`** — `approved` when an effective human `approved` row exists,
+  where effective is the publish gate's own predicate: the row is `approved` and
+  its approver STILL passes the human gate of the version's workspace. Otherwise
+  `denied` when any `denied` row exists; otherwise `pending`. A denial is read
+  from the row and is not re-validated against the approver's present standing,
+  which is the fail-closed direction. The bounded decision history is returned
+  SEPARATELY, oldest first, and no row in it is ever rewritten.
+- **`adopt_high_risk`** — `pending` while the request state is
+  `approval_pending`; otherwise the exactly bound approval yields `approved` or
+  `denied`; and a `dead_letter` carrying `approval_denied` is always `denied`.
+
+**Ordering and paging.** `updated_at_ms` is the maximum timestamp of the rows
+that entered the projection. The stable order is `updated_at_ms DESC,
+item_id ASC`, the cursor is an opaque encoding of exactly that pair so paging
+cannot disagree with ordering, `limit` defaults to 50 and MUST NOT exceed 200.
+A fixture carrying repeated review requests, a conditional, a reject, an approve
+and several historical publish rows MUST yield one fixed JSON document whatever
+the query plan did.
+
+**Kind-specific nullability**, which is part of the contract and not an
+accident of what happened to be available:
+
+| Field | review | publish | adopt_high_risk |
+|---|---|---|---|
+| `skill` | required | required | required |
+| `adoption_request` | `null` | `null` | required |
+| `conditions` | `[]` | required | required |
+| `decision` | latest review or `null` | latest approval or `null` | bound approval or `null` |
+| `consequence.scope` | `one_skill_version_review` | `one_skill_version_publish_gate` | `one_adoption_request` |
+
+`conditions` is `[]` for `review` and that is a statement: a review verdict is a
+technical judgement of the package, not an answer to a §7.3 condition, and
+listing the conditions beside it would invite a reviewer to read a human gate as
+something a verdict discharges.
+
+**The filters.** `status=decided` selects `approved`, `denied` and
+`conditional`; `status=pending` selects only `pending`; `status=all` is the
+union. `decided` is a FILTER and never a status: no item is ever `decided`. An
+unrecognised `status`, `kind`, `limit` or `cursor` is `INVALID_SCHEMA` and never
+a silent fallback to a default, because a caller that misspelled a filter and
+received a list is a caller reading a different question's answer.
+
+**What a decided item shows.** The decision carries the actor's `agent_id`, its
+`actor_type` and its `actor_role` as SEPARATE members, its note, and the server
+time it was recorded at. The type and the role are separate because the human
+gate turns on the type: a service principal holding `admin` is
+`{"actor_type":"service","actor_role":"admin"}` and never satisfies it. An actor
+fact this deployment does not hold is `unknown`, which is a different value from
+every role and every type it does hold (`INV-03`).
+
+**Reachability.** A service or admin principal that is not `agents.type='human'`
+never receives `allowed:true` for a human gate; a reviewer never receives
+`allowed:true` for a high-risk publish or adoption; an adoption approval always
+carries the exact `adoption_request_id` and a publish approval never carries
+one. A reviewer session may ask this route only for an explicit `kind=review`;
+`all` or another kind is `FORBIDDEN` and not a silently narrowed list, because a
+narrowed list reads as "there is nothing else to decide".
+
 ---
 
 ---
@@ -6054,6 +6148,7 @@ Internal worker surface (NOT public, service-authenticated, single-binary in-pro
 | — | `POST /v1/console/outcomes/{outcome_id}/revision` | a live console session (owner/admin) | `{"origin":"failure\|feedback","observation","improvement_goal","goal_kind":"failure_to_worked\|declared_binary"?,"revision":{…the ordinary revision body},"idempotency_key"?}` | `201 {"contract","revision_source_id","parent_revision_id","source_outcome_id","source_receipt_id","origin","improvement_goal","goal_kind","revision"}`. Creates a new DRAFT revision from a failure or a remark, through the same compiler, the same semantic and security preview and the same owner approval any other revision faces. The lineage row records the parent revision, the outcome that prompted it, the receipt behind that outcome and the binary goal — stated HERE, before the new revision has run anywhere. `origin:"failure"` on an outcome that is not `failed` is `PRECONDITION_FAILED` |
 | — | `POST /v1/console/comparisons` | a live console session (owner/admin) | `{"baseline_outcome_id","candidate_outcome_id","idempotency_key"?}` | `201 {"contract","comparison_id","draft_id","revision_source_id","baseline","candidate","comparable","scenario","improvement_goal","goal_kind","verdict","verdict_reason_code","verdict_reason","created_at_ms"}`. Shows the exact old and new revisions, the observation behind the old one and the new outcome. The verdict is COMPUTED and never supplied: `improved` requires a comparable scenario — same lineage, same agent, same runtime kind — and a proved transition to `worked` against the goal stated in advance; anything else is `not_improved` or `not_comparable` with the reason code saying which condition failed. A candidate revision with no lineage row is `PRECONDITION_FAILED` |
 | — | `GET /v1/console/dashboard/{view}` | a live console session (owner/admin/reviewer) | — | `200 {"contract","view","title","views","sections","demo_mode","notices"}` — the Proofline (§6.4.1). `view` is one of the eleven `dashboard.view` serves and the payload is that read's payload with the contract marker in front of it: the same data, built by the same method, filtered by the same ACL, with every cell keeping its value, kind, why, source, window and bounds. A `format` selector is `INVALID_SCHEMA`: the console reads this contract and MUST NOT parse the HTML rendering. `dead_letters` separates the adoption state from the notification delivery, and neither says a notification arrived (`INV-07`). An unrecognised `view` is `INVALID_SCHEMA` |
+| — | `GET /v1/console/approvals?status=&kind=&limit=&cursor=` | a live console session (owner/admin/reviewer) | — | `200 {"contract","statuses","kinds","items","next_cursor"}` — the Approval Inbox (§6.4.3). Each item is `{"item_id","kind","status","skill","adoption_request","conditions","eligibility","consequence","decision","decision_history","updated_at_ms","server_at_ms"}`, where `skill` is `{"skill_id","skill_version_id","slug","semantic_version","risk_level"}`, `adoption_request` is `{"adoption_request_id","adopter_agent_id","state"}` or `null`, a condition is `{"code","source","detail"}`, `eligibility` is `{"allowed","reason_code"}`, `consequence` is `{"scope","reusable","blocks_until_decided"}` and a decision is `{"decision","actor_agent_id","actor_type","actor_role","note","server_at_ms"}`. A READ-MODEL over existing rows: the registry computes `conditions`, `eligibility` and `consequence` and a conforming console MUST render them rather than recompute one. Ordering is `updated_at_ms DESC, item_id ASC`, the cursor is an opaque encoding of that pair, `limit` defaults to 50 and is at most 200. A reviewer session may pass only an explicit `kind=review`; `all` or another kind is `FORBIDDEN`. An unrecognised filter is `INVALID_SCHEMA` |
 | — | `POST /v1/console/versions/{version_id}/reviews` | a live console session (owner/admin/reviewer) | `{"action":"request\|verdict","verdict":"approve\|reject\|conditional"?,"note"?,"idempotency_key"?}` | `200 {"contract",…the body of `skill.review.request`…}`. A wrapper over surface 3 and nothing else: the route checks the session, the `Origin`, the CSRF token and the §6.4 route ACL, then calls the same service method the Bearer route calls with the session's own `AuthContext`. `verdict` is required when `action` is `verdict` and `INVALID_SCHEMA` when `action` is `request`. The self-review prohibition, the state ACL and the idempotent replay are the service's and are not recomputed here |
 | — | `POST /v1/console/versions/{version_id}/approvals` | a live console session (owner/admin), and the principal MUST be `agents.type='human'` | `{"scope":"publish\|adopt_high_risk","decision":"approved\|denied","adoption_request_id"?,"note"?,"idempotency_key"?}` | `201 {"contract",…the body of `skill.approve`…}`. A wrapper over the §7.3 approval recorder. A reviewer session is `FORBIDDEN` at the route, before the service is called; a service or admin principal that is not `agents.type='human'` is `FORBIDDEN` by the service's own gate. `adoption_request_id` is required for `adopt_high_risk` and `INVALID_SCHEMA` for `publish`, so an approval is bound to one exact request and cannot be spent on a second |
 | — | `GET /v1/console/capabilities/{draft_id}/outcomes` | a live console session (owner/admin) | — | `200 {"contract","draft_id","outcomes","lineage","comparisons"}` — every outcome filed against any revision of this lineage with its conflicts, every revision created from one, and every comparison drawn. Structured columns throughout |

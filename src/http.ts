@@ -21,12 +21,15 @@ import {
 } from "./console-session.ts";
 import {
   CONSOLE_CONTRACT_V2,
+  REVIEWER_VISIBLE_KINDS,
+  consoleInboxKindAdmits,
   consoleRouteAdmits,
   consoleRouteClass,
   validateConsoleApproval,
   validateConsoleReview,
   type ContractViolation,
 } from "./console-v2.ts";
+import { parseInboxQuery } from "./approval-inbox.ts";
 import { consolePage, consoleScript, loginPage } from "./console-page.ts";
 
 /** Reported by `/health`; the release version of the running build.
@@ -377,6 +380,7 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
       // here is an access-control defect and not a style lapse. Both v1.1
       // additions are named.
       path.startsWith("/v1/console/dashboard") ||
+      path.startsWith("/v1/console/approvals") ||
       path.startsWith("/v1/console/versions")
     ) {
       if (!session) throw new ApiError("UNAUTHORIZED", "the owner console requires a session");
@@ -490,6 +494,38 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
         }
         const payload = serializeDashboard(registry.dashboard(cauth, m[1], searchParamsOf(url)));
         return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_V2, ...payload }), {
+          "Cache-Control": "no-store",
+        });
+      }
+
+      // ---- THE APPROVAL INBOX — SPEC.md section 6.4.3.
+      //
+      // A READ over rows the registry already holds, and the route's whole job
+      // is the ONE question the projection is not allowed to answer for itself:
+      // may a session holding this role ask for this `kind` at all. A reviewer
+      // may ask for `review` and for nothing else, and asking for `all` is
+      // `FORBIDDEN` rather than silently narrowed — a narrowed list reads to an
+      // operator as "there is nothing else to decide", which is a false
+      // statement the server would be making on the reviewer's behalf.
+      //
+      // The `kind` is validated by the same parser the projection uses, BEFORE
+      // the role is consulted, so an unrecognised value is `INVALID_SCHEMA` for
+      // every role and a reviewer cannot learn which kinds exist by probing
+      // which ones answer `FORBIDDEN`.
+      if (method === "GET" && path === "/v1/console/approvals") {
+        const q = parseInboxQuery({
+          status: url.searchParams.get("status") ?? undefined,
+          kind: url.searchParams.get("kind") ?? undefined,
+          limit: url.searchParams.get("limit") ?? undefined,
+          cursor: url.searchParams.get("cursor") ?? undefined,
+        });
+        if (!consoleInboxKindAdmits(session.actor_role, q.kind)) {
+          throw new ApiError(
+            "FORBIDDEN",
+            `a console session holding the role ${session.actor_role} may ask this inbox only for an explicit kind=${REVIEWER_VISIBLE_KINDS.join("|")}`,
+          );
+        }
+        return json(200, JSON.stringify(registry.consoleApprovals(cauth, q)), {
           "Cache-Control": "no-store",
         });
       }

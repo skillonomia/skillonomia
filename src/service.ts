@@ -350,7 +350,9 @@ import {
   type MigrationWindow,
 } from "./skill-migrations.ts";
 import { checkCompatibility, mismatchBlocks, type CompatResult } from "./compat.ts";
-import { approvalConditions } from "./approvals.ts";
+import { approvalConditions, reviewVerdictRefusal } from "./approvals.ts";
+import { consoleApprovalInbox, type InboxQuery } from "./approval-inbox.ts";
+import type { ConsoleInboxEnvelope } from "./console-v2.ts";
 import {
   registerWebhook,
   deleteWebhook,
@@ -2117,22 +2119,16 @@ export class Registry {
     // (self-review)"; §5.1 adds that reviewers are same-workspace members with
     // role reviewer/admin/owner. Self-review is checked FIRST, so an author who
     // also holds admin cannot review their own version.
-    if (row.author_agent_id === auth.agent_id) {
-      throw new ApiError("FORBIDDEN", "the version author may not review their own version (self-review, §6 surface 3)");
-    }
-    if (row.owner_agent_id === auth.agent_id) {
-      throw new ApiError("FORBIDDEN", "the skill owner may not review their own skill (self-review, §6 ACL matrix)");
-    }
-    if (auth.role !== "reviewer" && auth.role !== "admin" && auth.role !== "owner") {
-      throw new ApiError("FORBIDDEN", "a review verdict requires workspace role reviewer/admin/owner (§5.1)");
-    }
-    if (row.state !== "linted" && row.state !== "reviewed") {
-      throw new ApiError(
-        "PRECONDITION_FAILED",
-        "a review verdict applies to a version in state `linted` (or an already `reviewed` one)",
-        row.state,
-      );
-    }
+    //
+    // The rules themselves live in `src/approvals.ts` and are raised here. They
+    // moved there when the Approval Inbox had to PUBLISH them as an
+    // `eligibility` an operator's console renders: a projection that decided
+    // for itself whether a verdict was admissible would be a second answer to
+    // the question this line asks, and the two would drift (`INV-01`). The
+    // order, the messages and the `current_state` this surface carries are
+    // unchanged — they are what a caller reads.
+    const refusal = reviewVerdictRefusal(row, auth);
+    if (refusal) throw new ApiError(refusal.code, refusal.message, refusal.current_state);
 
     const now = this.now();
     const db = this.db;
@@ -5005,6 +5001,20 @@ export class Registry {
       throw new ApiError("RATE_LIMITED", "rate limit exceeded for this console session");
     }
     return ctx;
+  }
+
+  /**
+   * `GET /v1/console/approvals` — the v1.1 Approval Inbox (SPEC.md §6.4.3).
+   *
+   * A READ, and a read-model: the projection reuses the registry's own
+   * `approvalConditions`, `requiresHumanApproval`, `isHumanApprover`,
+   * `publishApprovalSatisfied` and `reviewVerdictRefusal`, so the `conditions`,
+   * `eligibility` and `status` an owner reads are the same answers the mutation
+   * surfaces will give (`INV-01`). Nothing about approval semantics is decided
+   * in this method or in the module it calls.
+   */
+  consoleApprovals(auth: AuthContext, query: InboxQuery): ConsoleInboxEnvelope {
+    return consoleApprovalInbox(this.db, auth, query, this.now());
   }
 
   /** `GET /v1/console/drafts` — the Inbox, from the backend (`P2-FR-04`). */

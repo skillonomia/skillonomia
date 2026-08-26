@@ -185,6 +185,38 @@ export const SCOPE_OF_KIND: Readonly<Record<ApprovalKind, ConsequenceScope>> = {
 };
 
 /**
+ * The consequence each kind carries, as DATA rather than as three constructions
+ * at three call sites.
+ *
+ * `reusable` is `false` for all three and that is a claim, not an oversight: no
+ * decision this Inbox publishes authorizes anything beyond the subject its
+ * `scope` names. A high-risk approval is bound to one `adoption_request_id` and
+ * a second request from the same adopter for the same version remains pending;
+ * a publish approval opens the gate of one version and no other; a review
+ * verdict judges one version. `blocks_until_decided` is `true` for all three
+ * for the matching reason — each is a gate something is waiting behind, and an
+ * owner deciding what to open first is entitled to know that nothing here is
+ * merely advisory.
+ */
+export const CONSEQUENCE_OF_KIND: Readonly<Record<ApprovalKind, InboxConsequence>> = {
+  review: { scope: "one_skill_version_review", reusable: false, blocks_until_decided: true },
+  publish: { scope: "one_skill_version_publish_gate", reusable: false, blocks_until_decided: true },
+  adopt_high_risk: { scope: "one_adoption_request", reusable: false, blocks_until_decided: true },
+};
+
+/**
+ * How many past decisions an item carries beside its current one.
+ *
+ * The history is BOUNDED because the projection is over unbounded rows and an
+ * operator's browser is not the place to discover that; it is bounded from the
+ * RECENT end, because the rows a decision is being taken against are the recent
+ * ones. Nothing in it is ever rewritten: a superseded decision stays exactly as
+ * it was recorded, which is what makes the current status readable as a
+ * conclusion rather than as the only thing that ever happened.
+ */
+export const INBOX_DECISION_HISTORY_MAX = 20;
+
+/**
  * `item_id` — `<kind>:<subject>`, where the subject is the thing the item is one
  * projection OF.
  *
@@ -278,6 +310,18 @@ export interface ConsoleInboxItemV2 {
   eligibility: ConsoleEligibility;
   consequence: InboxConsequence;
   decision: InboxDecision | null;
+  /**
+   * The bounded decision history, oldest first, capped at
+   * `INBOX_DECISION_HISTORY_MAX` from the recent end.
+   *
+   * SEPARATE from `decision`, and that separation is the point for `publish`:
+   * a version can carry several historical approval rows, the current status is
+   * computed from the rules and not from the last row written, and neither the
+   * history nor any row in it is rewritten when a new decision lands. An item
+   * that showed only its latest row would let a denial that was later overridden
+   * — or an approval that was — disappear from the operator's view.
+   */
+  decision_history: InboxDecision[];
   /** the maximum timestamp of the rows that entered this projection — the
    *  first half of the stable sort key, and the value a cursor carries */
   updated_at_ms: number;
@@ -504,6 +548,24 @@ export function isConsoleSessionRole(v: unknown): v is ConsoleSessionRole {
  *  kind, or `all` — is `FORBIDDEN` rather than silently filtered, because a
  *  silently narrowed list reads as "there is nothing to decide". */
 export const REVIEWER_VISIBLE_KINDS: readonly ApprovalKindFilter[] = ["review"];
+
+/**
+ * May a session holding this role ask the Inbox for this `kind` filter?
+ *
+ * The refusal is at the FILTER and not at the result, which is the whole design:
+ * a reviewer who asked for `all` and got a silently narrowed list would read it
+ * as "there is nothing else to decide" — a false statement the server made on
+ * the operator's behalf. `FORBIDDEN` says instead that the question was not the
+ * reviewer's to ask, and leaves the reviewer able to ask the one that is.
+ *
+ * Owner and admin are admitted to every kind. What comes BACK is still whatever
+ * the existing Registry ACL says the principal may see — this decides the
+ * question, never the answer.
+ */
+export function consoleInboxKindAdmits(role: ConsoleSessionRole, kind: ApprovalKindFilter): boolean {
+  if (role === "reviewer") return REVIEWER_VISIBLE_KINDS.includes(kind);
+  return (APPROVAL_KIND_FILTERS as readonly string[]).includes(kind);
+}
 
 // ===========================================================================
 // The route-level ACL
