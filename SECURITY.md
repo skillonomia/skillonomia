@@ -23,8 +23,8 @@ rather than publishing it.
 
 ## Supported versions
 
-`0.1.0` is published and is source only. Version `1.0.0` is the version this
-tree declares; the release tagged `v1.0.0` carries a Linux x86_64 binary and its
+`0.1.0` is published and is source only. Version `1.1.0` is the version this
+tree declares; the release tagged `v1.1.0` carries a Linux x86_64 binary and its
 checksum alongside the source, and the same version is published as
 `@skillonomia/cli` on npm and as a tag of the container image
 `ghcr.io/skillonomia/skillonomia`. `v0.1.0` is refused by name, so the published
@@ -37,7 +37,7 @@ feed. Only the tip of the published branch is looked at.
 | Version | Supported |
 |---|---|
 | `0.1.0` | source published; no maintenance commitment |
-| `1.0.0` | what `v1.0.0` carries — source, a Linux x86_64 binary, `@skillonomia/cli` on npm and a tag of `ghcr.io/skillonomia/skillonomia`; no maintenance commitment |
+| `1.1.0` | what `v1.1.0` carries — source, a Linux x86_64 binary, `@skillonomia/cli` on npm and a tag of `ghcr.io/skillonomia/skillonomia`; no maintenance commitment |
 | the unscoped `skillonomia` package on npm | a name-holding placeholder under the same npm account — not this software, and out of scope here |
 
 ## Scope — what a security report would be about
