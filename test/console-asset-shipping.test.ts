@@ -71,6 +71,20 @@ test("the binary archive stages the Console bundle beside the executable", () =>
   );
   const release = readFileSync(join(REPO_ROOT, "ci", "mvp-release.mjs"), "utf8");
   assert.match(release, /"skillonomia", "migrations", "schema", "seed", "dist-console"/, "the release archive tars dist-console");
+
+  // TARRING IT AND ADMITTING IT ARE TWO CLAIMS, and the same script makes both.
+  // `verifyMembers` compares the archive's top-level members against `MEMBERS`
+  // as a SET, so a bundle added to the tar line and not to `MEMBERS` does not
+  // ship silently — it makes the release check refuse the archive it just
+  // built. That is exactly what happened: the tar line carried `dist-console`
+  // and `MEMBERS` still named the five without it, so `binary --local` failed
+  // with "contains [… dist-console/ …]; a release carries [… no console …]".
+  const members = release.match(/^export const MEMBERS = \[(.*)\];$/m)?.[1];
+  assert.ok(members, "ci/mvp-release.mjs must declare MEMBERS on one line");
+  assert.ok(
+    members.includes('"dist-console/"'),
+    `MEMBERS must admit the bundle the archive now carries; it lists [${members}]`,
+  );
 });
 
 test("the one script the Console page loads is the one the artifacts ship", () => {

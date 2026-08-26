@@ -40,8 +40,9 @@
 // TAKES THE ARCHIVE BACK from where a user would get it, and runs it OUTSIDE
 // THIS CHECKOUT:
 //
-//   1. package  — `dist/skillonomia` plus `migrations/`, `schema/`, `seed/` and
-//                 `LICENSE` into `skillonomia-linux-x86_64.tar.gz`;
+//   1. package  — `dist/skillonomia` plus `migrations/`, `schema/`, `seed/`,
+//                 `dist-console/` and `LICENSE` into
+//                 `skillonomia-linux-x86_64.tar.gz`;
 //   2. checksum — `SHA256SUMS`, verified by `sha256sum -c` rather than by this
 //                 script comparing a string it just computed to itself;
 //   3. download — with `--tag`, the two files come from THE RELEASE over the
@@ -79,7 +80,7 @@ export const ARCHIVE = "skillonomia-linux-x86_64.tar.gz";
 export const SUMS = "SHA256SUMS";
 
 /** What the archive contains — the whole of it, checked as a set. */
-export const MEMBERS = ["LICENSE", "migrations/", "schema/", "seed/", "skillonomia"];
+export const MEMBERS = ["LICENSE", "dist-console/", "migrations/", "schema/", "seed/", "skillonomia"];
 
 const OK = "RELEASE_BINARY_OK";
 const STAGED = "RELEASE_BINARY_STAGED_OK";
