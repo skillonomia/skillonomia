@@ -353,6 +353,7 @@ import {
 import { checkCompatibility, mismatchBlocks, type CompatResult } from "./compat.ts";
 import { approvalConditions, reviewVerdictRefusal } from "./approvals.ts";
 import { consoleApprovalInbox, type InboxQuery } from "./approval-inbox.ts";
+import { consoleRevocationContext, type ConsoleRevocationContext } from "./console-revocation.ts";
 import type { ConsoleInboxEnvelope } from "./console-v2.ts";
 import {
   registerWebhook,
@@ -3031,6 +3032,34 @@ export class Registry {
     );
   }
 
+  /**
+   * `POST /v1/console/webhooks` — the same registration, WITHOUT the secret.
+   *
+   * THE SECRET NEVER CROSSES INTO A BROWSER, and this method is the reason it
+   * cannot. `registerWebhook` above returns the plaintext once because a machine
+   * caller has nowhere else to get it; a browser has no use for it and `INV-04`
+   * forbids a credential reaching the DOM, a URL or a browser store at all. So
+   * the secret is minted, hashed into SQLite and put in the deployment-local
+   * secret store by the same function as always, and this wrapper drops it on
+   * the floor before anything is serialized.
+   *
+   * THE IDEMPOTENCY IS AROUND THE STRIPPED VALUE, not around the full one, and
+   * the order matters: `withIdempotency` PERSISTS the response bytes it replays,
+   * so wrapping the unstripped result would write the plaintext secret into
+   * `idempotency_keys` — a third place a credential lives, and the one place
+   * nothing would ever look for it.
+   */
+  registerWebhookForConsole(
+    auth: AuthContext,
+    input: { url?: unknown },
+    idempotencyKey?: string,
+  ): IdempotentOutcome<{ webhook_id: string; url: string }> {
+    return withIdempotency(this.db, auth.agent_id, "webhook.register", idempotencyKey, this.now(), () => {
+      const created = this.registerWebhook(auth, input);
+      return { webhook_id: created.webhook_id, url: created.url };
+    });
+  }
+
   /** `DELETE /v1/webhooks/{id}` — own only. */
   deleteWebhook(auth: AuthContext, webhookId: string): { deleted: boolean } {
     if (typeof webhookId !== "string") throw new ApiError("INVALID_SCHEMA", "webhook_id must be a string");
@@ -5044,6 +5073,22 @@ export class Registry {
    */
   consoleApprovals(auth: AuthContext, query: InboxQuery): ConsoleInboxEnvelope {
     return consoleApprovalInbox(this.db, auth, query, this.now());
+  }
+
+  /**
+   * `GET /v1/console/versions/{version_id}/revocation` — what revoking this
+   * version would do, read before anything is written.
+   *
+   * A READ, in the same sense `consoleApprovals` is one, and it exists because
+   * SPEC.md section 6.4 requires the consequences to be STATED BEFORE COMMIT and
+   * three of the four statements need a fact only this registry holds: which
+   * bytes, who already has them, and what could replace them. The eligibility it
+   * returns is computed from the same state set and the same actor rule
+   * `revokeVersion` applies, so the control this read withholds is the call that
+   * method would refuse (`INV-01`).
+   */
+  consoleRevocation(auth: AuthContext, versionId: unknown): ConsoleRevocationContext {
+    return consoleRevocationContext(this.db, auth, versionId, this.now());
   }
 
   /** `GET /v1/console/drafts` — the Inbox, from the backend (`P2-FR-04`). */

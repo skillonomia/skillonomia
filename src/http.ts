@@ -27,6 +27,8 @@ import {
   consoleRouteClass,
   validateConsoleApproval,
   validateConsoleReview,
+  validateConsoleRevoke,
+  validateConsoleWebhook,
   type ContractViolation,
 } from "./console-v2.ts";
 import { parseInboxQuery } from "./approval-inbox.ts";
@@ -637,6 +639,61 @@ export function handleRest(registry: Registry, req: RestRequest): RestResponse {
             "Cache-Control": "no-store",
           });
         }, req.url);
+      }
+
+      // ---- the revocation surface (SPEC.md section 6.4).
+      //
+      // TWO ROUTES BECAUSE THERE ARE TWO ACTS, and separating them is the whole
+      // requirement rather than a REST habit. SPEC.md section 6.4 requires the
+      // Console to STATE the consequences of a revocation BEFORE the commit, and
+      // a surface with only a mutation gives a browser nothing to state them
+      // from — it would have to assemble the manifest hash, the adopters and the
+      // replacement candidates from unrelated reads and decide for itself what
+      // "already holds this version" means, which is the decision `INV-01` puts
+      // on the server.
+      //
+      // The read is a `GET` and answers 200 with an `eligibility` even when the
+      // version cannot be revoked, because a page that cannot read the facts
+      // cannot state the consequences; the refusal an ineligible actor gets is
+      // the route ACL's, which already ran.
+      m = /^\/v1\/console\/versions\/([^/]+)\/revocation$/.exec(path);
+      if (method === "GET" && m) {
+        return json(200, JSON.stringify(registry.consoleRevocation(cauth, m[1])), {
+          "Cache-Control": "no-store",
+        });
+      }
+
+      // The commit, and a WRAPPER in the sense the review and approval wrappers
+      // above are: the state whitelist, the actor ACL, the reason's immutability,
+      // the lineage link, the transparency-log order, the queued notices and the
+      // idempotent replay are all `Registry.revokeVersion`'s, called with the
+      // console session's own `AuthContext`. Nothing about revocation is decided
+      // here (`INV-01`).
+      m = /^\/v1\/console\/versions\/([^/]+)\/revoke$/.exec(path);
+      if (method === "POST" && m) {
+        const body = parseBody(req);
+        refuseViolations(validateConsoleRevoke(body));
+        return consoleMutationResponse(registry.revokeVersion(cauth, m[1], body, idemKey(body)), 200);
+      }
+
+      // ---- the webhook list and registration (SPEC.md section 6.5).
+      //
+      // The registration is a wrapper over the same service method the Bearer
+      // route calls, so the URL policy, the SSRF rules, the loopback flag and
+      // the secret's generation are one implementation for both channels — which
+      // is what SPEC.md section 6.5's registration parity means. The secret the
+      // registration mints is in the service's response and is NOT forwarded:
+      // see `consoleWebhookRegistration` below.
+      if (method === "GET" && path === "/v1/console/webhooks") {
+        return json(200, JSON.stringify({ contract: CONSOLE_CONTRACT_V2, ...registry.listWebhooks(cauth) }), {
+          "Cache-Control": "no-store",
+        });
+      }
+
+      if (method === "POST" && path === "/v1/console/webhooks") {
+        const body = parseBody(req);
+        refuseViolations(validateConsoleWebhook(body));
+        return consoleMutationResponse(registry.registerWebhookForConsole(cauth, body, idemKey(body)), 201);
       }
 
       if (method === "GET" && path === "/v1/console/drafts") {

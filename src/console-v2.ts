@@ -522,6 +522,77 @@ export type HumanDecisionAction = keyof typeof HUMAN_DECISION_LABELS;
  *  property is negative and a negative property needs something to test. */
 export const FORBIDDEN_DECISION_LABELS: readonly string[] = ["Confirm", "OK", "Yes", "Submit"];
 
+/** `POST /v1/console/versions/{id}/revoke` */
+export interface ConsoleRevokeRequest {
+  reason: string;
+  successor_version_id?: string | null;
+  idempotency_key?: string;
+}
+
+/** The bound SPEC.md section 5.1b puts on a revocation reason. Restated from
+ *  `REVOCATION_REASON_MAX` rather than imported, and
+ *  `test/v1p2-p2c-console.test.ts` asserts the two are equal — `src/lifecycle-v11
+ *  .ts` is the lifecycle's module and this file is the wire contract, and a
+ *  boundary validator that imported the writer would invert that direction. */
+const REVOKE_REASON_MAX = 2000;
+
+/**
+ * The revocation body, checked at the boundary.
+ *
+ * `reason` is REQUIRED and non-empty, because SPEC.md section 5.1b makes it
+ * immutable once recorded: a blank reason accepted here is a blank reason
+ * nobody can ever correct. `successor_version_id` is optional and explicitly
+ * admits `null` — a form that offers "no replacement" sends the absence rather
+ * than omitting the member, and a validator that refused `null` would make the
+ * Console's own "no replacement" option unsendable.
+ */
+export function validateConsoleRevoke(body: unknown): ContractViolation[] {
+  const out: ContractViolation[] = [];
+  const reason = member(body, "reason");
+  if (typeof reason !== "string" || reason.length === 0 || reason.length > REVOKE_REASON_MAX) {
+    out.push({
+      pointer: "/reason",
+      code: "INVALID_SCHEMA",
+      detail: `reason must be a non-empty string of at most ${REVOKE_REASON_MAX} characters`,
+    });
+  }
+  const successor = member(body, "successor_version_id");
+  if (successor !== undefined && successor !== null && (typeof successor !== "string" || successor.length === 0)) {
+    out.push({
+      pointer: "/successor_version_id",
+      code: "INVALID_SCHEMA",
+      detail: "successor_version_id must be a non-empty string, or null for no replacement",
+    });
+  }
+  checkOptionalText(body, "idempotency_key", IDEMPOTENCY_KEY_MAX, out);
+  return out;
+}
+
+/** `POST /v1/console/webhooks` */
+export interface ConsoleWebhookRequest {
+  url: string;
+  idempotency_key?: string;
+}
+
+/**
+ * The webhook registration body, checked at the boundary.
+ *
+ * The URL is checked HERE only for being a non-empty string. Everything that
+ * makes a destination admissible — the scheme, the SSRF rules, the loopback
+ * flag, the reserved-name space — is `src/transport.ts`'s and stays there
+ * (`INV-01`). A second URL policy at the console boundary is exactly the
+ * parity break SPEC.md section 6.5 exists to prevent.
+ */
+export function validateConsoleWebhook(body: unknown): ContractViolation[] {
+  const out: ContractViolation[] = [];
+  const url = member(body, "url");
+  if (typeof url !== "string" || url.length === 0) {
+    out.push({ pointer: "/url", code: "INVALID_SCHEMA", detail: "url must be a non-empty string" });
+  }
+  checkOptionalText(body, "idempotency_key", IDEMPOTENCY_KEY_MAX, out);
+  return out;
+}
+
 // ===========================================================================
 // The session
 // ===========================================================================
