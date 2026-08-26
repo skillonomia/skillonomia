@@ -126,6 +126,19 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
     ["docs/API.md", "ad09febd932ee2b8", "behaviour", "the console payload equals the bearer payload modulo the envelope, for all eleven views, with every cell's method intact: test/v1p1-p1-console.test.ts"],
     ["docs/API.md", "d7d449869663b57b", "behaviour", "a `format` selector on the console Proofline is INVALID_SCHEMA, shown to be its own guard: test/v1p1-p1-console-probes.test.ts"],
   ],
+  // ------------------------------------------- docs/API, v1.1 Approval Inbox
+  //
+  // The three claims the Inbox row makes, each a rule of the running service.
+  // The first is the single-source property itself, measured by comparing the
+  // projection's eligibility against the review SURFACE's own answer principal
+  // by principal; the second and third are the filter vocabulary, the order,
+  // the page bounds and the reviewer's `kind` restriction, all of them driven
+  // through the router against a frozen fixture rather than described.
+  [
+    ["docs/API.md", "149a0e599546e96b", "behaviour", "the server computes conditions, eligibility and consequence and the projection recomputes none of them, compared against the surfaces item by item: test/v1p1-p1-inbox.test.ts"],
+    ["docs/API.md", "90354f78ed9c33d3", "behaviour", "the status and kind vocabularies are the server's, and an unrecognised filter is INVALID_SCHEMA rather than a default: test/v1p1-p1-inbox.test.ts"],
+    ["docs/API.md", "850b8c9985a3711c", "behaviour", "the order, the cursor pair, the 50/200 page bounds and the reviewer's explicit `kind=review` are each asserted through the router: test/v1p1-p1-inbox.test.ts"],
+  ],
   // ---------------------------------------------------------- docs/API, V1 P4
   //
   // The session loadout and the two native runtimes. Every one of these is a

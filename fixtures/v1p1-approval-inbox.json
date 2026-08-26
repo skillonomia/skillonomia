@@ -1,0 +1,482 @@
+{
+  "contract": "console.v2",
+  "statuses": [
+    "pending",
+    "approved",
+    "denied",
+    "conditional"
+  ],
+  "kinds": [
+    "review",
+    "publish",
+    "adopt_high_risk"
+  ],
+  "items": [
+    {
+      "item_id": "adopt_high_risk:REQ3-DENIED000000000000000",
+      "kind": "adopt_high_risk",
+      "status": "denied",
+      "skill": {
+        "skill_id": "SK-ALPHA000000000000000000",
+        "skill_version_id": "V3-HIGH-VERIFIED0000000000",
+        "slug": "alpha-skill",
+        "semantic_version": "3.0.0",
+        "risk_level": "high"
+      },
+      "adoption_request": {
+        "adoption_request_id": "REQ3-DENIED000000000000000",
+        "adopter_agent_id": "AG-ADOPTER0000000000000000",
+        "state": "dead_letter"
+      },
+      "conditions": [
+        {
+          "code": "risk_high",
+          "source": "signed_manifest",
+          "detail": "risk_level: high"
+        },
+        {
+          "code": "low_evidence_large_blast_radius",
+          "source": "signed_manifest+registry",
+          "detail": "low evidence (<3 terminal `adopted` receipts) + large blast radius declared"
+        }
+      ],
+      "eligibility": {
+        "allowed": false,
+        "reason_code": "ALREADY_DECIDED"
+      },
+      "consequence": {
+        "scope": "one_adoption_request",
+        "reusable": false,
+        "blocks_until_decided": true
+      },
+      "decision": {
+        "decision": "denied",
+        "actor_agent_id": "AG-OWNER000000000000000000",
+        "actor_type": "human",
+        "actor_role": "owner",
+        "note": "not this quarter",
+        "server_at_ms": 1700000000090
+      },
+      "decision_history": [
+        {
+          "decision": "denied",
+          "actor_agent_id": "AG-OWNER000000000000000000",
+          "actor_type": "human",
+          "actor_role": "owner",
+          "note": "not this quarter",
+          "server_at_ms": 1700000000090
+        }
+      ],
+      "updated_at_ms": 1700000000090,
+      "server_at_ms": 1700000001000
+    },
+    {
+      "item_id": "adopt_high_risk:REQ2-APPROVED0000000000000",
+      "kind": "adopt_high_risk",
+      "status": "approved",
+      "skill": {
+        "skill_id": "SK-ALPHA000000000000000000",
+        "skill_version_id": "V3-HIGH-VERIFIED0000000000",
+        "slug": "alpha-skill",
+        "semantic_version": "3.0.0",
+        "risk_level": "high"
+      },
+      "adoption_request": {
+        "adoption_request_id": "REQ2-APPROVED0000000000000",
+        "adopter_agent_id": "AG-ADOPTER0000000000000000",
+        "state": "pending"
+      },
+      "conditions": [
+        {
+          "code": "risk_high",
+          "source": "signed_manifest",
+          "detail": "risk_level: high"
+        },
+        {
+          "code": "low_evidence_large_blast_radius",
+          "source": "signed_manifest+registry",
+          "detail": "low evidence (<3 terminal `adopted` receipts) + large blast radius declared"
+        }
+      ],
+      "eligibility": {
+        "allowed": false,
+        "reason_code": "ALREADY_DECIDED"
+      },
+      "consequence": {
+        "scope": "one_adoption_request",
+        "reusable": false,
+        "blocks_until_decided": true
+      },
+      "decision": {
+        "decision": "approved",
+        "actor_agent_id": "AG-ADMIN000000000000000000",
+        "actor_type": "human",
+        "actor_role": "admin",
+        "note": "one team, one version",
+        "server_at_ms": 1700000000080
+      },
+      "decision_history": [
+        {
+          "decision": "approved",
+          "actor_agent_id": "AG-ADMIN000000000000000000",
+          "actor_type": "human",
+          "actor_role": "admin",
+          "note": "one team, one version",
+          "server_at_ms": 1700000000080
+        }
+      ],
+      "updated_at_ms": 1700000000080,
+      "server_at_ms": 1700000001000
+    },
+    {
+      "item_id": "adopt_high_risk:REQ4-DEAD-NO-ROW0000000000",
+      "kind": "adopt_high_risk",
+      "status": "denied",
+      "skill": {
+        "skill_id": "SK-ALPHA000000000000000000",
+        "skill_version_id": "V3-HIGH-VERIFIED0000000000",
+        "slug": "alpha-skill",
+        "semantic_version": "3.0.0",
+        "risk_level": "high"
+      },
+      "adoption_request": {
+        "adoption_request_id": "REQ4-DEAD-NO-ROW0000000000",
+        "adopter_agent_id": "AG-ADOPTER0000000000000000",
+        "state": "dead_letter"
+      },
+      "conditions": [
+        {
+          "code": "risk_high",
+          "source": "signed_manifest",
+          "detail": "risk_level: high"
+        },
+        {
+          "code": "low_evidence_large_blast_radius",
+          "source": "signed_manifest+registry",
+          "detail": "low evidence (<3 terminal `adopted` receipts) + large blast radius declared"
+        }
+      ],
+      "eligibility": {
+        "allowed": false,
+        "reason_code": "ALREADY_DECIDED"
+      },
+      "consequence": {
+        "scope": "one_adoption_request",
+        "reusable": false,
+        "blocks_until_decided": true
+      },
+      "decision": null,
+      "decision_history": [],
+      "updated_at_ms": 1700000000073,
+      "server_at_ms": 1700000001000
+    },
+    {
+      "item_id": "adopt_high_risk:REQ1-APPROVAL-PENDING00000",
+      "kind": "adopt_high_risk",
+      "status": "pending",
+      "skill": {
+        "skill_id": "SK-ALPHA000000000000000000",
+        "skill_version_id": "V3-HIGH-VERIFIED0000000000",
+        "slug": "alpha-skill",
+        "semantic_version": "3.0.0",
+        "risk_level": "high"
+      },
+      "adoption_request": {
+        "adoption_request_id": "REQ1-APPROVAL-PENDING00000",
+        "adopter_agent_id": "AG-ADOPTER0000000000000000",
+        "state": "approval_pending"
+      },
+      "conditions": [
+        {
+          "code": "risk_high",
+          "source": "signed_manifest",
+          "detail": "risk_level: high"
+        },
+        {
+          "code": "low_evidence_large_blast_radius",
+          "source": "signed_manifest+registry",
+          "detail": "low evidence (<3 terminal `adopted` receipts) + large blast radius declared"
+        }
+      ],
+      "eligibility": {
+        "allowed": true,
+        "reason_code": "APPROVABLE"
+      },
+      "consequence": {
+        "scope": "one_adoption_request",
+        "reusable": false,
+        "blocks_until_decided": true
+      },
+      "decision": null,
+      "decision_history": [],
+      "updated_at_ms": 1700000000070,
+      "server_at_ms": 1700000001000
+    },
+    {
+      "item_id": "publish:V3-HIGH-VERIFIED0000000000",
+      "kind": "publish",
+      "status": "denied",
+      "skill": {
+        "skill_id": "SK-ALPHA000000000000000000",
+        "skill_version_id": "V3-HIGH-VERIFIED0000000000",
+        "slug": "alpha-skill",
+        "semantic_version": "3.0.0",
+        "risk_level": "high"
+      },
+      "adoption_request": null,
+      "conditions": [
+        {
+          "code": "risk_high",
+          "source": "signed_manifest",
+          "detail": "risk_level: high"
+        },
+        {
+          "code": "low_evidence_large_blast_radius",
+          "source": "signed_manifest+registry",
+          "detail": "low evidence (<3 terminal `adopted` receipts) + large blast radius declared"
+        }
+      ],
+      "eligibility": {
+        "allowed": false,
+        "reason_code": "ALREADY_DECIDED"
+      },
+      "consequence": {
+        "scope": "one_skill_version_publish_gate",
+        "reusable": false,
+        "blocks_until_decided": true
+      },
+      "decision": {
+        "decision": "denied",
+        "actor_agent_id": "AG-OWNER000000000000000000",
+        "actor_type": "human",
+        "actor_role": "owner",
+        "note": "still no",
+        "server_at_ms": 1700000000060
+      },
+      "decision_history": [
+        {
+          "decision": "denied",
+          "actor_agent_id": "AG-ADMIN000000000000000000",
+          "actor_type": "human",
+          "actor_role": "admin",
+          "note": "wait for the fleet rollout",
+          "server_at_ms": 1700000000050
+        },
+        {
+          "decision": "approved",
+          "actor_agent_id": "AG-SVC00000000000000000000",
+          "actor_type": "service",
+          "actor_role": "admin",
+          "note": "automated",
+          "server_at_ms": 1700000000060
+        },
+        {
+          "decision": "denied",
+          "actor_agent_id": "AG-OWNER000000000000000000",
+          "actor_type": "human",
+          "actor_role": "owner",
+          "note": "still no",
+          "server_at_ms": 1700000000060
+        }
+      ],
+      "updated_at_ms": 1700000000060,
+      "server_at_ms": 1700000001000
+    },
+    {
+      "item_id": "review:V2-HIGH-LINTED000000000000",
+      "kind": "review",
+      "status": "denied",
+      "skill": {
+        "skill_id": "SK-ALPHA000000000000000000",
+        "skill_version_id": "V2-HIGH-LINTED000000000000",
+        "slug": "alpha-skill",
+        "semantic_version": "2.0.0",
+        "risk_level": "high"
+      },
+      "adoption_request": null,
+      "conditions": [],
+      "eligibility": {
+        "allowed": true,
+        "reason_code": "APPROVABLE"
+      },
+      "consequence": {
+        "scope": "one_skill_version_review",
+        "reusable": false,
+        "blocks_until_decided": true
+      },
+      "decision": {
+        "decision": "reject",
+        "actor_agent_id": "AG-REVIEWER000000000000000",
+        "actor_type": "agent",
+        "actor_role": "reviewer",
+        "note": "shell gate is not satisfiable offline",
+        "server_at_ms": 1700000000040
+      },
+      "decision_history": [
+        {
+          "decision": "reject",
+          "actor_agent_id": "AG-REVIEWER000000000000000",
+          "actor_type": "agent",
+          "actor_role": "reviewer",
+          "note": "shell gate is not satisfiable offline",
+          "server_at_ms": 1700000000040
+        }
+      ],
+      "updated_at_ms": 1700000000040,
+      "server_at_ms": 1700000001000
+    },
+    {
+      "item_id": "review:V1-LOW-LINTED0000000000000",
+      "kind": "review",
+      "status": "pending",
+      "skill": {
+        "skill_id": "SK-ALPHA000000000000000000",
+        "skill_version_id": "V1-LOW-LINTED0000000000000",
+        "slug": "alpha-skill",
+        "semantic_version": "1.0.0",
+        "risk_level": "low"
+      },
+      "adoption_request": null,
+      "conditions": [],
+      "eligibility": {
+        "allowed": true,
+        "reason_code": "APPROVABLE"
+      },
+      "consequence": {
+        "scope": "one_skill_version_review",
+        "reusable": false,
+        "blocks_until_decided": true
+      },
+      "decision": {
+        "decision": "conditional",
+        "actor_agent_id": "AG-REVIEWER000000000000000",
+        "actor_type": "agent",
+        "actor_role": "reviewer",
+        "note": "pin the two unpinned steps",
+        "server_at_ms": 1700000000020
+      },
+      "decision_history": [
+        {
+          "decision": "conditional",
+          "actor_agent_id": "AG-REVIEWER000000000000000",
+          "actor_type": "agent",
+          "actor_role": "reviewer",
+          "note": "pin the two unpinned steps",
+          "server_at_ms": 1700000000020
+        }
+      ],
+      "updated_at_ms": 1700000000030,
+      "server_at_ms": 1700000001000
+    },
+    {
+      "item_id": "review:V4-LOW-PUBLISHED0000000000",
+      "kind": "review",
+      "status": "approved",
+      "skill": {
+        "skill_id": "SK-ALPHA000000000000000000",
+        "skill_version_id": "V4-LOW-PUBLISHED0000000000",
+        "slug": "alpha-skill",
+        "semantic_version": "4.0.0",
+        "risk_level": "low"
+      },
+      "adoption_request": null,
+      "conditions": [],
+      "eligibility": {
+        "allowed": false,
+        "reason_code": "STATE_NOT_REVIEWABLE"
+      },
+      "consequence": {
+        "scope": "one_skill_version_review",
+        "reusable": false,
+        "blocks_until_decided": true
+      },
+      "decision": {
+        "decision": "approve",
+        "actor_agent_id": "AG-REVIEWER000000000000000",
+        "actor_type": "agent",
+        "actor_role": "reviewer",
+        "note": null,
+        "server_at_ms": 1700000000015
+      },
+      "decision_history": [
+        {
+          "decision": "approve",
+          "actor_agent_id": "AG-REVIEWER000000000000000",
+          "actor_type": "agent",
+          "actor_role": "reviewer",
+          "note": null,
+          "server_at_ms": 1700000000015
+        }
+      ],
+      "updated_at_ms": 1700000000015,
+      "server_at_ms": 1700000001000
+    },
+    {
+      "item_id": "publish:V5-UNREADABLE0000000000000",
+      "kind": "publish",
+      "status": "pending",
+      "skill": {
+        "skill_id": "SK-ALPHA000000000000000000",
+        "skill_version_id": "V5-UNREADABLE0000000000000",
+        "slug": "alpha-skill",
+        "semantic_version": "5.0.0",
+        "risk_level": "unknown"
+      },
+      "adoption_request": null,
+      "conditions": [
+        {
+          "code": "unreadable_manifest",
+          "source": "registry",
+          "detail": "the registry could not read this version's declared manifest, and §7.3 fails closed: an unreadable package requires a human decision rather than an automatic one"
+        }
+      ],
+      "eligibility": {
+        "allowed": true,
+        "reason_code": "APPROVABLE"
+      },
+      "consequence": {
+        "scope": "one_skill_version_publish_gate",
+        "reusable": false,
+        "blocks_until_decided": true
+      },
+      "decision": null,
+      "decision_history": [],
+      "updated_at_ms": 1700000000005,
+      "server_at_ms": 1700000001000
+    },
+    {
+      "item_id": "publish:V2-HIGH-LINTED000000000000",
+      "kind": "publish",
+      "status": "pending",
+      "skill": {
+        "skill_id": "SK-ALPHA000000000000000000",
+        "skill_version_id": "V2-HIGH-LINTED000000000000",
+        "slug": "alpha-skill",
+        "semantic_version": "2.0.0",
+        "risk_level": "high"
+      },
+      "adoption_request": null,
+      "conditions": [
+        {
+          "code": "risk_high",
+          "source": "signed_manifest",
+          "detail": "risk_level: high"
+        }
+      ],
+      "eligibility": {
+        "allowed": true,
+        "reason_code": "APPROVABLE"
+      },
+      "consequence": {
+        "scope": "one_skill_version_publish_gate",
+        "reusable": false,
+        "blocks_until_decided": true
+      },
+      "decision": null,
+      "decision_history": [],
+      "updated_at_ms": 1700000000002,
+      "server_at_ms": 1700000001000
+    }
+  ],
+  "next_cursor": null
+}

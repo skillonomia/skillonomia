@@ -92,6 +92,9 @@ const FROM_AUTH: IdentityColumnClass = { intake: "registry_generated", note: "ta
 export const IDENTITY_INTAKE: Record<string, IdentityColumnClass> = {
   // ------------------------------------------------------------ activity_log
   "activity_log.id": MINTED,
+  // the Approval Inbox reads the review-request rows of ONE workspace
+  // (src/approval-inbox.ts), and the workspace it names is the session's own
+  "activity_log.workspace_id": FROM_AUTH,
 
   // ------------------------------------------------------- adoption_receipts
   "adoption_receipts.id": MINTED,

@@ -466,14 +466,21 @@ test("[P1.CD8] the self-review prohibition survives the console, and it is the s
       // version's author and the skill's owner — and in this fixture they are
       // the same agent, so neutralising one leaves the other to refuse the call
       // and the probe would measure nothing.
+      //
+      // The conditions live in `src/approvals.ts` and are RAISED by
+      // `service.ts`: the Approval Inbox has to publish the same verdict as an
+      // `eligibility`, and a projection deciding it for itself would be a second
+      // answer. Mutating them there is mutating the one place they are stated —
+      // which is the stronger form of this probe, not a weaker one, because a
+      // pass now means no OTHER copy of the rule refused the call.
       {
-        file: "service.ts",
-        find: "if (row.author_agent_id === auth.agent_id) {",
+        file: "approvals.ts",
+        find: "if (subject.author_agent_id === actor.agent_id) {",
         replace: "if (false) {",
       },
       {
-        file: "service.ts",
-        find: "if (row.owner_agent_id === auth.agent_id) {",
+        file: "approvals.ts",
+        find: "if (subject.owner_agent_id === actor.agent_id) {",
         replace: "if (false) {",
       },
     ],
