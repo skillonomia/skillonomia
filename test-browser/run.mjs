@@ -16,5 +16,7 @@ import { run } from "./lib/harness.mjs";
 // Each file registers its gates by importing the harness's `test`.
 await import("./proofline.mjs");
 await import("./states.mjs");
+await import("./decisions.mjs");
+await import("./decision-states.mjs");
 
 await run();

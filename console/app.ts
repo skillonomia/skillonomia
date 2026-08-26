@@ -2279,11 +2279,1235 @@ async function boot(): Promise<void> {
     window.location.hash = `${PROOFLINE_HASH}${encodeURIComponent(first.view)}`;
   }
   await showProofline();
+  // v1.1: THE THREE DECISION SURFACES, OPENED BEFORE THE v1.0 REGIONS.
+  //
+  // The order is load-bearing and not a preference. `loadInbox` and
+  // `loadCapabilities` are owner-only reads that REJECT for a reviewer session,
+  // and a rejection there aborts `boot`. Opening the decision surfaces first
+  // means a reviewer — who is entitled to the review half of the Approval Inbox
+  // and is entitled to be told `FORBIDDEN` for the rest — sees the server's
+  // answer on those regions instead of three regions that never acquired a
+  // state at all. Each of the three catches its own refusal, so none of them
+  // can abort this function in turn.
+  await bootDecisionSurfaces();
   await loadInbox();
   await loadCapabilities();
   if (openDraftId) await openDraft(openDraftId);
   if (openCapabilityId) await openCapability(openCapabilityId);
 }
+
+
+// ===========================================================================
+// V1.1 P2 — THE THREE DECISION SURFACES: the Approval Inbox, the revocation
+// flow and the webhook flow (SPEC.md section 6.4, SPEC.md section 6.5).
+//
+// WHAT IS DIFFERENT ABOUT THESE THREE AND THE PROOFLINE ABOVE. The Proofline is
+// a read: the worst a bug in it can do is show an owner a wrong number. These
+// three CHANGE THE REGISTRY, and two of them change it irreversibly — a
+// revocation reason is immutable and a human approval is spent. So every
+// control below obeys three rules that the read surface does not need:
+//
+//   1. A CONTROL IS OFFERED ONLY WHERE THE SERVER SAID IT MAY BE. `eligibility`
+//      is `{allowed, reason_code}` and this file renders it. Where `allowed` is
+//      false the control is NOT DRAWN AT ALL and the server's own reason code is
+//      shown in its place. A greyed-out button is a button an operator can still
+//      reach with a keyboard, a devtools console or an accidental Enter, and it
+//      is a path that would send a request the server is going to refuse.
+//
+//   2. EVERY LABEL NAMES ITS OBJECT, ITS SCOPE AND ITS CONSEQUENCE, and the four
+//      human-decision labels are fixed verbatim by SPEC.md section 6.4. They come
+//      from `src/console-surfaces.ts` through a TABLE keyed by the two server
+//      fields that select one, so this file never assembles one and never falls
+//      back to a generic word.
+//
+//   3. A CONSEQUENCE IS STATED BEFORE THE COMMIT, NOT AFTER IT. The revocation
+//      panel says what revoking does and — the part that matters — what it does
+//      NOT do, before the button exists to be pressed.
+//
+// AND ONE RULE ABOUT WHAT IS NEVER CLAIMED (`INV-07`): a queued notification is
+// queued. The committed panel below reports three separate counts under three
+// separate names and there is no place in this file where the queued one is
+// rendered as a delivery.
+
+import {
+  APPROVALS_TEXT,
+  FORBIDDEN_CODE,
+  HUMAN_DECISION_LABELS,
+  INVALID_CODE,
+  REPLAY_HEADER,
+  REPLAY_HEADER_TRUE,
+  REVIEW_ACTION_LABELS,
+  REVOCATION_CONSEQUENCES,
+  REVOCATION_TEXT,
+  REVOKE_PRIMARY_LABELS,
+  STALE_CODES,
+  WEBHOOK_TEXT,
+  decisionRefusalDetail,
+  disabledDetail,
+  revocationSubject,
+  revokePrimaryKey,
+} from "../src/console-surfaces.ts";
+
+interface ConsoleEligibility {
+  allowed: boolean;
+  reason_code: string;
+}
+
+interface ApprovalSkillRef {
+  skill_id: string;
+  skill_version_id: string;
+  slug: string;
+  semantic_version: string;
+  risk_level: string;
+}
+
+interface ApprovalAdoptionRef {
+  adoption_request_id: string;
+  adopter_agent_id: string;
+  state: string;
+}
+
+interface ApprovalCondition {
+  code: string;
+  source: string;
+  detail: string;
+}
+
+interface ApprovalDecisionRow {
+  decision: string;
+  actor_agent_id: string;
+  actor_type: string;
+  actor_role: string;
+  note: string | null;
+  server_at_ms: number;
+}
+
+interface ApprovalItem {
+  item_id: string;
+  kind: string;
+  status: string;
+  skill: ApprovalSkillRef;
+  adoption_request: ApprovalAdoptionRef | null;
+  conditions: ApprovalCondition[];
+  eligibility: ConsoleEligibility;
+  consequence: { scope: string; reusable: boolean; blocks_until_decided: boolean };
+  decision: ApprovalDecisionRow | null;
+  decision_history: ApprovalDecisionRow[];
+  updated_at_ms: number;
+  server_at_ms: number;
+}
+
+interface ApprovalEnvelope {
+  contract: string;
+  statuses: string[];
+  kinds: string[];
+  items: ApprovalItem[];
+  next_cursor: string | null;
+}
+
+interface RevocationContext {
+  contract: string;
+  skill_version_id: string;
+  skill_id: string;
+  slug: string;
+  semantic_version: string;
+  manifest_hash: string;
+  state: string;
+  revocation_reason: string | null;
+  superseded_by: string | null;
+  active_adopters: Array<{ adopter_agent_id: string; receipts: number }>;
+  successors: Array<{ skill_version_id: string; semantic_version: string; state: string }>;
+  notices: { queued: number; delivered: number; dead_lettered: number; total: number };
+  eligibility: ConsoleEligibility;
+  server_at_ms: number;
+}
+
+interface RevokeResult {
+  contract: string;
+  skill_version_id: string;
+  state: string;
+  reason: string | null;
+  superseded_by: string | null;
+  notifications_queued?: number;
+  notified_adopters?: number;
+  tlog_seq?: number;
+  lineage_tlog_seq?: number;
+  noop?: boolean;
+}
+
+interface WebhookRow {
+  webhook_id: string;
+  url: string;
+  status: string;
+  failure_count: number;
+}
+
+interface WebhookTestResult {
+  contract: string;
+  delivered: boolean;
+  http_status: number | null;
+  latency_ms: number;
+  error_code: string | null;
+  error_detail: string | null;
+}
+
+/**
+ * A mutation, with the ONE fact about the response that is not in its body.
+ *
+ * `src/http.ts` marks an idempotent replay with a header, and it has to be a
+ * header: the body of a replay is byte-identical to the body of the original —
+ * that is what replay means — so a page that tried to tell them apart from the
+ * payload would be guessing. `api()` above is unchanged and every read still
+ * goes through it; this adds the header read for the three surfaces that need
+ * a replay badge, and returns the parsed body exactly as `api()` does.
+ */
+async function mutate<T>(
+  method: string,
+  path: string,
+  body: unknown,
+  idempotencyKey: string,
+  out: { replayed: boolean },
+): Promise<T> {
+  const payload = { ...((body ?? {}) as Record<string, unknown>), idempotency_key: idempotencyKey };
+  const res = await fetch(path, {
+    method,
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Skillonomia-Console-CSRF": csrfToken,
+    },
+    credentials: "same-origin",
+    body: JSON.stringify(payload),
+  });
+  out.replayed = res.headers.get(REPLAY_HEADER) === REPLAY_HEADER_TRUE;
+  const text = await res.text();
+  let parsed: unknown = null;
+  try {
+    parsed = text.length > 0 ? JSON.parse(text) : null;
+  } catch {
+    throw Object.assign(new Error("the server sent a body this console cannot read"), {
+      status: res.status,
+      code: "UNPARSEABLE",
+      message: "unparseable response",
+    } satisfies ApiFailure);
+  }
+  // `INV-05` first, exactly as in `api()`, and for the same reason: an error
+  // envelope is a versioned document too and its `code` decides what the owner
+  // is told happened.
+  requireContract(parsed, path);
+  if (res.status === 401) {
+    window.location.assign("/console/login");
+    throw new Error("session ended");
+  }
+  if (!res.ok) {
+    const envelope = (parsed as { error?: { code?: string; message?: string; current_state?: string } } | null)?.error;
+    throw Object.assign(new Error(envelope?.message ?? `request failed (${res.status})`), {
+      status: res.status,
+      code: envelope?.code ?? "UNKNOWN",
+      message: envelope?.message ?? "",
+      current_state: envelope?.current_state,
+    } satisfies ApiFailure);
+  }
+  return parsed as T;
+}
+
+/** A definition list row — the shape every fact on these three surfaces is
+ *  written in, so a gate reads `[data-fact="manifest_hash"]` rather than the
+ *  third `<p>` of a panel. */
+function fact(parent: HTMLElement, key: string, label: string, value: string): HTMLElement {
+  const wrap = el("div", undefined, "row");
+  wrap.dataset.fact = key;
+  wrap.appendChild(el("dt", label));
+  wrap.appendChild(el("dd", value));
+  parent.appendChild(wrap);
+  return wrap;
+}
+
+/** A facts panel. `<dl>` because these are keyed facts and a reader with a
+ *  screen reader is told which key each value belongs to. */
+function facts(parent: HTMLElement, className: string): HTMLElement {
+  const dl = el("dl", undefined, className);
+  parent.appendChild(dl);
+  return dl;
+}
+
+/**
+ * A typed refusal, sorted into the §7 row it belongs to and rendered there.
+ *
+ * ONE FUNCTION FOR ALL THREE SURFACES, because the classification is the
+ * SERVER'S CODE and not a judgement about the surface. `INVALID_SCHEMA` is the
+ * validation-error row, the three codes SPEC.md section 6.4 names for a
+ * concurrent change are the stale row, `FORBIDDEN` is permission denied and
+ * everything else is the network/server row with a bounded retry. A surface
+ * that sorted these differently would be a surface where the same server answer
+ * means two things.
+ */
+function renderFailure(
+  box: HTMLElement,
+  failure: ApiFailure,
+  text: { forbidden_heading: string; error_heading: string; invalid_heading: string; stale_heading: string; retry: string; stale_refresh: string },
+  onRetry: () => void,
+  preserved: string | null,
+): void {
+  const notice = el("div", undefined, "notice");
+  if (failure.code === FORBIDDEN_CODE) {
+    box.dataset.state = "forbidden";
+    notice.appendChild(el("h3", text.forbidden_heading));
+  } else if (failure.code === INVALID_CODE) {
+    box.dataset.state = "invalid";
+    notice.appendChild(el("h3", text.invalid_heading));
+  } else if (STALE_CODES.includes(failure.code)) {
+    box.dataset.state = "stale";
+    notice.appendChild(el("h3", text.stale_heading));
+  } else {
+    box.dataset.state = "error";
+    notice.appendChild(el("h3", text.error_heading));
+  }
+  box.dataset.code = failure.code;
+  const p = el("p", decisionRefusalDetail(failure.code, failure.message), "blocking");
+  p.setAttribute("role", "alert");
+  notice.appendChild(p);
+  if (failure.current_state !== undefined) {
+    const cur = el("p", failure.current_state, "muted");
+    cur.dataset.currentState = failure.current_state;
+    notice.appendChild(cur);
+  }
+  // WHAT THE OPERATOR TYPED IS STILL THERE, and the page says so. §7's
+  // validation-error row is not "show an error": it is "show an error and do not
+  // throw away the sentence the operator wrote", because retyping a revocation
+  // reason from memory is how a reason ends up different from the one intended.
+  if (preserved !== null) {
+    const kept = el("p", preserved, "muted");
+    kept.dataset.preserved = "true";
+    notice.appendChild(kept);
+  }
+  // A BOUNDED RECOVERY, and only where recovery is the answer. `FORBIDDEN`
+  // retried is `FORBIDDEN` again; a stale item is refreshed rather than retried,
+  // because the point is to show what the other session actually did.
+  if (failure.code !== FORBIDDEN_CODE) {
+    const stale = STALE_CODES.includes(failure.code);
+    const button = el("button", stale ? text.stale_refresh : text.retry);
+    button.type = "button";
+    button.dataset.action = stale ? "refresh" : "retry";
+    button.addEventListener("click", onRetry);
+    notice.appendChild(button);
+  }
+  box.appendChild(notice);
+}
+
+/** The replay badge. Drawn from the header and from nothing else. */
+function replayBadge(parent: HTMLElement, replayed: boolean, sentence: string): void {
+  if (!replayed) return;
+  const badge = el("p", sentence, "notice");
+  badge.dataset.replayed = "true";
+  parent.appendChild(badge);
+}
+
+/** The busy stamp every one of these regions wears while a request is out.
+ *  Stamped BEFORE the request, so the region is never stateless for exactly as
+ *  long as the server is slow — which is the one moment §7's loading rows are
+ *  about. */
+function beginLoading(box: HTMLElement, sentence: string): void {
+  clear(box);
+  box.dataset.state = "loading";
+  box.setAttribute("aria-busy", "true");
+  box.appendChild(el("p", sentence, "muted"));
+}
+
+// ------------------------------------------------------ the Approval Inbox
+
+/** The filters, defaulting to "everything". `all` is the ABSENCE of a filter,
+ *  which is what makes "this inbox is empty" and "your filters selected
+ *  nothing" two different states with two different sentences. */
+let approvalsStatus = "all";
+let approvalsKind = "all";
+let approvalsEnvelope: ApprovalEnvelope | null = null;
+let openApprovalId: string | null = null;
+
+/** The item the detail panel is about, found in the envelope the list was drawn
+ *  from. There is no per-item route: the Inbox is one projection and asking for
+ *  a single row again would be asking a second question that could answer
+ *  differently from the list the operator is looking at. */
+function approvalItem(itemId: string): ApprovalItem | null {
+  for (const item of approvalsEnvelope?.items ?? []) if (item.item_id === itemId) return item;
+  return null;
+}
+
+function fillFilter(select: HTMLSelectElement, values: string[], current: string): void {
+  clear(select);
+  for (const value of ["all", ...values]) {
+    const option = el("option", value);
+    option.value = value;
+    if (value === current) option.selected = true;
+    select.appendChild(option);
+  }
+}
+
+function renderApprovals(envelope: ApprovalEnvelope): void {
+  approvalsEnvelope = envelope;
+  const box = byId("approvals");
+  clear(box);
+  box.setAttribute("aria-busy", "false");
+  box.dataset.state = "loaded";
+  box.dataset.items = String(envelope.items.length);
+
+  fillFilter(byId<HTMLSelectElement>("approvals-status"), envelope.statuses, approvalsStatus);
+  fillFilter(byId<HTMLSelectElement>("approvals-kind"), envelope.kinds, approvalsKind);
+
+  if (envelope.items.length === 0) {
+    // ZERO ROWS IS NOT ONE STATE. A filter that selected nothing is a statement
+    // about the filter; an inbox that never had an item is a statement about the
+    // workspace. Saying the second while a filter is on would attribute the
+    // filter's work to the registry, and the actions differ too.
+    const filtered = approvalsStatus !== "all" || approvalsKind !== "all";
+    box.dataset.state = filtered ? "filtered-to-zero" : "empty";
+    box.appendChild(el("p", filtered ? APPROVALS_TEXT.filtered_to_zero : APPROVALS_TEXT.empty, "muted"));
+    const action = el("button", filtered ? APPROVALS_TEXT.clear_filter : APPROVALS_TEXT.empty_action);
+    action.type = "button";
+    action.dataset.action = filtered ? "clear-filter" : "reload";
+    action.addEventListener("click", () => {
+      if (filtered) {
+        approvalsStatus = "all";
+        approvalsKind = "all";
+      }
+      guard(() => loadApprovals());
+    });
+    box.appendChild(action);
+    return;
+  }
+
+  const scroll = el("div", undefined, "scroll-x");
+  const table = el("table");
+  table.id = "approval-rows-table";
+  const thead = el("thead");
+  const hrow = el("tr");
+  for (const h of ["Item", "Kind", "Status", "Skill", "Version", "Risk", "Decision offered", ""]) {
+    hrow.appendChild(el("th", h));
+  }
+  thead.appendChild(hrow);
+  table.appendChild(thead);
+  const tbody = el("tbody");
+  tbody.id = "approval-rows";
+  for (const item of envelope.items) {
+    const tr = el("tr");
+    tr.dataset.itemId = item.item_id;
+    tr.dataset.kind = item.kind;
+    tr.dataset.status = item.status;
+    tr.dataset.allowed = String(item.eligibility.allowed);
+    tr.dataset.reasonCode = item.eligibility.reason_code;
+    tr.appendChild(el("td", item.item_id));
+    tr.appendChild(el("td", item.kind));
+    tr.appendChild(el("td", item.status));
+    tr.appendChild(el("td", item.skill.slug));
+    tr.appendChild(el("td", item.skill.semantic_version));
+    tr.appendChild(el("td", item.skill.risk_level));
+    tr.appendChild(el("td", item.eligibility.reason_code));
+    const cell = el("td");
+    const open = el("button", `Open ${item.item_id}`);
+    open.type = "button";
+    open.dataset.action = "open-approval";
+    open.dataset.itemId = item.item_id;
+    open.addEventListener("click", () => guard(async () => openApproval(item.item_id)));
+    cell.appendChild(open);
+    tr.appendChild(cell);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  box.appendChild(scroll);
+}
+
+/**
+ * ONE ITEM, AND EVERY CONTROL IT IS ENTITLED TO.
+ *
+ * The order is the order a person decides in: what is being decided, why a
+ * decision is being asked for, what deciding it affects, what has already been
+ * decided, and only then the controls. A page that put the button first would be
+ * a page whose consequential action is reachable before its consequence is read.
+ */
+function renderApprovalDetail(item: ApprovalItem): void {
+  const box = byId("approval-detail");
+  clear(box);
+  box.hidden = false;
+  box.dataset.itemId = item.item_id;
+  box.dataset.kind = item.kind;
+  box.dataset.status = item.status;
+  box.dataset.allowed = String(item.eligibility.allowed);
+  box.dataset.reasonCode = item.eligibility.reason_code;
+  box.dataset.state = "loaded";
+  // A REDRAW IS THE END OF WHATEVER WAS IN FLIGHT. Leaving the action state at
+  // `pending` on a panel that has already been redrawn with the server's answer
+  // would leave the region reporting a request that finished.
+  box.removeAttribute("data-action-state");
+  box.setAttribute("aria-busy", "false");
+
+  box.appendChild(el("h2", item.item_id));
+  const what = facts(box, "panel");
+  fact(what, "kind", "kind", item.kind);
+  fact(what, "status", "status", item.status);
+  fact(what, "slug", "skill", item.skill.slug);
+  fact(what, "skill_version_id", "skill_version_id", item.skill.skill_version_id);
+  fact(what, "semantic_version", "semantic_version", item.skill.semantic_version);
+  fact(what, "risk_level", "risk_level", item.skill.risk_level);
+  if (item.adoption_request !== null) {
+    // THE EXACT REQUEST AN ADOPTION APPROVAL IS SPENT ON. A high-risk approval
+    // binds to one request and is not reusable; showing the id is what lets an
+    // owner see WHICH one before spending it.
+    fact(what, "adoption_request_id", "adoption_request_id", item.adoption_request.adoption_request_id);
+    fact(what, "adopter_agent_id", "adopter_agent_id", item.adoption_request.adopter_agent_id);
+    fact(what, "adoption_request_state", "adoption request state", item.adoption_request.state);
+  }
+
+  const why = el("div", undefined, "panel");
+  why.appendChild(el("h3", APPROVALS_TEXT.conditions_label));
+  why.dataset.conditions = String(item.conditions.length);
+  for (const condition of item.conditions) {
+    const row = el("div", undefined, "row");
+    row.dataset.conditionCode = condition.code;
+    row.appendChild(el("dt", condition.code));
+    row.appendChild(el("dd", `${condition.source}: ${condition.detail}`));
+    why.appendChild(row);
+  }
+  box.appendChild(why);
+
+  const consequence = facts(box, "panel");
+  consequence.dataset.consequence = "true";
+  fact(consequence, "consequence_scope", APPROVALS_TEXT.consequence_label, item.consequence.scope);
+  fact(consequence, "consequence_reusable", "reusable", String(item.consequence.reusable));
+  fact(consequence, "consequence_blocks", "blocks until decided", String(item.consequence.blocks_until_decided));
+
+  const history = el("div", undefined, "panel");
+  history.dataset.history = String(item.decision_history.length);
+  history.appendChild(el("h3", APPROVALS_TEXT.history_label));
+  for (const decision of item.decision_history) {
+    const row = el("p", `${decision.decision} · ${decision.actor_agent_id} · ${decision.actor_type}/${decision.actor_role} · ${iso(decision.server_at_ms)}${decision.note === null ? "" : ` · ${decision.note}`}`);
+    row.dataset.decision = decision.decision;
+    history.appendChild(row);
+  }
+  box.appendChild(history);
+
+  const note = el("textarea") as HTMLTextAreaElement;
+  note.id = "approval-note";
+  note.rows = 2;
+  note.cols = 60;
+  const noteLabel = el("label", APPROVALS_TEXT.note_label);
+  noteLabel.htmlFor = "approval-note";
+  box.appendChild(noteLabel);
+  box.appendChild(note);
+
+  const controls = el("div", undefined, "row");
+  controls.id = "approval-controls";
+  box.appendChild(controls);
+
+  // §7 `disabled`: the server offers no decision, so THERE IS NO CONTROL. Not a
+  // greyed one — none. The reason code is the server's own and is shown as its
+  // own, because a browser that translated `NOT_HUMAN_APPROVER` into friendlier
+  // words would be restating a decision it did not make.
+  if (!item.eligibility.allowed) {
+    const denied = el("div", undefined, "notice");
+    denied.dataset.disabled = "true";
+    denied.dataset.reasonCode = item.eligibility.reason_code;
+    denied.appendChild(el("h3", APPROVALS_TEXT.disabled_heading));
+    denied.appendChild(el("p", disabledDetail(item.eligibility.reason_code)));
+    controls.appendChild(denied);
+    return;
+  }
+
+  // THE LABELS COME FROM A TABLE KEYED BY THE SERVER'S OWN TWO FIELDS. A `kind`
+  // this build has no labels for yields no controls rather than a generic word:
+  // a wrong label on a consequential button is worse than a missing button,
+  // because the missing button is visible.
+  const humanLabels = HUMAN_DECISION_LABELS[item.kind];
+  if (humanLabels !== undefined) {
+    for (const decision of ["approved", "denied"]) {
+      const label = humanLabels[decision];
+      if (label === undefined) continue;
+      const button = el("button", label);
+      button.type = "button";
+      button.dataset.action = "decide";
+      button.dataset.decision = decision;
+      button.addEventListener("click", () => guard(() => decideApproval(item, decision)));
+      controls.appendChild(button);
+    }
+    return;
+  }
+
+  // The review half. A different type from a human approval, with its own words.
+  for (const verdict of ["approve", "reject", "conditional"]) {
+    const label = REVIEW_ACTION_LABELS[verdict];
+    if (label === undefined) continue;
+    const button = el("button", label);
+    button.type = "button";
+    button.dataset.action = "verdict";
+    button.dataset.verdict = verdict;
+    button.addEventListener("click", () => guard(() => recordVerdict(item, verdict)));
+    controls.appendChild(button);
+  }
+}
+
+/** Hold every control on this surface while one request is out. §7's
+ *  action-loading row is exactly this: a second press of a consequential button
+ *  must not become a second request, and the region says it is busy while the
+ *  first one is outstanding. */
+function holdApprovalControls(): void {
+  const box = byId("approval-detail");
+  box.dataset.actionState = "pending";
+  box.setAttribute("aria-busy", "true");
+  for (const node of box.querySelectorAll("#approval-controls button")) {
+    (node as HTMLButtonElement).disabled = true;
+  }
+  const busy = el("p", APPROVALS_TEXT.deciding, "muted");
+  busy.dataset.actionBusy = "true";
+  byId("approval-controls").appendChild(busy);
+}
+
+async function decideApproval(item: ApprovalItem, decision: string): Promise<void> {
+  const note = byId<HTMLTextAreaElement>("approval-note").value;
+  holdApprovalControls();
+  const replay = { replayed: false };
+  try {
+    await mutate<{ contract: string }>(
+      "POST",
+      `/v1/console/versions/${encodeURIComponent(item.skill.skill_version_id)}/approvals`,
+      {
+        scope: item.kind,
+        decision,
+        ...(item.adoption_request === null ? {} : { adoption_request_id: item.adoption_request.adoption_request_id }),
+        ...(note.length === 0 ? {} : { note }),
+      },
+      // ONE KEY PER (ITEM, DECISION, NOTE), not one per attempt. A double click
+      // that got past the held controls is the SAME decision with the SAME
+      // payload, which is what makes the registry's replay rule answer it with
+      // the original response instead of a second approval row.
+      `console-approval-${item.item_id}-${decision}-${note.length}`,
+      replay,
+    );
+    await loadApprovals();
+    const reloaded = approvalItem(item.item_id);
+    if (reloaded !== null) renderApprovalDetail(reloaded);
+    replayBadge(byId("approval-detail"), replay.replayed, APPROVALS_TEXT.replay_badge);
+  } catch (e) {
+    renderApprovalFailure(failureOf(e), note, item.item_id);
+  }
+}
+
+async function recordVerdict(item: ApprovalItem, verdict: string): Promise<void> {
+  const note = byId<HTMLTextAreaElement>("approval-note").value;
+  holdApprovalControls();
+  const replay = { replayed: false };
+  try {
+    await mutate<{ contract: string }>(
+      "POST",
+      `/v1/console/versions/${encodeURIComponent(item.skill.skill_version_id)}/reviews`,
+      { action: "verdict", verdict, ...(note.length === 0 ? {} : { note }) },
+      `console-review-${item.item_id}-${verdict}-${note.length}`,
+      replay,
+    );
+    await loadApprovals();
+    const reloaded = approvalItem(item.item_id);
+    if (reloaded !== null) renderApprovalDetail(reloaded);
+    replayBadge(byId("approval-detail"), replay.replayed, APPROVALS_TEXT.replay_badge);
+  } catch (e) {
+    renderApprovalFailure(failureOf(e), note, item.item_id);
+  }
+}
+
+/** A refused decision, with the note still on the page. */
+function renderApprovalFailure(failure: ApiFailure, note: string, itemId: string): void {
+  const box = byId("approval-detail");
+  box.setAttribute("aria-busy", "false");
+  box.dataset.actionState = "failed";
+  renderFailure(
+    box,
+    failure,
+    {
+      forbidden_heading: APPROVALS_TEXT.forbidden_heading,
+      error_heading: APPROVALS_TEXT.error_heading,
+      invalid_heading: APPROVALS_TEXT.invalid_heading,
+      stale_heading: APPROVALS_TEXT.stale_heading,
+      retry: APPROVALS_TEXT.retry,
+      stale_refresh: APPROVALS_TEXT.stale_refresh,
+    },
+    () => guard(async () => {
+      await loadApprovals();
+      await openApproval(itemId);
+    }),
+    // THE NOTE IS STILL IN THE FIELD and it is also stated on the page, so the
+    // promise is visible rather than merely true.
+    note.length === 0 ? APPROVALS_TEXT.note_preserved : `${APPROVALS_TEXT.note_preserved} ${note}`,
+  );
+}
+
+async function openApproval(itemId: string): Promise<void> {
+  openApprovalId = itemId;
+  if (approvalsEnvelope === null) await loadApprovals();
+  const item = approvalItem(itemId);
+  if (item === null) {
+    // The item is gone: another session decided or deleted it. That is §7's
+    // stale row and not an error of this page.
+    renderApprovalFailure(
+      { status: 404, code: "NOT_FOUND", message: `${itemId} is no longer in this inbox` },
+      "",
+      itemId,
+    );
+    return;
+  }
+  renderApprovalDetail(item);
+}
+
+async function loadApprovals(): Promise<void> {
+  const box = byId("approvals");
+  beginLoading(box, APPROVALS_TEXT.loading);
+  const query = `?status=${encodeURIComponent(approvalsStatus)}&kind=${encodeURIComponent(approvalsKind)}`;
+  try {
+    renderApprovals(await api<ApprovalEnvelope>("GET", `/v1/console/approvals${query}`));
+  } catch (e) {
+    box.setAttribute("aria-busy", "false");
+    clear(box);
+    renderFailure(
+      box,
+      failureOf(e),
+      {
+        forbidden_heading: APPROVALS_TEXT.forbidden_heading,
+        error_heading: APPROVALS_TEXT.error_heading,
+        invalid_heading: APPROVALS_TEXT.invalid_heading,
+        stale_heading: APPROVALS_TEXT.stale_heading,
+        retry: APPROVALS_TEXT.retry,
+        stale_refresh: APPROVALS_TEXT.stale_refresh,
+      },
+      () => guard(() => loadApprovals()),
+      null,
+    );
+  }
+}
+
+function wireApprovals(): void {
+  const status = byId<HTMLSelectElement>("approvals-status");
+  const kind = byId<HTMLSelectElement>("approvals-kind");
+  status.addEventListener("change", () => {
+    approvalsStatus = status.value;
+    guard(() => loadApprovals());
+  });
+  kind.addEventListener("change", () => {
+    approvalsKind = kind.value;
+    guard(() => loadApprovals());
+  });
+}
+
+// ------------------------------------------------------ the revocation flow
+
+let revocationContext: RevocationContext | null = null;
+
+/** Which of the two primary labels the form is currently offering. It follows
+ *  the `<select>`, so a person who picked a replacement is never offered a
+ *  button that does not mention one. */
+function refreshRevokePrimary(): void {
+  const button = document.getElementById("revoke-primary");
+  const select = document.getElementById("revocation-successor");
+  if (button === null || select === null) return;
+  const chosen = (select as HTMLSelectElement).value.length > 0;
+  const key = revokePrimaryKey(chosen);
+  button.textContent = REVOKE_PRIMARY_LABELS[key];
+  (button as HTMLElement).dataset.primaryKey = key;
+}
+
+/**
+ * WHAT REVOKING THIS VERSION WOULD DO, BEFORE THERE IS A BUTTON TO DO IT WITH.
+ *
+ * The order on the page is the requirement: the exact bytes, the people already
+ * holding them, what this does and does not do, the reason, the replacement —
+ * and the primary action last. SPEC.md section 6.4 asks for the statements
+ * "before commit", and putting the button above them would satisfy the letter
+ * and defeat the point.
+ */
+function renderRevocationPrecommit(ctx: RevocationContext): void {
+  revocationContext = ctx;
+  const box = byId("revocation");
+  clear(box);
+  box.setAttribute("aria-busy", "false");
+  box.dataset.state = "precommit";
+  box.dataset.versionId = ctx.skill_version_id;
+  box.dataset.allowed = String(ctx.eligibility.allowed);
+  box.dataset.reasonCode = ctx.eligibility.reason_code;
+  box.removeAttribute("data-action-state");
+
+  box.appendChild(el("h2", REVOCATION_TEXT.precommit_heading));
+  const subject = el("p", revocationSubject(ctx.skill_version_id, ctx.manifest_hash));
+  subject.dataset.subject = "true";
+  box.appendChild(subject);
+
+  const what = facts(box, "panel");
+  fact(what, "skill_version_id", "skill_version_id", ctx.skill_version_id);
+  fact(what, "manifest_hash", "manifest hash", ctx.manifest_hash);
+  fact(what, "slug", "skill", ctx.slug);
+  fact(what, "semantic_version", "semantic_version", ctx.semantic_version);
+  fact(what, "state", "registry state", ctx.state);
+  fact(what, "superseded_by", "superseded_by", ctx.superseded_by ?? "null");
+
+  // THE FOUR STATEMENTS, each its own node, each carrying its own code so a
+  // gate asserts four separate facts rather than searching one paragraph.
+  const consequences = el("div", undefined, "panel");
+  consequences.dataset.consequences = String(REVOCATION_CONSEQUENCES.length);
+  consequences.appendChild(el("h3", REVOCATION_TEXT.consequence_heading));
+  const list = el("ul");
+  for (const c of REVOCATION_CONSEQUENCES) {
+    const li = el("li", c.text);
+    li.dataset.consequence = c.code;
+    list.appendChild(li);
+  }
+  consequences.appendChild(list);
+  box.appendChild(consequences);
+
+  const adopters = el("div", undefined, "panel");
+  adopters.dataset.adopters = String(ctx.active_adopters.length);
+  adopters.appendChild(el("h3", REVOCATION_TEXT.adopters_heading));
+  if (ctx.active_adopters.length === 0) {
+    adopters.appendChild(el("p", REVOCATION_TEXT.adopters_none, "muted"));
+  } else {
+    for (const a of ctx.active_adopters) {
+      const p = el("p", `${a.adopter_agent_id} · receipts: ${a.receipts}`);
+      p.dataset.adopter = a.adopter_agent_id;
+      adopters.appendChild(p);
+    }
+  }
+  box.appendChild(adopters);
+
+  const form = el("div", undefined, "panel");
+  const reasonLabel = el("label", REVOCATION_TEXT.reason_label);
+  reasonLabel.htmlFor = "revocation-reason";
+  const reason = el("textarea") as HTMLTextAreaElement;
+  reason.id = "revocation-reason";
+  reason.rows = 2;
+  reason.cols = 60;
+  form.appendChild(reasonLabel);
+  form.appendChild(reason);
+
+  const successorLabel = el("label", REVOCATION_TEXT.successor_label);
+  successorLabel.htmlFor = "revocation-successor";
+  const successor = el("select") as HTMLSelectElement;
+  successor.id = "revocation-successor";
+  const none = el("option", REVOCATION_TEXT.successor_none);
+  none.value = "";
+  successor.appendChild(none);
+  for (const s of ctx.successors) {
+    const option = el("option", `${s.semantic_version} · ${s.state} · ${s.skill_version_id}`);
+    option.value = s.skill_version_id;
+    option.dataset.successorState = s.state;
+    successor.appendChild(option);
+  }
+  successor.addEventListener("change", () => refreshRevokePrimary());
+  form.appendChild(successorLabel);
+  form.appendChild(successor);
+  box.appendChild(form);
+
+  // §7 `disabled` again, and the same rule: no control at all, and the server's
+  // own reason code in its place.
+  if (!ctx.eligibility.allowed) {
+    const denied = el("div", undefined, "notice");
+    denied.dataset.disabled = "true";
+    denied.dataset.reasonCode = ctx.eligibility.reason_code;
+    denied.appendChild(el("h3", REVOCATION_TEXT.disabled_heading));
+    denied.appendChild(el("p", disabledDetail(ctx.eligibility.reason_code)));
+    box.appendChild(denied);
+    return;
+  }
+
+  const primary = el("button", REVOKE_PRIMARY_LABELS.without_successor);
+  primary.type = "button";
+  primary.id = "revoke-primary";
+  primary.dataset.action = "revoke";
+  primary.addEventListener("click", () => guard(() => commitRevocation(ctx)));
+  box.appendChild(primary);
+  refreshRevokePrimary();
+}
+
+/**
+ * AFTER THE COMMIT — and this is where `INV-07` is either kept or broken.
+ *
+ * Three counts, three names, three nodes. `queued` is the number of notices the
+ * delivery machine is holding; it is not a delivery and nothing here says it is.
+ * `delivered` counts the ones an endpoint accepted and `dead_lettered` counts
+ * the ones that failed for good — and the page carries the sentence saying so,
+ * so the distinction survives a reader who does not know the schema.
+ */
+function renderRevocationCommitted(result: RevokeResult, ctx: RevocationContext, replayed: boolean): void {
+  const box = byId("revocation");
+  clear(box);
+  box.setAttribute("aria-busy", "false");
+  box.dataset.state = "committed";
+  box.dataset.versionId = result.skill_version_id;
+  box.removeAttribute("data-action-state");
+
+  box.appendChild(el("h2", REVOCATION_TEXT.committed_heading));
+  const after = facts(box, "panel");
+  fact(after, "state", "registry state", result.state);
+  fact(after, "reason", "reason", result.reason ?? "null");
+  fact(after, "superseded_by", "successor", result.superseded_by ?? "null");
+  fact(after, "tlog_seq", "tlog_seq", result.tlog_seq === undefined ? "null" : String(result.tlog_seq));
+  fact(
+    after,
+    "lineage_tlog_seq",
+    "lineage_tlog_seq",
+    result.lineage_tlog_seq === undefined ? "null" : String(result.lineage_tlog_seq),
+  );
+
+  const counts = facts(box, "panel");
+  counts.dataset.counts = "true";
+  const queued = fact(counts, "notices_queued", REVOCATION_TEXT.count_queued_label, String(ctx.notices.queued));
+  queued.dataset.count = "queued";
+  const delivered = fact(counts, "notices_delivered", REVOCATION_TEXT.count_delivered_label, String(ctx.notices.delivered));
+  delivered.dataset.count = "delivered";
+  const failed = fact(counts, "notices_dead_lettered", REVOCATION_TEXT.count_failed_label, String(ctx.notices.dead_lettered));
+  failed.dataset.count = "dead_lettered";
+  const honesty = el("p", REVOCATION_TEXT.queued_is_not_delivered, "notice");
+  honesty.dataset.queuedIsNotDelivered = "true";
+  box.appendChild(honesty);
+
+  // Into the view that holds the failures, by the Console's own navigation.
+  const link = el("a", REVOCATION_TEXT.dead_letter_link);
+  link.href = `${PROOFLINE_HASH}${encodeURIComponent("dead_letters")}`;
+  link.dataset.action = "dead-letters";
+  box.appendChild(link);
+
+  replayBadge(box, replayed, REVOCATION_TEXT.replay_badge);
+}
+
+async function commitRevocation(ctx: RevocationContext): Promise<void> {
+  const reason = byId<HTMLTextAreaElement>("revocation-reason").value;
+  const successor = byId<HTMLSelectElement>("revocation-successor").value;
+  const box = byId("revocation");
+  box.dataset.actionState = "pending";
+  box.setAttribute("aria-busy", "true");
+  const primary = document.getElementById("revoke-primary");
+  if (primary !== null) (primary as HTMLButtonElement).disabled = true;
+  const busy = el("p", REVOCATION_TEXT.committing, "muted");
+  busy.dataset.actionBusy = "true";
+  box.appendChild(busy);
+
+  const replay = { replayed: false };
+  try {
+    const result = await mutate<RevokeResult>(
+      "POST",
+      `/v1/console/versions/${encodeURIComponent(ctx.skill_version_id)}/revoke`,
+      { reason, successor_version_id: successor.length === 0 ? null : successor },
+      // The key is a function of the exact revocation, so a second press is the
+      // same request and the registry replays it rather than writing again.
+      `console-revoke-${ctx.skill_version_id}-${successor}-${reason.length}`,
+      replay,
+    );
+    // THE COUNTS ARE RE-READ FROM THE SERVER, not taken from the mutation's
+    // response: the mutation reports what it QUEUED, and what became of those
+    // notices afterwards is a fact the delivery machine owns.
+    const after = await api<RevocationContext>(
+      "GET",
+      `/v1/console/versions/${encodeURIComponent(ctx.skill_version_id)}/revocation`,
+    );
+    revocationContext = after;
+    renderRevocationCommitted(result, after, replay.replayed);
+  } catch (e) {
+    box.setAttribute("aria-busy", "false");
+    box.dataset.actionState = "failed";
+    if (busy.parentNode !== null) busy.parentNode.removeChild(busy);
+    renderFailure(
+      box,
+      failureOf(e),
+      {
+        forbidden_heading: REVOCATION_TEXT.forbidden_heading,
+        error_heading: REVOCATION_TEXT.error_heading,
+        invalid_heading: REVOCATION_TEXT.invalid_heading,
+        stale_heading: REVOCATION_TEXT.stale_heading,
+        retry: REVOCATION_TEXT.retry,
+        stale_refresh: REVOCATION_TEXT.stale_refresh,
+      },
+      () => guard(() => loadRevocation(ctx.skill_version_id)),
+      // THE REASON IS STILL IN THE FIELD, and this is the one that matters most
+      // on this surface: a revocation reason is immutable once recorded, so a
+      // page that cleared it would make the operator retype from memory the one
+      // sentence they can never correct.
+      reason.length === 0 ? REVOCATION_TEXT.reason_preserved : `${REVOCATION_TEXT.reason_preserved} ${reason}`,
+    );
+  }
+}
+
+async function loadRevocation(versionId: string): Promise<void> {
+  const box = byId("revocation");
+  beginLoading(box, REVOCATION_TEXT.loading);
+  box.dataset.versionId = versionId;
+  try {
+    renderRevocationPrecommit(
+      await api<RevocationContext>("GET", `/v1/console/versions/${encodeURIComponent(versionId)}/revocation`),
+    );
+  } catch (e) {
+    box.setAttribute("aria-busy", "false");
+    clear(box);
+    renderFailure(
+      box,
+      failureOf(e),
+      {
+        forbidden_heading: REVOCATION_TEXT.forbidden_heading,
+        error_heading: REVOCATION_TEXT.error_heading,
+        invalid_heading: REVOCATION_TEXT.invalid_heading,
+        stale_heading: REVOCATION_TEXT.stale_heading,
+        retry: REVOCATION_TEXT.retry,
+        stale_refresh: REVOCATION_TEXT.stale_refresh,
+      },
+      () => guard(() => loadRevocation(versionId)),
+      null,
+    );
+  }
+}
+
+function wireRevocation(): void {
+  byId("revocation-load").addEventListener("click", () =>
+    guard(() => loadRevocation(byId<HTMLInputElement>("revocation-version").value.trim())),
+  );
+}
+
+// --------------------------------------------------------- the webhook flow
+
+let webhookRows: WebhookRow[] = [];
+
+function renderWebhooks(items: WebhookRow[]): void {
+  webhookRows = items;
+  const box = byId("webhooks");
+  clear(box);
+  box.setAttribute("aria-busy", "false");
+  box.dataset.state = items.length === 0 ? "empty" : "loaded";
+  box.dataset.items = String(items.length);
+
+  if (items.length === 0) {
+    // The first valid action on a workspace that has never registered one is to
+    // register one, and it is already in the region above this panel.
+    box.appendChild(el("p", WEBHOOK_TEXT.empty, "muted"));
+    return;
+  }
+
+  const scroll = el("div", undefined, "scroll-x");
+  const table = el("table");
+  const thead = el("thead");
+  const hrow = el("tr");
+  for (const h of ["Endpoint", "URL", "Status", "Failure count", ""]) hrow.appendChild(el("th", h));
+  thead.appendChild(hrow);
+  table.appendChild(thead);
+  const tbody = el("tbody");
+  tbody.id = "webhook-rows";
+  for (const row of items) {
+    const tr = el("tr");
+    tr.dataset.webhookId = row.webhook_id;
+    tr.dataset.status = row.status;
+    tr.dataset.failureCount = String(row.failure_count);
+    tr.appendChild(el("td", row.webhook_id));
+    tr.appendChild(el("td", row.url));
+    // PRODUCTION HEALTH, LABELLED AS SUCH. The test result below is drawn in a
+    // panel of its own with a sentence saying it is not this — SPEC.md section
+    // 6.5 keeps the test off these two columns server-side, and a page that drew
+    // a probe's answer here would undo that in the only place an operator looks.
+    const status = el("td", row.status);
+    status.dataset.health = "status";
+    tr.appendChild(status);
+    const failures = el("td", String(row.failure_count));
+    failures.dataset.health = "failure_count";
+    tr.appendChild(failures);
+    const cell = el("td");
+    const test = el("button", WEBHOOK_TEXT.send_test);
+    test.type = "button";
+    test.dataset.action = "test-webhook";
+    test.dataset.webhookId = row.webhook_id;
+    test.addEventListener("click", () => guard(() => testWebhook(row.webhook_id)));
+    cell.appendChild(test);
+    tr.appendChild(cell);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  box.appendChild(scroll);
+}
+
+/**
+ * ONE TEST DELIVERY'S RESULT — five fields, and a sentence about what it is not.
+ *
+ * The five are rendered under their own field names rather than under a verdict
+ * this page composed, and the endpoint's response body is not among them
+ * because the transport never returns one: `error_detail` is the transport's own
+ * bounded, sanitized line. The panel says both of those things on the page, so
+ * an operator reading a failure is not left to assume the endpoint's own words
+ * are being withheld from them.
+ */
+function renderWebhookTest(webhookId: string, result: WebhookTestResult): void {
+  const box = byId("webhooks");
+  const panel = el("div", undefined, "panel");
+  panel.id = "webhook-test-result";
+  panel.dataset.webhookId = webhookId;
+  panel.dataset.delivered = String(result.delivered);
+  panel.appendChild(el("h3", WEBHOOK_TEXT.result_heading));
+  const dl = facts(panel, "row");
+  fact(dl, "delivered", WEBHOOK_TEXT.field_delivered, String(result.delivered));
+  fact(dl, "http_status", WEBHOOK_TEXT.field_http_status, result.http_status === null ? WEBHOOK_TEXT.field_absent : String(result.http_status));
+  fact(dl, "latency_ms", WEBHOOK_TEXT.field_latency_ms, String(result.latency_ms));
+  fact(dl, "error_code", WEBHOOK_TEXT.field_error_code, result.error_code ?? WEBHOOK_TEXT.field_absent);
+  fact(dl, "error_detail", WEBHOOK_TEXT.field_error_detail, result.error_detail ?? WEBHOOK_TEXT.field_absent);
+  const notHealth = el("p", WEBHOOK_TEXT.result_not_health, "notice");
+  notHealth.dataset.notHealth = "true";
+  panel.appendChild(notHealth);
+  const bounded = el("p", WEBHOOK_TEXT.detail_bounded, "muted");
+  bounded.dataset.bounded = "true";
+  panel.appendChild(bounded);
+  box.appendChild(panel);
+}
+
+async function testWebhook(webhookId: string): Promise<void> {
+  const box = byId("webhooks");
+  box.dataset.actionState = "pending";
+  box.setAttribute("aria-busy", "true");
+  for (const node of box.querySelectorAll('button[data-action="test-webhook"]')) {
+    (node as HTMLButtonElement).disabled = true;
+  }
+  const busy = el("p", WEBHOOK_TEXT.testing, "muted");
+  busy.dataset.actionBusy = "true";
+  box.appendChild(busy);
+  const replay = { replayed: false };
+  try {
+    const result = await mutate<WebhookTestResult>(
+      "POST",
+      `/v1/console/webhooks/${encodeURIComponent(webhookId)}/test`,
+      {},
+      `console-webhook-test-${webhookId}`,
+      replay,
+    );
+    // THE LIST IS RE-READ, so the health columns beside the result are the
+    // registry's current answer and not a copy from before the probe. That is
+    // what makes "the test moved no counter" a thing an operator can see rather
+    // than a thing this page asserts.
+    renderWebhooks((await api<{ items: WebhookRow[] }>("GET", "/v1/console/webhooks")).items);
+    byId("webhooks").dataset.actionState = "done";
+    renderWebhookTest(webhookId, result);
+  } catch (e) {
+    box.setAttribute("aria-busy", "false");
+    box.dataset.actionState = "failed";
+    if (busy.parentNode !== null) busy.parentNode.removeChild(busy);
+    renderFailure(
+      box,
+      failureOf(e),
+      {
+        forbidden_heading: WEBHOOK_TEXT.forbidden_heading,
+        error_heading: WEBHOOK_TEXT.error_heading,
+        invalid_heading: WEBHOOK_TEXT.invalid_heading,
+        stale_heading: WEBHOOK_TEXT.stale_heading,
+        retry: WEBHOOK_TEXT.retry,
+        stale_refresh: WEBHOOK_TEXT.stale_refresh,
+      },
+      () => guard(() => loadWebhooks()),
+      null,
+    );
+  }
+}
+
+async function registerWebhookEndpoint(): Promise<void> {
+  const field = byId<HTMLInputElement>("webhook-url");
+  const url = field.value.trim();
+  const box = byId("webhooks");
+  box.dataset.actionState = "pending";
+  box.setAttribute("aria-busy", "true");
+  const button = byId<HTMLButtonElement>("webhook-register");
+  button.disabled = true;
+  const replay = { replayed: false };
+  try {
+    await mutate<{ webhook_id: string; url: string }>(
+      "POST",
+      "/v1/console/webhooks",
+      { url },
+      `console-webhook-register-${url}`,
+      replay,
+    );
+    await loadWebhooks();
+    byId("webhooks").dataset.actionState = "done";
+    replayBadge(byId("webhooks"), replay.replayed, WEBHOOK_TEXT.replay_badge);
+    field.value = "";
+  } catch (e) {
+    box.setAttribute("aria-busy", "false");
+    box.dataset.actionState = "failed";
+    button.removeAttribute("disabled");
+    renderFailure(
+      box,
+      failureOf(e),
+      {
+        forbidden_heading: WEBHOOK_TEXT.forbidden_heading,
+        error_heading: WEBHOOK_TEXT.error_heading,
+        invalid_heading: WEBHOOK_TEXT.invalid_heading,
+        stale_heading: WEBHOOK_TEXT.stale_heading,
+        retry: WEBHOOK_TEXT.retry,
+        stale_refresh: WEBHOOK_TEXT.stale_refresh,
+      },
+      () => guard(() => loadWebhooks()),
+      // §7's validation-error row names the URL for this column: the endpoint an
+      // operator typed is still in the field and the page says so.
+      url.length === 0 ? WEBHOOK_TEXT.url_preserved : `${WEBHOOK_TEXT.url_preserved} ${url}`,
+    );
+  }
+}
+
+async function loadWebhooks(): Promise<void> {
+  const box = byId("webhooks");
+  beginLoading(box, WEBHOOK_TEXT.loading);
+  try {
+    renderWebhooks((await api<{ items: WebhookRow[] }>("GET", "/v1/console/webhooks")).items);
+  } catch (e) {
+    box.setAttribute("aria-busy", "false");
+    clear(box);
+    renderFailure(
+      box,
+      failureOf(e),
+      {
+        forbidden_heading: WEBHOOK_TEXT.forbidden_heading,
+        error_heading: WEBHOOK_TEXT.error_heading,
+        invalid_heading: WEBHOOK_TEXT.invalid_heading,
+        stale_heading: WEBHOOK_TEXT.stale_heading,
+        retry: WEBHOOK_TEXT.retry,
+        stale_refresh: WEBHOOK_TEXT.stale_refresh,
+      },
+      () => guard(() => loadWebhooks()),
+      null,
+    );
+  }
+}
+
+function wireWebhooks(): void {
+  byId("webhook-register").addEventListener("click", () => guard(() => registerWebhookEndpoint()));
+}
+
+/**
+ * The three decision surfaces, opened once the session is known.
+ *
+ * SEQUENTIAL AND NOT `Promise.all`. Each region stamps its own busy state before
+ * its own request, and a failure in one must leave the other two on the page —
+ * a combined await would make one refused surface hide two that answered.
+ */
+async function bootDecisionSurfaces(): Promise<void> {
+  wireApprovals();
+  wireRevocation();
+  wireWebhooks();
+  for (const region of ["approvals", "revocation", "webhooks"]) {
+    const box = byId(region);
+    box.dataset.state = "loading";
+    box.setAttribute("aria-busy", "true");
+  }
+  // The revocation region has no subject until an operator names one, so it
+  // waits rather than pretending to load. It says which state it is in.
+  const revocation = byId("revocation");
+  revocation.dataset.state = "idle";
+  revocation.setAttribute("aria-busy", "false");
+  await loadApprovals();
+  await loadWebhooks();
+  if (openApprovalId !== null) await openApproval(openApprovalId);
+}
+
+// ---------------------------------------------------------------- the entry
+//
+// LAST IN THE FILE, and it has to be: the sign-in page and the console page are
+// two different documents served by the same bundle, the choice between them is
+// which one is in the DOM, and every function and every module variable above
+// must exist before either branch runs. A dispatch written half way up the file
+// would put the module state declared below it in its temporal dead zone.
 
 if (document.getElementById("login")) {
   wireLogin();

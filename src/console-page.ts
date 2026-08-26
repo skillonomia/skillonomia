@@ -24,6 +24,10 @@ import { consoleAssetDir } from "./assets.ts";
 // The Proofline's own words, from the one file that declares them, so the shell
 // and the bundle cannot disagree about what the region is called.
 import { PROOFLINE_TEXT } from "./console-proofline.ts";
+// The decision surfaces' own words, from the one file that declares them, for
+// the same reason: a heading typed into this template and a heading typed into
+// the bundle are two headings that can disagree.
+import { APPROVALS_TEXT, REVOCATION_TEXT, WEBHOOK_TEXT } from "./console-surfaces.ts";
 
 /** Where the built bundle is served from, and the one place the path is written. */
 export const CONSOLE_SCRIPT_PATH = "/console/app.js";
@@ -154,6 +158,35 @@ export function consolePage(): string {
 </tr></thead><tbody id="inbox-rows"></tbody></table></div>
 <div id="detail" class="panel" hidden></div>
 <div id="audit" class="panel" hidden></div>
+<section id="approvals-region" aria-labelledby="approvals-heading">
+  <h1 id="approvals-heading">${APPROVALS_TEXT.heading}</h1>
+  <div class="row">
+    <label for="approvals-status">${APPROVALS_TEXT.status_label}</label>
+    <select id="approvals-status"></select>
+    <label for="approvals-kind">${APPROVALS_TEXT.kind_label}</label>
+    <select id="approvals-kind"></select>
+  </div>
+</section>
+<div id="approvals" class="panel" aria-live="polite" aria-busy="false"></div>
+<div id="approval-detail" class="panel" hidden></div>
+<section id="revocation-region" aria-labelledby="revocation-heading">
+  <h1 id="revocation-heading">${REVOCATION_TEXT.heading}</h1>
+  <div class="row">
+    <label for="revocation-version">${REVOCATION_TEXT.version_label}</label>
+    <input id="revocation-version" size="30" autocomplete="off">
+    <button id="revocation-load" type="button">${REVOCATION_TEXT.load}</button>
+  </div>
+</section>
+<div id="revocation" class="panel" aria-live="polite" aria-busy="false"></div>
+<section id="webhooks-region" aria-labelledby="webhooks-heading">
+  <h1 id="webhooks-heading">${WEBHOOK_TEXT.heading}</h1>
+  <div class="row">
+    <label for="webhook-url">${WEBHOOK_TEXT.url_label}</label>
+    <input id="webhook-url" type="url" size="36" autocomplete="off">
+    <button id="webhook-register" type="button">${WEBHOOK_TEXT.register}</button>
+  </div>
+</section>
+<div id="webhooks" class="panel" aria-live="polite" aria-busy="false"></div>
 <div class="row"><h1>Capabilities</h1><button id="refresh-capabilities" type="button">Refresh</button></div>
 <div class="scroll-x"><table id="capabilities"><thead><tr>
   <th>Capability</th><th>Approved revisions</th><th>Head approval</th><th>Assignments</th><th>Active</th><th></th>
