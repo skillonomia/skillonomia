@@ -15,16 +15,51 @@ export type VersionState =
 
 // Exactly §5.1:  draft → linted → reviewed → verified → published
 //                published → deprecated | superseded | revoked
+//                published | deprecated | superseded → revoked      (v1.1)
+//
+// WHY `deprecated` AND `superseded` GAINED AN OUTGOING EDGE, AND `revoked` DID
+// NOT. v1.0.0 called all three tails terminal and meant one thing by it: that a
+// retired version does not come back. Two of the three carried a second meaning
+// nobody chose — that a version which had been withdrawn from use could never
+// afterwards be declared UNSAFE. A skill superseded in March and found to leak a
+// credential in May had no surface at all: `revoke` refused the state, and there
+// was no path back to `published` to revoke it from. The owner's only options
+// were to leave the registry saying "replaced" about bytes that are dangerous,
+// or to publish a lie.
+//
+// So the graph now admits `deprecated → revoked` and `superseded → revoked`.
+// This is not a relaxation of terminality; it is the recognition that a
+// DISPOSITION and a REPLACEMENT are different facts (INV-06). `revoked` is the
+// strongest disposition and every other released state may reach it.
+//
+// `revoked` KEEPS AN EMPTY ROW, deliberately, and the reason is the same
+// invariant read the other way. Attaching a successor to a revoked version is
+// NOT a state change: `revoke --successor` leaves `state='revoked'` and writes
+// `superseded_by_version_id`, a COLUMN. Giving `revoked` an edge to `superseded`
+// would make the registry choose between the two facts again — it would erase
+// the revocation to record the replacement — which is exactly the trap §6.3
+// exists to close. `migrations/0018` enforces the same thing from below: the
+// revocation reason is immutable and required iff the state is `revoked`, so
+// leaving `revoked` would have to clear a reason that cannot be cleared.
 export const TRANSITION_WHITELIST: Readonly<Record<VersionState, readonly VersionState[]>> = {
   draft: ["linted"],
   linted: ["reviewed"],
   reviewed: ["verified"],
   verified: ["published"],
   published: ["deprecated", "superseded", "revoked"],
-  deprecated: [],
-  superseded: [],
+  deprecated: ["revoked"],
+  superseded: ["revoked"],
   revoked: [],
 };
+
+/**
+ * The states §5.1 lets a revocation start from — the whitelist read backwards,
+ * so the one graph answers both questions and a service method does not restate
+ * the edge set as a literal of its own.
+ */
+export const REVOCABLE_STATES: readonly VersionState[] = (
+  Object.keys(TRANSITION_WHITELIST) as VersionState[]
+).filter((from) => TRANSITION_WHITELIST[from].includes("revoked"));
 
 export function isLegalTransition(from: VersionState, to: VersionState): boolean {
   return (TRANSITION_WHITELIST[from] ?? []).includes(to);
@@ -44,6 +79,7 @@ export interface TransitionErr {
     | "CONFLICT"
     | "USE_PUBLISH_VERSION"
     | "USE_VERIFY_VERSION"
+    | "USE_REVOKE_VERSION"
     | "GATES_NOT_PASSED"
     /** §6 surface 3: no eligible reviewer has approved this version */
     | "REVIEW_NOT_APPROVED"
@@ -79,6 +115,18 @@ export function transitionVersion(
   // transaction. Leaving a generic path open here would make this exported
   // function itself the bypass the P4 review subject is about.
   if (to === "verified") return { ok: false, code: "USE_VERIFY_VERSION" };
+  // The graph above gives `revoked` two more inbound edges, and that is precisely why it
+  // needs the same closed door `published` and `verified` have. A revocation is
+  // inseparable from four writes that happen in ONE transaction: the mandatory
+  // `revocation_reason`, the optional successor link, the `version_revoked`
+  // transparency-log append (and the `version_superseded` one after it), and a
+  // revocation notice queued for every active adopter. A generic state change
+  // performs none of them, and `migrations/0018` would refuse it anyway —
+  // `state='revoked'` with no reason breaks the disposition invariant. Refusing
+  // here rather than letting the trigger abort is the difference between a typed
+  // answer and a SQLITE_CONSTRAINT surfacing as a 500. The one entry point is
+  // `Registry.revokeVersion()` (`src/service.ts`).
+  if (to === "revoked") return { ok: false, code: "USE_REVOKE_VERSION" };
   // §6 surface 3: "reviewed state requires ≥1 approve". Enforced HERE for the
   // same reason the §7.1 aggregate is: otherwise this exported function reaches
   // `reviewed` — and therefore the whole review conjunct — without a review.

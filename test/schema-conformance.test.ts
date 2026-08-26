@@ -336,6 +336,21 @@ const NEW_OBJECTS: ReadonlyArray<{ file: string; names: readonly string[] }> = [
       "tg_revision_comparisons_no_del",
     ],
   },
+  {
+    // D.1r — the v1.1 disposition/lineage constraints. Three indexes and two
+    // triggers, no table and no column: `0018` states rules about columns D.1
+    // already had. Its three scratch tables are created, read and dropped
+    // inside its own transaction, so they are not objects of the live schema
+    // and are correctly absent from this list.
+    file: "0018_a_revocation_and_a_replacement_are_two_facts.sql",
+    names: [
+      "uq_versions_superseded_by",
+      "uq_versions_supersedes",
+      "idx_versions_disposition",
+      "tg_version_disposition_ins",
+      "tg_version_disposition_upd",
+    ],
+  },
 ];
 
 const ADDED_OBJECT_COUNT = NEW_OBJECTS.reduce((n, m) => n + m.names.length, 0);
@@ -431,7 +446,7 @@ test("live schema is Appendix D.1 plus exactly the Appendix D.1b delta", () => {
   assert.equal(liveSet.size, fileStatements.length + ADDED_OBJECT_COUNT, "live schema has no extra objects");
 });
 
-test("object counts: 48 tables, 63 triggers, 34 indexes; no bookkeeping table", () => {
+test("object counts: 48 tables, 65 triggers, 37 indexes; no bookkeeping table", () => {
   const db = openMigrated();
   const count = (type: string) =>
     (db
@@ -468,14 +483,19 @@ test("object counts: 48 tables, 63 triggers, 34 indexes; no bookkeeping table", 
   // session, the normalised outcome, the conflict a contradicting redelivery
   // becomes, the lineage of a revision created from one, and the comparison
   // drawn between two — and edits nothing.
+  // D.1r adds three indexes and two triggers and NO table: it is the first
+  // migration of this schema whose whole content is rules about columns D.1
+  // already had — the v1.1 disposition/lineage invariants of §5.1b. The three
+  // scratch tables it uses to check the rows that already exist live and die
+  // inside its own transaction, which is why the table count does not move.
   assert.equal(count("table"), 48);
-  assert.equal(count("trigger"), 63);
-  assert.equal(count("index"), 34);
+  assert.equal(count("trigger"), 65);
+  assert.equal(count("index"), 37);
   const uv = db.prepare("PRAGMA user_version").get() as { user_version: number };
   assert.equal(
     uv.user_version,
-    17,
-    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote, 0013 = D.1m the capture and draft domain of V1 — three INSERT-only tables added and nothing edited, 0014 = D.1n the Owner Console of V1 — five INSERT-only tables added and nothing edited, 0015 = D.1o assignment and lifecycle control — five INSERT-only tables added and nothing edited, 0016 = D.1p the immutable session loadout and the runtime receipts — four INSERT-only tables added and nothing edited, 0017 = D.1q outcomes and the revision loop — five INSERT-only tables added and nothing edited; tracked in user_version",
+    18,
+    "0002 = D.1b approval hold + webhook delta, 0003 = D.1c notification_kind, 0004 = D.1d environment_json, 0005 = D.1e secret_ref + source_hash, 0006 = D.1f transfer grants + transfers + the `transferred` event, 0007 = D.1g assignments + their INSERT-only journal, 0008 = D.1h runtime observations + the records they were reduced to, 0009 = D.1i the `requested` event that names the recipient of a pull, 0010 = D.1j the evidence a run presented, which is what a contract is executed against, 0011 = D.1k a rebuild whose rule was withdrawn, 0012 = D.1l the key of a repeat, made a digest on every row an older build wrote, 0013 = D.1m the capture and draft domain of V1 — three INSERT-only tables added and nothing edited, 0014 = D.1n the Owner Console of V1 — five INSERT-only tables added and nothing edited, 0015 = D.1o assignment and lifecycle control — five INSERT-only tables added and nothing edited, 0016 = D.1p the immutable session loadout and the runtime receipts — four INSERT-only tables added and nothing edited, 0017 = D.1q outcomes and the revision loop — five INSERT-only tables added and nothing edited, 0018 = D.1r a revocation and a replacement are two facts — three indexes and two triggers over the columns D.1 already had, no table and no column added and nothing edited; tracked in user_version",
   );
 });
 

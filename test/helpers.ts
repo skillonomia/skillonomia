@@ -85,6 +85,18 @@ export function seedGraph(db: Db = openMigrated()): Seed {
   return { db, wsA, wsB, ownerA, authorA, adopterA, adopterB, skill, version, request, receipt, now };
 }
 
+/**
+ * A version row in a chosen state, written straight to SQLite so that a test of
+ * one rule does not have to drive the whole lifecycle to reach its subject.
+ *
+ * `revocation_reason` is supplied HERE rather than at every call site, because
+ * `migrations/0018` makes it required exactly when `state='revoked'` (§5.1b:
+ * the reason is NOT NULL iff the state is `revoked`, both directions) — so a
+ * fixture that wrote a revoked row with no reason was writing a row the v1.1
+ * data model does not admit, and the trigger is right to refuse it. A caller
+ * that cares which reason the row carries passes one; the default exists so
+ * that a test about states can go on being about states.
+ */
 export function insertVersion(
   db: Db,
   skill: string,
@@ -92,13 +104,15 @@ export function insertVersion(
   semver: string,
   state: string,
   now: number,
+  revocationReason?: string,
 ): string {
   const id = ulid(now);
+  const reason = state === "revoked" ? (revocationReason ?? "fixture revocation") : null;
   db.prepare(
     `INSERT INTO skill_versions(id, skill_id, semantic_version, author_agent_id, manifest_json,
-       manifest_hash, content_hash, package_blob_ref, signature_jws, state, created_at_ms)
-     VALUES (?,?,?,?, '{}', ?, ?, 'blob:none', 'sig', ?, ?)`,
-  ).run(id, skill, semver, author, "a".repeat(64), "b".repeat(64), state, now);
+       manifest_hash, content_hash, package_blob_ref, signature_jws, state, revocation_reason, created_at_ms)
+     VALUES (?,?,?,?, '{}', ?, ?, 'blob:none', 'sig', ?, ?, ?)`,
+  ).run(id, skill, semver, author, "a".repeat(64), "b".repeat(64), state, reason, now);
   return id;
 }
 

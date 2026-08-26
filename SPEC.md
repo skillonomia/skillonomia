@@ -675,6 +675,7 @@ The registry enforces a transition whitelist:
 ```
 draft → linted → reviewed → verified → published
 published → deprecated | superseded | revoked
+published | deprecated | superseded → revoked
 verified|published → (new version) draft…            -- improvement loop
 ```
 
@@ -763,7 +764,7 @@ state that a bare state change would omit:
 |---|---|---|
 | `deprecated` | 13 `skill.deprecate` | `deprecation_date` from the registry clock + a transparency-log entry |
 | `superseded` | 10 `skill.supersede` | both versions' lifecycle links, atomically + a transparency-log entry |
-| `revoked` | 11 `skill.revoke` | the mandatory `revocation_reason` + a transparency-log entry + a §5.2 revocation notice queued for every active adopter |
+| `revoked` | 11 `skill.revoke` | the mandatory `revocation_reason` + a transparency-log entry + a §5.2 revocation notice queued for every active adopter +, when a successor is named, the lineage link and a second transparency-log entry after the first (§5.1b) |
 
 Deprecation is the mildest of the three: the version stays visible and stays
 adoptable with a warning (see the state-visibility table below). Its actor set
@@ -772,8 +773,69 @@ admin/owner — and NOT the supersede row: the extra actor supersede admits, the
 reviewer, is admitted because naming a successor is a judgement about a
 replacement package, and deprecation names none. The date is stamped once; a
 repeated deprecation converges on the recorded date and MUST NOT move it
-forward. All three tails are terminal: nothing follows them, including a return
-to `published`.
+forward.
+
+**`revoked` is the one tail every other released state can reach.** A version
+that has been withdrawn from use may afterwards be found to be UNSAFE, and the
+registry has to be able to say so: `deprecated → revoked` and
+`superseded → revoked` are legal edges, and the surface is the same surface 11,
+which writes the same mandatory `revocation_reason`, the same transparency-log
+entry and the same notice for every active adopter. Any successor link the
+version already carries is PRESERVED across that move — see §5.1b. No other edge
+leaves a tail: none of the three returns to `published`, `deprecated` does not
+become `superseded`, and `revoked` leads nowhere at all, for the reason §5.1b
+gives. `revoked` is therefore terminal in the strict sense; `deprecated` and
+`superseded` are terminal in the sense that matters — a version does not come
+back — and admit exactly one further withdrawal each.
+
+### 5.1b Disposition and lineage are orthogonal
+
+A version carries TWO independent facts about its retirement, and neither one
+erases the other.
+
+- The **disposition** is `state` plus `revocation_reason`. It says what may still
+  be done with the version: `revoked` blocks new adoptions and the reason says
+  why.
+- The **lineage** is the pair `supersedes_version_id` /
+  `superseded_by_version_id`. It is a POINTER, not a state: it names the version
+  that replaces this one.
+
+Recording a replacement is therefore a COLUMN WRITE and not a state change. A
+revoked version keeps `state='revoked'` and gains `superseded_by_version_id`;
+surface 11 accepts an optional `successor_version_id` and writes both facts in
+one transaction. This is why `revoked` has no outgoing edge: leaving it would be
+the registry giving up the revocation in order to record the replacement, which
+is precisely the trap this rule closes.
+
+The constraints below are normative, and the ones a database can hold are held
+by the database (Appendix D.1r), not only by the service:
+
+1. `revocation_reason IS NOT NULL` if and only if `state='revoked'`. Both
+   directions: a reason without a revocation is as refused as a revocation
+   without a reason.
+2. `revocation_reason` is IMMUTABLE once written, and so is each half of the
+   lineage pair. A second revoke with the same reason converges; one with a
+   different reason is `CONFLICT` and changes nothing. Together with rule 1 this
+   is what makes `revoked` terminal without a separate rule saying so: leaving
+   `revoked` would require clearing a reason that cannot be cleared.
+3. `superseded_by_version_id` is permitted for `published`, `deprecated`,
+   `superseded` and `revoked`, and for no earlier state — a version that never
+   reached `published` has nothing to replace.
+4. Predecessor and successor belong to one `skill_id`, and no version is its own
+   predecessor or successor.
+5. At the moment the link is CREATED the successor is `verified` or `published`.
+   The successor may be retired later; the check is on link creation, so a
+   successor that is itself deprecated afterwards does not freeze the
+   predecessor's disposition.
+6. A predecessor has at most one successor and a successor has at most one
+   predecessor. A conflicting existing link is `CONFLICT`.
+
+Both orders converge. `supersede` then `revoke` leaves `state='revoked'` with
+the link intact; `revoke` then `revoke --successor` leaves the same row. What
+neither order does is rewrite history: the transparency log gains a
+`version_revoked` entry and, when this call created the link, a
+`version_superseded` entry after it, and existing outcomes, receipts and log
+entries are untouched.
 
 **Trial-adoption lane.** The first version of a skill cannot cite receipts that
 do not yet exist. Therefore a version in state `reviewed` MAY be adopted
@@ -1967,10 +2029,10 @@ installs none is conforming.
 
 ## Appendix D. NORMATIVE SQLite DDL
 
-The normative schema is given in **seventeen** migrations, applied in ascending file
+The normative schema is given in **eighteen** migrations, applied in ascending file
 order, and the live schema of a conforming registry is their sum. Each is
 embedded below verbatim and is byte-identical to the file this repository ships;
-a test asserts that for all seventeen. Schema version is tracked in
+a test asserts that for all eighteen. Schema version is tracked in
 `PRAGMA user_version` and nowhere else — there is no bookkeeping table, because
 the live schema is compared object for object against D.1 plus the deltas below,
 and a table this specification does not name would fail that comparison. A
@@ -2099,15 +2161,20 @@ path, and MUST NOT attempt it.
   them by exactly its own five tables, ten triggers and six indexes, on the
   same terms and with its own reversal
   (`migrations/down/0017_outcomes_and_the_revision_loop.down.sql`), which
-  restores `PRAGMA user_version` to `16`.
-  Those five are the migrations of this
+  restores `PRAGMA user_version` to `16`. D.1r moves
+  them by exactly its own two triggers and three indexes — it creates no table
+  and adds no column, so it is the one delta that moves the table count by
+  nothing — on the same terms and with its own reversal
+  (`migrations/down/0018_a_revocation_and_a_replacement_are_two_facts.down.sql`),
+  which restores `PRAGMA user_version` to `17`.
+  Those six are the migrations of this
   schema that ship a reversal; D.1 through D.1l ship none, which
   `v1/P0-BASELINE.md` records as a fact about the released base. After all
-  seventeen migrations
+  eighteen migrations
   `PRAGMA user_version`
-  MUST report `17`. A test in this repository asserts the live schema equals D.1
+  MUST report `18`. A test in this repository asserts the live schema equals D.1
   plus exactly those twelve edits and the new objects of D.1f, D.1g, D.1h, D.1m,
-  D.1n, D.1o, D.1p and D.1q —
+  D.1n, D.1o, D.1p, D.1q and D.1r —
   the five of D.1b, the one of D.1c, the one of D.1d, the two of D.1e, the one
   rebuilt table of D.1f, the one further edit of D.1i to that same rebuilt table
   and the one column D.1j adds to `observed_records`, together with the one column
@@ -4836,6 +4903,239 @@ CREATE TRIGGER tg_revision_sources_no_upd BEFORE UPDATE ON revision_sources BEGI
 CREATE TRIGGER tg_revision_sources_no_del BEFORE DELETE ON revision_sources BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 CREATE TRIGGER tg_revision_comparisons_no_upd BEFORE UPDATE ON revision_comparisons BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
 CREATE TRIGGER tg_revision_comparisons_no_del BEFORE DELETE ON revision_comparisons BEGIN SELECT RAISE(ABORT,'INSERT_ONLY'); END;
+```
+
+### D.1r NORMATIVE DELTA — eighteenth migration (verbatim)
+
+A REVOCATION AND A REPLACEMENT ARE TWO FACTS. Three indexes and two triggers,
+with no table, no column and nothing edited — the first migration of this schema
+whose entire content is RULES about columns D.1 already had. `revoked` and the
+lineage pair `supersedes_version_id` / `superseded_by_version_id` stop being
+alternatives: a version may be revoked AND name its successor, because the
+disposition is a state and the replacement is a pointer (§5.1b).
+
+The two triggers refuse, on INSERT and on UPDATE, what a `CHECK` would refuse if
+SQLite could add one in place: a `revocation_reason` that is present without
+`state='revoked'` or absent with it, a successor link on a version that was never
+released, a version linked to itself or to a version of another skill, a
+successor that has not itself reached `verified`, and any later change to a
+reason or a link once written. The two unique indexes state the counting rules —
+at most one successor per predecessor, at most one predecessor per successor —
+and the third index is the read a disposition view makes. The three scratch
+tables are how the rows that ALREADY EXIST are checked: each is a `CHECK` whose
+failure names the rule, and all three are dropped inside the same transaction, so
+none of them is an object of the live schema.
+
+REVERSAL is `migrations/down/0018_a_revocation_and_a_replacement_are_two_facts.down.sql`,
+which drops the two triggers and the three indexes and sets `PRAGMA user_version`
+back to `17`. Reversal discards no data, because this migration writes none; what
+it discards is the enforcement, which is why the documented rollback procedure
+makes its target a copy taken before the migration rather than a database walked
+backwards through it.
+`PRAGMA user_version` = `18`.
+
+```sql
+-- 0018 — A REVOCATION AND A REPLACEMENT ARE TWO FACTS, AND ONE ROW MAY HOLD BOTH.
+--
+-- WHAT WAS WRONG. v1.0.0 shipped `revoked` and `superseded` as two of three
+-- mutually exclusive tails of one state column (§5.1: "all three tails are
+-- terminal"), and put the replacement pointer on the same row as the state. So
+-- a version that was superseded could not afterwards be revoked — the whitelist
+-- refused the edge — and a version that was revoked could never be given a
+-- successor, because reaching `superseded` would have erased the revocation.
+-- Both orders were impossible, which made the trap irreversible: an owner who
+-- revoked first lost the ability to point adopters at the replacement, and an
+-- owner who superseded first lost the ability to say the old bytes are unsafe.
+--
+-- WHAT IS TRUE INSTEAD (§5.1b). A revocation and a replacement are ORTHOGONAL
+-- facts about one version. `state='revoked'` is the disposition:
+-- new adoptions are blocked and `revocation_reason` says why. The lineage pair
+-- `supersedes_version_id` / `superseded_by_version_id` is a POINTER: it names
+-- the version that replaces this one. A revoked row keeps `state='revoked'` AND
+-- gains `superseded_by_version_id`; the successor link is a COLUMN, not a state
+-- change, so nothing has to be given up to record the other fact.
+--
+-- WHY THIS MIGRATION ADDS TRIGGERS AND INDEXES AND NOT A `CHECK`. §5.1b says
+-- its constraints are held by the database and not only by the service, and
+-- leaves the FORM to this file. The form is not a stylistic preference here.
+-- `skill_versions` is the most-referenced
+-- table in this schema — eight tables hold a foreign key into it — and SQLite
+-- cannot add a `CHECK` in place, so a `CHECK` would mean the twelve-step rebuild
+-- `0011` and `0012` perform on `receipt_events`: drop and re-create the tenancy
+-- trigger, drop the table every one of those foreign keys points at, and rename
+-- a copy over it. A trigger refuses exactly the same writes a `CHECK` would, on
+-- INSERT and on UPDATE, for every statement issued through every connection —
+-- so the rebuild would buy nothing and risk the centre of the registry.
+--
+-- The one thing a rebuild WOULD give that a trigger cannot is a proof that the
+-- rows already in the database satisfy the rule: the rebuild's `INSERT…SELECT`
+-- fails on a row that does not. That proof is not given up either — it is taken
+-- explicitly, by the three scratch tables below, each of which is a `CHECK`
+-- whose failure names the rule that was broken. They are created, filled from a
+-- count over the live rows and dropped inside this migration's transaction, so
+-- they are never part of a schema a reader sees, and a database that violates a
+-- rule leaves this migration by `ROLLBACK` with `PRAGMA user_version` exactly
+-- where it was found — the state the documented rollback procedure restores from.
+--
+-- WHAT IS DELIBERATELY NOT HERE. The cross-row rules §5.1b states that need a
+-- decision rather than a refusal — "an existing different link returns
+-- `CONFLICT`", the convergent noop of a repeated supersede, the ordering of the
+-- `version_revoked` and `version_superseded` transparency-log appends — belong
+-- to the service layer, which is where a caller can be told WHICH rule it broke
+-- in the vocabulary of §6's error model. A trigger can only abort. Duplicating
+-- those here would give one rule two enforcers that could drift, which is the
+-- defect class `test/spec-parity.test.ts` exists to prevent.
+--
+-- NOTHING ELSE MOVES. No table is created or rebuilt, no column is added,
+-- removed or altered, no row is inserted, updated or deleted, and no statement
+-- of any earlier migration is edited. `PRAGMA user_version` = `18`.
+
+-- ============ 1. the rows that already exist satisfy the rules ============
+--
+-- Each scratch table is one rule. `CHECK(n=0)` turns a non-zero count into an
+-- abort whose message carries the table's name, so the failure says which rule
+-- the database broke rather than only that something failed. The migration
+-- runner's `ROLLBACK` unwinds the table with everything else.
+
+-- §5.1b: `revocation_reason IS NOT NULL` iff `state='revoked'`. Both
+-- directions. The forward one is what v1.0.0's revoke path writes; the REVERSE
+-- one — a reason on a row that is not revoked — is the half no shipped writer
+-- produces and therefore the half nothing has ever checked.
+CREATE TABLE mig0018_a_reason_belongs_to_a_revocation(n INTEGER NOT NULL CHECK(n=0));
+INSERT INTO mig0018_a_reason_belongs_to_a_revocation(n)
+  SELECT COUNT(*) FROM skill_versions
+   WHERE (revocation_reason IS NOT NULL) <> (state='revoked');
+DROP TABLE mig0018_a_reason_belongs_to_a_revocation;
+
+-- §5.1b: predecessor and successor belong to one `skill_id`, and a version is
+-- not its own predecessor or successor. Checked on BOTH columns, because either
+-- one alone can carry the pointer: v1.0.0's supersede writes both, and a
+-- database whose halves disagree is exactly what this asks about.
+CREATE TABLE mig0018_a_link_stays_inside_one_skill(n INTEGER NOT NULL CHECK(n=0));
+INSERT INTO mig0018_a_link_stays_inside_one_skill(n)
+  SELECT COUNT(*) FROM skill_versions v
+   WHERE v.superseded_by_version_id = v.id
+      OR v.supersedes_version_id = v.id
+      OR (v.superseded_by_version_id IS NOT NULL
+          AND (SELECT s.skill_id FROM skill_versions s WHERE s.id = v.superseded_by_version_id) <> v.skill_id)
+      OR (v.supersedes_version_id IS NOT NULL
+          AND (SELECT p.skill_id FROM skill_versions p WHERE p.id = v.supersedes_version_id) <> v.skill_id);
+DROP TABLE mig0018_a_link_stays_inside_one_skill;
+
+-- §5.1b: `superseded_by_version_id` is permitted for `published`,
+-- `deprecated`, `superseded` and `revoked`. A version that never reached
+-- `published` has nothing to replace.
+CREATE TABLE mig0018_a_link_belongs_to_a_released_version(n INTEGER NOT NULL CHECK(n=0));
+INSERT INTO mig0018_a_link_belongs_to_a_released_version(n)
+  SELECT COUNT(*) FROM skill_versions
+   WHERE superseded_by_version_id IS NOT NULL
+     AND state NOT IN ('published','deprecated','superseded','revoked');
+DROP TABLE mig0018_a_link_belongs_to_a_released_version;
+
+-- ============ 2. one successor, one predecessor ============
+--
+-- §5.1b rule 6: a predecessor has at most one successor and a successor has at
+-- most one predecessor. Each side of the pair is a single column, so no row can name two — what has to be forbidden is TWO ROWS
+-- naming one. That is a uniqueness rule, and a partial unique index states it
+-- exactly: it constrains the rows that carry a pointer and says nothing about
+-- the rows that do not, which are most of them.
+--
+-- Creating the index is itself the check on existing data: SQLite refuses to
+-- build a unique index over duplicate values, and that refusal rolls the
+-- migration back like any other.
+
+-- no two versions are replaced BY the same successor
+CREATE UNIQUE INDEX uq_versions_superseded_by
+  ON skill_versions(superseded_by_version_id) WHERE superseded_by_version_id IS NOT NULL;
+-- no two versions replace the same predecessor
+CREATE UNIQUE INDEX uq_versions_supersedes
+  ON skill_versions(supersedes_version_id) WHERE supersedes_version_id IS NOT NULL;
+
+-- the read a revoked-with-successor Console view makes: every version of one
+-- skill that carries a disposition or a pointer, without scanning the table
+CREATE INDEX idx_versions_disposition ON skill_versions(skill_id,state,superseded_by_version_id);
+
+-- ============ 3. the rules hold for every future write ============
+--
+-- Two triggers, one per operation, rather than one trigger per rule: SQLite
+-- evaluates the statements of a trigger body in order and the first `RAISE`
+-- wins, so a caller that breaks two rules is told about one of them, and which
+-- one is decided here rather than by the order SQLite happens to fire separate
+-- triggers in. Each `RAISE` message is the rule's name, so the abort a service
+-- method catches says what was violated.
+--
+-- These are BEFORE triggers on the table itself, so they bind every writer:
+-- the service layer, a migration step, and a statement typed at the file.
+
+CREATE TRIGGER tg_version_disposition_ins BEFORE INSERT ON skill_versions
+BEGIN
+  -- the iff. Both operands are 0/1, so `<>` is exactly "these disagree".
+  SELECT CASE WHEN (NEW.revocation_reason IS NOT NULL) <> (NEW.state='revoked')
+    THEN RAISE(ABORT,'DISPOSITION_REASON_IFF_REVOKED') END;
+  SELECT CASE WHEN NEW.superseded_by_version_id IS NOT NULL
+       AND NEW.state NOT IN ('published','deprecated','superseded','revoked')
+    THEN RAISE(ABORT,'LINEAGE_STATE_NOT_LINKABLE') END;
+  SELECT CASE WHEN NEW.superseded_by_version_id = NEW.id OR NEW.supersedes_version_id = NEW.id
+    THEN RAISE(ABORT,'LINEAGE_SELF_LINK') END;
+  SELECT CASE WHEN NEW.superseded_by_version_id IS NOT NULL
+       AND (SELECT s.skill_id FROM skill_versions s WHERE s.id=NEW.superseded_by_version_id) <> NEW.skill_id
+    THEN RAISE(ABORT,'LINEAGE_CROSS_SKILL') END;
+  SELECT CASE WHEN NEW.supersedes_version_id IS NOT NULL
+       AND (SELECT p.skill_id FROM skill_versions p WHERE p.id=NEW.supersedes_version_id) <> NEW.skill_id
+    THEN RAISE(ABORT,'LINEAGE_CROSS_SKILL') END;
+  -- §5.1b rule 5: at the moment the link is created the successor is `verified`
+  -- or `published`. On an INSERT the link is always newly created, so the check
+  -- is unconditional here.
+  SELECT CASE WHEN NEW.superseded_by_version_id IS NOT NULL
+       AND (SELECT s.state FROM skill_versions s WHERE s.id=NEW.superseded_by_version_id)
+           NOT IN ('verified','published')
+    THEN RAISE(ABORT,'LINEAGE_SUCCESSOR_NOT_READY') END;
+END;
+
+CREATE TRIGGER tg_version_disposition_upd BEFORE UPDATE ON skill_versions
+BEGIN
+  SELECT CASE WHEN (NEW.revocation_reason IS NOT NULL) <> (NEW.state='revoked')
+    THEN RAISE(ABORT,'DISPOSITION_REASON_IFF_REVOKED') END;
+  SELECT CASE WHEN NEW.superseded_by_version_id IS NOT NULL
+       AND NEW.state NOT IN ('published','deprecated','superseded','revoked')
+    THEN RAISE(ABORT,'LINEAGE_STATE_NOT_LINKABLE') END;
+  SELECT CASE WHEN NEW.superseded_by_version_id = NEW.id OR NEW.supersedes_version_id = NEW.id
+    THEN RAISE(ABORT,'LINEAGE_SELF_LINK') END;
+  SELECT CASE WHEN NEW.superseded_by_version_id IS NOT NULL
+       AND (SELECT s.skill_id FROM skill_versions s WHERE s.id=NEW.superseded_by_version_id) <> NEW.skill_id
+    THEN RAISE(ABORT,'LINEAGE_CROSS_SKILL') END;
+  SELECT CASE WHEN NEW.supersedes_version_id IS NOT NULL
+       AND (SELECT p.skill_id FROM skill_versions p WHERE p.id=NEW.supersedes_version_id) <> NEW.skill_id
+    THEN RAISE(ABORT,'LINEAGE_CROSS_SKILL') END;
+  -- AT LINK CREATION, and only then. A successor is `verified` or `published`
+  -- when the pointer is written; it may be deprecated, superseded or revoked
+  -- later, and re-asking the question on every subsequent UPDATE of the
+  -- predecessor would then refuse the `superseded → revoked` edge §5.1 admits.
+  -- So the
+  -- check is guarded on the pointer having just changed. `IS NOT` is SQLite's
+  -- null-safe inequality: it is true when the old value was NULL, which is what
+  -- "just created" means.
+  SELECT CASE WHEN NEW.superseded_by_version_id IS NOT NULL
+       AND NEW.superseded_by_version_id IS NOT OLD.superseded_by_version_id
+       AND (SELECT s.state FROM skill_versions s WHERE s.id=NEW.superseded_by_version_id)
+           NOT IN ('verified','published')
+    THEN RAISE(ABORT,'LINEAGE_SUCCESSOR_NOT_READY') END;
+  -- §5.1b rule 2: the reason and each half of the lineage pair are IMMUTABLE
+  -- once written. Neither may be changed and neither may be cleared; a service
+  -- method that is asked to change one answers `CONFLICT` before it writes, and
+  -- this is the backstop under it. This is what makes `revoked` terminal without a second rule saying
+  -- so: leaving `revoked` requires clearing the reason (the iff above), and
+  -- clearing the reason is refused here.
+  SELECT CASE WHEN OLD.revocation_reason IS NOT NULL
+       AND NEW.revocation_reason IS NOT OLD.revocation_reason
+    THEN RAISE(ABORT,'DISPOSITION_REASON_IMMUTABLE') END;
+  SELECT CASE WHEN OLD.superseded_by_version_id IS NOT NULL
+       AND NEW.superseded_by_version_id IS NOT OLD.superseded_by_version_id
+    THEN RAISE(ABORT,'LINEAGE_LINK_IMMUTABLE') END;
+  SELECT CASE WHEN OLD.supersedes_version_id IS NOT NULL
+       AND NEW.supersedes_version_id IS NOT OLD.supersedes_version_id
+    THEN RAISE(ABORT,'LINEAGE_LINK_IMMUTABLE') END;
+END;
 ```
 
 ### D.2 SQL negative probes

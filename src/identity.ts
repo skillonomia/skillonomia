@@ -391,6 +391,16 @@ export const IDENTITY_INTAKE: Record<string, IdentityColumnClass> = {
     note: "64 hex characters computed by `manifestHash` over the canonical manifest",
   },
   "skill_versions.state": { intake: "registry_generated", note: "the eight §5.1 version states — a closed set" },
+  // The v1.1 lineage pair (§5.1b). Both were columns of D.1 from the first
+  // migration; what `0018` gave them is a UNIQUE key each — "no two versions
+  // are replaced by one successor", "no two versions replace one predecessor" —
+  // and a UNIQUE key over TEXT is exactly what puts a column in this survey.
+  // Neither carries a caller's string: a request names a successor by id, the
+  // service RESOLVES it to a row of this table (same skill, `verified` or
+  // `published`) and writes that row's ULID, so two different strings cannot
+  // become one here for the same reason `skill_id` cannot.
+  "skill_versions.superseded_by_version_id": RESOLVED,
+  "skill_versions.supersedes_version_id": RESOLVED,
 
   // ------------------------------------------------------------------ skills
   "skills.id": MINTED,

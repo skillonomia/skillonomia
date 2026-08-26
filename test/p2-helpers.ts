@@ -91,7 +91,15 @@ export function createInState(
   const { tar } = buildPackage(manifest);
   const res = fx.registry.createVersion(author, { slug, archive: tar }).response;
   if (state !== "draft") {
-    fx.db.prepare("UPDATE skill_versions SET state=? WHERE id=?").run(state, res.skill_version_id);
+    // The reason travels with the state, in ONE statement. `migrations/0018`
+    // requires `revocation_reason` to be non-null exactly when the state is
+    // `revoked` (§5.1b), and a trigger sees the row as the statement leaves it
+    // — so setting the state first and the reason afterwards is a write the
+    // data model refuses, correctly: there is no instant at which a version is
+    // revoked for no stated reason.
+    fx.db
+      .prepare("UPDATE skill_versions SET state=?, revocation_reason=? WHERE id=?")
+      .run(state, state === "revoked" ? "fixture revocation" : null, res.skill_version_id);
   }
   return { skillId: res.skill_id, versionId: res.skill_version_id };
 }

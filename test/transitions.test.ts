@@ -30,6 +30,12 @@ const LEGAL = new Set([
   "published>deprecated",
   "published>superseded",
   "published>revoked",
+  // v1.1 §5.1: a version withdrawn from use may afterwards be found unsafe, and
+  // the registry has to be able to say so. `revoked` keeps no outgoing edge —
+  // attaching a successor to a revoked version is a COLUMN write, not a state
+  // change (§5.1b) — so the graph gains exactly these two.
+  "deprecated>revoked",
+  "superseded>revoked",
 ]);
 
 // `published` and `verified` are legal edges of the §5.1 graph but neither is
@@ -41,12 +47,19 @@ const LEGAL = new Set([
 //     of which this function can see → verifyVersionTransition() is the only
 //     entry point (P4).
 // Leaving either open here would make the exported function itself the bypass.
+//   - `revoked` is inseparable from the mandatory reason, the optional
+//     successor link, the transparency-log append(s) and the adopter notices,
+//     all in one transaction → revokeVersion() is the only entry point. It was
+//     not gated in v1.0.0 because `published→revoked` was the only edge and the
+//     service never used the generic path; v1.1 gives it two more inbound edges,
+//     which is exactly when an ungated generic path becomes reachable.
 const GATED_TARGETS: Record<string, string> = {
   published: "USE_PUBLISH_VERSION",
   verified: "USE_VERIFY_VERSION",
+  revoked: "USE_REVOKE_VERSION",
 };
 
-test("whitelist encodes exactly the §5.1 graph (7 legal edges)", () => {
+test("whitelist encodes exactly the §5.1 graph (9 legal edges)", () => {
   const edges: string[] = [];
   for (const from of STATES) for (const to of TRANSITION_WHITELIST[from]) edges.push(`${from}>${to}`);
   assert.deepEqual(new Set(edges), LEGAL);
@@ -98,9 +111,22 @@ test("defect #1 regression: transition to the current state returns noop:true, n
   }
 });
 
-test("terminal states have no outgoing edges", () => {
+test("`revoked` is the one state with no outgoing edge, and the other two lead only to it", () => {
+  // The v1.1 shape of "terminal", and the reason it is not one sentence any
+  // more. `revoked` leads NOWHERE: giving it an edge to `superseded` would make
+  // the registry surrender the revocation in order to record a replacement,
+  // which is the trap §5.1b closes — the successor of a revoked version is a
+  // column, not a state. `deprecated` and `superseded` lead ONLY to `revoked`:
+  // a version does not come back, and the single further move admitted is the
+  // strongest disposition, not a return to service.
+  assert.deepEqual([...TRANSITION_WHITELIST.revoked], []);
+  assert.deepEqual([...TRANSITION_WHITELIST.deprecated], ["revoked"]);
+  assert.deepEqual([...TRANSITION_WHITELIST.superseded], ["revoked"]);
   for (const t of ["deprecated", "superseded", "revoked"] as VersionState[]) {
-    assert.equal(TRANSITION_WHITELIST[t].length, 0);
+    assert.ok(
+      !TRANSITION_WHITELIST[t].includes("published"),
+      `${t} must not return to published`,
+    );
   }
 });
 

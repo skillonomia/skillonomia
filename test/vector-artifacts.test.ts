@@ -18,9 +18,7 @@ function registryFor(expected: any) {
   if (r.key_revoked_at_ms === "after_countersign") return tvRegistry({ keyRevokedAtMs: 1_754_000_010_000 }).db;
   if (r.key_revoked_at_ms === "before_countersign") return tvRegistry({ keyRevokedAtMs: 1_754_000_001_000 }).db;
   if (r.version_state === "revoked") {
-    const { db } = tvRegistry({ state: "revoked" });
-    db.prepare("UPDATE skill_versions SET revocation_reason=?").run(r.revocation_reason ?? "revoked");
-    return db;
+    return tvRegistry({ state: "revoked", revocationReason: r.revocation_reason ?? "revoked" }).db;
   }
   if (r.version_state === "superseded") return tvRegistry({ state: "superseded", supersededBy: true }).db;
   return tvRegistry().db;

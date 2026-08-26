@@ -145,8 +145,7 @@ test("TV-07b unknown extra field → INVALID_SCHEMA (additionalProperties:false;
 });
 
 test("TV-08 revoked version → revoked (with reason)", () => {
-  const { db } = tvRegistry({ state: "revoked" });
-  db.exec("UPDATE skill_versions SET revocation_reason='security issue' WHERE revocation_reason IS NULL");
+  const { db } = tvRegistry({ state: "revoked", revocationReason: "security issue" });
   const out = verifyPackage(tv01Package(), db);
   assert.equal(out.verdict, "revoked");
   assert.equal(out.revocation_reason, "security issue");

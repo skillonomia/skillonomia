@@ -98,6 +98,12 @@ export interface RegistryFixture {
  */
 export function tvRegistry(opts?: {
   state?: string;
+  /** The reason a `revoked` fixture carries. §5.1b makes it required exactly
+   *  when the state is `revoked`, and `migrations/0018` enforces that on the
+   *  row as written — so the reason goes in the INSERT beside the state rather
+   *  than in an UPDATE afterwards, which would ask the database to hold a
+   *  revoked version with no stated reason for the length of one statement. */
+  revocationReason?: string;
   keyRevokedAtMs?: number | null;
   skipCountersign?: boolean;
   supersededBy?: boolean;
@@ -141,11 +147,16 @@ export function tvRegistry(opts?: {
   const manifest = tv01Manifest();
   const mHash = manifestHash(manifest);
   const versionId = ulid(now);
+  const state = opts?.state ?? "published";
   db.prepare(
     `INSERT INTO skill_versions(id, skill_id, semantic_version, author_agent_id, manifest_json,
-       manifest_hash, content_hash, package_blob_ref, signature_jws, state, created_at_ms)
-     VALUES (?,?,?,?,?,?,?, 'blob:tv01', 'sig', ?, ?)`,
-  ).run(versionId, skill, "1.0.0", author, JSON.stringify(manifest), mHash, "c".repeat(64), opts?.state ?? "published", now);
+       manifest_hash, content_hash, package_blob_ref, signature_jws, state, revocation_reason, created_at_ms)
+     VALUES (?,?,?,?,?,?,?, 'blob:tv01', 'sig', ?, ?, ?)`,
+  ).run(
+    versionId, skill, "1.0.0", author, JSON.stringify(manifest), mHash, "c".repeat(64), state,
+    state === "revoked" ? (opts?.revocationReason ?? "revoked") : null,
+    now,
+  );
 
   if (opts?.supersededBy) {
     const v2 = ulid(now);

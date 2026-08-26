@@ -587,17 +587,23 @@ test("published → superseded and published → revoked work end to end through
   fx.db.close();
 });
 
-test("the three tails are mutually exclusive: each is terminal", () => {
+test("a tail does not return to `published`, and only `revoked` follows another tail", () => {
   const fx = p4Fixture();
   const dep = publishedVersion(fx, "terminal-dep");
   restJson(fx, "POST", `/v1/versions/${dep.versionId}/deprecate`, fx.keys.owner, {});
 
-  // §5.1 whitelist: deprecated/superseded/revoked lead nowhere
-  assert.deepEqual([...TRANSITION_WHITELIST.deprecated], []);
-  assert.deepEqual([...TRANSITION_WHITELIST.superseded], []);
+  // §5.1 whitelist, v1.1 shape: `revoked` leads nowhere; `deprecated` and
+  // `superseded` lead ONLY to `revoked` — a version withdrawn from use can
+  // still be declared unsafe, and nothing else follows a tail.
+  assert.deepEqual([...TRANSITION_WHITELIST.deprecated], ["revoked"]);
+  assert.deepEqual([...TRANSITION_WHITELIST.superseded], ["revoked"]);
   assert.deepEqual([...TRANSITION_WHITELIST.revoked], []);
 
-  // a deprecated version cannot then be revoked or superseded
+  // The v1.0.0 REST surface still refuses `deprecated → revoked`: the whitelist
+  // is the state rule, and `skill.revoke` carries its own precondition, which
+  // this phase does not widen. That is what makes the edge a CONTRACT change
+  // rather than a behaviour change smuggled in with the schema — the surface
+  // moves in P1, against this assertion.
   const revokeIt = restJson(fx, "POST", `/v1/versions/${dep.versionId}/revoke`, fx.keys.owner, { reason: "too late" });
   assert.equal(revokeIt.status, 412);
   assert.equal(revokeIt.body.error.current_state, "deprecated");
