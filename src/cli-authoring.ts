@@ -42,7 +42,9 @@ import {
   isValidateOk,
   validateExitCode,
   CLI_SLUG_RE,
+  GATES_NOT_REPORTED,
   HIGH_RISK_REQUIRED_APPROVALS,
+  NEXT_ACTION_NOT_REPORTED,
   SLUG_CONFLICT_CODE,
   SOURCE_PROFILE,
   type CreateArgs,
@@ -388,25 +390,23 @@ async function post(server: string, path: string, apiKey: string, body: unknown)
 }
 
 /**
- * What an author may do next, RENDERED FROM THE STATE THE SERVER REPORTED.
+ * What an author may do next, TAKEN FROM THE SERVER'S ANSWER AND NOTHING ELSE.
  *
- * Not computed: eligibility is the §7.3 matrix's, it lives on the server, and a
- * second copy on a client is the drift `INV-01` forbids. This maps the state the
- * server just returned to the name of the surface that consumes that state, and
- * if the server returns a state this does not know it says so rather than
- * guessing.
+ * There was a `switch` on the state here, and it was wrong in the way a client
+ * re-deriving a server decision is always eventually wrong: it mapped `draft` to
+ * "request a review", and that exact request returns `412 PRECONDITION_FAILED`
+ * because §5.1 puts `lint` between `draft` and a reviewable version. An author
+ * following the CLI's own next step met a refusal the CLI had told them to
+ * expect success from.
+ *
+ * So the mapping is gone. `next_action` is the registry's sentence, and where
+ * the registry sent none this reports that it sent none — it does not fall back
+ * to a table, because a fallback table is the same second implementation with a
+ * narrower blast radius.
  */
-function nextActionFor(state: string): string {
-  switch (state) {
-    case "draft":
-      return "request a review (POST /v1/versions/{id}/reviews) — the eight gates run when the version leaves draft";
-    case "reviewed":
-      return "seek publication approval, then publish (the server decides eligibility; §7.3)";
-    case "published":
-      return "the version is published; adopters may request it";
-    default:
-      return `the server reports state \`${state}\`; consult the lifecycle documentation for what it permits`;
-  }
+function serverNextAction(created: any): string | null {
+  const reported = created?.next_action;
+  return typeof reported === "string" && reported.length > 0 ? reported : null;
 }
 
 export async function runCreate(args: CreateArgs, io: CliIo, opts: CreateOptions): Promise<number> {
@@ -439,12 +439,17 @@ export async function runCreate(args: CreateArgs, io: CliIo, opts: CreateOptions
     return EXIT_CHECK_FAILED;
   }
 
-  // ONE IDEMPOTENCY KEY PER ATTEMPT, minted before the request and reused if
-  // the request has to be repeated. That is what makes a retry after transport
-  // uncertainty safe: a socket that dies after the server committed and before
-  // the answer arrived is indistinguishable here from one that died before, and
-  // a fresh key on the retry would create a second version out of that
-  // ambiguity. A key minted per RETRY is not an idempotency key.
+  // ONE IDEMPOTENCY KEY PER INVOCATION, minted before the request. It bounds
+  // what a RETRY INSIDE this process would do, and this process does not retry:
+  // a socket that dies is reported, not resent.
+  //
+  // WHAT IT DOES NOT DO, because the message on that failure path used to claim
+  // otherwise: it does not survive the process. `create` takes no key as an
+  // argument and reads none from the environment, so a second invocation mints
+  // a second key. What makes re-running safe after transport uncertainty is
+  // SOURCE CONVERGENCE — `skill.create_from_dir` compares `source_hash` and
+  // returns the version already packed from these bytes, with `noop: true` —
+  // and that holds whatever key the second attempt carries.
   const idempotencyKey = (opts.mintId ?? ulid)(opts.nowMs);
   const source = writeTar(files).toString("base64");
 
@@ -459,7 +464,18 @@ export async function runCreate(args: CreateArgs, io: CliIo, opts: CreateOptions
     // The source is untouched: nothing above this line opened a file for
     // writing, and the archive was built in memory.
     io.err(e instanceof CreateFailed ? e.message : String(e?.message ?? e));
-    io.err(`the source directory is unchanged; re-running with the same idempotency key ${idempotencyKey} is safe`);
+    // WHAT MAKES THE RETRY SAFE, stated as the thing that actually makes it
+    // safe. This line used to say "re-running with the same idempotency key
+    // <k> is safe", and the command exposes no way to reuse a key: a second
+    // invocation mints a fresh one, so the sentence described a mechanism the
+    // author cannot reach. The retry IS safe, for a different reason — a create
+    // converges on the version already packed from this exact source — and
+    // saying the true reason is worth more than naming a key nobody can pass
+    // back in.
+    io.err("the source directory is unchanged, and nothing here can tell whether the server committed before the socket died");
+    io.err("re-running this command on the same unchanged directory is safe: a create converges on the version already");
+    io.err(`packed from that source and does not mint a second one. This attempt's idempotency key was ${idempotencyKey};`);
+    io.err("a new invocation mints a new one, and the convergence — not the key — is what makes the retry safe.");
     return EXIT_CHECK_FAILED;
   }
 
@@ -503,7 +519,7 @@ export async function runCreate(args: CreateArgs, io: CliIo, opts: CreateOptions
     // package it packed, and a summary computed here would be a second answer
     // about bytes this process never saw
     gates: gateSummary(created.gate_reports),
-    next_action: nextActionFor(String(created.state)),
+    next_action: serverNextAction(created),
   };
 
   if (args.json) {
@@ -515,8 +531,14 @@ export async function runCreate(args: CreateArgs, io: CliIo, opts: CreateOptions
   io.out(`  skill_version_id  ${report.skill_version_id}`);
   io.out(`  semantic_version  ${report.semantic_version}`);
   io.out(`  state             ${report.state}`);
-  io.out(`  gates             ${report.gates.passed} passed, ${report.gates.failed} failed, ${report.gates.warned} warned`);
-  io.out(`  next              ${report.next_action}`);
+  io.out(
+    `  gates             ${
+      report.gates === null
+        ? GATES_NOT_REPORTED
+        : `${report.gates.passed} passed, ${report.gates.failed} failed, ${report.gates.warned} warned`
+    }`,
+  );
+  io.out(`  next              ${report.next_action ?? NEXT_ACTION_NOT_REPORTED}`);
   return EXIT_OK;
 }
 
@@ -551,12 +573,22 @@ async function slugTakenByAnother(server: string, apiKey: string, slug: string, 
   }
 }
 
-/** `unknown` is not zero: a response that carried no gate reports says so by
- *  reporting nothing counted, and the caller who wants the gate verdicts asks
- *  the lint surface. Reporting `0 failed` for "we were not told" would be the
- *  `INV-03` mistake in a smaller place. */
+/**
+ * `unknown` IS NOT ZERO, and this is where that stopped being true.
+ *
+ * The comment that used to stand here said the right thing and the code under it
+ * did the opposite: a response carrying no `gate_reports` returned
+ * `{passed: 0, failed: 0, warned: 0}`, which the CLI then printed as
+ * `0 passed, 0 failed, 0 warned`. Three zeros is a claim that eight gates ran
+ * and reported nothing. "We were not told" is a different statement, and
+ * `INV-03` is the rule that the two must not be spelled the same way — in the
+ * official authoring tool least of all.
+ *
+ * So absence returns `null`, the renderer says so in words, and the caller who
+ * wants the verdicts asks the lint surface.
+ */
 function gateSummary(reports: unknown): CreateReport["gates"] {
-  if (!Array.isArray(reports)) return { passed: 0, failed: 0, warned: 0 };
+  if (!Array.isArray(reports)) return null;
   return {
     passed: reports.filter((r: any) => r?.result === "pass").length,
     failed: reports.filter((r: any) => r?.result === "fail").length,

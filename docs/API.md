@@ -368,11 +368,31 @@ because nothing was found yet, and never `no`. Declare a shell if you want runs
 to be recorded.
 
 Returns `201 {"skill_id","skill_version_id","state":"draft","arrival_marker",`
-`"kid","manifest_hash","content_hash"}`. Re-posting an UNCHANGED source
-converges on the version already packed from it (`noop:true`), reporting that
-version's marker; a different source under an existing `semantic_version` is a
-`CONFLICT`. Convergence is judged on the source rather than on the packed bytes,
-because the marker makes every packing of one source byte-different.
+`"kid","manifest_hash","content_hash","gate_reports","next_action"}`. Re-posting
+an UNCHANGED source converges on the version already packed from it
+(`noop:true`), reporting that version's marker; a different source under an
+existing `semantic_version` is a `CONFLICT`. Convergence is judged on the source
+rather than on the packed bytes, because the marker makes every packing of one
+source byte-different.
+
+`gate_reports` is the eight §7.1 gates run over the bytes this call packed. It is
+the same gate function on the same file set `skill.lint` reads back out of the
+stored blob, so a create and the lint that follows it cannot disagree about one
+package — but it is NOT a lint: no `lint_reports` row is written and the version
+does not leave `draft`. `skill.lint` remains the surface that does both. Where
+the gates could not be run — a convergent replay whose stored blob is
+unavailable — the field is ABSENT rather than an empty list, because an empty
+list would say eight gates ran and reported nothing, and `INV-03` forbids
+spelling "not known" the same way as "nothing found".
+
+`next_action` names the surface §5.1's transition graph admits from the state
+this response reports. The registry decides it, in `src/transitions.ts`, from the
+same edge set that governs the transition itself. A client that derived it from
+the state got it wrong: the authoring CLI used to map `draft` to "request a
+review", and `POST /v1/versions/{id}/reviews` answers `PRECONDITION_FAILED` from
+`draft`, because `POST /v1/versions/{id}/lint` stands between the two. The field
+names a surface and settles nothing about your entitlement to call it —
+eligibility is the §7.3 matrix's, and the surface named decides it on the call.
 
 ### 15. `skill.transfer` — `POST /v1/versions/{id}/transfers`
 

@@ -291,17 +291,21 @@ export async function authorSkill(fx, { slug, risk, apiKey, edit = null }) {
   const initCode = runInit({ slug, risk, directory: dir, force: false }, io, { nowMs: Date.now() });
   if (initCode !== 0) throw new Error(`init failed for ${slug}: ${io.errors.join(" | ")}`);
 
-  // THE AUTHOR'S OWN EDIT, and every source tree gets one — a template is a
-  // starting point and `skillonomia init` says so in its own next-steps output.
-  // A `high` tree needs one specific edit before the registry will take it: the
-  // §7.1 schema gate refuses `risk_level: high` unless
-  // `safety.sandbox_requirement` is `required`, and the generated template
-  // writes `none` for every risk. Making the edit here is what an author does;
-  // it is written down rather than hidden because the shipped template not
-  // making it is a fact about the template, not about this fixture.
+  // THE AUTHOR'S OWN EDIT, where a caller asks for one. A `high` tree used to
+  // need one specific edit before the registry would take it — the §7.1 schema
+  // gate refuses `risk_level: high` unless `safety.sandbox_requirement` is
+  // `required`, and the generated template wrote `none` for every risk — and
+  // that edit was made here, in a fixture, which is the only reason the browser
+  // gates ever saw a high-risk version at all. `P2-R1-001` fixed the template,
+  // so the edit is gone: what these gates now drive is the SHIPPED high-risk
+  // template, unpatched, exactly as an author receives it.
   const manifestPath = join(dir, "manifest.json");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  if (risk === "high") manifest.safety.sandbox_requirement = "required";
+  if (risk === "high" && manifest.safety.sandbox_requirement !== "required") {
+    throw new Error(
+      `the shipped --risk high template writes safety.sandbox_requirement=${JSON.stringify(manifest.safety.sandbox_requirement)}, which the §7.1 schema gate refuses`,
+    );
+  }
   if (edit) edit(manifest);
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 

@@ -60,7 +60,7 @@ import {
   shipsArrivalScript,
 } from "./marker.ts";
 import { assertNoPrivateMaterial, systemSigningKey } from "./system-key.ts";
-import { transitionVersion, REVOCABLE_STATES, type VersionState } from "./transitions.ts";
+import { transitionVersion, nextActionForState, REVOCABLE_STATES, type VersionState } from "./transitions.ts";
 import {
   isLineageLinkableState,
   isSuccessorEligibleState,
@@ -826,6 +826,34 @@ export interface CreateFromDirResponse {
   kid: string;
   manifest_hash: string;
   content_hash: string;
+  /**
+   * The eight §7.1 gates, run over the bytes this call packed.
+   *
+   * ADDITIVE, and it exists because the alternative was worse than silence. The
+   * response used to carry no gate verdicts at all, and the authoring CLI —
+   * asked by §6.6.3 to show a gate summary — rendered that absence as
+   * `0 passed, 0 failed, 0 warned`. `INV-03` is the invariant this product
+   * exists to uphold and the official authoring tool was printing unknown as
+   * three zeros. Either the counts are real or the field is absent and the
+   * reader is told so; this is the first half.
+   *
+   * IT IS NOT A LINT. No `lint_reports` row is written and no state moves:
+   * `skill.lint` is the surface that records a gate run and transitions
+   * `draft → linted`, and a create that quietly did that would be a transition
+   * nobody asked for. This is the same function's verdict on the same bytes,
+   * reported so an author knows before they call `lint` what it will say.
+   *
+   * Absent — never `[]` — when the gates could not be run at all, which is a
+   * convergent replay whose stored package blob is unavailable.
+   */
+  gate_reports?: Array<{ gate: string; result: string; details: string | null }>;
+  /**
+   * The surface this version's CURRENT state admits next, decided from §5.1's
+   * transition graph HERE (`INV-01`). It names a surface and promises no
+   * entitlement to use it: eligibility is the §7.3 matrix's, and the surface
+   * decides it when it is called.
+   */
+  next_action: string;
   /** present (true) only when this SOURCE had already been packed as this version */
   noop?: boolean;
 }
@@ -1529,8 +1557,13 @@ export class Registry {
           // reported is the one the EXISTING id derives, so a caller that
           // resubmits gets the marker of the package that actually shipped.
           const row = db
-            .prepare("SELECT manifest_hash, content_hash FROM skill_versions WHERE id=?")
-            .get(existing.id) as { manifest_hash: string; content_hash: string };
+            .prepare("SELECT manifest_hash, content_hash, manifest_json, package_blob_ref FROM skill_versions WHERE id=?")
+            .get(existing.id) as {
+            manifest_hash: string;
+            content_hash: string;
+            manifest_json: string;
+            package_blob_ref: string;
+          };
           return {
             skill_id: skillId,
             skill_version_id: existing.id,
@@ -1539,6 +1572,12 @@ export class Registry {
             kid: key.kid,
             manifest_hash: row.manifest_hash,
             content_hash: row.content_hash,
+            // THE GATES OF THE PACKAGE THAT ACTUALLY SHIPPED, not of the source
+            // that was just resent — a replay reports the version the registry
+            // holds, and its bytes are the stored blob's. Omitted, never
+            // reported as zeros, when that blob is unavailable.
+            gate_reports: this.gateReportsForStoredPackage(row.package_blob_ref, row.manifest_json),
+            next_action: nextActionForState(existing.state),
             noop: true,
           };
         }
@@ -1602,6 +1641,13 @@ export class Registry {
       // [I-7]/[M-2], checked over the actual bytes rather than promised: the
       // package, the stored manifest, the signature, the marker and the response
       // are searched for the private seed in every encoding it could wear.
+      // THE EIGHT GATES, over the bytes that are about to be stored — `files`
+      // now holds `skill.json` and `SIGNATURE.jws`, which is exactly the file
+      // set `skill.lint` reads back out of the blob, so the two cannot disagree
+      // about the same package. Nothing is recorded and nothing transitions:
+      // `lint` is the surface that writes `lint_reports` and moves
+      // `draft → linted`, and a create that did that silently would be a
+      // transition nobody asked for.
       const response: CreateFromDirResponse = {
         skill_id: skillId,
         skill_version_id: versionId,
@@ -1610,6 +1656,12 @@ export class Registry {
         kid: key.kid,
         manifest_hash: mHash,
         content_hash: cHash,
+        gate_reports: runGates(manifest, files, { nowMs: now }).map((r) => ({
+          gate: r.gate,
+          result: r.result,
+          details: r.details,
+        })),
+        next_action: nextActionForState("draft"),
       };
       assertNoPrivateMaterial(seedHex, [
         ["the package archive", tar],
@@ -1643,6 +1695,35 @@ export class Registry {
       rollbackIfOpen(db);
       throw e;
     }
+  }
+
+  /**
+   * The eight §7.1 gates over a package this registry already stored.
+   *
+   * `undefined` — never an empty list — when the blob or the stored manifest
+   * cannot be read. An empty list would say "eight gates ran and none of them
+   * reported anything", which is the `INV-03` mistake this whole response field
+   * exists to avoid; absence says the one true thing, that the verdicts are not
+   * known here. `skill.lint` answers the same question authoritatively and
+   * refuses outright when the blob is gone.
+   */
+  private gateReportsForStoredPackage(
+    blobRef: string,
+    manifestJson: string,
+  ): Array<{ gate: string; result: string; details: string | null }> | undefined {
+    const blob = this.blobs.get(blobRef);
+    if (!blob) return undefined;
+    let manifest: any;
+    try {
+      manifest = JSON.parse(manifestJson);
+    } catch {
+      return undefined;
+    }
+    return runGates(manifest, readArchiveBytes(blob), { nowMs: this.now() }).map((r) => ({
+      gate: r.gate,
+      result: r.result,
+      details: r.details,
+    }));
   }
 
   /** Create-or-reuse the target skill row; returns its id. Caller holds the tx. */

@@ -61,6 +61,48 @@ export const REVOCABLE_STATES: readonly VersionState[] = (
   Object.keys(TRANSITION_WHITELIST) as VersionState[]
 ).filter((from) => TRANSITION_WHITELIST[from].includes("revoked"));
 
+/**
+ * The surface that reaches each state, so "what may I do next" is DERIVED from
+ * the graph above rather than restated by whoever is answering.
+ *
+ * WHY THIS IS HERE AND NOT IN A CLIENT. The authoring CLI used to answer it from
+ * a `switch` of its own, and mapped `draft` to "request a review" — a request
+ * that reproducibly returns `412 PRECONDITION_FAILED`, because §5.1 puts `lint`
+ * between the two and the review surface refuses any state but `linted`. That is
+ * a client re-deriving a decision the server owns (`INV-01`) and getting it
+ * wrong. The registry answers now, from the one edge set that decides it, and
+ * the client renders the sentence it is given.
+ *
+ * `draft` has no entry: nothing transitions INTO `draft`, it is where a version
+ * is created, and a map that invented a surface for it would be describing a
+ * route that does not exist.
+ */
+const SURFACE_REACHING: Readonly<Partial<Record<VersionState, string>>> = {
+  linted: "POST /v1/versions/{skill_version_id}/lint — the eight §7.1 gates run there, and a version that passes them becomes `linted`",
+  reviewed: 'POST /v1/versions/{skill_version_id}/reviews with {"action":"request"} — a reviewer who is not the author then records the verdict',
+  verified: "POST /v1/versions/{skill_version_id}/verify — §5.1 requires a reported trial adoption first",
+  published: "POST /v1/versions/{skill_version_id}/publish",
+  deprecated: "POST /v1/versions/{skill_version_id}/deprecate",
+  superseded: "POST /v1/versions/{skill_version_id}/supersede",
+  revoked: "POST /v1/versions/{skill_version_id}/revoke",
+};
+
+/**
+ * What a version in this state admits next, in the registry's own words.
+ *
+ * It names the SURFACE and never promises the caller is entitled to use it:
+ * eligibility is the §7.3 matrix's and is decided by the surface when it is
+ * called. A state with no outgoing edge says so rather than inventing one.
+ */
+export function nextActionForState(state: VersionState): string {
+  const next = TRANSITION_WHITELIST[state] ?? [];
+  const surfaces = next.map((to) => SURFACE_REACHING[to]).filter((s): s is string => s !== undefined);
+  if (surfaces.length === 0) {
+    return `state \`${state}\` has no onward transition — nothing further is permitted on this version`;
+  }
+  return surfaces.join("; or ");
+}
+
 export function isLegalTransition(from: VersionState, to: VersionState): boolean {
   return (TRANSITION_WHITELIST[from] ?? []).includes(to);
 }

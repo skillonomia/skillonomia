@@ -207,7 +207,11 @@ export function isValidateOk(findings: readonly SourceFinding[]): boolean {
  * `next_action` is a field and not a sentence in the output text: after a
  * create, what an author may do next depends on the risk level, the gate
  * results and the §7.3 matrix, and a CLI that guessed would be a second
- * implementation of the eligibility rules INV-01 forbids. The server says.
+ * implementation of the eligibility rules INV-01 forbids. The server says —
+ * and the CLI used to say instead, mapping `draft` to "request a review", a
+ * request that reproducibly returns `412 PRECONDITION_FAILED` because §5.1 puts
+ * `lint` between the two. Both fields below are therefore `null` where the
+ * server did not answer, and `null` is rendered as ABSENT.
  */
 export interface CreateReport {
   skill_id: string;
@@ -215,9 +219,29 @@ export interface CreateReport {
   slug: string;
   semantic_version: string;
   state: string;
-  gates: { passed: number; failed: number; warned: number };
-  next_action: string;
+  /**
+   * The counts of the server's own gate reports, or `null` when the response
+   * carried none.
+   *
+   * `null` AND NEVER `{passed:0,failed:0,warned:0}`. Three zeros is a claim that
+   * eight gates ran and reported nothing; "we were not told" is a different
+   * statement and `INV-03` is the invariant that the two must not be spelled
+   * the same way. This is that invariant applied to the authoring tool, which
+   * is where it was being broken.
+   */
+  gates: { passed: number; failed: number; warned: number } | null;
+  /** the server's own sentence, or `null` when the response carried none */
+  next_action: string | null;
 }
+
+/** What `create` prints where the server sent no gate reports. It says the
+ *  verdicts are unknown and where to get them; it does not say zero. */
+export const GATES_NOT_REPORTED = "not reported by the server — run the lint surface for the gate verdicts";
+
+/** What `create` prints where the server sent no next action. It does not
+ *  guess one from the state: that guess is what `INV-01` forbids. */
+export const NEXT_ACTION_NOT_REPORTED =
+  "not reported by the server — consult the lifecycle documentation for what this state permits";
 
 /**
  * The typed conflict an author meets when the slug is taken by another skill.
