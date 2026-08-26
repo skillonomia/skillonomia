@@ -124,6 +124,20 @@ const DECLARED: ReadonlyArray<Declared> = ([] as Row[]).concat(
   // the discriminating pairs the console probe log records.
   [
     ["docs/API.md", "ad09febd932ee2b8", "behaviour", "the console payload equals the bearer payload modulo the envelope, for all eleven views, with every cell's method intact: test/v1p1-p1-console.test.ts"],
+  ],
+  // ---------------------------------------------- docs/REFERENCE, the no-DRM
+  //
+  // ONE SENTENCE, AND IT IS A QUOTATION. `docs/REFERENCE.md` prints the
+  // revocation consequences the Console shows before a commit, and it prints
+  // them CHARACTER FOR CHARACTER out of `REVOCATION_CONSEQUENCES` in
+  // `src/console-surfaces.ts` — test/v1p2-p2d-documentation.test.ts compares
+  // them and fails if a character moves. Rewording this sentence to name a file
+  // and make it checkable here would therefore be a lie of a different kind:
+  // the published boundary would stop being what the owner is actually shown.
+  // So it is declared, on the ground that it states a rule of the running
+  // service, with the two places that rule is exercised named.
+  [
+    ["docs/REFERENCE.md", "5c11e7d1340e0a0c", "behaviour", "the no-DRM boundary, quoted verbatim from REVOCATION_CONSEQUENCES and asserted on the revocation surface: test/v1p2-p2c-console.test.ts, and against the document by test/v1p2-p2d-documentation.test.ts"],
     ["docs/API.md", "d7d449869663b57b", "behaviour", "a `format` selector on the console Proofline is INVALID_SCHEMA, shown to be its own guard: test/v1p1-p1-console-probes.test.ts"],
   ],
   // ------------------------------------------- docs/API, v1.1 Approval Inbox
