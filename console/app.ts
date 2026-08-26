@@ -41,9 +41,11 @@
 // thing to keep in step — and because the gates compare the bytes on the page
 // against these exact constants.
 import {
+  CELL_SELECTOR,
   CONSOLE_FIRST_VIEW,
   PROOFLINE_TEXT,
   PROVENANCE_SEP,
+  UNKNOWN_CELL_SELECTOR,
   answerToken,
   parseCell,
   partialDetail,
@@ -2139,22 +2141,22 @@ function renderProofline(payload: ProoflineEnvelope): void {
     box.appendChild(n);
   }
 
+  // The sections first, then the banner ABOUT them — see below.
+  const firstSection = box.childNodes.length;
+  for (const s of payload.sections) renderProoflineSection(box, s);
+
   // §7 `partial`: an unknown value is a value, and the ones that were read stay
-  // on the page beside it. This is a COUNT of what the server sent and not a
-  // judgement about it — and it is not a loading state, which is why it renders
-  // with the data rather than instead of it.
-  let unknown = 0;
-  let total = 0;
-  for (const s of payload.sections) {
-    for (const row of s.rows) {
-      for (const field of s.fields) {
-        const text = row[field];
-        if (text === undefined) continue;
-        total += 1;
-        if (parseCell(text).value === "unknown") unknown += 1;
-      }
-    }
-  }
+  // on the page beside it. It is not a loading state, which is why it renders
+  // WITH the data rather than instead of it.
+  //
+  // THE COUNT IS OF THE RENDERED CELLS. This file labels the server's values and
+  // never compares one — a comparison here is where a client-side verdict starts
+  // — so the banner counts the nodes the renderer produced rather than deciding
+  // for itself which payload values are unknown. The class it counts is
+  // `answerToken` of the answer itself, so the count cannot disagree with the
+  // table underneath it.
+  const total = box.querySelectorAll(CELL_SELECTOR).length;
+  const unknown = box.querySelectorAll(UNKNOWN_CELL_SELECTOR).length;
   if (unknown > 0) {
     const partial = el("div", undefined, "partial");
     partial.dataset.partial = "true";
@@ -2162,10 +2164,8 @@ function renderProofline(payload: ProoflineEnvelope): void {
     partial.dataset.totalCells = String(total);
     partial.appendChild(el("h3", PROOFLINE_TEXT.partial_heading));
     partial.appendChild(el("p", partialDetail(unknown, total)));
-    box.appendChild(partial);
+    box.insertBefore(partial, box.childNodes[firstSection] ?? null);
   }
-
-  for (const s of payload.sections) renderProoflineSection(box, s);
 }
 
 /** The refusal and the failure, told apart, because they are different facts

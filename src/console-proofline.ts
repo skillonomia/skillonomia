@@ -151,6 +151,26 @@ export function answerToken(value: string): string {
   return token.length === 0 ? "answer-other" : `answer-${token}`;
 }
 
+/**
+ * The two selectors the partial banner counts over.
+ *
+ * THE COUNT IS TAKEN FROM THE PAGE, NOT FROM THE PAYLOAD, and that is a
+ * deliberate choice rather than a convenience. `console/app.ts` may LABEL a
+ * value the server sent and may not COMPARE one — a comparison in the client is
+ * where a second implementation of a rule starts, and `test/v1p5-outcome-loop.
+ * test.ts` fails the build over exactly that line. The class on a cell is not a
+ * comparison: it is `answerToken` of the answer itself, the same reduction
+ * `rowClassOf` does server-side, so `unknown` cannot be quietly renamed into
+ * something friendlier on the way to a class.
+ *
+ * Counting the rendered nodes therefore has two properties a payload-side count
+ * would not: the bundle holds no predicate about the registry's vocabulary, and
+ * the banner cannot disagree with the table beneath it — it is counting the very
+ * cells a reader is looking at.
+ */
+export const CELL_SELECTOR = "td[data-field]";
+export const UNKNOWN_CELL_SELECTOR = "td[data-field].answer-unknown";
+
 /** The texts a rendered answer may never be — the same list the server's own
  *  sweep refuses, restated for the browser because the browser is a second place
  *  a value can be flattened into nothing. */
