@@ -517,7 +517,7 @@ test("§7 disabled · TRIGGER: the server's own {allowed:false, reason_code} on 
     await page.waitForSelector('#approval-detail[data-state="loaded"]', { timeout: 25000 });
     assert.equal(await page.$eval("#approval-detail", (b) => b.dataset.allowed), "false");
     assert.equal(
-      await page.$eval("#approval-controls [data-disabled]", (n) => n.dataset.reasonCode),
+      await page.$eval("#approval-controls [data-withheld]", (n) => n.dataset.reasonCode),
       refused.eligibility.reason_code,
       "the exact reason code the server sent is not the one on the page",
     );
@@ -532,7 +532,7 @@ test("§7 disabled · TRIGGER: the server's own {allowed:false, reason_code} on 
     assert.equal(server.body.eligibility.allowed, false, "the high-risk version is unexpectedly revocable");
     assert.equal(await page.$eval("#revocation", (b) => b.dataset.reasonCode), server.body.eligibility.reason_code);
     assert.equal(
-      await page.$eval("#revocation [data-disabled]", (n) => n.dataset.reasonCode),
+      await page.$eval("#revocation [data-withheld]", (n) => n.dataset.reasonCode),
       server.body.eligibility.reason_code,
     );
     assert.equal(await page.$("#revoke-primary"), null, "a revoke control was offered for a version that cannot be revoked");

@@ -11,6 +11,17 @@
     "publish",
     "adopt_high_risk"
   ],
+  "status_filters": [
+    "pending",
+    "decided",
+    "all"
+  ],
+  "kind_filters": [
+    "review",
+    "publish",
+    "adopt_high_risk",
+    "all"
+  ],
   "items": [
     {
       "item_id": "adopt_high_risk:REQ3-DENIED000000000000000",

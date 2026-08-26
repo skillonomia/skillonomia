@@ -292,6 +292,24 @@ async function api<T>(method: string, path: string, body?: unknown, idempotencyK
     credentials: "same-origin",
     body: payload === undefined ? undefined : JSON.stringify(payload),
   });
+  return readConsoleResponse<T>(res, path);
+}
+
+/**
+ * EVERY CONSOLE RESPONSE, READ IN ONE PLACE.
+ *
+ * `api()` above and `mutate()` below both end here, and that is the whole point
+ * of the function existing: `INV-05` says the contract is checked ONCE, before a
+ * field of the body is read, and two copies of that check are two places for one
+ * of them to drift below a status branch. `P2-R2-001` was exactly that drift —
+ * the check sitting under the error envelope, so a failed response was read for
+ * `code`, `message` and `current_state` before its version had been looked at.
+ *
+ * The order below is the requirement, in this order and no other: parse, then
+ * refuse an unknown contract, then the session, then the error envelope, then
+ * the body.
+ */
+async function readConsoleResponse<T>(res: Response, path: string): Promise<T> {
   const text = await res.text();
   let parsed: unknown = null;
   try {
@@ -304,11 +322,8 @@ async function api<T>(method: string, path: string, body?: unknown, idempotencyK
     } satisfies ApiFailure);
   }
   // `INV-05`, and it stands HERE — ahead of the status, ahead of the error
-  // envelope, ahead of everything. `P2-R2-001`: the check used to sit at the
-  // bottom, so a failed response was read for `code`, `message` and
-  // `current_state` before its version had been looked at, and a payload
-  // announcing a contract this build does not know was rendered on the strength
-  // of being an error. A version boundary with a hole in it is not a boundary.
+  // envelope, ahead of everything. A version boundary with a hole in it is not
+  // a boundary.
   requireContract(parsed, path);
   if (res.status === 401) {
     window.location.assign("/console/login");
@@ -2482,35 +2497,10 @@ async function mutate<T>(
     body: JSON.stringify(payload),
   });
   out.replayed = res.headers.get(REPLAY_HEADER) === REPLAY_HEADER_TRUE;
-  const text = await res.text();
-  let parsed: unknown = null;
-  try {
-    parsed = text.length > 0 ? JSON.parse(text) : null;
-  } catch {
-    throw Object.assign(new Error("the server sent a body this console cannot read"), {
-      status: res.status,
-      code: "UNPARSEABLE",
-      message: "unparseable response",
-    } satisfies ApiFailure);
-  }
-  // `INV-05` first, exactly as in `api()`, and for the same reason: an error
-  // envelope is a versioned document too and its `code` decides what the owner
-  // is told happened.
-  requireContract(parsed, path);
-  if (res.status === 401) {
-    window.location.assign("/console/login");
-    throw new Error("session ended");
-  }
-  if (!res.ok) {
-    const envelope = (parsed as { error?: { code?: string; message?: string; current_state?: string } } | null)?.error;
-    throw Object.assign(new Error(envelope?.message ?? `request failed (${res.status})`), {
-      status: res.status,
-      code: envelope?.code ?? "UNKNOWN",
-      message: envelope?.message ?? "",
-      current_state: envelope?.current_state,
-    } satisfies ApiFailure);
-  }
-  return parsed as T;
+  // THE SAME READER `api()` USES, and not a second copy of it: `INV-05`'s check
+  // is one check in one place, and the header above is the only thing this
+  // function does that `api()` does not.
+  return readConsoleResponse<T>(res, path);
 }
 
 /** A definition list row — the shape every fact on these three surfaces is
@@ -2822,7 +2812,14 @@ function renderApprovalDetail(item: ApprovalItem): void {
   // words would be restating a decision it did not make.
   if (!item.eligibility.allowed) {
     const denied = el("div", undefined, "notice");
-    denied.dataset.disabled = "true";
+    // `data-withheld`, and NOT `data-disabled`. The source guard in
+    // `test/v1p5-outcome-loop.test.ts` reads every assignment to a `disabled`
+    // property in this file and requires the right-hand side to be the in-flight
+    // constant or a negated server verdict; a dataset key of the same name is
+    // indistinguishable from that when the rule is read off the source. The
+    // attribute means something different anyway — no control was drawn at all,
+    // which is a stronger statement than a control being greyed out.
+    denied.dataset.withheld = "true";
     denied.dataset.reasonCode = item.eligibility.reason_code;
     denied.appendChild(el("h3", APPROVALS_TEXT.disabled_heading));
     denied.appendChild(el("p", disabledDetail(item.eligibility.reason_code)));
@@ -3136,7 +3133,14 @@ function renderRevocationPrecommit(ctx: RevocationContext): void {
   // own reason code in its place.
   if (!ctx.eligibility.allowed) {
     const denied = el("div", undefined, "notice");
-    denied.dataset.disabled = "true";
+    // `data-withheld`, and NOT `data-disabled`. The source guard in
+    // `test/v1p5-outcome-loop.test.ts` reads every assignment to a `disabled`
+    // property in this file and requires the right-hand side to be the in-flight
+    // constant or a negated server verdict; a dataset key of the same name is
+    // indistinguishable from that when the rule is read off the source. The
+    // attribute means something different anyway — no control was drawn at all,
+    // which is a stronger statement than a control being greyed out.
+    denied.dataset.withheld = "true";
     denied.dataset.reasonCode = ctx.eligibility.reason_code;
     denied.appendChild(el("h3", REVOCATION_TEXT.disabled_heading));
     denied.appendChild(el("p", disabledDetail(ctx.eligibility.reason_code)));

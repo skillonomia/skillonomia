@@ -221,7 +221,7 @@ test("G-P2-7 · an item the server offers no decision on shows the server's reas
     await page.waitForSelector('#approval-detail[data-state="loaded"]', { timeout: 20000 });
 
     // THE SERVER'S OWN CODE, ON THE PAGE.
-    const shown = await page.$eval("#approval-controls [data-disabled]", (n) => n.dataset.reasonCode);
+    const shown = await page.$eval("#approval-controls [data-withheld]", (n) => n.dataset.reasonCode);
     assert.equal(shown, refused.eligibility.reason_code);
 
     // AND NO CONTROL. Not a disabled one — none. A greyed button is still a

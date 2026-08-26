@@ -103,6 +103,11 @@ export const IDENTITY_INTAKE: Record<string, IdentityColumnClass> = {
 
   // ------------------------------------------------------- adoption_requests
   "adoption_requests.id": MINTED,
+  // The version the request or the notice is ABOUT. It is a `skill_versions.id`
+  // this registry minted and then resolved — no caller ever writes one directly
+  // — and it entered this survey when the revocation console read began
+  // selecting notices by it (`src/console-revocation.ts`).
+  "adoption_requests.skill_version_id": RESOLVED,
   "adoption_requests.lease_owner": {
     intake: "registry_generated",
     note: "`worker:<host>:<pid>:<ULID>`, composed by `workerId` (src/delivery.ts) out of the machine this registry runs on; no request carries one",

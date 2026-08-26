@@ -19,8 +19,10 @@
 // (INV-01, INV-02). This file supplies only the nouns.
 //
 // WHY THIS FILE HAS NO IMPORTS. It is bundled into the browser, exactly as
-// `src/console-proofline.ts` is, and a `node:` import anywhere in its transitive
-// graph would end up in a browser build or fail it.
+// `src/console-proofline.ts` is, and a builtin-module import anywhere in its
+// transitive graph would end up in a browser build or fail it. The cheapest way
+// to have no transitive graph is to have none at all, so this file imports
+// nothing and `test/v1p2-p2c-console.test.ts` asserts it still imports nothing.
 
 // ===========================================================================
 // The four exact human-decision labels (SPEC.md section 6.4)
@@ -306,8 +308,6 @@ export const WEBHOOK_TEXT = {
    */
   result_not_health:
     "This is the result of one test delivery, not the endpoint's production health. It moved no failure count, changed no endpoint status and queued nothing.",
-  /** the heading over the endpoint's actual production health */
-  health_heading: "Production health, as the registry records it",
   /** the field labels of a test result, each naming exactly its field */
   field_delivered: "delivered",
   field_http_status: "http_status",
@@ -324,8 +324,6 @@ export const WEBHOOK_TEXT = {
   /** a transport or server failure */
   error_heading: "The webhook endpoints could not be read",
   retry: "Retry loading the webhook endpoints",
-  /** the heading over the server's reason for offering no test */
-  disabled_heading: "This endpoint offers no test delivery",
   /** the heading over a typed schema refusal */
   invalid_heading: "The server refused this endpoint as malformed",
   /** what is promised about the URL when a registration is refused */
