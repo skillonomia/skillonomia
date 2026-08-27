@@ -8,9 +8,10 @@
 // into the artifact hashes the release phase has to certify — for a tool that is
 // never part of the product.
 //
-// So the browser engine lives OUTSIDE the repository, at a control install, and
-// this module is the one place that knows where. The path is overridable with
-// `SKILLONOMIA_PLAYWRIGHT_DIR`; the default below is the documented location.
+// So the browser engine normally lives OUTSIDE the repository, at a control
+// install, and this module is the one place that knows where to search. An
+// explicit `SKILLONOMIA_PLAYWRIGHT_DIR` wins; portable local and home-derived
+// candidates follow it.
 //
 // WHAT HAPPENS WHEN IT IS NOT THERE. The suite DOES NOT RUN and DOES NOT PASS.
 // It prints why, and exits `SKIPPED_EXIT` — a code that is neither 0 nor the
@@ -19,17 +20,43 @@
 // success when it did not run is worse than no harness.
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
-
-/** The control install the P2 gate manifest names. */
-export const DEFAULT_PLAYWRIGHT_DIR = "/home/node/.ductor-alan/tools/v1.1-playwright";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
 /** The exit code that means "no browser was started, so nothing was proved". */
 export const SKIPPED_EXIT = 3;
 
-export function playwrightDir() {
-  const fromEnv = process.env.SKILLONOMIA_PLAYWRIGHT_DIR;
-  return fromEnv === undefined || fromEnv === "" ? DEFAULT_PLAYWRIGHT_DIR : fromEnv;
+/** Every supported control-install location, in resolution order. */
+export function playwrightCandidates({ env = process.env, cwd = process.cwd(), home = homedir() } = {}) {
+  const repository = resolve(cwd);
+  const operatorHome = resolve(home);
+  const fromEnv = env.SKILLONOMIA_PLAYWRIGHT_DIR;
+  return [
+    ...(fromEnv === undefined || fromEnv === "" ? [] : [resolve(repository, fromEnv)]),
+    repository,
+    join(repository, ".playwright"),
+    join(repository, ".skillonomia", "tools", "v1.1-playwright"),
+    join(repository, ".ductor-alan", "tools", "v1.1-playwright"),
+    join(operatorHome, ".skillonomia", "tools", "v1.1-playwright"),
+    join(operatorHome, ".ductor-alan", "tools", "v1.1-playwright"),
+  ].filter((candidate, index, all) => all.indexOf(candidate) === index);
+}
+
+/** Resolve the first candidate that contains the Playwright package. */
+export function resolvePlaywrightDir({
+  env = process.env,
+  cwd = process.cwd(),
+  home = homedir(),
+  exists = existsSync,
+} = {}) {
+  const candidates = playwrightCandidates({ env, cwd, home });
+  const dir = candidates.find((candidate) => exists(join(candidate, "node_modules", "playwright"))) ?? null;
+  return { dir, candidates };
+}
+
+/** The selected control install, retained as a small compatibility helper. */
+export function playwrightDir(options = {}) {
+  return resolvePlaywrightDir(options).dir;
 }
 
 /**
@@ -39,10 +66,16 @@ export function playwrightDir() {
  * once, in one place, instead of a `catch` at each call site guessing whether a
  * missing engine is a skip or a failure.
  */
-export function loadPlaywright() {
-  const dir = playwrightDir();
-  if (!existsSync(join(dir, "node_modules", "playwright"))) {
-    return { ok: false, dir, reason: `no \`playwright\` under ${join(dir, "node_modules")}` };
+export function loadPlaywright(options = {}) {
+  const resolved = resolvePlaywrightDir(options);
+  const { dir, candidates } = resolved;
+  if (dir === null) {
+    return {
+      ok: false,
+      dir,
+      candidates,
+      reason: `no \`playwright\` found; searched:\n${candidates.map((candidate) => `    ${candidate}`).join("\n")}`,
+    };
   }
   const require_ = createRequire(join(dir, "package.json"));
   let playwright;
@@ -50,7 +83,7 @@ export function loadPlaywright() {
   try {
     playwright = require_("playwright");
   } catch (e) {
-    return { ok: false, dir, reason: `\`playwright\` did not load from ${dir}: ${String(e)}` };
+    return { ok: false, dir, candidates, reason: `\`playwright\` did not load from ${dir}: ${String(e)}` };
   }
   try {
     // Present in the control install and used by the accessibility gate of a
@@ -60,20 +93,18 @@ export function loadPlaywright() {
   } catch {
     axe = null;
   }
-  return { ok: true, dir, playwright, axe };
+  return { ok: true, dir, candidates, playwright, axe };
 }
 
 /** The message a run prints when it did not run. Loud, exact, and naming the
  *  override — a skip nobody can read is a skip somebody mistakes for a pass. */
 export function skipBanner(reason) {
-  const dir = playwrightDir();
   return [
     "",
     "==============================================================",
     "  BROWSER GATES DID NOT RUN — NOTHING HERE IS A PASS",
     "==============================================================",
     `  reason: ${reason}`,
-    `  looked in: ${dir}`,
     "",
     "  These gates need the Playwright control install, which is kept",
     "  OUTSIDE this repository on purpose (the shipped package has two",
