@@ -11,6 +11,7 @@
 #
 #   sk_… / sk_own_…  the registry's own API keys (src/auth.ts mints `sk_<b64url>`)
 #   bt_…             the one-time bootstrap token
+#   ct_… / cs_… / cx_…  Console tickets, sessions and CSRF tokens
 #   the standard prefixes of credentials people paste from elsewhere
 #   PEM private key blocks
 #   `Authorization: Bearer <something long>` in a captured transcript
@@ -29,6 +30,7 @@ fi
 PATTERNS=(
   'sk_[A-Za-z0-9_-]{16,}'
   'bt_[A-Za-z0-9_-]{16,}'
+  'c[tsx]_[A-Za-z0-9_-]{16,}'
   'gh[pousr]_[A-Za-z0-9]{20,}'
   'AKIA[0-9A-Z]{16}'
   'xox[baprs]-[A-Za-z0-9-]{10,}'
@@ -73,9 +75,13 @@ echo "pinned test-fixture digests read from test/: $(printf '%s\n' "$PINNED" | g
 excused=0
 hits=0
 for p in "${PATTERNS[@]}"; do
-  # -I skips binaries; the redaction marker is excluded so a redacted transcript
-  # does not read as a leak.
-  found=$(grep -rIEno "$p" "$DIR" 2>/dev/null | grep -v 'REDACTED-CREDENTIAL' || true)
+  # -a scans every byte stream instead of treating NUL-bearing evidence (for
+  # example SQLite) as unsearchable. -o emits only the ASCII match, so binary
+  # bytes never pass through a shell variable. No pattern has a leading word
+  # boundary: a credential remains a credential when the preceding byte is an
+  # ASCII word character. The redaction marker is excluded so a redacted
+  # transcript does not read as a leak.
+  found=$(LC_ALL=C grep -raEno "$p" "$DIR" 2>/dev/null | grep -v 'REDACTED-CREDENTIAL' || true)
   real=""
   while IFS= read -r line; do
     [ -z "$line" ] && continue
